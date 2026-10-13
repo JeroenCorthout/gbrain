@@ -10,6 +10,14 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [Unreleased] - recall: agent guidance for `question` (W1 A29)
+
+**The brain-ops and query skills and the ambient-recall guide now tell agents to pass the user's question as `recall`'s `question`.**
+
+### Itemized changes
+
+- The brain-ops and query skills and the ambient-recall guide tell agents to pass the user's question as `recall`'s `question` for question-shaped lookups, so facts come back ranked by relevance (`facts_order: "relevance"`) instead of newest first, to keep `entity`, `since` and `session_id` as filters, and to say so when `facts_degraded` reports keyword-only ranking. The `question` parameter's own description is unchanged.
+
 ## [0.60.204.0] - 2026-10-13
 
 **`recall` takes `since: "6 weeks ago"` or `"last month"`, and ranks expired facts for a `question` when you pass `include_expired: true`. Both used to be refused.**
@@ -31,7 +39,6 @@ identifiers and attribution are available in the pre-removal Git revision
 - **Docs:** AGENTS.md step 3, INSTALL_FOR_AGENTS.md and `docs/guides/setup.md` ("First-run settings") say the same for the setup path; the plain-`init` rule to stop and confirm is unchanged.
 - **Tests:** two fail-first setup tests (on the old `setup.ts` the human output carried `Do this next`, `claude mcp add` and `Reply 'defaults'`, and `--json` carried `harness_wiring`), four unit cases in `test/init-first-run.test.ts`, and a Cat 41 install-text smoke ($0.55) whose install session ended with "Settings in effect (no answer needed)" and whose fresh session recalled the fact.
 - **Flake fix:** `test/chronicle-auto-decision.test.ts` no longer fails when a run crosses midnight UTC between computing the expected date and writing the receipt; a forced clock probe across midnight fails the old test and passes the new one.
-
 ## [0.60.202.0] - 2026-10-13
 
 **A page-unit call with its own budget now gets whole pages that fill that budget instead of many partial ones, and search can grade its candidates before the cross-encoder to report how often the reranker was paying for an answer retrieval already found. The page cut is on by default (`gbrain config set search.page_rank_cut off` restores the old path); the grade is off by default and never changes results.**

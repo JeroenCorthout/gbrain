@@ -22,7 +22,7 @@ ordinary conversation — is [ambient-writeback.md](./ambient-writeback.md).
 | **Session start** | `context_pack(entities, budget_tokens)` | Warm the thread's 1-3 standing entities before the first message. | zero-LLM, sub-second |
 | **After compaction** | `context_pack(entities, budget_tokens)` | Rehydrate the verbatim detail the summary dropped. | zero-LLM, sub-second |
 | **Heartbeat / periodic wake** | `delta(session_id, budget_tokens)` | "What changed since my last wake" in O(changes), deduped. | zero-LLM, sub-second |
-| Explicit memory question | `recall(query \| entity, budget_tokens)` | The budget-packed read for "what do we know that we SAVED about X". | sub-second (+1 embedding if `query`) |
+| Explicit memory question | `recall(question, query?, budget_tokens)` | Pass the user's question as `question` so saved facts rank by relevance to it (`facts_order: "relevance"`); add `query` to also search pages. Use `recall(entity)` for everything about one entity. | sub-second (+1 embedding per `question` or `query`) |
 | Answer needs cross-page reasoning | `synthesize(question)` | LLM-backed. **Never** on a hot or ambient path. | seconds-to-minutes, $$ |
 
 Observed shape: per-message retrieval beyond `entity` cards adds latency faster
