@@ -10,6 +10,14 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.214.0] - 2026-10-13
+
+**The writer-busy test reads the write after the consumer lets it go, not at the end of its 1.5 s wait.** `test/persistence-git-coalescing-5530.slow.test.ts` ("a write that finds the worktree busy is requeued as writer_busy with no stale preparing phase") holds the worktree lock, submits a put_page with `waitMs: 1500`, and read the request row as soon as that wait ended. On a loaded runner the consumer claimed the write late, so the read landed while the write was still in flight: `running`, phase `preparing` before #6628's claim stamp and `publishing` after it (as #6641's gate saw, 15 ms after the claim). The write still ended `queued` / `writer_busy` with no claim phase. No product code changed.
+
+### Itemized changes
+
+- The test now polls the row (50 ms steps, at most 30 s) until it leaves `running`, then makes the same assertion. `waitMs` and the expected row are unchanged. Forced probe on PGLite: a 2 s stall at `consumer:preparing`, at `consumer:prepared`, or right after the publishing claim stamp fails the old read (`running` with `preparing`, `preparing`, and `publishing`/`waiting_on: publication`) and passes the new one. The Postgres arm passed 3 of 3 runs.
+
 ## [0.60.213.0] - 2026-10-13
 
 **`gbrain eval longmemeval --call-plan FILE` prices a paid LongMemEval run before it runs.** It writes the run's call plan in gstack's `GSTACK_EVAL_CALLS` v1 format: one line per paid lane (embeddings, rerank, trajectory extraction, per-chunk synopsis, fact keys, expansion, reader, judge) with its model, call count and token bounds. It makes no provider call and opens no brain. `gstack-eval-plan price-gate --plan-file FILE` then prices it against a cap, so a run like tokenmax's per-chunk synopses on about 100k chunks is priced before approval, not discovered in a smoke run.
