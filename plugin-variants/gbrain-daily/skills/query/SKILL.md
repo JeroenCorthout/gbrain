@@ -40,6 +40,10 @@ Answer questions using the brain's knowledge with 3-layer search and synthesis.
 > provenance, evidence, and a server-enforced token budget:
 > - **`recall(query | entity, budget_tokens)`** — the budget-packed memory read.
 >   Use it instead of bare `search` for "what do we know that we SAVED about X".
+>   For a question a saved fact answers, pass the question as `question`
+>   (`recall({question: "...", query: "..."})`): facts come back ranked by
+>   relevance (`facts_order: "relevance"`) instead of newest first, and a
+>   `facts_degraded` field means they were ranked by term share only.
 > - **`entity(name)`** — a zero-LLM person/company/project card (aliases,
 >   last-touched, open threads, top edges). Use it instead of `get_page` +
 >   `get_backlinks` when you just need the card.

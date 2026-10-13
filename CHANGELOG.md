@@ -19,6 +19,7 @@ identifiers and attribution are available in the pre-removal Git revision
 - `since` on `recall` (MCP and `gbrain recall --since`) falls back to relative phrases after its existing grammar: `"N weeks|months|years ago"`, `"a week ago"`, `"an hour ago"`, compact `"3w"`, `"2mo"`, `"1y"`, and `"last month"`, `"past 2 weeks"`, `"the last 6 weeks"`. Months and years step the UTC calendar and clamp the day. Every value that parsed before gives the same instant (`src/core/facts/since-parse.ts`). In the dev-only A12 agent smoke, an agent's `since: "6 weeks ago"` was refused and it fell back to a less precise call.
 - `question` with `include_expired: true` ranks expired, superseded and lapsed facts alongside active ones, under the same read policy and filters, instead of returning `invalid_params`. Each row keeps its `expired_at` and `valid_until`. Without `include_expired`, ranking covers active facts only, as before. `question` with `supersessions` is still refused.
 - The `include_expired` and `since` parameter descriptions say how they now behave; no parameter was added, renamed or made required.
+- The brain-ops and query skills and the ambient-recall guide tell agents to pass the user's question as `recall`'s `question` for question-shaped lookups, so facts come back ranked by relevance (`facts_order: "relevance"`) instead of newest first, to keep `entity`, `since` and `session_id` as filters, and to say so when `facts_degraded` reports keyword-only ranking. The `question` parameter's own description is unchanged.
 
 ## [0.60.202.0] - 2026-10-13
 

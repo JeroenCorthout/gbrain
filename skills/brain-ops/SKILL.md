@@ -41,8 +41,8 @@ suppresses writes for that turn, including when standing capture is enabled.
 > **Memory verbs (MEMORY_VERBS v1, gbrain ≥ 0.43).** Over MCP, prefer the five
 > core memory verbs for the read/write cycle: **`remember(fact, provenance,
 > ttl?)`** to save a single durable fact (mandatory provenance; dedupes +
-> supersedes), **`recall(query | entity, budget_tokens)`** to read it back
-> budget-packed, **`entity(name)`** for a zero-LLM card, **`synthesize(question)`**
+> supersedes), **`recall(question | query | entity, budget_tokens)`** to read it
+> back budget-packed (`question` ranks facts by relevance to a question), **`entity(name)`** for a zero-LLM card, **`synthesize(question)`**
 > for the expensive cross-page answer, **`forget(id)`** to withdraw active memory
 > (history, source material, and backups may remain). `context_pack` and `delta`
 > complete the seven-verb surface. Use
@@ -50,6 +50,21 @@ suppresses writes for that turn, including when standing capture is enabled.
 > `put_page` / `add_link` / `add_timeline_entry` stay the page/graph write path.
 > Fall back to the classic ops when the verbs aren't on the surface. Contract:
 > `docs/protocol/MEMORY_VERBS_v1.md`.
+>
+> **Question-shaped memory lookups:** when the user asks something a saved
+> fact answers ("where did I say we'd meet?", "what did Alice decide about the
+> launch?"), pass the question itself as `question`:
+> `recall({question: "What did Alice decide about the launch?", query: "Alice launch decision"})`.
+> Facts come back ranked by relevance to it (`facts_order: "relevance"`) instead
+> of newest first, and `query` also searches pages; drop `query` for facts only.
+> CLI: `gbrain recall --question 'What did Alice decide about the launch?' --json`.
+> `entity`, `session_id` and `since` still filter before ranking (`since` takes an
+> ISO date or a phrase such as `"6 weeks ago"` or `"last month"`). Add
+> `include_expired: true` to rank expired and superseded facts too. If the response
+> carries `facts_degraded`, facts were ranked by term share only (its `reason`
+> says why); say so rather than treating a thin answer as missing memory. Keep
+> plain `recall(entity)` or `recall(query)` for "everything about X" and
+> newest-first reads.
 >
 > **Tight-budget page questions:** explicitly use
 > `recall({query: "zebra telescope", budget_tokens: 75, budget_policy: "query_first"})`
