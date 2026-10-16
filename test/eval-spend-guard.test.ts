@@ -22,6 +22,7 @@ import {
   appendFileSync,
   chmodSync,
   existsSync,
+  readdirSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -606,8 +607,13 @@ describe('eval-spend-guard.sh', () => {
 
 // ---------------------------------------------------------------------------
 // Process groups (#6776). The guarded command runs in its own process group:
-// a signal, the kill grace or a normal exit stops every process in it.
+// a signal, a timeout or a normal exit stops every process in it, and a guard
+// that was SIGKILLed leaves a lease the next guard uses to reap the group,
+// but only when it can prove the group is still the one it launched.
 // ---------------------------------------------------------------------------
+
+const leaseDir = () => ledger + '.leases';
+const unknownRows = () => ledgerRows().filter((r) => r.status === 'unknown');
 
 /** Alive and not a zombie (an orphan's zombie is reaped by init shortly after). */
 function alive(pid: number): boolean {
@@ -637,6 +643,34 @@ function killQuietly(...pids: number[]): void {
 function groupCommand(leaderPid: string, kidPid: string, leaderSeconds = 30): string[] {
   return ['sh', '-c', 'echo $$ > "' + leaderPid + '"; sh -c \'trap "" TERM; echo $$ > "' + kidPid + '"; exec sleep 30\' & exec sleep ' + leaderSeconds];
 }
+/** The identity a guard on this machine records, read from a real guard's lease. */
+async function liveLeaseFields(): Promise<Record<string, string>> {
+  const g = start(['100', '0.5', '--', 'sleep', '30']);
+  try {
+    await waitFor(() => existsSync(leaseDir()) && readdirSync(leaseDir()).some((f) => f.endsWith('.lease')), 'the lease file');
+    const file = readdirSync(leaseDir()).find((f) => f.endsWith('.lease'))!;
+    const fields: Record<string, string> = {};
+    for (const line of readFileSync(join(leaseDir(), file), 'utf-8').split('\n')) {
+      const i = line.indexOf('=');
+      if (i > 0) fields[line.slice(0, i)] = line.slice(i + 1);
+    }
+    return fields;
+  } finally {
+    g.child.kill('SIGTERM');
+    await g.exit;
+  }
+}
+/** A pid that no longer exists: a reaped child's. */
+function deadPid(): number {
+  return spawnSync('true').pid;
+}
+function writeLease(name: string, fields: Record<string, string | number>): string {
+  mkdirSync(leaseDir(), { recursive: true });
+  const file = join(leaseDir(), name + '.lease');
+  writeFileSync(file, Object.entries(fields).map(([k, v]) => k + '=' + v).join('\n') + '\n');
+  return file;
+}
+
 describe('eval-spend-guard.sh process groups (#6776)', () => {
   test('a SIGTERMed guard stops the whole process group, including a grandchild that ignores SIGTERM (exit 143)', async () => {
     const leaderFile = join(dir, 'leader.pid');
@@ -655,6 +689,7 @@ describe('eval-spend-guard.sh process groups (#6776)', () => {
       expect(await waitDead(leader)).toBe(true);
       expect(await waitDead(kid)).toBe(true);
       expect(doneRows()[0]?.exit_code).toBe(143);
+      expect(existsSync(leaseDir()) ? readdirSync(leaseDir()) : []).toEqual([]);
     } finally {
       killQuietly(kid, leader);
     }
@@ -674,6 +709,143 @@ describe('eval-spend-guard.sh process groups (#6776)', () => {
       expect(doneRows()[0]?.exit_code).toBe(0);
     } finally {
       killQuietly(helper);
+    }
+  }, 20_000);
+
+  test("a SIGKILLed guard's group is stopped by the next guard start and recorded as unknown spend; the reservation stays counted", async () => {
+    const leaderFile = join(dir, 'leader.pid');
+    const kidFile = join(dir, 'kid.pid');
+    const g = start(['10', '4', '--', ...groupCommand(leaderFile, kidFile)]);
+    let kid = 0;
+    let leader = 0;
+    try {
+      await waitFor(() => existsSync(kidFile) && existsSync(leaderFile) && existsSync(leaseDir()) && readdirSync(leaseDir()).length === 1, 'the command pids and lease');
+      await new Promise((r) => setTimeout(r, 200));
+      kid = readPid(kidFile);
+      leader = readPid(leaderFile);
+      const runId = runningRows()[0]!.run_id;
+      g.child.kill('SIGKILL');
+      await g.exit;
+      expect(alive(leader)).toBe(true); // nothing stopped it yet
+      const r = run(['10', '1', '--', 'true'], { GBRAIN_EVAL_SPEND_GUARD_KILL_GRACE_SECONDS: '1' });
+      expect(r.status).toBe(0);
+      expect(r.stderr).toContain('stale run ' + runId);
+      expect(await waitDead(leader)).toBe(true);
+      expect(await waitDead(kid)).toBe(true);
+      const unknown = unknownRows();
+      expect(unknown.length).toBe(1);
+      expect(unknown[0]!.reaped_run_id).toBe(runId);
+      expect(unknown[0]!.reason).toBe('reaped');
+      expect(unknown[0]!.cost_usd).toBe(0);
+      expect(unknown[0]!.pgid).toBe(leader);
+      expect(readdirSync(leaseDir())).toEqual([]);
+      // The spend is unknown, so the reservation keeps counting at the estimate: 4 + 1 + 6 > 10.
+      const over = run(['10', '6', '--', 'true']);
+      expect(over.status).toBe(3);
+      expect(over.stderr).toContain('1 in-flight reservation(s)');
+      expect(unknownRows().length).toBe(1); // recorded once, never again
+    } finally {
+      killQuietly(kid, leader);
+    }
+  }, 30_000);
+
+  test('concurrent guards: a live guard keeps its group, and a stale group is reaped exactly once', async () => {
+    const liveFile = join(dir, 'live.pid');
+    const staleLeader = join(dir, 'stale-leader.pid');
+    const staleKid = join(dir, 'stale-kid.pid');
+    const live = start(['100', '1', '--', 'sh', '-c', 'echo $$ > "' + liveFile + '"; exec sleep 30']);
+    let livePid = 0;
+    let leader = 0;
+    let kid = 0;
+    try {
+      await waitFor(() => existsSync(liveFile) && existsSync(leaseDir()) && readdirSync(leaseDir()).length === 1, 'the live guard lease');
+      livePid = readPid(liveFile);
+      const stale = start(['100', '1', '--', ...groupCommand(staleLeader, staleKid)]);
+      await waitFor(() => existsSync(staleKid) && existsSync(staleLeader) && readdirSync(leaseDir()).length === 2, 'the stale guard lease');
+      await new Promise((r) => setTimeout(r, 200));
+      leader = readPid(staleLeader);
+      kid = readPid(staleKid);
+      stale.child.kill('SIGKILL');
+      await stale.exit;
+      const liveRun = runningRows()[0]!.run_id;
+      const staleRun = runningRows()[1]!.run_id;
+      const env = { GBRAIN_EVAL_SPEND_GUARD_KILL_GRACE_SECONDS: '1' };
+      const [a, b] = [start(['100', '1', '--', 'true'], env), start(['100', '1', '--', 'true'], env)];
+      expect((await a.exit).code).toBe(0);
+      expect((await b.exit).code).toBe(0);
+      expect(await waitDead(leader)).toBe(true);
+      expect(await waitDead(kid)).toBe(true);
+      expect(alive(livePid)).toBe(true);
+      const unknown = unknownRows();
+      expect(unknown.map((u) => u.reaped_run_id)).toEqual([staleRun]);
+      expect(unknown.some((u) => u.reaped_run_id === liveRun)).toBe(false);
+      expect(readdirSync(leaseDir()).length).toBe(1); // the live guard's lease
+      live.child.kill('SIGTERM');
+      expect((await live.exit).code).toBe(143);
+      expect(await waitDead(livePid)).toBe(true);
+    } finally {
+      live.child.kill('SIGKILL');
+      killQuietly(livePid, leader, kid);
+    }
+  }, 30_000);
+
+  test('PID reuse: a stale lease whose pgid now belongs to an unrelated process with another start time is never signalled', async () => {
+    const fields = await liveLeaseFields();
+    const unrelated = spawn('sleep', ['30'], { detached: true, stdio: 'ignore' });
+    const pid = unrelated.pid!;
+    try {
+      expect(fields.boot_id).toBeTruthy();
+      writeLease('stale-reuse', { ...fields, run_id: 'stale-reuse', guard_pid: deadPid(), pgid: pid, leader_start: 'not-' + fields.leader_start });
+      const before = unknownRows().length;
+      const r = run(['100', '1', '--', 'true']);
+      expect(r.status).toBe(0);
+      expect(alive(pid)).toBe(true);
+      const unknown = unknownRows().slice(before);
+      expect(unknown.length).toBe(1);
+      expect(unknown[0]!.reaped_run_id).toBe('stale-reuse');
+      expect(unknown[0]!.reason).toBe('pid_reused');
+      expect(existsSync(join(leaseDir(), 'stale-reuse.lease'))).toBe(false);
+    } finally {
+      killQuietly(pid);
+    }
+  }, 20_000);
+
+  test('reboot mismatch: a lease from another boot is marked stale and its pgid is never signalled', async () => {
+    const fields = await liveLeaseFields();
+    const unrelated = spawn('sleep', ['30'], { detached: true, stdio: 'ignore' });
+    const pid = unrelated.pid!;
+    try {
+      writeLease('stale-boot', { ...fields, run_id: 'stale-boot', boot_id: 'another-boot-' + fields.boot_id, guard_pid: deadPid(), pgid: pid });
+      const before = unknownRows().length;
+      const r = run(['100', '1', '--', 'true']);
+      expect(r.status).toBe(0);
+      expect(alive(pid)).toBe(true);
+      const unknown = unknownRows().slice(before);
+      expect(unknown.map((u) => [u.reaped_run_id, u.reason])).toEqual([['stale-boot', 'boot_mismatch']]);
+      expect(existsSync(join(leaseDir(), 'stale-boot.lease'))).toBe(false);
+    } finally {
+      killQuietly(pid);
+    }
+  }, 20_000);
+
+  test('unavailable probes: a lease recorded without verifiable identity is unknown, kept for the operator, and never signalled', async () => {
+    const fields = await liveLeaseFields();
+    const unrelated = spawn('sleep', ['30'], { detached: true, stdio: 'ignore' });
+    const pid = unrelated.pid!;
+    try {
+      writeLease('stale-noprobe', { ...fields, run_id: 'stale-noprobe', boot_id: '', leader_start: '', guard_pid: deadPid(), pgid: pid });
+      const before = unknownRows().length;
+      const r = run(['100', '1', '--', 'true']);
+      expect(r.status).toBe(0);
+      expect(alive(pid)).toBe(true);
+      const unknown = unknownRows().slice(before);
+      expect(unknown.map((u) => [u.reaped_run_id, u.reason])).toEqual([['stale-noprobe', 'probe_unavailable']]);
+      expect(existsSync(join(leaseDir(), 'stale-noprobe.unknown'))).toBe(true);
+      // Kept, not reprocessed: a second guard writes nothing more about it.
+      run(['100', '1', '--', 'true']);
+      expect(unknownRows().length).toBe(before + 1);
+    } finally {
+      killQuietly(pid);
     }
   }, 20_000);
 

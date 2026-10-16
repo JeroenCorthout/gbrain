@@ -64,6 +64,25 @@
 # input. (A terminal set to `stty tostop` also stops a background group that
 # writes to it; redirect the command's output there.)
 #
+# Leases: while the command runs, <ledger>.leases/<run_id>.lease records who
+# owns its group: host, boot id, pid namespace, the guard's pid and start
+# time, the group id and its leader's start time, and a nonce exported to the
+# command as GBRAIN_EVAL_SPEND_GUARD_LEASE. A guard that exits removes its
+# lease. A SIGKILLed guard cannot, so the next guard, holding the ledger lock
+# (reaping is serialized, and skipped where flock is missing), checks each
+# lease whose guard is gone. It signals that group (TERM, the kill grace, then
+# KILL) only on verified ownership: same host, boot and pid namespace, and
+# either the leader alive with its recorded start time or every surviving
+# member carrying the nonce (read from /proc on Linux). A group it cannot
+# prove is its own is never signalled. Either way it appends one row
+#   {"ts":"…","status":"unknown","reason":R,"reaped_run_id":"<id>","pgid":N,"estimate_usd":E,"cost_usd":0.000000,"exit_code":null}
+# with R one of reaped · exited · pid_reused · boot_mismatch ·
+# probe_unavailable · ownership_unverified. The row has no run_id and costs 0:
+# the stale run's spend is unknown, so its reservation stays counted at the
+# estimate. Leases from another host or pid namespace are left alone;
+# probe_unavailable and ownership_unverified leases are kept as
+# <run_id>.unknown for the operator to inspect.
+#
 # The audit itself is fail-closed: a ledger that exists but cannot be read, an
 # awk that exits non-zero, or an audit line that is not `<int> <int> <decimal>
 # <int> …` refuses the launch (exit 3) — an empty audit must never read as $0.
@@ -163,12 +182,188 @@ refuse_unparseable() {
   exit 3
 }
 
-# Serialize audit → cap check → reservation across concurrent guards where
-# flock exists; elsewhere the reservation row still shrinks the race from the
-# command's whole runtime to the instant between the read and the append.
+# Process groups and leases (see the header). Stops poll in 0.1 s steps for up
+# to KILL_GRACE seconds (10 by default; GBRAIN_EVAL_SPEND_GUARD_KILL_GRACE_SECONDS
+# overrides) between SIGTERM and SIGKILL.
+KILL_GRACE="${GBRAIN_EVAL_SPEND_GUARD_KILL_GRACE_SECONDS:-10}"
+case "$KILL_GRACE" in ''|*[!0-9]*) KILL_GRACE=10 ;; esac
+LEASE_DIR="$LEDGER.leases"
+LEASE=""
+GUARD_OS="$(uname -s 2>/dev/null)"
+
+probe_boot_id() {
+  case "$GUARD_OS" in
+    Linux) [ -r /proc/sys/kernel/random/boot_id ] && tr -d '[:space:]' < /proc/sys/kernel/random/boot_id ;;
+    Darwin) sysctl -n kern.bootsessionuuid 2>/dev/null ;;
+  esac
+}
+probe_pidns() {
+  case "$GUARD_OS" in
+    Linux) readlink "/proc/$$/ns/pid" 2>/dev/null ;;
+    Darwin) echo none ;;
+  esac
+}
+# Start time of a live pid, '' when it cannot be read: clock ticks since boot
+# from /proc on Linux (the comm field may hold spaces and parens), `ps -o
+# lstart` elsewhere.
+proc_start() {  # <pid>
+  case "$GUARD_OS" in
+    Linux) [ -r "/proc/$1/stat" ] && awk '{ sub(/^.*\) /, ""); print $20 }' "/proc/$1/stat" 2>/dev/null ;;
+    *) ps -o lstart= -p "$1" 2>/dev/null | sed 's/^ *//; s/ *$//' ;;
+  esac
+}
+pid_exists() { ps -p "$1" -o pid= >/dev/null 2>&1; }
+# Live (non-zombie) members of a process group, one pid per line.
+group_members() {  # <pgid>
+  ps -A -o pid=,pgid=,stat= 2>/dev/null | awk -v g="$1" '$2 == g && $3 !~ /^Z/ { print $1 }'
+}
+group_alive() {  # <pgid>; falls back to kill -0 where ps cannot list processes
+  local all
+  all="$(ps -A -o pid=,pgid=,stat= 2>/dev/null)" || { kill -0 -- "-$1" 2>/dev/null; return; }
+  printf '%s\n' "$all" | awk -v g="$1" '$2 == g && $3 !~ /^Z/ { f = 1 } END { exit !f }'
+}
+member_has_nonce() {  # <pid> <nonce>
+  [ -r "/proc/$1/environ" ] || return 1
+  tr '\0' '\n' < "/proc/$1/environ" 2>/dev/null | grep -Fqx "GBRAIN_EVAL_SPEND_GUARD_LEASE=$2"
+}
+HOST_ID="$(hostname 2>/dev/null || uname -n 2>/dev/null)"
+BOOT_ID="$(probe_boot_id)"
+PIDNS_ID="$(probe_pidns)"
+MY_PGID="$(ps -o pgid= -p $$ 2>/dev/null | tr -d ' ')"
+
+read_lease() {  # <file>; sets L_*, non-zero when the lease is malformed
+  L_VERSION=; L_RUN=; L_NONCE=; L_HOST=; L_BOOT=; L_PIDNS=; L_GPID=; L_GSTART=; L_PGID=; L_LSTART=; L_EST=
+  local k v
+  while IFS='=' read -r k v; do
+    case "$k" in
+      version) L_VERSION="$v" ;;
+      run_id) L_RUN="$v" ;;
+      nonce) L_NONCE="$v" ;;
+      host) L_HOST="$v" ;;
+      boot_id) L_BOOT="$v" ;;
+      pidns) L_PIDNS="$v" ;;
+      guard_pid) L_GPID="$v" ;;
+      guard_start) L_GSTART="$v" ;;
+      pgid) L_PGID="$v" ;;
+      leader_start) L_LSTART="$v" ;;
+      estimate_usd) L_EST="$v" ;;
+    esac
+  done < "$1"
+  [ "$L_VERSION" = "1" ] || return 1
+  case "$L_RUN" in ''|*[!A-Za-z0-9_-]*) return 1 ;; esac
+  case "$L_PGID" in ''|*[!0-9]*|0|1) return 1 ;; esac
+  case "$L_GPID" in ''|*[!0-9]*) return 1 ;; esac
+  is_number "$L_EST"
+}
+
+# Whose is the lease's group? 0: the lease's (its leader alive with the
+# recorded start time, or every live member carrying the nonce) · 1: no live
+# member · 2: the leader pid now belongs to another process (a pid is never
+# reused while its group has members, so the lease's group is gone) · 3:
+# ownership cannot be proven.
+lease_group_status() {
+  local now m members
+  [ "$L_PGID" = "$MY_PGID" ] && return 3
+  if pid_exists "$L_PGID"; then
+    now="$(proc_start "$L_PGID")"
+    { [ -n "$now" ] && [ -n "$L_LSTART" ]; } || return 3
+    [ "$now" = "$L_LSTART" ] && return 0
+    return 2
+  fi
+  members="$(group_members "$L_PGID")"
+  [ -n "$members" ] || return 1
+  [ -n "$L_NONCE" ] || return 3
+  for m in $members; do member_has_nonce "$m" "$L_NONCE" || return 3; done
+  return 0
+}
+
+stop_lease_group() {
+  local i=0
+  kill -TERM -- "-$L_PGID" 2>/dev/null
+  while [ "$i" -lt "$((KILL_GRACE * 10))" ] && group_alive "$L_PGID"; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  group_alive "$L_PGID" || return 0
+  if pid_exists "$L_PGID" && [ "$(proc_start "$L_PGID")" != "$L_LSTART" ]; then return 0; fi
+  kill -KILL -- "-$L_PGID" 2>/dev/null
+}
+
+settle_lease() {  # <lease file> <reason>
+  local what keep=0
+  case "$2" in
+    reaped) what="stopped its process group" ;;
+    exited) what="its process group had already exited" ;;
+    pid_reused) what="its leader pid now belongs to another process; nothing signalled" ;;
+    boot_mismatch) what="recorded before the last reboot; nothing signalled" ;;
+    *) what="its ownership cannot be verified; nothing signalled (lease kept as ${1%.lease}.unknown; stop the group by hand if it still runs)"; keep=1 ;;
+  esac
+  if ! printf '{"ts":"%s","status":"unknown","reason":"%s","reaped_run_id":"%s","pgid":%s,"estimate_usd":%s,"cost_usd":0.000000,"exit_code":null}\n' \
+      "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$2" "$L_RUN" "$L_PGID" "$(norm6 "$L_EST")" >> "$LEDGER"; then
+    echo "eval-spend-guard: FAILED to record stale run $L_RUN in $LEDGER; its lease stays for the next guard" >&2
+    return 0
+  fi
+  if [ "$keep" = "1" ]; then mv -f "$1" "${1%.lease}.unknown" 2>/dev/null; else rm -f "$1"; fi
+  echo "eval-spend-guard: stale run $L_RUN (process group $L_PGID): $what; its spend is unknown, so its reservation stays counted at the estimate" >&2
+}
+
+reap_lease() {  # <lease file>
+  local now
+  if ! read_lease "$1"; then
+    mv -f "$1" "${1%.lease}.unknown" 2>/dev/null
+    echo "eval-spend-guard: malformed lease $1 kept as ${1%.lease}.unknown; nothing signalled" >&2
+    return 0
+  fi
+  # Another machine's or container's guard: whether it lives is not ours to judge.
+  [ -z "$L_HOST" ] || [ "$L_HOST" = "$HOST_ID" ] || return 0
+  [ -z "$L_PIDNS" ] || [ "$L_PIDNS" = "$PIDNS_ID" ] || return 0
+  if [ -n "$L_BOOT" ] && [ "$L_BOOT" != "$BOOT_ID" ]; then settle_lease "$1" boot_mismatch; return 0; fi
+  if [ -z "$L_HOST" ] || [ -z "$L_PIDNS" ] || [ -z "$L_BOOT" ] || [ -z "$L_GSTART" ]; then
+    settle_lease "$1" probe_unavailable
+    return 0
+  fi
+  if pid_exists "$L_GPID"; then
+    now="$(proc_start "$L_GPID")"
+    [ -n "$now" ] || return 0              # cannot tell whether its guard lives: leave it
+    [ "$now" = "$L_GSTART" ] && return 0   # a live guard owns its group
+  fi
+  lease_group_status
+  case $? in
+    0) stop_lease_group; settle_lease "$1" reaped ;;
+    1) settle_lease "$1" exited ;;
+    2) settle_lease "$1" pid_reused ;;
+    *) settle_lease "$1" ownership_unverified ;;
+  esac
+}
+
+reap_stale_leases() {
+  local f found=0
+  for f in "$LEASE_DIR"/*.lease; do
+    if [ -f "$f" ]; then found=1; break; fi
+  done
+  [ "$found" = "1" ] || return 0
+  if [ "$LOCKED" != "1" ]; then
+    echo "eval-spend-guard: stale-lease check skipped: reaping must hold the ledger lock and flock is unavailable; stale reservations stay counted at the estimate" >&2
+    return 0
+  fi
+  if [ -z "$HOST_ID" ] || [ -z "$BOOT_ID" ] || [ -z "$PIDNS_ID" ]; then
+    echo "eval-spend-guard: stale-lease check skipped: cannot read this host's identity (host, boot id, pid namespace); nothing signalled" >&2
+    return 0
+  fi
+  for f in "$LEASE_DIR"/*.lease; do
+    if [ -f "$f" ]; then reap_lease "$f"; fi
+  done
+}
+
+# Serialize audit → stale-lease reaping → cap check → reservation across
+# concurrent guards where flock exists; elsewhere the reservation row still
+# shrinks the race from the command's whole runtime to the instant between the
+# read and the append.
 LOCK="$LEDGER.lock"
+LOCKED=0
 if command -v flock >/dev/null 2>&1 && ( : >> "$LOCK" ) 2>/dev/null && exec 9>>"$LOCK"; then
   flock -w 60 9 || { echo "eval-spend-guard: REFUSED — could not lock $LOCK within 60s (another guard holds it); command NOT run: $*" >&2; exit 3; }
+  LOCKED=1
 fi
 
 # An audit the guard cannot trust is a refusal, never a $0 ledger: gawk exits 0
@@ -193,6 +388,10 @@ AUDIT="$(ledger_audit "$LEDGER")" || refuse_audit "awk exited $? while summing i
 read -r LINES PARSED TOTAL OPEN BAD <<< "$AUDIT"
 audit_shape_ok "${LINES:-}" "${PARSED:-}" "${TOTAL:-}" "${OPEN:-}" || refuse_audit "audit line is malformed ('$AUDIT')"
 [ "$LINES" = "$PARSED" ] || refuse_unparseable "$@"
+
+# Stale leases change nothing in TOTAL (their rows cost 0; the reservations
+# stay counted), so the audit above still holds.
+reap_stale_leases
 
 PROJECTED="$(awk -v a="$TOTAL" -v b="$EST" 'BEGIN { printf "%.6f", a + b }')"
 OVER="$(awk -v p="$PROJECTED" -v c="$CAP" 'BEGIN { print (p > c) ? 1 : 0 }')"
@@ -230,6 +429,8 @@ json_escape() {
 }
 CMD_JSON="$(json_escape "$*")"
 RUN_ID="$(uuidgen 2>/dev/null || printf '%s-%s-%s' "$(date -u +%Y%m%dT%H%M%SZ)" "$$" "$RANDOM$RANDOM")"
+NONCE="$(od -An -N16 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n')"
+[ -n "$NONCE" ] || NONCE="$RUN_ID-$RANDOM$RANDOM"
 
 append_row() {  # <status> <cost> <exit_code|null>; non-zero when the append fails
   printf '{"ts":"%s","run_id":"%s","status":"%s","estimate_usd":%s,"cost_usd":%s,"exit_code":%s,"command":"%s"}\n' \
@@ -252,6 +453,7 @@ RECONCILED=0
 reconcile() {  # <cost> <exit_code>; returns 1 when the ledger append fails
   [ "$RECONCILED" = "1" ] && return 0
   RECONCILED=1
+  [ -n "$LEASE" ] && rm -f "$LEASE"
   [ "$CLEANUP_COST_FILE" = "1" ] && rm -f "$GBRAIN_EVAL_ACTUAL_COST_FILE"
   if ! append_row done "$1" "$2"; then
     echo "eval-spend-guard: FAILED to append the reconciliation row to $LEDGER — the \$${EST} reservation for run $RUN_ID stays on the books" >&2
@@ -263,18 +465,10 @@ reconcile() {  # <cost> <exit_code>; returns 1 when the ledger append fails
   echo "eval-spend-guard: recorded cost \$${1} (exit $2); ledger now ${AFTER}" >&2
 }
 
-# Stop the command's process group: SIGTERM, then up to KILL_GRACE seconds (10
-# by default; GBRAIN_EVAL_SPEND_GUARD_KILL_GRACE_SECONDS overrides) before
-# SIGKILL, so a command (or a grandchild) that ignores SIGTERM cannot keep the
-# guard — and its reservation — hanging forever, nor outlive it. Polled in
-# 0.1 s steps; `wait` reaps the leader either way.
-KILL_GRACE="${GBRAIN_EVAL_SPEND_GUARD_KILL_GRACE_SECONDS:-10}"
-case "$KILL_GRACE" in ''|*[!0-9]*) KILL_GRACE=10 ;; esac
-group_alive() {  # <pgid>; falls back to kill -0 where ps cannot list processes
-  local all
-  all="$(ps -A -o pid=,pgid=,stat= 2>/dev/null)" || { kill -0 -- "-$1" 2>/dev/null; return; }
-  printf '%s\n' "$all" | awk -v g="$1" '$2 == g && $3 !~ /^Z/ { f = 1 } END { exit !f }'
-}
+# Stop the command's process group: SIGTERM, then up to KILL_GRACE seconds
+# before SIGKILL, so a command (or a grandchild) that ignores SIGTERM cannot
+# keep the guard — and its reservation — hanging forever, nor outlive it.
+# `wait` reaps the leader either way.
 CHILD=""
 stop_child() {
   local i=0
@@ -292,6 +486,21 @@ stop_child() {
   fi
   wait "$CHILD" 2>/dev/null
   CHILD=""
+}
+# The lease names this run's group so the next guard can stop it if this one
+# is SIGKILLed (see the header). Best effort: without it the reservation still
+# counts, only the group cannot be reaped.
+write_lease() {
+  local tmp="$LEASE_DIR/.$RUN_ID.tmp"
+  if mkdir -p "$LEASE_DIR" 2>/dev/null \
+    && printf 'version=1\nrun_id=%s\nnonce=%s\nhost=%s\nboot_id=%s\npidns=%s\nguard_pid=%s\nguard_start=%s\npgid=%s\nleader_start=%s\nestimate_usd=%s\n' \
+      "$RUN_ID" "$NONCE" "$HOST_ID" "$BOOT_ID" "$PIDNS_ID" "$$" "$(proc_start $$)" "$CHILD" "$(proc_start "$CHILD")" "$EST" > "$tmp" 2>/dev/null \
+    && mv -f "$tmp" "$LEASE_DIR/$RUN_ID.lease" 2>/dev/null; then
+    LEASE="$LEASE_DIR/$RUN_ID.lease"
+    return 0
+  fi
+  rm -f "$tmp" 2>/dev/null
+  echo "eval-spend-guard: could not write a lease under $LEASE_DIR; if this guard is SIGKILLed, the next guard cannot stop the command's process group" >&2
 }
 on_signal() {  # <signal number>
   trap - INT TERM HUP
@@ -333,6 +542,8 @@ if [ -t 0 ]; then
   echo "eval-spend-guard: stdin is a terminal, which the command's own process group cannot read; its stdin is EOF (/dev/null). Pipe or redirect input if it needs any." >&2
   exec </dev/null
 fi
+GBRAIN_EVAL_SPEND_GUARD_LEASE="$NONCE"
+export GBRAIN_EVAL_SPEND_GUARD_LEASE
 
 # Run the command as a job so a trapped signal interrupts `wait` (a foreground
 # child would defer the trap until it exited). `<&0` keeps the child's stdin.
@@ -342,6 +553,7 @@ set -m
 "$@" <&0 &
 CHILD=$!
 set +m
+write_lease
 wait "$CHILD"
 CODE=$?
 # Settle: anything the command left running in its group is stopped too.

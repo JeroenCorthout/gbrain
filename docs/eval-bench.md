@@ -773,7 +773,13 @@ reader pins and the judge pins all land on one receipt.
   pipe or redirect input if the command needs any (piped and file stdin pass
   through). No eval entrypoint reads stdin; a TTY-only Ctrl-C grace window
   (such as `eval suspected-contradictions`' cost notice) proceeds as it does
-  off a terminal, and Ctrl-C reaches the guard, which stops the run.
+  off a terminal, and Ctrl-C reaches the guard, which stops the run. If a
+  guard is SIGKILLed, the next guard stops the group it left running, but
+  only after proving the group is the one that guard launched (same host,
+  boot and pid namespace, and the leader's recorded start time or the run's
+  nonce); otherwise it signals nothing. Either way it records the stale run in the ledger as
+  `status: "unknown"`, and that run's reservation stays counted at the
+  estimate.
 
 Row fields with `--judge`: exactly one of `judge_correct` / `judge_error`
 (+ `judge_error_detail`) / `judge_skipped`, plus `judge_model`,
