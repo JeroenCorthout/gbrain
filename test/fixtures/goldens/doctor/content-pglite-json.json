@@ -1444,46 +1444,15 @@
             "blockers": [],
             "configured": "unset",
             "docs": "docs/guides/memory-boundaries.md#segmented-page-storage",
-            "effective": "off",
+            "effective": "on",
             "floor": "<version>",
-            "max_bytes": 25165824,
+            "max_bytes": 134217728,
             "truncated": false,
             "window_days": 7
           },
           "elapsed_ms": "<volatile>",
-          "fix": {
-            "actor": "user",
-            "argv": [
-              "gbrain",
-              "config",
-              "set",
-              "pages.segmented_storage",
-              "on",
-              "--brain",
-              "host"
-            ],
-            "command": "gbrain config set pages.segmented_storage on --brain host",
-            "consent": [],
-            "docs": "https://github.com/garrytan/gbrain/blob/master/docs/guides/memory-boundaries.md#segmented-page-storage",
-            "next": "tell_user_to_run",
-            "requires_exclusive": false,
-            "verify": {
-              "argv": [
-                "gbrain",
-                "doctor",
-                "--only",
-                "segmented_storage",
-                "--json",
-                "--brain",
-                "host"
-              ]
-            },
-            "why": "Turns segmented storage on: pages over 1 MiB are stored in segments, up to the engine ceiling."
-          },
-          "message": "Segmented page storage is off by default in this release (pages.segmented_storage unset): pages over 1 MiB are stored inline up to 24 MiB; pages already stored in segments stay readable.",
+          "message": "Segmented page storage is on: pages over 1 MiB are stored in segments, up to 134217728 bytes on this PGLite brain.",
           "name": "segmented_storage",
-          "readiness_state": "disabled_by_choice",
-          "severity": "info",
           "status": "ok"
         },
         {

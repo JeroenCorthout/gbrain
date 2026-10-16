@@ -140,8 +140,7 @@ receipt: the write is refused as `request_too_large`.
 ### Segmented page storage
 
 A page over 1 MiB is stored as segments of about 256 KiB instead of one text
-column when `pages.segmented_storage` is on (off by default in this release;
-`gbrain config set pages.segmented_storage on` turns it on). Reading a window, an
+column (`pages.segmented_storage`, on by default). Reading a window, an
 outline or a chunk's context costs the size of the window, not the page, and
 a rewrite re-indexes only the segments that changed. Pages at or under 1 MiB
 are stored exactly as before; a segmented page goes back to one column when a
@@ -154,17 +153,17 @@ files that is only the file at its own place in the checkout, which gbrain
 never rewrites; a database-only source takes it by `gbrain import`.
 
 The switch stays off while an older gbrain writes to the same brain: a
-writer older than the release that added this check, or one that stamps no
+writer older than the release that turned it on, or one that stamps no
 version, that admitted or published a managed write in the last 7 days keeps
 new pages inline, even when the setting is `on`. `gbrain doctor` check
 `segmented_storage` shows the configured and effective value and names each
 blocking host by UUID. Run `gbrain upgrade` there; the hold clears 7 days
 after that writer's last write. An older binary that writes without managed
 persistence (a classic brain shared by several hosts) is not detected, so
-upgrade every host before turning the switch on.
+upgrade every host before writing pages over 1 MiB.
 
-While the switch is off (unset in this release, set to `off`, or held by an
-older writer), new pages are stored inline up to 24 MiB as before.
+While the switch is off (`gbrain config set pages.segmented_storage off`, or
+held by an older writer), new pages are stored inline up to 24 MiB as before.
 Pages already stored in segments stay readable and exportable; a write that
 would leave one over 24 MiB is refused until the switch is on again.
 

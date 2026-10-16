@@ -2,12 +2,12 @@
  * Wave B PR 2 switch-on (spec 1.1 activation gate, 13 PR 2): `pages.segmented_storage` follows
  * SEGMENTED_STORAGE_DEFAULT when unset and is gated by the writer versions recorded on committed persistence requests.
  *
- * 1. Protects: with no configuration a page over 1 MiB is stored inline under the 24 MiB limit while the default is
- *    off, and doctor offers the switch; a writer older than SEGMENTED_WRITER_FLOOR (or unstamped) seen in the last seven days keeps writes
+ * 1. Protects: with no configuration a page over 1 MiB is stored segmented and `pages.max_bytes` is the engine
+ *    ceiling; a writer older than SEGMENTED_WRITER_FLOOR (or unstamped) seen in the last seven days keeps writes
  *    inline, even with an explicit `on`, and doctor `segmented_storage` names it with an upgrade fix; once that
  *    observation is gone the next write promotes; an explicit `off` keeps pages inline and reports it as a choice;
  *    a stored segmented page over 32 MiB still exports while the switch is off.
- * 2. Fails when: the default turns on before the release flips it, the gate ignores old or unstamped writers, an explicit `on` overrides the
+ * 2. Fails when: the default stays off, the gate ignores old or unstamped writers, an explicit `on` overrides the
  *    gate, a cleared gate keeps writes inline, or export sizes stored segmented pages by the write limit.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'bun:test';
@@ -71,15 +71,12 @@ for (const kind of testBackends()) {
     });
     const inHome = <T>(fn: () => Promise<T>) => withEnv({ GBRAIN_HOME: home, DATABASE_URL: undefined, GBRAIN_DATABASE_URL: undefined }, fn);
 
-    test('default off: unset keeps a page over 1 MiB inline under the 24 MiB limit, and doctor offers the switch', async () => {
+    test('default on: a page over 1 MiB is stored segmented and pages.max_bytes is the engine ceiling', async () => {
       expect(await engine.getConfig('pages.segmented_storage')).toBeNull();
-      expect(await readPageBodyPolicy(engine)).toMatchObject({ segmented: false, maxBytes: PAGE_MAX_BYTES });
-      expect((await importFromContent(engine, 'notes/default-off', content, { noEmbed: true })).status).toBe('imported');
-      expect(await storage(engine, 'notes/default-off')).toBe('inline');
-      expect(await segmentedStorageCheck(engine)).toMatchObject({ status: 'ok', severity: 'info', readiness_state: 'disabled_by_choice',
-        details: { configured: 'unset', effective: 'off', blockers: [] }, fix: { argv: ['gbrain', 'config', 'set', 'pages.segmented_storage', 'on'] } });
-      await engine.setConfig('pages.segmented_storage', 'on');
       expect(await readPageBodyPolicy(engine)).toMatchObject({ segmented: true, maxBytes: segmentedPageCeiling(engine.kind) });
+      expect((await importFromContent(engine, 'notes/default-on', content, { noEmbed: true })).status).toBe('imported');
+      expect(await storage(engine, 'notes/default-on')).toBe('segmented');
+      expect(await segmentedStorageCheck(engine)).toMatchObject({ status: 'ok', details: { configured: 'unset', effective: 'on', blockers: [] } });
     }, 120_000);
 
     test('a recent writer below the floor keeps writes inline, even with an explicit on; once it is gone the next write promotes', async () => inHome(async () => {

@@ -343,7 +343,7 @@ and the fix is the read-only `gbrain migrate --to postgres --plan --json`.
 | Cost | Free | Supabase Pro ($25/mo) |
 | Concurrency | Single process | Connection pooling |
 | Backups | Manual (file copy) | Managed by Supabase |
-| Largest page | 24 MiB; 128 MiB stored in segments with `pages.segmented_storage on` (`pages.max_bytes`) | 24 MiB; 256 MiB stored in segments with `pages.segmented_storage on` (`pages.max_bytes`) |
+| Largest page | 128 MiB, stored in segments (`pages.max_bytes`) | 256 MiB, stored in segments (`pages.max_bytes`) |
 
 **Migration:** on a PGLite brain, `gbrain migrate --to postgres` (alias `--to supabase`) graduates the brain to Postgres. Without `--yes` it prints the plan and exits 3; `--yes --expect <plan_hash>` runs it. Graduation drains pending writes, copies every table verbatim with its primary keys (pages, facts, takes, versions, links, timeline, embeddings, transcripts and paid caches, request history and withdrawals, token and OAuth rows) into a fenced target, verifies row counts and digests, runs `gbrain doctor` on the target, and only then flips routing. It works for brains with write history and for managed brains. The PGLite data dir is retained as `<path>.graduated-<run_id>` and a tombstone file takes its place. Walkthrough, recovery by error code, rollback and what stays on this computer: [Move a PGLite brain to Postgres](guides/move-to-postgres.md).
 

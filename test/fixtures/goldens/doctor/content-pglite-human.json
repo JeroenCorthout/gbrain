@@ -107,7 +107,7 @@
       "  [OK] foreign_ownership_marker: Every ownership marker beside a source checkout belongs to this brain.",
       "  [OK] unbound_source: No page was written database-only to an unbound source.",
       "  [OK] writer_version: Every writer that admitted or published a request in the last 7 days is v0.60.5.0 or newer.",
-      "  [INFO] segmented_storage: Segmented page storage is off by default in this release (pages.segmented_storage unset): pages over 1 MiB are stored inline up to 24 MiB; pages already stored in segments stay readable.",
+      "  [OK] segmented_storage: Segmented page storage is on: pages over 1 MiB are stored in segments, up to 134217728 bytes on this PGLite brain.",
       "  [OK] self_capture: No session corpus is configured; nothing to classify.",
       "  [OK] vector_plan: Skipped: PGLite runs vector search in-process; the plan check applies to Postgres brains.",
       "  [OK] keyword_plan: Skipped: PGLite runs keyword search with no statement timeout; the canary applies to Postgres brains.",

@@ -110,7 +110,7 @@ function positiveInt(raw: string | null, fallback: number): number {
 }
 
 /** The effective `pages.segmented_storage` when it is not configured. */
-export const SEGMENTED_STORAGE_DEFAULT: 'on' | 'off' = 'off';
+export const SEGMENTED_STORAGE_DEFAULT: 'on' | 'off' = 'on';
 
 /** The configured `pages.segmented_storage`: unset means SEGMENTED_STORAGE_DEFAULT; an unrecognized value counts as `off`. */
 export function parseSegmentedStorage(raw: string | null): 'on' | 'off' | 'unset' | 'invalid' {
