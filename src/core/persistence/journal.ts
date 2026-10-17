@@ -171,6 +171,21 @@ export async function assertWriteHeadroom(engine: SqlEngine, principal: Principa
     }
   }
 }
+/**
+ * #6884: how many more requests `principal` can have outstanding before the tighter of its own and the brain's
+ * outstanding caps, each taken at `share` (a background run stops at the pause line), with that cap's counts.
+ */
+export async function readOutstandingRoom(engine: SqlEngine, principal: Principal, share = 1): Promise<{ room: number; scope: 'brain' | 'principal'; used: number; limit: number }> {
+  const limits = await readJournalLimits(engine);
+  const rows = await engine.executeRaw<{ key: string; outstanding_count: number | string }>('SELECT key,outstanding_count FROM persistence_counters WHERE key=ANY($1::text[])',
+    [['brain', principalKey(principal)]]);
+  const room = (scope: 'brain' | 'principal', key: string, cap: number) => {
+    const used = Number(rows.find(row => row.key === key)?.outstanding_count ?? 0), limit = Math.floor(cap * share);
+    return { room: limit - used, scope, used, limit };
+  };
+  const brain = room('brain', 'brain', limits.brainOutstanding), own = room('principal', principalKey(principal), limits.principalOutstanding);
+  return brain.room < own.room ? brain : own;
+}
 /** Creates and locks the counter rows in key order: two statements for any number of keys (#5984 round-trip diet). */
 /** Creates missing counter rows; takes no lock on existing ones. Keys sorted. */
 export const ENSURE_COUNTERS_SQL = 'INSERT INTO persistence_counters(key) SELECT k FROM unnest($1::text[]) WITH ORDINALITY AS u(k,n) ORDER BY n ON CONFLICT DO NOTHING';

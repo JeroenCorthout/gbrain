@@ -177,16 +177,31 @@ function freeze(event: Record<string, unknown>): never {
  * share one `requestId`.
  */
 const PER_REQUEST_SEAMS: ReadonlySet<FaultPoint> = new Set<FaultPoint>(['consumer:preparing', 'consumer:prepared']);
-/** True when this pass counts toward the seam's nth: always, except a repeat of the same request at a per-request seam. */
-export function seamCounter(): (point: FaultPoint, detail: FaultDetail) => boolean {
-  const seen = new Set<string>();
+/**
+ * #6896: `consumer:claiming` fires before every claim attempt, the consumer's idle ticks and the passes that find
+ * the root busy included, so how many passes a run makes follows wall-clock time, not the schedule (a count role
+ * saw 19, the run made fewer and its fault at #19 went unreached). It counts in claim epochs instead: the number of
+ * distinct write request rows that have reached `consumer:preparing`. The first pass at epoch e or later advances
+ * the count to e + 1, so slot n is the first claim attempt after n - 1 requests were prepared; requests of one root
+ * are claimed one after another, so every slot the count role saw comes again in the run.
+ */
+/** How far this pass advances the seam's count: 1, 0 for a repeat of the same request at a per-request seam, the epochs passed at the claim seam. */
+export function seamCounter(): (point: FaultPoint, detail: FaultDetail) => number {
+  const seen = new Set<string>(), prepared = new Set<string>();
+  let claimSlots = 0;
   return (point, detail) => {
     const request = detail.writeId ?? detail.requestId;
-    if (!PER_REQUEST_SEAMS.has(point) || !request) return true;
+    if (point === 'consumer:preparing' && request) prepared.add(request);
+    if (point === 'consumer:claiming') {
+      const advanced = Math.max(0, prepared.size + 1 - claimSlots);
+      claimSlots += advanced;
+      return advanced;
+    }
+    if (!PER_REQUEST_SEAMS.has(point) || !request) return 1;
     const key = `${point}\u0000${request}`;
-    if (seen.has(key)) return false;
+    if (seen.has(key)) return 0;
     seen.add(key);
-    return true;
+    return 1;
   };
 }
 
@@ -201,7 +216,10 @@ export function robotFaultHook(fault: NonNullable<RobotConfig['fault']>): (point
   let seen = 0;
   const counts = seamCounter();
   return (point, detail) => {
-    if (point !== fault.point || (fault.operation && detail.operation !== fault.operation) || !counts(point, detail) || ++seen !== fault.nth) return;
+    const advanced = counts(point, detail);
+    if (point !== fault.point || (fault.operation && detail.operation !== fault.operation) || !advanced) return;
+    seen += advanced;
+    if (seen < fault.nth) return;
     try { freeze({ event: 'fault', point, nth: seen, detail }); }
     catch (error) { freeze({ event: 'fault_hook_error', point, nth: seen, message: error instanceof Error ? error.message : String(error) }); }
   };
@@ -372,7 +390,7 @@ export async function robotWorker(role: 'count' | 'run' | 'recover', config: Rob
     installLockOrderTrace();
     const counts: Record<string, number> = {};
     const counted = seamCounter();
-    if (role === 'count') installFaultHook((point, detail) => { if (counted(point, detail)) counts[point] = (counts[point] ?? 0) + 1; });
+    if (role === 'count') installFaultHook((point, detail) => { const advanced = counted(point, detail); if (advanced) counts[point] = (counts[point] ?? 0) + advanced; });
     if (role === 'run' && config.fault) installFaultHook(robotFaultHook(config.fault));
     if (role === 'run') {
       let next = 0; let inFlight: string[] = [];

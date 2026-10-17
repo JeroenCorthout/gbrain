@@ -4,7 +4,10 @@ import { loadConfig } from '../config.ts';
 import type { OperationContext } from '../ops/contract.ts';
 import { requireConsent, type ConsentRequest } from '../consent.ts';
 import { managedPersistenceEnabled } from './ownership.ts';
-import { submitPageMutation } from './page-mutations.ts';
+import { requestPrincipalForContext, submitPageMutation } from './page-mutations.ts';
+import { readOutstandingRoom } from './journal.ts';
+import { isWriteCapacityWait } from './admission-retry.ts';
+import { readBackgroundPauseShare, resolveAdmissionOrigin } from './admission-origin.ts';
 import { withBeliefBatch } from '../belief/ledger.ts';
 import { markBeliefCommits } from '../belief/append.ts';
 import { linkStreamSlugs } from './page-purge.ts';
@@ -28,6 +31,11 @@ export interface DeletedPagePurge {
   inactive: number;
   /** #6741 C: tombstones not submitted after PURGE_PARK_LIMIT failures (in `blocked`, code `purge_parked`); doctor purge_parked_pages names them. */
   parked: number;
+  /**
+   * #6884: tombstones not submitted because the writer's outstanding-request capacity was in use (in `blocked`, code
+   * `write_capacity_deferred`); the next run submits them. Never a failure and never a park.
+   */
+  capacity_deferred: number;
   /** Present when `failed > 0`, so the caller cannot report success. */
   error?: { class: string; code: string; message: string };
 }
@@ -159,14 +167,15 @@ export async function selectPurgeCandidates(engine: BrainEngine, olderThanHours:
   return selection;
 }
 
-/** #6741 C: the cycle purge phase's status: a coordinator failure fails it; a source in recovery or a parked page warns. */
+/** #6741 C: the cycle purge phase's status: a coordinator failure fails it; a source in recovery, a parked page or a capacity deferral (#6884) warns. */
 export function purgePhaseStatus(result: DeletedPagePurge): 'ok' | 'warn' | 'fail' {
-  return result.error ? 'fail' : result.inactive || result.parked ? 'warn' : 'ok';
+  return result.error ? 'fail' : result.inactive || result.parked || result.capacity_deferred ? 'warn' : 'ok';
 }
 
 /** The purge phase summary's note on the pages it did not submit (empty when there are none). */
 export function purgePhaseNote(result: DeletedPagePurge): string {
-  const parts = [result.inactive ? `${result.inactive} waiting on a writer in recovery` : '', result.parked ? `${result.parked} parked (gbrain doctor: purge_parked_pages)` : ''].filter(Boolean);
+  const parts = [result.inactive ? `${result.inactive} waiting on a writer in recovery` : '', result.parked ? `${result.parked} parked (gbrain doctor: purge_parked_pages)` : '',
+    result.capacity_deferred ? `${result.capacity_deferred} deferred to the next run (write capacity in use)` : ''].filter(Boolean);
   return parts.length ? ` (${parts.join(', ')})` : '';
 }
 
@@ -183,12 +192,17 @@ export function purgePhaseNote(result: DeletedPagePurge): string {
  * recovery and skips a tombstone that failed PURGE_PARK_LIMIT times (parked,
  * purge-parks.ts); `retryParked` (`gbrain pages purge-deleted --retry-parked`)
  * gives each parked tombstone the cutoff selects one more attempt.
+ *
+ * #6884: the run submits only while the writer has outstanding-request room
+ * (at the background pause line for a background run), so a large backlog
+ * no longer turns into thousands of `queue_capacity` failures and parks
+ * ahead of interactive writes; the rest is `capacity_deferred` to the next run.
  */
 export async function purgeDeletedPagesCoordinated(engine: BrainEngine, olderThanHours: number, opts: { retryParked?: boolean } = {}): Promise<DeletedPagePurge> {
   if (!await managedPersistenceEnabled(engine)) {
     const recorded = await expireRecordedTombstones(engine, olderThanHours);
     const result = await engine.purgeDeletedPages(olderThanHours);
-    return { slugs: [...recorded, ...result.slugs], count: recorded.length + result.count, blocked: [], deferred: 0, failed: 0, inactive: 0, parked: 0 };
+    return { slugs: [...recorded, ...result.slugs], count: recorded.length + result.count, blocked: [], deferred: 0, failed: 0, inactive: 0, parked: 0, capacity_deferred: 0 };
   }
   const selection = await selectPurgeCandidates(engine, olderThanHours, opts);
   for (const [sourceId, active] of Object.entries(selection.writers)) await notePurgeSourceWriter(engine, sourceId, active);
@@ -196,20 +210,33 @@ export async function purgeDeletedPagesCoordinated(engine: BrainEngine, olderTha
   const config = loadConfig() ?? { engine: engine.kind };
   const slugs: string[] = [];
   const blocked: DeletedPagePurge['blocked'] = [...selection.blocked];
-  let deferred = 0, failed = 0;
-  for (const row of selection.candidates) {
+  let deferred = 0, failed = 0, capacityDeferred = 0;
+  const share = resolveAdmissionOrigin() === 'background' ? await readBackgroundPauseShare(engine) : 1;
+  let principal: Awaited<ReturnType<typeof requestPrincipalForContext>> | undefined;
+  for (const [index, row] of selection.candidates.entries()) {
+    const deferRest = (reason: string) => {
+      for (const rest of selection.candidates.slice(index)) blocked.push({ source_id: rest.source_id, slug: rest.slug, code: 'write_capacity_deferred', reason });
+      capacityDeferred = selection.candidates.length - index;
+    };
     try {
+      const ctx: OperationContext = { engine, config, remote: false, sourceId: row.source_id, dryRun: false,
+        logger: { info() {}, warn() {}, error() {} } };
+      principal ??= await requestPrincipalForContext(ctx);
+      const room = await readOutstandingRoom(engine, principal, share);
+      if (room.room <= 0) {
+        deferRest(`Not submitted: ${room.used} ${room.scope} outstanding write requests are in use, and this run submits only below ${room.limit}${share < 1 ? ` (a background run stops at ${Math.round(share * 100)}% of the cap, persistence.capacity.background_pause_pct)` : ''}; the next run submits it.`);
+        break;
+      }
       const snapshot = await engine.readPageSnapshot(row.slug, { sourceId: row.source_id, includeDeleted: true });
       if (!snapshot?.page.deleted_at) continue;
       // Restored and deleted again since the scan: its recovery window restarted.
       if (new Date(snapshot.page.deleted_at).getTime() >= new Date(row.cutoff).getTime()) { deferred++; continue; }
-      const ctx: OperationContext = { engine, config, remote: false, sourceId: row.source_id, dryRun: false,
-        logger: { info() {}, warn() {}, error() {} } };
       await submitPageMutation(ctx, { operation: 'delete_page', params: { slug: row.slug, source_id: row.source_id,
         purge: true, retention: true, expected_revision: snapshot.revision, request_id: randomUUID() } });
       slugs.push(row.slug);
       if (row.park) await clearPurgePark(engine, row.key);
     } catch (error) {
+      if (isWriteCapacityWait(error)) { deferRest(`Not submitted: ${error.message}; the next run submits it.`); break; }
       const code = typeof (error as { code?: unknown })?.code === 'string' ? (error as { code: string }).code : null;
       const reason = error instanceof Error ? error.message : String(error);
       if (code && DEFERRAL_CODES.has(code)) deferred++;
@@ -217,10 +244,10 @@ export async function purgeDeletedPagesCoordinated(engine: BrainEngine, olderTha
       blocked.push({ source_id: row.source_id, slug: row.slug, code, reason });
     }
   }
-  const failures = blocked.filter(b => !b.code || !DEFERRAL_CODES.has(b.code) && b.code !== 'writer_not_active' && b.code !== 'purge_parked');
+  const failures = blocked.filter(b => !b.code || !DEFERRAL_CODES.has(b.code) && b.code !== 'writer_not_active' && b.code !== 'purge_parked' && b.code !== 'write_capacity_deferred');
   const error = failed > 0 ? { class: 'ManagedPurgeFailed', code: 'managed_purge_failed',
     message: `${failed} expired page(s) could not be purged through the coordinator: ${failures.slice(0, 3)
       .map(b => `${b.source_id}/${b.slug}: ${b.reason}`).join('; ')}` } : undefined;
   const parked = selection.parked.filter(park => !park.retried).length;
-  return { slugs, count: slugs.length, blocked, deferred, failed, inactive: selection.inactive, parked, ...(error ? { error } : {}) };
+  return { slugs, count: slugs.length, blocked, deferred, failed, inactive: selection.inactive, parked, capacity_deferred: capacityDeferred, ...(error ? { error } : {}) };
 }

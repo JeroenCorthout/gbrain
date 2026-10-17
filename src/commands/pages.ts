@@ -81,7 +81,7 @@ async function runPurgeDeleted(engine: BrainEngine, args: string[]): Promise<voi
   const result = await purgeDeletedPagesCoordinated(engine, olderThanHours, { retryParked });
   if (json) {
     console.log(JSON.stringify({ older_than_hours: olderThanHours, count: result.count, slugs: result.slugs,
-      ...(result.blocked.length ? { blocked: result.blocked } : {}) }, null, 2));
+      ...(result.capacity_deferred ? { capacity_deferred: result.capacity_deferred } : {}), ...(result.blocked.length ? { blocked: result.blocked } : {}) }, null, 2));
     if (result.error) setCliExitVerdict(1);
     return;
   }
