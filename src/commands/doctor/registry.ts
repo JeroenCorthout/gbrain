@@ -124,6 +124,7 @@ import { missingRecordedFilesEntry } from './checks/missing-recorded-files.ts';
 import { overwrittenEditsEntry } from './checks/overwritten-edits.ts';
 import { managedSyncMovementEntry } from './checks/managed-sync-movement.ts';
 import { managedSyncLatencyEntry } from './checks/managed-sync-latency.ts';
+import { managedSyncConvergenceEntry } from './checks/managed-sync-convergence.ts';
 import { managedSyncBlockedEntry } from './checks/managed-sync-blocked.ts';
 import { atomHeldFailedEntry } from './checks/atom-holds.ts';
 import { extractionInputTruncatedEntry } from './checks/extraction-input.ts';
@@ -252,6 +253,8 @@ export const DOCTOR_CHECK_REGISTRY: readonly DoctorEntry[] = [
   unindexedFilesEntry,
   overwrittenEditsEntry,
   syncConfigKeysEntry,
+  // #6712 PR 4a: the read-only convergence shadow (deep tier: a full level read per source).
+  managedSyncConvergenceEntry,
   fenceIntegrityEntry,
   searchModeEntry,
 ];

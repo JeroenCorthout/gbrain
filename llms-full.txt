@@ -7615,6 +7615,13 @@ days, so a soak can show that sync keeps moving on its own.
 Each line has one count per kind and a `total`; `by_day` lists both line
 totals for each day that recorded anything. Fields are only ever added.
 
+## Dry-run convergence classes
+
+`sync --dry-run --json` adds a read-only `convergence` receipt. Class actions:
+- `none`: settled.
+- `owner`: sync finishes it.
+- `repair`: a person decides.
+
 ## See also
 
 - [`write-refusals.md`](write-refusals.md#held-files-and-content-refusals): every hold code with its recovery.

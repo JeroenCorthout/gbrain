@@ -64,6 +64,7 @@ export const SYNC_FLAGS = {
   '--hard-deadline': managed(local('value', 'client', 'client')),
   '--no-hard-deadline': local('boolean', 'client', 'client'),
   '--json': managed(local('boolean', 'client', 'client')),
+  '--redact-paths': local('boolean'),
   '--yes': local('boolean', 'client', 'client'),
   '--no-delegate': local('boolean', 'client', 'client'),
   '--all': managed(local('boolean')),

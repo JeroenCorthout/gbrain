@@ -302,6 +302,8 @@ export const OPS_CHECK_NAMES: ReadonlySet<string> = new Set([
   'managed_sync_not_moving',
   // #6858: a managed sync run stopped on a page that did not commit, failed past an hour (doctor/checks/managed-sync-blocked.ts).
   'managed_sync_blocked',
+  // #6712 PR 4a: the read-only convergence shadow's counts (doctor/checks/managed-sync-convergence.ts).
+  'managed_sync_convergence',
   'persistence_session_timeouts',
   // #6317: consumer heartbeat rows and host identity (doctor/checks/persistence-consumers.ts).
   'two_consumers_on_host',

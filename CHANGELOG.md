@@ -10,6 +10,41 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.289.0] - 2026-10-17
+
+**The unit test matrix runs 10 shards instead of 8, so one slow CI runner no longer turns master red.** Master run 39030803745 lost `test (2)` to the 22-minute job timeout. The tests were fine: CPU steal on that runner was 2–3x the usual and every file ran about 1.5x slower. At 8 shards each shard carried about 908s of measured test time, so a normal job took about 16.5 minutes and a 1.5x slower runner overran the timeout. At 10 shards each carries about 727s.
+
+### What changed
+
+| Area | Before | Now |
+|---|---|---|
+| `test` matrix in `test.yml` | 8 shards, 22-minute timeout | 10 shards, same timeout |
+| `scripts/test-weights.json` | one run from an older master | re-mined from the last fully green master run (3,591 files) |
+| `coverage-report` manifest | `shard-1`..`shard-8` | `shard-1`..`shard-10` |
+| Drift guard | none | `test/scripts/ci-gates.test.ts` fails if the matrix, the shard step and the coverage manifest disagree on the shard count |
+
+### What you need to do
+
+Nothing. This only changes CI.
+
+## [0.60.288.0] - 2026-10-17
+
+**`gbrain sync --dry-run --json` now shows what the coming level-triggered reconcile would do, without doing any of it.** This is the read-only shadow of #6712 PR 4. It compares every path in Git with its record and page, puts each one in exactly one class, and reports the counts. It writes nothing, and sync behaves exactly as before.
+
+### What you'd see
+
+| Situation | Before | Now |
+|---|---|---|
+| `gbrain sync --source <id> --dry-run --json` on a managed source | the dry-run plan only | also a `convergence` receipt: per-class counts, each with an `action` (`none`, `owner`: sync finishes it, `repair`: a person decides), predicted decisions, deletes with the mass-delete valve's verdict, up to 20 sample paths per class, and `timings_ms` |
+| Sharing that receipt | paths and slugs were in it | `--redact-paths` turns sample paths into `sha256:` prefixes and drops slugs |
+| `gbrain sync status --source <id> --json --detail` | no convergence view | an additive `convergence` block (`dry_run: true`) and `convergence_read`. A plain status reports `convergence: null` with `convergence_read: not_read`, and no existing field changes meaning |
+| `gbrain doctor --tier deep` | — | informational `managed_sync_convergence` check |
+| `gbrain errors reconcile_read_incomplete` / `convergence_read_failed` | unknown code | explained, with a read-only fix |
+
+### What you need to do
+
+Nothing. To help validate the next release, run `gbrain sync --source <id> --dry-run --json --redact-paths` and share the `convergence` counts.
+
 ## [0.60.287.0] - 2026-10-17
 
 **A batch of page purges no longer holds a source's write queue for hours (#6884).** Each page purge used to read and case-fold the whole write journal to find old requests that still carried the page's claims, so on a journal of about 540k requests one purge took about 20 minutes and a nightly purge batch blocked ordinary writes for about 2.8 hours. Now one sweep serves a batch of queued purges, later purges read only the rows added since, and the purge run stops submitting when the writer's queue is full instead of failing thousands of pages.

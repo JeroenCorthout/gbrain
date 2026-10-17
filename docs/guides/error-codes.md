@@ -770,6 +770,16 @@ Reasons: `events_missing`, `no_assistant_events`, `segments_unmatched`.
 
 More: [docs/ai-providers/claude-cli.md#claude-cli-troubleshooting](../../docs/ai-providers/claude-cli.md#claude-cli-troubleshooting)
 
+### convergence_read_failed
+
+<a id="convergence_read_failed"></a>
+
+| Meaning | Why | Next step | Who acts · consent | Verify | Exit | Retryable |
+|---|---|---|---|---|---|---|
+| The read-only convergence shadow (`gbrain sync --dry-run --json`'s `convergence`, `sync status --detail`, doctor `managed_sync_convergence`) could not read the source's level, so it reports `status: unavailable` instead of counts. | The shadow only predicts what the level-triggered pass would do; the dry run, status and doctor results around it are unaffected and nothing was written. | Read the receipt's message, then rerun the read-only status; report it with gbrain doctor --json if it repeats. Run: gbrain sync status --source '{source_id}' --detail --json | agent | `gbrain doctor --json` | 1 | no |
+
+More: [docs/guides/sync-unblock-runbook.md#dry-run-convergence-classes](../../docs/guides/sync-unblock-runbook.md#dry-run-convergence-classes)
+
 ### core_budget_exceeded
 
 <a id="core_budget_exceeded"></a>
@@ -2845,6 +2855,16 @@ More: [docs/guides/company-brain-ingestion.md#resume-and-verify](../../docs/guid
 | The receipt ID is already bound to different approved ingestion metadata. | The request itself was wrong or no longer matches the brain; nothing was changed. | Correct the request using the message above, then retry. | agent | `repeat the read that failed` | 1 | no |
 
 More: [docs/guides/company-brain-ingestion.md#agent-and-ci-use](../../docs/guides/company-brain-ingestion.md#agent-and-ci-use)
+
+### reconcile_read_incomplete
+
+<a id="reconcile_read_incomplete"></a>
+
+| Meaning | Why | Next step | Who acts · consent | Verify | Exit | Retryable |
+|---|---|---|---|---|---|---|
+| A Git listing the managed-sync reconcile reads (`ls-tree`, `ls-files`, `diff-tree`) did not finish cleanly: Git exited non-zero, was killed by a signal or its time or size cap, or its output did not end at a record boundary. | A partial listing would make files look deleted or new, so the level is refused rather than classified. In PR 4a only the read-only convergence shadow reads it, and it reports `status: unavailable` with this code. | Check the checkout with git -C <dir> status, then rerun the read-only status; report it with gbrain doctor --json if it repeats. Run: gbrain sync status --source '{source_id}' --detail --json | agent | `gbrain doctor --json` | 1 | no |
+
+More: [docs/guides/sync-unblock-runbook.md#dry-run-convergence-classes](../../docs/guides/sync-unblock-runbook.md#dry-run-convergence-classes)
 
 ### recovery_required
 

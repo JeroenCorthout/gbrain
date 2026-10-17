@@ -136,6 +136,13 @@ export interface SyncStatus {
   checkpoint_blockers_read: SyncStatusRead;
   cursors_read: SyncStatusRead;
   terminal_failures_read: SyncStatusRead;
+  /**
+   * #6712 PR 4a: the read-only shadow of the level-triggered pass (sync-convergence.ts), \`dry_run: true\`; a heavy read, so
+   * only \`--detail\` runs it (\`convergence_read\`). Null when not read, on a brain that is not managed, or for a company-brain
+   * source; \`status: 'unavailable'\` names why a read could not run. No other field's meaning depends on it.
+   */
+  convergence: import('./sync-convergence.ts').ConvergenceReceipt | { dry_run: true; status: 'unavailable'; code: string; message: string } | null;
+  convergence_read: SyncStatusRead;
 }
 export type SyncStatusState = 'synced' | 'resumable' | 'blocked';
 /** Why the source is in its state; one closed list. */
@@ -312,7 +319,8 @@ export async function readSyncStatus(engine: BrainEngine, sourceId: string, opts
       why: `The oldest-blocker or recovery probe did not answer within ${SYNC_STATUS_PROBE_MS / 1000} s, so this status does not know the state (it is not reported synced). Rerun it after a short wait; gbrain doctor --json checks the database if it keeps timing out.` } satisfies Action : null),
     state, reason: stateReason,
     oldest_blocker: oldest, recovery, checkpoint_blockers_read: detail ? { status: 'read' } : notRead('checkpoint blocker list'),
-    cursors_read: detail ? { status: 'read' } : notRead('live cursor'), terminal_failures_read: detail ? { status: 'read' } : notRead('terminal-failure summary') };
+    cursors_read: detail ? { status: 'read' } : notRead('live cursor'), terminal_failures_read: detail ? { status: 'read' } : notRead('terminal-failure summary'),
+    convergence: detail ? await (await import('./sync-pass.ts')).statusConvergence(engine, sourceId) : null, convergence_read: detail ? { status: 'read' } : notRead('convergence shadow') };
 }
 
 /** #6712 PR 2: the state and its reason, from what this read saw; a probe that did not answer never yields `synced`. */

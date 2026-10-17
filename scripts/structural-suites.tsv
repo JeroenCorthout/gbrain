@@ -285,7 +285,7 @@ test/scripts/check-function-size.test.ts	check-function-size.ts rules	11	readFil
 test/scripts/chunk-visibility-ratchet.test.ts	check-chunk-visibility.ts	6	readFileSync
 test/scripts/ci-bounded-run.test.ts	(file-level)	7	readFileSync
 test/scripts/ci-executed-counts.test.ts	CLI	2	readFileSync
-test/scripts/ci-gates.test.ts	CI execution evidence	6	readFileSync
+test/scripts/ci-gates.test.ts	CI execution evidence	7	readFileSync
 test/scripts/ci-gates.test.ts	test:full exit status	0	readFileSync
 test/scripts/ci-hydrate-admin-dist.test.ts	#6756 ci:local hydrates the admin/dist volume from the worktree	7	readFileSync
 test/scripts/ci-local-rendering.test.ts	ci-local command rendering	1	readFileSync

@@ -85,6 +85,10 @@ Managed brains (the flags an operator or cron needs; listed first):
   --dry-run            Show what would be synced without writing; lists
                        every file the content screen would hold (would_hold)
                        and screen errors separately (screen_skipped).
+                       Managed sources add 'convergence' to --json: every
+                       path classified the way the level-triggered pass
+                       will (counts, predicted decisions, deletes and the
+                       mass-delete verdict, samples). Read-only.
   --no-bulk            Managed Postgres sync: publish one page per transaction
                        instead of bulk groups (each page keeps its own write
                        request either way). GBRAIN_SYNC_BULK=0 does the
@@ -109,6 +113,9 @@ Classic brains / advanced (classic sync, processing opt-outs, one-off repair):
   --repo <path>        Path to the brain repo. Defaults to the path
                        saved by 'gbrain init'.
   --full               Force a full re-sync (rare; usually incremental).
+  --redact-paths       With --dry-run --json: sample paths become sha256
+                       prefixes and slugs are dropped, so the counts can
+                       be shared.
   --src-subpath <dir>  Sync only this subdirectory of the git repo (monorepo
                        pattern: N logical sources in one repo). Git pull/diff
                        run at the repo root; imports are scoped to the subdir
@@ -303,6 +310,7 @@ export function parseSyncFlags(args: string[]) {
     console.error('[gbrain] WARN: --missing-path only applies to `sync --all`; ignored here.');
   }
   const jsonOut = args.includes('--json');
+  const redactPaths = args.includes('--redact-paths');
   const yesFlag = args.includes('--yes');
   // v0.41.6.0 D3: lock-recovery flags. --break-lock (safe) verifies the
   // holder is local-host + (TTL-expired OR PID-dead+60s-old) before
@@ -333,7 +341,7 @@ export function parseSyncFlags(args: string[]) {
     console.error(`--max-age cannot be combined with --force-break-lock (force skips all guards).`);
     process.exit(1);
   }
-  return { repoPath, watch, interval, dryRun, full, noPull, noBulk, lanes, noEmbed, noExtract, skipFailed, retryFailed, resetCheckpoint, noSchemaPack, includeGitignored, workingTree, syncAll, missingPathMode, jsonOut, yesFlag, breakLock, forceBreakLock, maxAgeSeconds };
+  return { repoPath, watch, interval, dryRun, full, noPull, noBulk, lanes, noEmbed, noExtract, skipFailed, retryFailed, resetCheckpoint, noSchemaPack, includeGitignored, workingTree, syncAll, missingPathMode, jsonOut, redactPaths, yesFlag, breakLock, forceBreakLock, maxAgeSeconds };
 }
 
 export type SyncFlags = ReturnType<typeof parseSyncFlags>;
