@@ -791,6 +791,79 @@ database only and are never ghosts. Doctor `undeclared_db_only_pages` is a
 separate audit. A preview lists at most 1,000 ghosts; apply them, then preview
 again for the rest. Sync never removes ghost pages by itself.
 
+<a id="legacy-twins"></a>
+### Legacy twins
+
+Before #6857, a managed sync could fork a second page for a file an older gbrain
+had imported under its raw name: the **legacy page** (the original id, a slug
+such as `notes/foo bar` that the current slug fold spells differently, no
+recorded file, and the page's links, timeline and history) and its **twin**
+(the folded slug `notes/foo-bar`, recording the file). Sync no longer forks
+new pairs, but it leaves the existing ones as they are. Deleting the twin by
+hand withdraws the file, because no other live page records it; deleting the
+legacy page keeps the file but loses the id, links and history.
+`gbrain repair legacy-twins` converges each pair onto the legacy page.
+
+```bash
+gbrain repair legacy-twins --source default        # preview: each pair, decisions, and a hash
+gbrain repair legacy-twins --source default --apply --expect <hash> --yes
+```
+
+The preview writes nothing. It lists every pair with both page ids, slugs and
+revisions, the file the twin records and whether the two pages hold the same
+content, and prints the apply command with its hash. A pair the repair never
+merges on its own is listed as a decision (class `decision:<reason>`), with the
+commands a person uses to decide it:
+
+| Reason | What to decide |
+|---|---|
+| `content_differs` | The two pages hold different content. Compare them (`gbrain get --source <id> -- '<slug>'`); make them the same (edit the file and sync, or edit the legacy page) and preview again, or keep the twin and delete the legacy page. |
+| `several_legacy` | More than one legacy page folds to the twin's slug. Keep one, soft-delete the others, preview again. |
+| `file_missing`, `file_drift`, `file_unverified` | The twin's file is gone, differs from the twin, or cannot be checked. Resolve it with [ghost pages](#ghost-pages) or [file drift](#file-drift) first. |
+| `twin_slug_path_occupied` | A file sits at the twin's own slug path (`<twin-slug>.md`), which the twin's purge would compare or remove. Rename or remove it, sync, preview again. |
+| `twin_has_withdrawals` | Claims were forgotten on the twin. Forget the same claims on the legacy page first, or retire the twin by hand. |
+| `legacy_records_file_uri` | The legacy page records a file URI of its own; reconcile it first. |
+
+The apply needs the user's consent: without `--yes` a terminal asks, and a
+non-interactive run exits 3 (`ask_user`) with the consent payload and changes
+nothing. Each approved pair is one coordinated write (an unmanaged brain does
+the same in one transaction):
+
+1. The legacy page records the file. It keeps its id, slug, links, timeline,
+   versions and aliases.
+2. The twin's links (both directions, without duplicating the legacy page's
+   own; links between the two pages stay on the twin), timeline rows, slug
+   aliases, facts other pages assert about it, raw data and attachments move
+   to the legacy page. The twin's slug becomes an alias of the legacy page, so
+   `[[notes/foo-bar]]` and `gbrain get notes/foo-bar` keep resolving.
+3. The twin's sync import record moves to the legacy page, so the next
+   `gbrain sync --source <id>` finds the file and the page unchanged: no new
+   page, no hold, no file write.
+4. The twin is soft-deleted as a shared origin: the file is not touched. Its
+   tombstone forgets the file, so the autopilot purge removes it from the
+   database 72 h later without refusing it as a page whose file another page
+   records.
+
+The legacy page keeps its slug: that is also the slug sync gives a never-forked
+file whose legacy page it takes over (#6727), and the folded slug resolves to it
+through the alias. The twin's tags, chunks, versions and the facts and takes its
+own body projects stay with the twin (the legacy page has the same ones, from
+the same content). Restoring the twin brings back a page that records no file;
+what moved stays on the legacy page.
+
+Each pair is checked again before its request, in preparation and under the
+publication locks (both page ids, slugs and revisions, the recorded path, the
+owner, the content and the file); a pair that moved is skipped
+`changed_since_preview`. It refuses off the canonical owner host
+([`not_owner_host`](error-codes.md#not_owner_host)), when the checkout cannot
+be read ([`legacy_twins_storage_unknown`](error-codes.md#legacy_twins_storage_unknown)),
+and when the pairs are more than half of the source's file-backed pages on a
+source with more than 20 of them
+([`legacy_twin_mass_merge_refused`](error-codes.md#legacy_twin_mass_merge_refused);
+rerun with `GBRAIN_ALLOW_MASS_RECONCILE=1` only after the user agrees). A
+preview lists at most 1,000 pairs and decisions; apply them, then preview
+again. Trusted local CLI only; it runs only when named.
+
 ### Stale atoms
 
 `gbrain repair stale-atoms` (explicit-only) retires atoms that drifted from

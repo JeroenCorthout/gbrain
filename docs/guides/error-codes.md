@@ -2024,6 +2024,28 @@ More: [docs/guides/repair.md#legacy-job-selection-invalid](../../docs/guides/rep
 
 More: [docs/guides/repair.md#legacy-jobs-active](../../docs/guides/repair.md#legacy-jobs-active)
 
+### legacy_twin_mass_merge_refused
+
+<a id="legacy_twin_mass_merge_refused"></a>
+
+| Meaning | Why | Next step | Who acts · consent | Verify | Exit | Retryable |
+|---|---|---|---|---|---|---|
+| gbrain repair legacy-twins refused to merge legacy twin pairs that are more than half of a source's file-backed pages; nothing was changed. | The sync mass-delete valve (#2828) applied to legacy twins: each merge soft-deletes a file-backed twin, and that many twins at once almost always means a re-import under another slug fold or the wrong checkout, not a backlog of forked pairs. | Check the source and its checkout on the owner host first. If merging these pairs is genuinely intended, ask the user, then rerun the same apply command with GBRAIN_ALLOW_MASS_RECONCILE=1. Run: gbrain sources writer status --source '{source_id}' --json | agent | `repeat the read that failed` | 1 | no |
+
+More: [docs/guides/repair.md#legacy-twins](../../docs/guides/repair.md#legacy-twins)
+
+### legacy_twins_storage_unknown
+
+<a id="legacy_twins_storage_unknown"></a>
+
+| Meaning | Why | Next step | Who acts · consent | Verify | Exit | Retryable |
+|---|---|---|---|---|---|---|
+| Legacy twin pairs of a source cannot be checked because its canonical root is missing or is not a readable directory; nothing was listed or changed. | Whether a twin's file is still there and agrees with it is only known from the checkout, so the repair fails closed rather than merge on a guess. | Inspect the source checkout on its owner host (writer status shows its root), fix it, then preview gbrain repair legacy-twins --source <id> again. Run: gbrain sources writer status --source '{source_id}' --json | agent | `gbrain doctor --json` | 1 | no |
+
+Reasons: `storage_unavailable`.
+
+More: [docs/guides/repair.md#legacy-twins](../../docs/guides/repair.md#legacy-twins)
+
 ### local_conflict
 
 <a id="local_conflict"></a>
