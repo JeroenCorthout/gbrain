@@ -49,6 +49,7 @@
   "test/fact-fence-adoption-exits.test.ts": 26963,
   "test/fact-purge-lookup-timeout-6511.test.ts": 8682,
   "test/fence-repair-receipts.test.ts": 11974,
+  "test/forecast-journal.test.ts": 12000,
   "test/frontmatter-reserved-keys-6454.test.ts": 9760,
   "test/get-chunks-paging.test.ts": 6453,
   "test/graduation-copy.test.ts": 92395,

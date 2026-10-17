@@ -927,7 +927,7 @@
         {
           "category": "ops",
           "elapsed_ms": "<volatile>",
-          "message": "RLS enabled on 149/149 public tables",
+          "message": "RLS enabled on 146/146 public tables",
           "name": "rls",
           "status": "ok"
         },
@@ -941,7 +941,7 @@
         {
           "category": "meta",
           "elapsed_ms": "<volatile>",
-          "message": "1277 column(s) verified against live schema",
+          "message": "1249 column(s) verified against live schema",
           "name": "schema_columns",
           "status": "ok"
         },
@@ -2862,6 +2862,20 @@
           "name": "unindexed_files",
           "readiness_state": "unknown",
           "severity": "info",
+          "status": "ok"
+        },
+        {
+          "category": "brain",
+          "details": {
+            "count": 0,
+            "docs": "docs/guides/repair.md#overwritten-edits",
+            "sources": [],
+            "truncated": false,
+            "unknown": 0
+          },
+          "elapsed_ms": "<volatile>",
+          "message": "No page shows a database edit that a sync import overwrote.",
+          "name": "sync_overwritten_db_edits",
           "status": "ok"
         },
         {

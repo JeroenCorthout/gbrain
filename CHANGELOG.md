@@ -10,6 +10,61 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.286.0] - 2026-10-17
+
+**Your brain keeps a private forecast journal: every prediction, when it was made, by when it had to come true, and how it turned out.** Takes that make a call ("Acme-example will reach $5M ARR by the end of 2024") now get a horizon, the last day the claim can come true. `gbrain takes journal` lists every prediction as resolved, overdue, open or undated, and it always counts the unresolved ones, so a track record can't look better by leaving its misses unresolved. `gbrain takes scorecard --group-by holder` (or `source`) ranks who has been right, with sample-size honesty built in. All of this stays on the brain host: remote agents and thin clients see exactly what they saw before.
+
+### What you'd see
+
+| You run | You get |
+|---|---|
+| `gbrain takes horizon scan` | each take's stated deadline ("by the end of 2024" → 2024-12-31, "within 18 months" counted from its since date); nothing is written until you add `--apply` |
+| `gbrain takes horizon set <slug> --row N --date YYYY-MM-DD` / `clear` | your own horizon for a take with no stated deadline; a scan never overwrites it |
+| `gbrain takes journal` | every prediction with its time, claim, holder, weight, horizon, state and resolution; the totals count every open, overdue and undated prediction whatever `--state` or `--limit` shows |
+| `gbrain takes scorecard --group-by holder` | one row per holder: accuracy, accuracy shrunk toward the brain-wide rate, a 95% interval, recency-weighted accuracy, Brier and Brier skill, how many resolutions cite a source, open and overdue counts, and `low_n` below `--min-n` (default 10) |
+
+**When was a prediction made?** Where the belief ledger records a source, the journal gives the recorded time, and calls it certified on a managed source. Everywhere else it shows the take's since date, labelled `uncertified`, so you always know which dates you can lean on.
+
+### What to do after upgrading
+
+Nothing runs on upgrade. A new migration adds the private `take_horizons` table; no take is touched. To date your takes, run `gbrain takes horizon scan`, look at the list, then run `gbrain takes horizon scan --apply`. Then `gbrain takes journal`.
+
+### Itemized changes
+
+- New `gbrain takes horizon scan [--apply]`, `set` and `clear`, and new `gbrain takes journal`: trusted local only. They have no MCP op, and thin clients refuse them as host-bound.
+- `gbrain takes scorecard` gains `--group-by holder|source`, `--min-n N` and `--source-id`. Without them the scorecard prints what it did before.
+- `takes_scorecard` gains `group_by` and `min_n` for trusted local callers. A remote caller that passes either gets the new `scorecard_group_by_local_only` refusal. Without them, its answer is byte for byte what it was.
+- `takes_list`, `takes_search` and `takes_scorecard` return the same output, locally and remotely, whether or not horizons exist.
+
+### For contributors
+
+- `src/core/takes-horizon.ts` (the deadline parser and the horizon store) and `src/core/forecast-journal.ts` (the journal and the grouped statistics).
+- `evals/forecast-journal/`: a $0 synthetic gate with a frozen preregistration. It uses 20 seeded cohorts of placeholder holders with known skill. On those cohorts the median Spearman ρ between true skill and shrunk accuracy is 0.905. The who-was-right set-F1 is 1.000, the denominator, `low_n` and labelling counts are exact, and 8/8 remote probes pass. Run it with `bun evals/forecast-journal/harness.ts --run`.
+
+## [0.60.285.0] - 2026-10-17
+
+**Doctor can now find page edits that an earlier sync silently overwrote, and one repair puts them back (#6712).** Between v0.60.255.0 and v0.60.279.0, a plain incremental `gbrain sync` could publish a committed file edit over a page that had also been edited in the database (for example a `put_page` with `sync.write_through` off). v0.60.279.0 stopped new damage. This release finds the pages that were already hit, using records gbrain keeps permanently, and restores them with a preview first.
+
+### What you'd see
+
+| Situation | Before | Now |
+|---|---|---|
+| a database edit an earlier sync overwrote | survived only as an old page version; nothing pointed at it | doctor `sync_overwritten_db_edits` warns and names the page; `gbrain repair overwritten-edits` previews a diff |
+| applying the restore | no command | the page goes back to the edit through a database-only, revision-bound revert; the committed file is held `file_drift` when it differs, so sync never publishes it over the edit again |
+| applying on a host that doesn't own the checkout | no command | the page is restored and the outcome is `restored_file_unheld`, naming the file-drift command to run on the owner host |
+| a page whose history has no recorded writer, or a segmented page | not detectable | not reported, or reported `unknown`, and never restored automatically |
+
+### What to do after upgrading
+
+Nothing runs on upgrade. Run `gbrain doctor --only sync_overwritten_db_edits --json`. If it warns, preview with `gbrain repair overwritten-edits --source <id>` (narrow with `--slug <slug>`), decide with the user, then apply with `--apply --expect <hash>` on the host that owns the checkout. Then resolve the `file_drift` hold it leaves, using `gbrain repair file-drift --source <id> --slug <slug>`.
+
+### Itemized changes
+
+- `persistence/overwritten-edits.ts` scans `page_versions` for a revision whose writer was a database-only page write and whose archiver was a managed-sync import that changed the body. It reads only receipt columns that compaction keeps, and caps the scan at 500 candidates per source.
+- The doctor check `sync_overwritten_db_edits` (BRAIN) warns only on high-confidence findings and counts `unknown` separately.
+- The repair kind `overwritten-edits` is explicit-only and preview-bound. It rechecks the revision and the version digest, restores through `revert_version` with `databaseOnly: 'overwrite_restore'`, writes the `file_drift` hold on the owner host, and replays an apply that was interrupted after the restore committed.
+- Tests: `test/overwritten-edits-6712.test.ts` runs on PGLite and Postgres: detect and restore, no false flag on normal sync history, a page that moved since the preview is refused, an interrupted apply replays, and a non-owner host reports the file left unheld. The doctor goldens gain the new row.
+
 ## [0.60.284.0] - 2026-10-17
 
 **Your agent can now finish a rename that sync split in two, find people and companies in every source it can read, and stop chasing warnings that only describe the past (fix wave 18).** When you move a note and rewrite it in the same commit, sync sometimes cannot tell it was a move, so it keeps the old page aside and starts a new one. Until now the only way out was to bring the old page back. Now one command, run after you agree, moves the old page's history, links and facts onto the new name, or closes the pair and lets the old page go.

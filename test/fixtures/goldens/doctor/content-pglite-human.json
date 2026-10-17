@@ -205,6 +205,7 @@
       "  [OK] purge_parked_pages: No soft-deleted page is parked by the managed purge.",
       "  [INFO] missing_recorded_files: Not applicable: no source is a classic checkout on this host (managed sources are checked by ghost_pages).",
       "  [INFO] unindexed_files: Unindexed files are not known for default (not computed yet), notes (not computed yet). The maintenance phase unindexed_files computes them on each run and continues an incomplete scan; to compute them now, run gbrain sources retry-held <id> --unindexed.",
+      "  [OK] sync_overwritten_db_edits: No page shows a database edit that a sync import overwrote.",
       "  [OK] sync_config_keys: No retired sync config key is stored on this brain.",
       "  [OK] fence_integrity: No malformed facts or takes fence is held, stored or waiting in a checkout (2 source(s) scanned).",
       "  [OK] search_mode: Mode: conservative (no per-key overrides — mode bundle is canonical).",

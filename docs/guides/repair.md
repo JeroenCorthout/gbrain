@@ -148,6 +148,7 @@ work behind exits 0, so scripts should also check `results[].complete`.
 | `receipt-compaction` | `persistence_capacity` (terminal bytes) | Explicit-only, preview-bound, destructive consent. Compacts terminal write receipts now instead of on the idle maintenance tick (#6696): the intent and error message are dropped, the outcome, error code and detail stay, and the unused reservation returns to the receipt-bytes counters. `--older-than <72h\|30d>` is floored at the configured retention unless `--force`; committed receipts only unless `--include-failures`. No admission, so it runs at a full cap. See [receipt compaction](#receipt-compaction). | `failures_kept`: failed, conflict and cancelled receipts left without `--include-failures`. Receipts of a run whose sync cursor is still open, and the newest sync receipt of each worktree, are never listed. |
 | `aliases` | `dangling_aliases` (orphaned rows) | Explicit-only. Deletes free-text page aliases and slug redirects whose target page has no row at all (a page purged before purge removed its aliases, #6619, or a hard-deleted page), each target rechecked under its page lock; a coordinated maintenance write on a managed brain. A redirect from an old name of a page that still exists is never touched. See [aliases](#aliases). | `soft_deleted_target`: aliases of a soft-deleted page, kept for `gbrain restore` and removed when the page is purged. |
 | `rename-identity` | `rename_identity_downgrades` | Explicit-only, preview-bound, destructive consent. For an inexact Git rename that sync split into a delete plus an add (#6729): carries the old page's identity (id, version history, timeline, links, facts, aliases) onto the new slug, imports the new file onto it as an edit and retires the provisional page; or, with `--close`, settles the pair and moves nothing. `--slug <new-slug>` (and `--from <old-slug>`) names one pair; `--apply --expect <hash> --yes`. See [rename identity](#rename-identity). | `fact_rows_collide` (a fence row of the old page the new file does not keep with the same claim); `managed_remedy_unavailable` (a carry on a managed source; `--close` is the remedy there); pages changed after the preview (`changed_since_preview`). |
+| `overwritten-edits` | `sync_overwritten_db_edits` | Explicit-only, preview-bound. Restores database edits that an incremental managed sync replaced with a committed file edit and no `file_drift` hold (#6712, fixed by #6887). It restores only what the records prove: a database-only revision (its receipt published no file) archived by a managed-sync import that wrote different content, with no later revision holding the edit again. The preview diffs the live page against the edit; `--apply --expect <hash>` reverts each page to that version through a revision-bound, database-only `revert_version` and holds the committed file `file_drift` when it differs. See [overwritten edits](#overwritten-edits). | `unknown_*` findings (no persistence outcome on the writer's receipt, the import's content no longer readable, a segmented version), listed but not restored; pages that moved after the preview (`changed_since_preview`). |
 
 Timeline rows that an earlier version of a page produced and its current text
 no longer has are removals, not history, so `timeline` neither counts nor
@@ -497,6 +498,66 @@ accepted, which is what a correct accept leaves. Not restored, because no
 record holds it: a grade or resolution stored only in the database, the take's
 id (the row gets a new one) and its embedding (re-embedded). A second preview
 lists nothing.
+
+<a id="overwritten-edits"></a>
+### Overwritten database edits
+
+**Say to your agent:** *"Check whether sync overwrote any of my database edits and show me what it would restore."*
+
+Before #6887, an ordinary incremental `gbrain sync` on a managed
+brain could publish a committed file edit over a page that was also edited in
+the database since its last import (for example a `put_page` with
+`sync.write_through` off). It wrote no `file_drift` hold and no backup. The database edit is still in
+the page's history: the import archived it as a page version. Doctor
+`sync_overwritten_db_edits` counts the pages per source and names the first ones.
+
+Preview, show the user both versions, then apply after they agree:
+
+```bash
+gbrain repair overwritten-edits --source <id>                  # each page, the edit's version, who wrote it, the import that replaced it, a diff
+gbrain repair overwritten-edits --source <id> --slug notes/a   # one page
+gbrain repair overwritten-edits --source <id> --apply --expect <preview-hash>
+```
+
+A page is listed only when the records prove it: the archived revision's writer
+is a committed request whose receipt published no file (`persistence.mode`
+`database`, no Git effect for that revision, not a read-only mirror write), the
+request that archived it is a managed-sync import (also after receipt
+compaction, from its operation and outcome), the import wrote different content,
+and no later revision of the page holds the edit again. Findings the records
+cannot prove are listed `unknown` with the reason and never restored: the
+writer's receipt has no `persistence` outcome, the import's own content is no
+longer readable, or a version is segmented. A revision with no recorded writer
+(written before write attribution, by a classic sync, or by unattributed
+maintenance) is not reported, because it looks exactly like ordinary sync
+history.
+
+The apply reverts each page to the archived version through `revert_version`,
+bound to the page revision the preview saw, so a page that moved since is
+`changed_since_preview` and nothing is written. An apply interrupted after a
+restore committed replays that restore's request on the next run and then
+writes the hold, instead of reporting the page as moved. The restore
+publishes to the database only and never rewrites the committed file.
+
+Only the host that owns the source's checkout compares that file with the
+restored page. There, a file that differs is held `file_drift` (outcome
+`restored_file_held`), so no later sync publishes it over the edit; pick the
+winner with [`gbrain repair file-drift`](#file-drift). On any other host the
+restore still applies, but the file is neither compared nor held: the outcome
+is `restored_file_unheld` (`why=checkout_not_on_this_host`; the same outcome
+with `why=file_over_read_bound` means the owner host could not read a file
+that large). A later sync that imports a change to that file can then publish
+it over the restored edit again. No command writes only the hold afterward,
+and the restored page is not listed again, so run the apply on the owner host.
+After a restore on another host, resolve the page on the owner host so the
+file holds the restored edit:
+
+```bash
+gbrain repair file-drift --source <id> --slug <slug> --prefer database                          # preview
+gbrain repair file-drift --source <id> --slug <slug> --prefer database --apply --expect <preview-hash>
+```
+
+A restored page is not listed again.
 
 <a id="orphan-bindings"></a>
 ### Orphan persistence bindings

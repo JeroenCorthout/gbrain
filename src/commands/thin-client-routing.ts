@@ -118,6 +118,7 @@ export async function routeThinClientCommand(
         return true;
       }
       case 'scorecard': {
+        if (rest.includes('--group-by') || rest.includes('--min-n')) return false; // W7: private journal groups, host-bound
         const holder = rest[0] && !rest[0].startsWith('--') ? rest[0] : flagValue(rest, '--holder');
         printJson(await call(cfg, 'takes_scorecard', { ...(holder ? { holder } : {}) }));
         return true;

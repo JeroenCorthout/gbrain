@@ -3729,6 +3729,18 @@ export const OPERATION_MANIFEST: OperationMeta[] = [
       "until": {
         "type": "string",
         "description": "Window end (YYYY-MM-DD)"
+      },
+      "group_by": {
+        "type": "string",
+        "enum": [
+          "holder",
+          "source"
+        ],
+        "description": "Trusted local CLI only: per-group journal statistics"
+      },
+      "min_n": {
+        "type": "number",
+        "description": "Trusted local CLI only: groups with fewer resolved predictions are flagged low_n (default 10)"
       }
     },
     "cliHints": {

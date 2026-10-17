@@ -577,7 +577,7 @@ cannot fix.
 What the build changed from the text above, or measured, so a reader of the
 code finds no surprise:
 
-- **Migration v251** (`belief_history_index`) adds four tables, not three:
+- **Migration v252** (`belief_history_index`) adds four tables, not three:
   `belief_text_revisions`, `belief_text_chunks`, `belief_text_revision_chunks`
   and `belief_text_index_state`. The fourth holds each source's index cut and
   build pass, so the cut stays unset until build pass 1 completes. A source

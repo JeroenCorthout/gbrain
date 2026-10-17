@@ -2,8 +2,8 @@
   "golden": {
     "exitCode": 0,
     "stderr": "",
-    "stdoutBytes": 243221,
-    "stdoutSha256": "cd67da9568c51ae7b1e53f8d488162ddca20a4c9d72f554141da37fda7c5a9d9",
+    "stdoutBytes": 242884,
+    "stdoutSha256": "181e7dd98ce52c544dc1ae81a4035e2024e3b584428401576b24e815c584f9dc",
     "toolNames": [
       "remember",
       "entity",
@@ -1266,7 +1266,6 @@
         "parameters": {
           "cursor": "string?",
           "fields": "string?",
-          "known_as_of": "string?",
           "limit": "number?",
           "match": "string?",
           "min_trust": "string?",
@@ -1295,10 +1294,6 @@
                 "lean",
                 "full"
               ],
-              "type": "string"
-            },
-            "known_as_of": {
-              "description": "Recorded time: the pages as this brain had recorded them at this ISO 8601 instant, ranked by the lexical historical retriever. Not as_of, which is valid time.",
               "type": "string"
             },
             "limit": {
@@ -4268,7 +4263,6 @@
           "active": "boolean?",
           "holder": "string?",
           "kind": "string?",
-          "known_as_of": "string?",
           "limit": "number?",
           "min_trust": "string?",
           "offset": "number?",
@@ -4289,10 +4283,6 @@
             },
             "kind": {
               "description": "Filter to this kind (fact|take|bet|hunch)",
-              "type": "string"
-            },
-            "known_as_of": {
-              "description": "Recorded time: the take rows of page_slug's body as this brain had recorded it at this ISO 8601 instant. Needs page_slug.",
               "type": "string"
             },
             "limit": {
@@ -4383,7 +4373,6 @@
         "name": "think",
         "parameters": {
           "anchor": "string?",
-          "known_as_of": "string?",
           "model": "string?",
           "question": "string",
           "reference_date": "string?",
@@ -4398,10 +4387,6 @@
           "properties": {
             "anchor": {
               "description": "Pull the entity subgraph around this slug",
-              "type": "string"
-            },
-            "known_as_of": {
-              "description": "Recorded time: think over the evidence as this brain had recorded it at this ISO 8601 instant (lexical retrieval; refuses save and take).",
               "type": "string"
             },
             "model": {
@@ -4452,7 +4437,9 @@
         "name": "takes_scorecard",
         "parameters": {
           "domain_prefix": "string?",
+          "group_by": "string?",
           "holder": "string?",
+          "min_n": "number?",
           "since": "string?",
           "until": "string?"
         },
@@ -4463,9 +4450,21 @@
               "description": "Slug prefix (e.g. companies/) to scope the scorecard",
               "type": "string"
             },
+            "group_by": {
+              "description": "Trusted local CLI only: per-group journal statistics",
+              "enum": [
+                "holder",
+                "source"
+              ],
+              "type": "string"
+            },
             "holder": {
               "description": "Filter to this holder (world|garry|brain|<slug>)",
               "type": "string"
+            },
+            "min_n": {
+              "description": "Trusted local CLI only: groups with fewer resolved predictions are flagged low_n (default 10)",
+              "type": "number"
             },
             "since": {
               "description": "Window start (YYYY-MM-DD)",

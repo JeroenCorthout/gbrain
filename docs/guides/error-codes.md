@@ -3124,6 +3124,14 @@ More: [docs/architecture/schema-packs.md#oversized-pack](../../docs/architecture
 
 More: [docs/guides/google-connect.md#troubleshooting](../../docs/guides/google-connect.md#troubleshooting)
 
+### scorecard_group_by_local_only
+
+<a id="scorecard_group_by_local_only"></a>
+
+| Meaning | Why | Next step | Who acts · consent | Verify | Exit | Retryable |
+|---|---|---|---|---|---|---|
+| An agent-facing caller asked takes_scorecard for group_by or min_n, which read the private forecast journal and run only from the trusted local CLI. | The request itself was wrong or no longer matches the brain; nothing was changed. | Omit group_by and min_n; the brain owner runs gbrain takes scorecard --group-by on the brain host. | agent | `repeat the read that failed` | 1 | no |
+
 ### search_cursor_requires_keyword
 
 <a id="search_cursor_requires_keyword"></a>

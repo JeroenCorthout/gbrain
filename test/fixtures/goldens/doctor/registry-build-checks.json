@@ -870,6 +870,10 @@
         "name": "unindexed_files"
       },
       {
+        "category": "brain",
+        "name": "sync_overwritten_db_edits"
+      },
+      {
         "category": "meta",
         "name": "sync_config_keys"
       },

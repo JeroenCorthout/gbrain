@@ -3888,10 +3888,10 @@
       {
         "handler": "absent",
         "idempotent": true,
-        "name": "belief_history_index",
+        "name": "take_horizons",
         "sql": {
-          "length": 2825,
-          "sha256": "d1bbbb3db373cc100c3d1ace6c7f0e62d23ff59b1c35e049c891123a0f3f8f17"
+          "length": 414,
+          "sha256": "43fb123a615e4eb3a77b021b2e8766e85093bfb80e8ef4f1dbc86dcc01658137"
         },
         "sqlFor": "absent",
         "transaction": "absent",
