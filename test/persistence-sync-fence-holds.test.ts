@@ -31,6 +31,7 @@ import { printSyncResult, type SyncOpts, type SyncResult } from '../src/commands
 import { isolatedPersistencePostgres } from './helpers/persistence-postgres.ts';
 import { testBackends } from './helpers/test-backends.ts';
 import { withEnv } from './helpers/with-env.ts';
+import { SYNC_IMPORT_PROVENANCE_OP } from '../src/core/persistence/sync-holds.ts';
 import { TEST_WRITE_ATTRIBUTION } from './helpers/write-attribution.ts';
 import { waitFor } from './helpers/wait-for.ts';
 import { readFileSync } from 'node:fs';
@@ -391,6 +392,8 @@ test('TE1: a stored take whose prior fence did not parse is updated by its norma
     await tx.executeRaw("UPDATE pages SET compiled_truth=$3 WHERE source_id=$1 AND slug=$2", [s.id, 'people/probe', bad.split('---\n').slice(2).join('---\n')]);
     await tx.executeRaw("INSERT INTO takes(page_id,row_num,claim,kind,holder,weight) SELECT id,2,'Second take','assessment','brain',0.7 FROM pages WHERE source_id=$1 AND slug=$2", [s.id, 'people/probe']);
   }, TEST_WRITE_ATTRIBUTION));
+  // That older writer recorded no import provenance (a recorded database-only edit is held #6712 file_drift instead).
+  await engine.executeRaw("DELETE FROM op_checkpoints WHERE op=$1 AND completed_keys->0->>'page_id'=(SELECT id::text FROM pages WHERE source_id=$2 AND slug=$3)", [SYNC_IMPORT_PROVENANCE_OP, s.id, 'people/probe']);
   s.write('people/probe.md', bad); commit(s.root, 'invented kind');
   const result = await s.sync();
   expect(result).toMatchObject({ status: 'synced', fences_normalized: { count: 1, by_class: { kind_map: 1 } } });

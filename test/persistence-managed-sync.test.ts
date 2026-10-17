@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, expect, test } from 'bun:test';
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
@@ -467,6 +467,40 @@ test.each([false, true])('managed terminal receipts survive a missing ledger and
       expect(requests.at(-1)?.state).toBe('committed');
       expect(requests.at(-1)?.request_id).not.toBe(id);
       expect((await engine.executeRaw<{ last_commit: string }>('SELECT last_commit FROM sources WHERE id=$1', [f.id]))[0].last_commit).toBe(target);
+      } finally { await engine.executeRaw("DELETE FROM config WHERE key='sync.holds'"); }
+    }
+  }), 120_000);
+
+// The replay of a pinned-worktree refusal is decided by the file's bytes, not by its mtime against the stop's database
+// timestamp: a filesystem timestamp lags the wall clock by up to a scheduler tick, so a correction written right after
+// the stop was recorded read as unwritten and replayed the refusal (the flake of the test above, about 1 run in 7).
+// The mtimes are forced to either side of the stop so the old comparison fails deterministically in both directions.
+test('a pinned-worktree refusal replays on the file bytes, whatever the file mtime says', async () =>
+  withEnv({ GBRAIN_HOME: home, GBRAIN_SYNC_FAILURES_DIR: home }, async () => {
+    for (const engine of engines) {
+      await engine.setConfig('sync.holds', 'fail');
+      try {
+        const f = await fixture(engine, { 'notes/example.md': 'An original observation about the example system.\n' });
+        await performManagedSync(engine, { sourceId: f.id, noPull: true });
+        const pinned = 'A newly committed observation about the example system.\n';
+        const working = 'A private uncommitted observation that must not appear in diagnostics.\n';
+        const path = join(f.root, 'notes/example.md');
+        writeFileSync(path, pinned);
+        const target = commit(f.root);
+        writeFileSync(path, working);
+        const opts = { sourceId: f.id, noPull: true };
+        const blocked = await performManagedSync(engine, opts);
+        expect(blocked).toMatchObject({ status: 'blocked_by_failures', managedWrite: { reason: 'pinned_git_worktree_conflict', write_request: { state: 'conflict' } } });
+        const minute = 60;
+        const later = Date.now() / 1000 + minute, earlier = Date.now() / 1000 - minute;
+        writeFileSync(path, working); utimesSync(path, later, later);
+        const rewritten = await performManagedSync(engine, opts);
+        expect(rewritten.status).toBe('blocked_by_failures');
+        expect(rewritten.managedWrite?.write_request).toEqual(blocked.managedWrite!.write_request);
+        writeFileSync(path, pinned); utimesSync(path, earlier, earlier);
+        const corrected = await performManagedSync(engine, opts);
+        expect(corrected.status).toBe('synced');
+        expect((await engine.executeRaw<{ last_commit: string }>('SELECT last_commit FROM sources WHERE id=$1', [f.id]))[0].last_commit).toBe(target);
       } finally { await engine.executeRaw("DELETE FROM config WHERE key='sync.holds'"); }
     }
   }), 120_000);

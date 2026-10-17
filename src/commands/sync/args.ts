@@ -210,6 +210,8 @@ Subcommands:
                        committed in the last 10 minutes, each hold and the
                        last error with class / safe_actions / needs_human,
                        and the next action (for an operator agent's loop).
+                       'gbrain sync --status' is the same read (never a sync);
+                       sync refuses --preview, which it never reads.
   gbrain sync unblock --source <id> [--apply] [--no-llm] [--no-repair] [--json]
                        Performs the safe action for every hold (re-screens a
                        held file whose edit is now committed, retries a

@@ -17,6 +17,7 @@ import { disposePersistenceConsumer } from '../src/core/persistence/service.ts';
 import { performManagedSync } from '../src/core/persistence/sync-run.ts';
 import { sha256 } from '../src/core/persistence/digest.ts';
 import { GIT_HOLD_OP, SYNC_IMPORT_PROVENANCE_OP, gitHoldItem, readGitSourceHolds, recordContentHoldRepair, requestGitHoldRetry } from '../src/core/persistence/sync-holds.ts';
+import { CONTENT_REPAIR_LANE_VERSION } from '../src/core/persistence/sync-fault-class.ts';
 import { printSyncResult, type SyncOpts, type SyncResult } from '../src/commands/sync.ts';
 import { gitHoldStatusLines, readGitHoldStatuses } from '../src/core/persistence/connector-status.ts';
 import { isolatedPersistencePostgres } from './helpers/persistence-postgres.ts';
@@ -36,6 +37,8 @@ const FOLDED = '---\ntitle: alice-example first line\nalice-example second line\
 const LONG = Array.from({ length: 40 }, (_, i) => `Line ${i} of a long synthetic observation that keeps Git rename detection certain.`).join('\n');
 /** Same long body, so Git still detects a rename when only the frontmatter changes. */
 const long = (title: string) => `---\ntitle: ${title}\n---\n${LONG}\n`;
+/** #6729: an explicit slug: line that an exact move (R100) leaves pointing at the old path, so the moved file is held with the old page's identity. */
+const pinned = (title: string, slug: string) => `---\ntitle: ${title}\nslug: ${slug}\n---\n${LONG}\n`;
 const longBroken = `---\ntitle: alice-example first line\nalice-example second line\n---\n${LONG}\n`;
 const AUTHOR = '---\ntitle: Payments roundup\nauthor: PYMNTS (citing Reuters / Bloomberg) (original: https://x.com/a/status/1)\n---\nA synthetic roundup.\n';
 
@@ -168,10 +171,11 @@ test('a sliced run that has not reached a held file leaves its hold untouched; a
 }), 180_000);
 
 test('renamed to a broken file keeps the old page, a later fix moves it with its id, and a full walk never deletes it meanwhile', () => each(async engine => {
-  const s = await source(engine, { 'notes/old.md': long('Old') });
+  const s = await source(engine, { 'notes/old.md': pinned('Old', 'notes/old') });
   await s.sync();
   const page = (await engine.getPage('notes/old', { sourceId: s.id }))!;
-  git(s.root, 'mv', 'notes/old.md', 'notes/new.md'); s.write('notes/new.md', longBroken); commit(s.root, 'rename to broken');
+  git(s.root, 'mv', 'notes/old.md', 'notes/new.md'); commit(s.root, 'exact move onto a stale slug: line');
+  expect(git(s.root, 'diff', '--name-status', '-M', 'HEAD~1', 'HEAD')).toMatch(/^R100\t/);
   const held = await s.sync();
   expect(held.held?.[0]).toMatchObject({ path: 'notes/new.md', stale: false });
   expect((await s.holds())[0]!.meta.rename_from).toMatchObject({ slug: 'notes/old', pageId: page.id });
@@ -187,18 +191,20 @@ test('renamed to a broken file keeps the old page, a later fix moves it with its
 }), 240_000);
 
 test('a chained rename carries the held identity, and a changed old page keeps the rename held as rename_held', () => each(async engine => {
-  const s = await source(engine, { 'notes/a.md': long('A'), 'notes/x.md': long('X') });
+  const s = await source(engine, { 'notes/a.md': pinned('A', 'notes/a'), 'notes/x.md': pinned('X', 'notes/x') });
   await s.sync();
   const a = (await engine.getPage('notes/a', { sourceId: s.id }))!;
-  git(s.root, 'mv', 'notes/a.md', 'notes/b.md'); s.write('notes/b.md', longBroken); commit(s.root, 'a to b broken');
+  git(s.root, 'mv', 'notes/a.md', 'notes/b.md'); commit(s.root, 'a to b, held');
   await s.sync();
-  git(s.root, 'mv', 'notes/b.md', 'notes/c.md'); s.write('notes/c.md', long('C')); commit(s.root, 'b to c fixed');
+  git(s.root, 'mv', 'notes/b.md', 'notes/c.md'); commit(s.root, 'b to c, still held');
+  await s.sync();
+  s.write('notes/c.md', long('C')); commit(s.root, 'fix c');
   await s.sync();
   expect((await engine.getPage('notes/c', { sourceId: s.id }))?.id).toBe(a.id);
   expect(await s.holds()).toEqual([]);
 
   const x = (await engine.getPage('notes/x', { sourceId: s.id }))!;
-  git(s.root, 'mv', 'notes/x.md', 'notes/y.md'); s.write('notes/y.md', longBroken); commit(s.root, 'x to y broken');
+  git(s.root, 'mv', 'notes/x.md', 'notes/y.md'); commit(s.root, 'x to y, held');
   await s.sync();
   await engine.executeRaw('UPDATE persistence_brain SET enabled=false WHERE singleton=1');
   await engine.executeRaw('UPDATE pages SET knowledge_revision=gen_random_uuid() WHERE id=$1', [x.id]);
@@ -207,6 +213,26 @@ test('a chained rename carries the held identity, and a changed old page keeps t
   const result = await s.sync();
   expect(result.held?.[0]).toMatchObject({ path: 'notes/y.md', code: 'rename_held', reason: 'rename_source_changed' });
   expect((await engine.getPage('notes/x', { sourceId: s.id }))?.id).toBe(x.id);
+}), 240_000);
+
+test('#6729: an inexact rename onto a broken file is a delete plus an add; the old page stays recorded, and once the file is fixed the record names the new page', () => each(async engine => {
+  const s = await source(engine, { 'notes/old.md': long('Old') });
+  await s.sync();
+  const page = (await engine.getPage('notes/old', { sourceId: s.id }))!;
+  git(s.root, 'mv', 'notes/old.md', 'notes/new.md'); s.write('notes/new.md', longBroken); commit(s.root, 'rename to broken');
+  expect(git(s.root, 'diff', '--name-status', '-M', 'HEAD~1', 'HEAD')).toMatch(/^R0\d\d\tnotes\/old.md\tnotes\/new.md$/);
+  const held = await s.sync();
+  expect(held.held?.[0]).toMatchObject({ path: 'notes/new.md', code: 'invalid_frontmatter' });
+  expect((await s.holds())[0]!.meta.rename_from).toBeUndefined();
+  expect(held.identityDowngrades).toMatchObject([{ from: 'notes/old.md', to: 'notes/new.md', old_slug: 'notes/old', old_page_id: page.id, new_slug: null }]);
+  const oldRow = async () => (await engine.executeRaw<{ id: number; deleted_at: string | null }>('SELECT id, deleted_at FROM pages WHERE source_id=$1 AND slug=$2', [s.id, 'notes/old']))[0];
+  expect((await oldRow())!.deleted_at).not.toBeNull();
+  s.write('notes/new.md', long('New')); commit(s.root, 'fix');
+  await s.sync();
+  const fresh = (await engine.getPage('notes/new', { sourceId: s.id }))!;
+  expect(fresh.id).not.toBe(page.id);
+  const { listIdentityDowngrades } = await import('../src/core/sync-identity-downgrades.ts');
+  expect((await listIdentityDowngrades(engine, [s.id])).map(record => [record.old_slug, record.new_slug])).toEqual([['notes/old', 'notes/new']]);
 }), 240_000);
 
 test('the hold write and the cursor step past it commit together: a crash between them persists neither', () => each(async engine => {
@@ -394,7 +420,7 @@ test('#6377: a slug-conflict hold carries the content-repair verdict only for th
   expect(hold).toMatchObject({ code: 'frontmatter_slug_conflict' });
   expect(gitHoldItem(hold!).fix.argv).toEqual(['gbrain', 'repair', 'content', '--source', s.id, '--only', 'notes/slug.md']);
   expect(gitHoldItem(hold!).fix.why).toContain('The content-repair lane clears this itself on the next maintenance run');
-  const state = { action: 'merge_into' as const, reason: 'merge_recommended', canonical: 'notes/elsewhere', named: 'notes/elsewhere', model: 'anthropic:claude-opus-5-5', at: new Date().toISOString(), next_attempt_after: null };
+  const state = { action: 'merge_into' as const, reason: 'merge_recommended', canonical: 'notes/elsewhere', named: 'notes/elsewhere', model: 'anthropic:claude-opus-5-5', at: new Date().toISOString(), next_attempt_after: null, lane_version: CONTENT_REPAIR_LANE_VERSION };
   // Conditional on the judged bytes and the code: other bytes or another path record nothing.
   expect(await recordContentHoldRepair(engine, { sourceId: s.id, incarnation: hold!.incarnation, path: 'notes/slug.md', upstreamVersion: sha256('other bytes'), state })).toBe(false);
   expect(await recordContentHoldRepair(engine, { sourceId: s.id, incarnation: hold!.incarnation, path: 'notes/ok.md', upstreamVersion: null, state })).toBe(false);

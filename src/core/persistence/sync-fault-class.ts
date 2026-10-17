@@ -60,7 +60,7 @@ export const SYNC_FAULT_TABLE: ReadonlyArray<SyncFaultRule> = [
     escalate: `${ESCALATE_AFTER}, or writer status names a step that never finishes`, human_reason: 'The write owner cannot finish preparing this file; writer status names the step, fix or report it.' },
   { code: 'invalid_fence', class: 'page', safe_actions: ['repair'], needs_human: false, escalate: 'the fence repair preview offers no plan (a manual reason)', human_reason: 'Edit the facts or takes table the hold names and commit.' },
   { code: 'invalid_frontmatter', class: 'page', safe_actions: ['repair'], needs_human: false, escalate: 'the repair preview needs an interpretation (--include-ambiguous)', human_reason: 'Approve the proposed frontmatter fix or edit the file.' },
-  { code: 'frontmatter_slug_conflict', class: 'page', safe_actions: ['repair'], needs_human: false, escalate: 'the repair preview needs an interpretation', human_reason: 'Decide which page keeps the slug.' },
+  { code: 'frontmatter_slug_conflict', class: 'page', safe_actions: ['repair'], needs_human: false, escalate: 'the lane recorded why it could not decide', human_reason: 'The content-repair lane could not clear the hold; its recorded verdict names the page, edit or setting.' },
   { code: 'rename_held', class: 'page', safe_actions: ['repair'], needs_human: false, escalate: 'the repair preview needs an interpretation', human_reason: 'Approve re-binding the rename to the current page.' },
   { code: 'file_too_large', class: 'page', safe_actions: ['none'], needs_human: true, escalate: 'always', human_reason: 'The file is over the page size limit; exclude it with sync.exclude, or split it into files under the limit.' },
   { code: 'content_rejected', class: 'page', safe_actions: ['none'], needs_human: true, escalate: 'always', human_reason: 'The content-sanity gate rejected the file; remove the junk or change junk_disposition.' },
@@ -147,6 +147,45 @@ export interface ContentRepairHoldInput {
   type?: string;
   path: string;
   slug: string | null;
+  /** #6865: the lane version that recorded the verdict, the other frontmatter fix codes (`still_invalid`), a named page with no file. */
+  lane_version?: number;
+  other_codes?: string[];
+  named_db_only?: true;
+}
+
+/** #6865: the content-repair lane's verdict version; a verdict an older lane recorded (or one with none) is rechecked once, never shown as a person's decision. */
+export const CONTENT_REPAIR_LANE_VERSION = 2;
+
+/** Whether this release's lane recorded the verdict. */
+export function contentRepairLaneCurrent(state: { lane_version?: number } | null | undefined): boolean {
+  return (state?.lane_version ?? 1) >= CONTENT_REPAIR_LANE_VERSION;
+}
+
+const SLUG_PAID: ReadonlySet<string> = new Set(['llm_disabled', 'budget_exhausted', 'no_measured_model', 'no_pricing']);
+const SLUG_TRANSIENT: ReadonlySet<string> = new Set(['llm_unavailable', 'ledger_unavailable', 'sync_in_progress', 'claimed_elsewhere', 'changed_since_read', 'changed_since_preview']);
+
+/**
+ * #6865: what a person does about a slug-conflict hold, from what the lane actually found; undefined while an agent or the
+ * lane itself can still clear it (no verdict yet, an older lane's verdict awaiting its recheck, a transient retry), so the
+ * attempts escalation never names a person then. "Decide which page keeps the slug" only when the line names a live page.
+ */
+export function slugConflictEscalation(input: ContentRepairHoldInput | null | undefined): string | undefined {
+  if (!input || !contentRepairLaneCurrent(input) || SLUG_TRANSIENT.has(input.reason)) return undefined;
+  const named = input.named ? `page \`${input.named}\`${input.named_db_only ? ' (a database-only page with no file)' : ''}` : null;
+  if (input.action === 'pending') {
+    if (!SLUG_PAID.has(input.reason)) return undefined;
+    return `\`${input.path}\` declares the slug of ${named ?? 'the page its slug: line names'}; whether they are the same page needs the content-repair model, which waits on a setting only the user changes (${input.reason}). `
+      + `Allow it, or decide which page keeps the slug: delete the slug: line of \`${input.path}\` if they differ, or merge them and delete the duplicate, then commit.`;
+  }
+  if (input.action !== 'remove_slug') return undefined;
+  if (input.reason === 'still_invalid') {
+    return `Removing the slug: line of \`${input.path}\` alone leaves it unimportable${input.other_codes?.length ? ` (the frontmatter also needs ${input.other_codes.join(', ')})` : ''}; `
+      + `the user approves the frontmatter fix (gbrain repair frontmatter --only ${input.path} --include-ambiguous previews it and writes nothing) or edits the file.`;
+  }
+  if (input.reason === 'slug_page_mismatch') {
+    return `Sync files \`${input.path}\` as page \`${input.slug ?? '?'}\`, which its slug: line does not name exactly; make the line name that slug or move the file, then commit.`;
+  }
+  return `gbrain decided to remove the slug: line of \`${input.path}\` but could not write it (${input.reason}); delete the line by hand and commit.`;
 }
 
 /**
@@ -166,7 +205,7 @@ export function contentRepairHumanReason(input: ContentRepairHoldInput): string 
       + 'the hold clears on the next sync after the file is removed. gbrain does not merge pages by itself yet.';
   }
   if (input.action === 'needs_human') {
-    return `gbrain could not decide whether \`${input.path}\`${other ? ` and page \`${other}\`` : ' and the page its slug: line names'} are the same page; decide which keeps the slug: `
+    return `gbrain could not decide whether \`${input.path}\`${other ? ` and page \`${other}\`${input.named_db_only ? ' (a database-only page with no file)' : ''}` : ' and the page its slug: line names'} are the same page; decide which keeps the slug: `
       + `remove the slug: line of \`${input.path}\` if they differ, or merge them by hand and delete the duplicate, then commit; the hold clears on the next sync.`;
   }
   return undefined;
@@ -187,14 +226,16 @@ export function classifySyncFault(input: { code: string; detail?: string | null;
   held_for_ms?: number | null;
   /** #6712 PR 2: a `worktree_dirty` hold whose uncommitted bytes changed within `HOLD_ESCALATE_MS`: someone is still editing. */
   live_editor?: boolean }): SyncFaultVerdict {
-  const judged = input.content_repair && input.code === 'frontmatter_slug_conflict' ? contentRepairHumanReason(input.content_repair) : undefined;
+  const slugRepair = input.code === 'frontmatter_slug_conflict' ? input.content_repair : undefined;
+  const judged = slugRepair && contentRepairLaneCurrent(slugRepair) ? contentRepairHumanReason(slugRepair) : undefined;
   if (judged) return { class: 'page', safe_actions: ['none'], needs_human: true, human_reason: judged };
+  const slugHuman = input.code === 'frontmatter_slug_conflict' ? slugConflictEscalation(slugRepair) : undefined;
   const rule = (input.detail ? BY_CODE.get(input.detail) : undefined) ?? BY_CODE.get(input.code)
     ?? (/ECONN|ETIMEDOUT|EPIPE|connection.*closed|CONNECTION_ENDED/i.test(input.message ?? '') ? BY_CODE.get('connection_lost') : undefined);
   if (!rule) return { class: 'systemic', safe_actions: ['none'], needs_human: true, human_reason: `Unknown code ${input.code}; run gbrain doctor --json and read gbrain errors ${input.code}.` };
   const exhausted = !rule.needs_human && (input.attempts ?? 0) >= HOLD_ATTEMPTS_NEEDS_HUMAN && (input.held_for_ms ?? 0) >= HOLD_ESCALATE_MS && !input.live_editor
-    && rule.safe_actions[0] !== 'none' && rule.class === 'page';
+    && rule.safe_actions[0] !== 'none' && rule.class === 'page' && (input.code !== 'frontmatter_slug_conflict' || slugHuman !== undefined);
   if (!exhausted) return { class: rule.class, safe_actions: rule.safe_actions, needs_human: rule.needs_human, ...(rule.needs_human && rule.human_reason ? { human_reason: rule.human_reason } : {}) };
   return { class: rule.class, safe_actions: ['none'], needs_human: true,
-    human_reason: `${(rule.human_reason ?? 'The page keeps moving under the sync.').replace(/\.$/, '')} (held ${input.attempts} times over ${Math.floor(input.held_for_ms! / 3_600_000)} h with code ${rule.code}).` };
+    human_reason: `${(slugHuman ?? rule.human_reason ?? 'The page keeps moving under the sync.').replace(/\.$/, '')} (held ${input.attempts} times over ${Math.floor(input.held_for_ms! / 3_600_000)} h with code ${rule.code}).` };
 }

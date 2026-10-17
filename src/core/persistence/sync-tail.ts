@@ -31,6 +31,8 @@ export interface SyncTailReport {
   runs: number;
   statistics: 'refreshed' | 'not_needed' | 'failed';
   links?: ManagedLinkExtraction;
+  /** Pages this run imported that the tail's link extraction left underived (present when links ran); they stay stale. */
+  underived?: number;
   notice?: Notice;
 }
 
@@ -69,7 +71,7 @@ export async function runSyncTail(engine: BrainEngine, sourceId: string, opts: {
   const underived = links ? Math.max(0, slugs.length - links.pages - links.skipped) : 0;
   const truncated = underived > 0 && (Date.now() >= deadlineAt || links!.pages + links!.skipped >= SYNC_TAIL_MAX_PAGES);
   const status: SyncTailReport['status'] = failure !== null ? 'failed' : !ran ? 'deferred' : truncated ? 'truncated' : statistics === 'failed' ? 'degraded' : 'done';
-  return { status, runs: owed.length, statistics, ...(links ? { links } : {}), ...(status === 'done' ? {} : { notice: tailNotice(sourceId, status, { statistics, underived, failure }) }) };
+  return { status, runs: owed.length, statistics, ...(links ? { links, underived } : {}), ...(status === 'done' ? {} : { notice: tailNotice(sourceId, status, { statistics, underived, failure }) }) };
 }
 
 function tailNotice(sourceId: string, status: Exclude<SyncTailReport['status'], 'done'>, d: { statistics: SyncTailReport['statistics']; underived?: number; failure: string | null }): Notice {

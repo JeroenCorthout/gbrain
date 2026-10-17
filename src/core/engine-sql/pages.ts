@@ -304,6 +304,8 @@ export async function purgeDeletedPages(
         SELECT slug, deleted_at FROM pages
         WHERE deleted_at IS NOT NULL
           AND deleted_at < now() - (${hours} || ' hours')::interval
+          AND NOT EXISTS (SELECT 1 FROM op_checkpoints dg WHERE dg.op = 'sync-identity-downgrade' AND dg.fingerprint = pages.id::text
+            AND dg.completed_keys->0->>'disposition' IS NULL AND pages.deleted_at = (dg.completed_keys->0->>'old_deleted_at')::timestamptz)
         ORDER BY deleted_at ASC, slug ASC
       `);
       const pages = rows.map((r) => ({
@@ -316,6 +318,9 @@ export async function purgeDeletedPages(
       DELETE FROM pages
       WHERE deleted_at IS NOT NULL
         AND deleted_at < now() - (${hours} || ' hours')::interval
+        -- #6729: the old page of an open rename-identity downgrade waits for its disposition (identityDowngradePurgeHold).
+        AND NOT EXISTS (SELECT 1 FROM op_checkpoints dg WHERE dg.op = 'sync-identity-downgrade' AND dg.fingerprint = pages.id::text
+          AND dg.completed_keys->0->>'disposition' IS NULL AND pages.deleted_at = (dg.completed_keys->0->>'old_deleted_at')::timestamptz)
       RETURNING slug
     `);
     const slugs = rows.map((r) => r.slug);
@@ -725,6 +730,19 @@ function stalePagesWhere(opts?: { sourceId?: string; versionTs?: string; attenda
     : opts?.attendance === 'blocked' ? sqlFragment` AND links_attendance_blocked_revision = knowledge_revision` : sqlFragment``;
   // A quarantined page is hidden from search; it is neither re-extracted nor counted as stale.
   return sqlFragment`deleted_at IS NULL AND ${trustedSql(quarantineFilterFragment('pages'))} AND ${version}${source}${attendance}`;
+}
+
+/**
+ * #6803 (D1): the live page count, the stale count without attendance-blocked pages and the attendance-blocked count
+ * in one statement, so doctor's `links_extraction_lag` and the sync nudge share one predicate and one threshold input.
+ * `attendance: false` is the pre-v180 shape (no marker column: nothing is attendance-blocked).
+ */
+export function extractionLagStatement(opts: { sourceId?: string; versionTs: string; attendance: boolean }): { text: string; params: unknown[] } {
+  const source = opts.sourceId ? sqlFragment` AND source_id = ${opts.sourceId}` : sqlFragment``;
+  const stale = stalePagesWhere({ versionTs: opts.versionTs, ...(opts.attendance ? { attendance: 'exclude' as const } : {}) });
+  const blocked = opts.attendance ? sqlFragment`count(*) FILTER (WHERE ${stalePagesWhere({ versionTs: opts.versionTs, attendance: 'blocked' })})::int` : sqlFragment`0`;
+  return renderFragment(sqlFragment`SELECT count(*)::int AS total, count(*) FILTER (WHERE ${stale})::int AS stale, ${blocked} AS attendance_blocked
+    FROM pages WHERE deleted_at IS NULL AND ${trustedSql(quarantineFilterFragment('pages'))}${source}`);
 }
 
 export async function countStalePagesForExtraction(exec: ScopedRead, opts?: { sourceId?: string; versionTs?: string; attendance?: 'exclude' | 'blocked' }): Promise<number> {

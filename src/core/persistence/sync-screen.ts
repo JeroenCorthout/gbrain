@@ -75,6 +75,16 @@ export function pinnedBlob(cursor: PinnedCursor, path: string): TreeBlob | null 
   return readPinnedBlob(cursor.gitRoot, cursor.target, syncGitPath(cursor, path), upcomingGitPaths(cursor));
 }
 
+/**
+ * A `both` entry's recorded disk blob (`driftBaseline`), or null. When the page still holds what it imports (sync-run.ts
+ * `sameContentAtOrigin`, `pageOnly`), the database changed only what an import keeps (tags, links), so the newer file
+ * overwrites nothing the database alone holds and the entry imports.
+ */
+export function driftBaselineContent(gitRoot: string, entry: Pick<SyncEntry, 'drift' | 'driftBaseline'>): string | null {
+  if (entry.drift !== 'both' || !entry.driftBaseline) return null;
+  try { return readBlobContents(gitRoot, [{ oid: entry.driftBaseline, size: SYNC_READ_BOUND }]).get(entry.driftBaseline) ?? null; } catch { return null; }
+}
+
 /** The frozen import content of one entry (`readSyncContent`); a committed entry's pinned blob is read with the entries after it. */
 export function pinnedContent(cursor: SyncDiscovery & { index: number }, entry: SyncEntry): string {
   const content = entry.working ? null : readPinnedContent(cursor.gitRoot, cursor.target, syncGitPath(cursor, entry.path), upcomingGitPaths(cursor));
@@ -248,6 +258,11 @@ export async function screenFrozenImport(engine: BrainEngine, input: FrozenImpor
   if (input.oversize || content === null) return oversizeHold(entry, slug, pageId, input.oversize?.size ?? blob?.size ?? null, blob);
   if (entry.renameHeld) {
     return heldEntry(entry, slug, pageId, { code: 'rename_held', reason: 'rename_source_changed', message: `${entry.path} is a rename of page ${entry.renameHeld.slug}, which changed after the rename was recorded, so the page was not moved.` }, content, blob);
+  }
+  if (entry.legacySlugs?.length && entry.legacyIdVeto) {
+    const held = heldEntry(entry, slug, pageId, { code: 'legacy_slug_conflict', reason: 'explicit_id_conflict', message: `${entry.path} imports as page ${slug}, but page ${entry.legacySlugs[0]}, which an older gbrain imported from a file of that name `
+      + `and records no file, has a frontmatter id that differs from the file's, so it is a different document and sync held the file instead of taking that page over.` }, content, blob);
+    return { ...held, meta: { ...held.meta, legacy_slugs: entry.legacySlugs } };
   }
   if (entry.legacySlugs?.length) {
     const [only, several] = [entry.legacySlugs[0], entry.legacySlugs.length > 1];

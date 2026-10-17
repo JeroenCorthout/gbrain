@@ -238,8 +238,16 @@ describe('routeThinClientCommand — (b) host-bound forms return false', () => {
     ['quarantine', ['scan']],
     ['quarantine', ['clear']],
     ['takes', ['extract']],
+    ['takes', ['grades']],
     ['beliefs', ['changes', '--source', 'notes']],
     ['beliefs', ['status']],
+    ['takes', ['horizon', 'scan']],
+    ['takes', ['horizon', 'set', 'companies/acme-example', '--row', '1', '--date', '2025-06-30']],
+    ['takes', ['horizon', 'clear', 'companies/acme-example', '--row', '1']],
+    ['takes', ['journal']],
+    ['takes', ['journal', '--holder', 'alice-example', '--json']],
+    ['takes', ['scorecard', '--group-by', 'holder']],
+    ['takes', ['scorecard', 'alice-example', '--min-n', '5']],
   ];
 
   for (const [command, args] of hostBound) {

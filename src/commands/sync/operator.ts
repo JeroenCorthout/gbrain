@@ -83,6 +83,35 @@ Runbook: docs/guides/sync-unblock-runbook.md
 `);
 }
 
+/**
+ * #6803: the operator verb a `gbrain sync` argument vector asks for, shared by
+ * the CLI's pre-connect preflight (no watchdog, no owner delegation) and
+ * `runSyncInner`. `gbrain sync --status` is the status read, the same as
+ * `gbrain sync status` (it used to run a full sync, because nothing read the
+ * flag). `--preview` and `--check` are read by no sync path, so a sync that
+ * would silently run past them is refused.
+ */
+export function syncOperatorVerb(args: readonly string[]): 'status' | 'unblock' | null {
+  if (args[0] === 'status' || args[0] === 'unblock') return args[0];
+  if (args[0] === 'trigger') return null;
+  const unread = args.find(a => a === '--preview' || a === '--check' || a.startsWith('--preview=') || a.startsWith('--check='));
+  if (unread) {
+    const flag = unread.split('=')[0];
+    throw opError('invalid_params', `gbrain sync does not read ${flag}; it would have run a full sync.`,
+      'Preview a sync with --dry-run, or read where the source stands with gbrain sync status.',
+      { fix: { argv: ['gbrain', 'sync', ...args.filter(a => a !== unread && a !== '--dry-run'), '--dry-run'], consent: [], actor: 'agent', requires_exclusive: false,
+        why: 'The same sync with --dry-run reports what it would import and writes nothing.' } });
+  }
+  return args.includes('--status') ? 'status' : null;
+}
+
+/** `runSyncInner`'s operator route: `sync --status` prints one hint, then runs exactly `sync status`. */
+export async function runSyncOperator(engine: BrainEngine, verb: 'status' | 'unblock', args: string[]): Promise<void> {
+  if (args[0] === verb) return verb === 'status' ? runSyncStatus(engine, args.slice(1)) : runSyncUnblock(engine, args.slice(1));
+  process.stderr.write('[gbrain] sync --status is the status read, the same as gbrain sync status (it never syncs).\n');
+  return runSyncStatus(engine, args.filter(a => a !== '--status'));
+}
+
 function sourceOf(args: string[]): string {
   const explicit = args.find((a, i) => args[i - 1] === '--source') ?? null;
   const source = resolveSourceIdEngineFree(explicit, process.cwd());
@@ -97,20 +126,25 @@ export async function runSyncStatus(engine: BrainEngine, args: string[]): Promis
   const status = await readSyncStatus(engine, sourceId, { detail: args.includes('--detail') });
   const ctx = cliRenderContext();
   // #6696 (A4): the capacity picture rides every status read (unthrottled), from the 60 s snapshot.
-  const { cachedCapacitySnapshot, capacityNotices } = await import('../../core/persistence/capacity-snapshot.ts');
+  // #6803 C4: one bounded wait per status read, shared with its notices; a slow snapshot reads unknown for this call only.
+  const { capacitySnapshotWithin, capacityNotices, CAPACITY_READ_WAIT_MS } = await import('../../core/persistence/capacity-snapshot.ts');
   const { renderNotice } = await import('../../core/agent-output.ts');
-  const snapshot = await cachedCapacitySnapshot(engine);
-  const notices = (await capacityNotices(engine, { throttle: false })).map(notice => renderNotice(notice, ctx));
+  const snapshot = await capacitySnapshotWithin(engine, Date.now() + CAPACITY_READ_WAIT_MS);
+  const notices = (await capacityNotices(engine, { throttle: false, snapshot })).map(notice => renderNotice(notice, ctx));
+  // #6858 ask 6: commit→searchable / commit→embedded latency over 24 h (null for a source with no managed binding).
+  const { readSyncFreshness, formatSyncFreshness } = await import('../../core/persistence/sync-freshness.ts');
+  const [freshness = null] = await readSyncFreshness(engine, { sourceIds: [sourceId] }).catch(() => []);
   const read = (r: typeof status.cursors_read) => r.status === 'read' ? r : { ...r, fix: renderAction(r.fix, ctx) };
   const rendered = { ...status, holds: status.holds.map(hold => ({ ...hold, fix: renderAction(hold.fix, ctx) })), next: status.next ? renderAction(status.next, ctx) : null,
     checkpoint_blockers_read: read(status.checkpoint_blockers_read), cursors_read: read(status.cursors_read), terminal_failures_read: read(status.terminal_failures_read),
-    capacity: { status: snapshot.status, pause_pct: snapshot.pause_pct, low: snapshot.low, paused: snapshot.paused }, ...(notices.length ? { notices } : {}) };
+    capacity: { status: snapshot.status, pause_pct: snapshot.pause_pct, low: snapshot.low, paused: snapshot.paused }, freshness, ...(notices.length ? { notices } : {}) };
   if (args.includes('--json')) return writeJsonDocument(JSON.stringify(rendered, null, 2));
   const c = status.cursor;
   console.log(syncStatusHeadline(status));
   console.log(`  ${c ? c.done ? `last run finished at ${c.index}/${c.total} (pinned ${c.pinned_target?.slice(0, 8) ?? '?'})` : `cursor ${c.index}/${c.total} at pinned target ${c.pinned_target?.slice(0, 8) ?? '?'}`
     + `${c.last_advance_at ? `, last advance ${c.last_advance_at}` : ''}` : 'no managed cursor'}`);
   console.log(`  committed in the last 10 minutes: ${status.committed_last_10m}${status.rate_pages_per_min !== null ? `, ${status.rate_pages_per_min} pages/min` : ''}`);
+  if (freshness) console.log(`  freshness: ${formatSyncFreshness(freshness)}`);
   console.log(`  holds: ${status.holds.length}${status.holds.length ? ` (${status.holds.filter(h => h.needs_human).length} need a person)` : ''}; last error: ${status.last_error ? `${status.last_error.code} [${status.last_error.class}]` : 'none'}`);
   for (const hold of status.holds) console.log(`    ${hold.path}${hold.slug ? ` (${hold.slug})` : ''}: ${hold.code} [${hold.class}] safe: ${hold.safe_actions.join(',')}${hold.needs_human ? ` NEEDS HUMAN: ${hold.human_reason}` : ''}${hold.attempts > 1 ? ` (held ${hold.attempts} times)` : ''}`);
   if (status.last_error) console.log(`    ${status.last_error.path ?? ''}: ${status.last_error.code} safe: ${status.last_error.safe_actions.join(',')}${status.last_error.needs_human ? ` NEEDS HUMAN: ${status.last_error.human_reason}` : ''}`);

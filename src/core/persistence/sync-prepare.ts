@@ -504,7 +504,9 @@ function canonicalWritebackNeeded(row: WriteRequest, p: SyncIntent, pinned: stri
 }
 
 /** A managed-sync preparation; a Markdown import also carries the provenance its publication records, which a no-op waiver records instead. */
-export type SyncPreparedMutation = PreparedMutation & { importProvenance?: SyncImportProvenanceBase };
+export type SyncPreparedMutation = PreparedMutation & { importProvenance?: SyncImportProvenanceBase;
+  /** The import leaves the page as it is (only a canonical writeback of the file may remain); #6712 drift baseline check in sync-run.ts. */
+  pageUnchanged?: boolean };
 
 export async function prepareManagedSyncMutation(unbounded: BrainEngine, row: WriteRequest, _config: GBrainConfig, clock?: ClaimPhaseClock,
   screening?: { unsaved: true }): Promise<SyncPreparedMutation> {
@@ -715,6 +717,7 @@ export async function prepareManagedSyncMutation(unbounded: BrainEngine, row: Wr
   const preparedImport: SyncPreparedMutation = { observedRevision: snapshot?.revision ?? null, trust: await ownerImportTrust(engine, row, ready.parsedPage.frontmatter, p.sourcePath), importProvenance,
     // Tells the #5470 screen the content is unchanged; publication still queues its effects.
     contentUnchanged: ready.noop && !moved && !writeback,
+    pageUnchanged: ready.noop && !moved,
     ...(renamed ? { additionalPageKeys: [{ sourceId: row.source_id, slug: renamed.slug }] } : {}),
     validate: async tx => { await validate(tx); await ready.validate(tx); },
     deferEmbedding: p.processingOptions?.noEmbed || p.embedDeferred === true,

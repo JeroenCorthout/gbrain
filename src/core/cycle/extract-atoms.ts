@@ -85,6 +85,7 @@ import { slugifySegment } from '../sync.ts';
 import { resolveAlias, resolveTierDefault } from '../model-config.ts';
 import { isMissingSchemaObject, warnOncePerProcess } from '../utils.ts';
 import { utcDate } from './cycle-date.ts';
+import { atomSourceDate } from './atom-source-date.ts';
 import { normalizeForGrounding } from './synthesize-verify.ts';
 import type { TranscriptPageIndex } from '../transcripts/discover.ts';
 import { managedAtomSession, readAtomOrigin, resumeManagedAtoms, publishManagedAtoms, MANAGED_ATOM_DISCOVERY_SQL, type AtomOrigin } from '../persistence/atom-maintenance.ts';
@@ -1086,8 +1087,10 @@ export async function runPhaseExtractAtoms(
     const { promptContent, truncated } = input;
     try {
       const origin: AtomOrigin | null = managed ? { ...await readAtomOrigin(engine, managed, item), ...(truncated ? { partialInputChars: maxInputChars } : {}) } : null;
+      const sourcePage = item.kind === 'page' ? await engine.getPage(item.slug, { sourceId }) : null;
+      const contentDate = await atomSourceDate(engine, sourcePage); // #6720: captured with the input, before inference
       const visibility = origin?.visibility ?? effectiveVisibility(item.kind === 'transcript' ? { kind: 'transcript' } // #5525
-        : { kind: 'page', page: await engine.getPage(item.slug, { sourceId }) });
+        : { kind: 'page', page: sourcePage });
       throwIfAborted(opts.signal, 'extract_atoms');
       const resumed = !opts.dryRun && managed && origin ? await resumeManagedAtoms(engine, managed, origin) : 'run';
       if (resumed === 'done') { duplicatesSkipped++; continue; }
@@ -1173,7 +1176,6 @@ export async function runPhaseExtractAtoms(
         // write below). Page-kind items only — transcripts are files, not
         // pages, so there is no from-endpoint to link.
         const provenanceLinks: LinkBatchInput[] = [];
-        const sourcePage = item.kind === 'page' ? await engine.getPage(item.slug, { sourceId }) : null;
         const undatedDate = sourcePage?.created_at ? utcDate(new Date(sourcePage.created_at)) : 'undated';
         for (const atom of atoms) {
           const srcRef = item.kind === 'transcript' ? item.filePath : item.slug;
@@ -1225,7 +1227,7 @@ export async function runPhaseExtractAtoms(
           const md = serializeMarkdown(
             {
               atom_type: atom.atom_type,
-              ...originFrontmatter,
+              ...originFrontmatter, ...(contentDate ? { date: contentDate } : {}),
               // Provisional until the whole item's atoms persist (see above).
               source_hash: `pending:${hash16}`,
               visibility, ...(origin ? { managed_extraction: true } : {}),

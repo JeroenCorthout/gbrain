@@ -8,7 +8,7 @@
 import { afterAll, beforeAll, expect, test } from 'bun:test';
 import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { BrainEngine } from '../src/core/engine.ts';
@@ -17,7 +17,7 @@ import { PGLiteEngine } from '../src/core/pglite-engine.ts';
 import { claimWorktree } from '../src/core/persistence/ownership.ts';
 import { disposePersistenceConsumer } from '../src/core/persistence/service.ts';
 import { performManagedSync } from '../src/core/persistence/sync-run.ts';
-import { readGitSourceHolds, SYNC_IMPORT_PROVENANCE_OP } from '../src/core/persistence/sync-holds.ts';
+import { gitHoldFix, readGitSourceHolds, SYNC_IMPORT_PROVENANCE_OP } from '../src/core/persistence/sync-holds.ts';
 import { submitPageMutation } from '../src/core/persistence/page-mutations.ts';
 import { slugifyPath } from '../src/core/sync.ts';
 import { isolatedPersistencePostgres } from './helpers/persistence-postgres.ts';
@@ -150,6 +150,30 @@ test('#6727 a database-only page (never imported from a file) is not taken over 
   await s.sync();
   expect(await s.held()).toEqual([]);
   expect((await s.pages()).map(page => [page.slug, page.source_path])).toEqual([['notes/foo bar', null], ['notes/foo-bar', 'notes/Foo Bar.md']]);
+}), 180_000);
+
+test('#6729 x #6727 a legacy page whose explicit frontmatter id differs from the file\'s is not taken over; the file is held', () => each(async engine => {
+  const s = await legacySource(engine, { 'notes/Foo Bar.md': '---\ntitle: Foo Bar\nid: doc-a\n---\nA synthetic observation.\n' });
+  await engine.executeRaw('UPDATE persistence_brain SET enabled=false WHERE singleton=1');
+  await engine.executeRaw(`UPDATE pages SET frontmatter=frontmatter || '{"id":"doc-b"}'::jsonb WHERE source_id=$1`, [s.id]);
+  await engine.executeRaw('UPDATE persistence_brain SET enabled=true WHERE singleton=1');
+  await s.sync();
+  const holds = (await readGitSourceHolds(engine, { sourceIds: [s.id] }))[0]?.holds ?? [];
+  expect(holds.map(hold => ({ path: hold.path, code: hold.code, reason: hold.meta.reason, slugs: hold.meta.legacy_slugs })))
+    .toEqual([{ path: 'notes/Foo Bar.md', code: 'legacy_slug_conflict', reason: 'explicit_id_conflict', slugs: ['notes/foo bar'] }]);
+  expect((await s.pages()).map(page => [page.slug, page.source_path, Number(page.id)])).toEqual([['notes/foo bar', null, s.ids.get('notes/foo bar')!]]);
+  // The hold's exit works: its docs anchor exists, it names both ways out, and the next sync re-screens it.
+  const fix = gitHoldFix(holds[0]!);
+  expect(fix.docs).toBe('docs/guides/write-refusals.md#legacy_slug_conflict-explicit_id_conflict');
+  expect(readFileSync(join(import.meta.dir, '..', 'docs/guides/write-refusals.md'), 'utf8')).toContain('<a id="legacy_slug_conflict-explicit_id_conflict"></a>');
+  expect(fix.user_message).toContain("give the file the page's id");
+  expect(fix.user_message).toContain(`gbrain delete --source ${s.id} -- 'notes/foo bar'`);
+  expect(fix.then?.argv).toEqual(['gbrain', 'sync', '--source', s.id, '--no-pull']);
+  writeFileSync(join(s.root, 'notes/Foo Bar.md'), '---\ntitle: Foo Bar\nid: doc-b\n---\nA synthetic observation.\n');
+  git(s.root, '-c', 'user.name=Example', '-c', 'user.email=example@example.invalid', 'commit', '-qam', 'same id');
+  await s.sync();
+  expect(await s.held()).toEqual([]);
+  expect((await s.pages()).map(page => [page.slug, page.source_path, Number(page.id)])).toEqual([['notes/foo bar', 'notes/Foo Bar.md', s.ids.get('notes/foo bar')!]]);
 }), 180_000);
 
 test('#6727 with sync.holds=fail the ambiguous file stops the run instead of creating a page', () => each(async engine => {

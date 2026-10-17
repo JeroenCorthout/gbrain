@@ -64,7 +64,6 @@ const LONG = Array.from({ length: 40 }, (_, i) => `Line ${i} of a long synthetic
 const long = (title: string) => note(title, LONG);
 const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==', 'base64');
 const FOLDED = '---\ntitle: alice-example first line\nalice-example second line\n---\nA synthetic post.\n';
-const LONG_BROKEN = `---\ntitle: alice-example first line\nalice-example second line\n---\n${LONG}\n`;
 const TAKES = (who: string) => `---\ntitle: Holder\n---\nA synthetic page.\n\n<!--- gbrain:takes:begin -->\n| # | claim | kind | who | weight | since | source |\n|---|---|---|---|---|---|---|\n`
   + `| 1 | Synthetic take | take | ${who} | 0.7 | 2026-01 | chat |\n<!--- gbrain:takes:end -->\n`;
 
@@ -232,10 +231,11 @@ test('invalid_frontmatter: the preview, then its hash-bound apply, clears the ho
 }), 180_000);
 
 test('rename_held: re-binding the rename to the current page clears the hold', () => each(async engine => {
-  const s = await managed(engine, { 'notes/x.md': long('X') });
+  // #6729: an exact move (R100) whose slug: line still names the old path holds with the old page's identity.
+  const s = await managed(engine, { 'notes/x.md': long('X').replace('title: X', 'title: X\nslug: notes/x') });
   await s.sync();
   const x = (await engine.getPage('notes/x', { sourceId: s.id }))!;
-  git(s.root, 'mv', 'notes/x.md', 'notes/y.md'); s.write('notes/y.md', LONG_BROKEN); commit(s.root, 'x to y broken');
+  git(s.root, 'mv', 'notes/x.md', 'notes/y.md'); commit(s.root, 'x to y, held');
   await s.sync();
   await engine.executeRaw('UPDATE persistence_brain SET enabled=false WHERE singleton=1');
   await engine.executeRaw('UPDATE pages SET knowledge_revision=gen_random_uuid() WHERE id=$1', [x.id]);

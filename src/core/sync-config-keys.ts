@@ -13,7 +13,15 @@
 import { CONFIG_ROLLBACK_WINDOWS, type ConfigRollbackWindow } from './wire-skew.ts';
 
 export const SYNC_TUNABLE_KEYS = ['sync.bulk_size', 'sync.lanes', 'sync.exclude', 'sync.include_hidden', 'sync.include_working_tree', 'sync.holds',
-  'sync.write_through', 'sync.cost_gate_min_usd'] as const;
+  'sync.write_through', 'sync.cost_gate_min_usd', 'sync.on_commit', 'sync.freshness_target_seconds'] as const;
+
+/**
+ * #6858 ask 6, option C (Garry's "rec", via GBRA-108): a resident serve starts a managed source's sync when its
+ * checkout's HEAD moves (serve-head-watcher.ts). Off by default. `sync.freshness_target_seconds` (default 300) is the
+ * p95 commit→searchable target doctor `managed_sync_latency` grades against (persistence/sync-freshness.ts).
+ */
+export const SYNC_ON_COMMIT_KEY = 'sync.on_commit';
+export const SYNC_FRESHNESS_TARGET_KEY = 'sync.freshness_target_seconds';
 
 export interface RetiredSyncKey {
   key: string;

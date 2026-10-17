@@ -62,9 +62,10 @@ type PerSourceResult = {
  * scope): under `--json` as rendered `notices`, otherwise as stderr lines.
  */
 async function syncCapacityNotices(engine: BrainEngine, json: boolean, result?: SyncResult): Promise<{ notices?: unknown[] }> {
-  const { capacityNotices } = await import('../../core/persistence/capacity-snapshot.ts');
-  // #6712 PR 2 (L5): a degraded post-checkpoint tail rides the same notices.
-  const notices = [...(result?.tail?.notice ? [result.tail.notice] : []), ...await capacityNotices(engine).catch(() => [])].map(notice => renderNotice(notice, cliRenderContext()));
+  const { capacityNotices, CAPACITY_READ_WAIT_MS } = await import('../../core/persistence/capacity-snapshot.ts');
+  // #6712 PR 2 (L5): a degraded post-checkpoint tail rides the same notices. #6803 C4: the snapshot wait is bounded.
+  const capacity = await capacityNotices(engine, { throttle: true, deadlineAt: Date.now() + CAPACITY_READ_WAIT_MS }).catch(() => []);
+  const notices = [...(result?.tail?.notice ? [result.tail.notice] : []), ...capacity].map(notice => renderNotice(notice, cliRenderContext()));
   if (!json) for (const notice of notices) process.stderr.write(`[gbrain notice ${notice.code}] ${notice.why}\n`);
   return notices.length ? { notices } : {};
 }
@@ -89,10 +90,10 @@ export async function runSyncInner(engine: BrainEngine, args: string[]) {
     return runSyncTrigger(engine, args.slice(1));
   }
   // #6340: the operator contract (status / unblock) reads and schedules; it never runs a sync.
-  if (args[0] === 'status' || args[0] === 'unblock') {
-    const { runSyncStatus, runSyncUnblock } = await import('./operator.ts');
-    return args[0] === 'status' ? runSyncStatus(engine, args.slice(1)) : runSyncUnblock(engine, args.slice(1));
-  }
+  // #6803: `sync --status` is canonicalized to `sync status` by the same classifier the CLI preflight uses.
+  const { syncOperatorVerb, runSyncOperator } = await import('./operator.ts');
+  const operatorVerb = syncOperatorVerb(args);
+  if (operatorVerb) return runSyncOperator(engine, operatorVerb, args);
 
   // v0.37 fix wave (Lane D.4 + CDX2-12): print usage when `--help`/`-h` is
   // passed. Pre-fix this was unreachable because the dispatcher's generic

@@ -2,8 +2,8 @@
   "golden": {
     "exitCode": 0,
     "stderr": "",
-    "stdoutBytes": 241057,
-    "stdoutSha256": "49eb8473ee380c158399b9e9e48d8ed817820ebb11018fac1a81cee2e169f78e",
+    "stdoutBytes": 242884,
+    "stdoutSha256": "181e7dd98ce52c544dc1ae81a4035e2024e3b584428401576b24e815c584f9dc",
     "toolNames": [
       "remember",
       "entity",
@@ -298,7 +298,9 @@
         "name": "entity",
         "parameters": {
           "name": "string?",
-          "names": "array?"
+          "names": "array?",
+          "prefer_source_id": "string?",
+          "source_id": "string?"
         },
         "required_scopes": [],
         "schema": {
@@ -313,6 +315,14 @@
                 "type": "string"
               },
               "type": "array"
+            },
+            "prefer_source_id": {
+              "description": "Source to try first (thin clients send .gbrain-source here); never narrows.",
+              "type": "string"
+            },
+            "source_id": {
+              "description": "Read only this source. Default: your source first, then every source you can read.",
+              "type": "string"
             }
           },
           "required": [],
@@ -4427,7 +4437,9 @@
         "name": "takes_scorecard",
         "parameters": {
           "domain_prefix": "string?",
+          "group_by": "string?",
           "holder": "string?",
+          "min_n": "number?",
           "since": "string?",
           "until": "string?"
         },
@@ -4438,9 +4450,21 @@
               "description": "Slug prefix (e.g. companies/) to scope the scorecard",
               "type": "string"
             },
+            "group_by": {
+              "description": "Trusted local CLI only: per-group journal statistics",
+              "enum": [
+                "holder",
+                "source"
+              ],
+              "type": "string"
+            },
             "holder": {
               "description": "Filter to this holder (world|garry|brain|<slug>)",
               "type": "string"
+            },
+            "min_n": {
+              "description": "Trusted local CLI only: groups with fewer resolved predictions are flagged low_n (default 10)",
+              "type": "number"
             },
             "since": {
               "description": "Window start (YYYY-MM-DD)",
@@ -6089,12 +6113,15 @@
           "budget_tokens": "number?",
           "counterparty": "string?",
           "entities": "string?",
+          "entity_refs": "array?",
           "include_private": "boolean?",
           "include_quarantined": "boolean?",
           "intent": "string?",
           "min_trust": "string?",
+          "prefer_source_id": "string?",
           "session_id": "string?",
-          "since": "string?"
+          "since": "string?",
+          "source_id": "string?"
         },
         "required_scopes": [],
         "schema": {
@@ -6110,6 +6137,23 @@
             "entities": {
               "description": "Comma-separated names or slugs (max 8).",
               "type": "string"
+            },
+            "entity_refs": {
+              "description": "Source-qualified entities: [{\"source_id\":\"wiki\",\"slug\":\"people/alice-example\"}].",
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "slug": {
+                    "type": "string"
+                  },
+                  "source_id": {
+                    "type": "string"
+                  }
+                },
+                "required": [],
+                "type": "object"
+              },
+              "type": "array"
             },
             "include_private": {
               "description": "Local trusted callers only.",
@@ -6139,12 +6183,20 @@
               ],
               "type": "string"
             },
+            "prefer_source_id": {
+              "description": "Source to try first (thin clients send .gbrain-source here); never narrows.",
+              "type": "string"
+            },
             "session_id": {
               "description": "Opaque session id.",
               "type": "string"
             },
             "since": {
               "description": "Open-thread events after this ISO time.",
+              "type": "string"
+            },
+            "source_id": {
+              "description": "Resolve entities in this source only. Default: your source first, then every source you can read.",
               "type": "string"
             }
           },
