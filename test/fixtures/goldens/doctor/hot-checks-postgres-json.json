@@ -1016,7 +1016,7 @@
           {
             "category": "ops",
             "elapsed_ms": "<volatile>",
-            "message": "RLS enabled on 146/146 public tables",
+            "message": "RLS enabled on 150/150 public tables",
             "name": "rls",
             "status": "ok"
           },
@@ -1030,7 +1030,7 @@
           {
             "category": "meta",
             "elapsed_ms": "<volatile>",
-            "message": "1249 column(s) verified against live schema",
+            "message": "1277 column(s) verified against live schema",
             "name": "schema_columns",
             "status": "ok"
           },
@@ -5240,7 +5240,7 @@
           {
             "category": "ops",
             "elapsed_ms": "<volatile>",
-            "message": "RLS enabled on 146/146 public tables",
+            "message": "RLS enabled on 150/150 public tables",
             "name": "rls",
             "status": "ok"
           },
@@ -5254,7 +5254,7 @@
           {
             "category": "meta",
             "elapsed_ms": "<volatile>",
-            "message": "1249 column(s) verified against live schema",
+            "message": "1277 column(s) verified against live schema",
             "name": "schema_columns",
             "status": "ok"
           },
