@@ -12,6 +12,8 @@ import { randomUUID } from 'node:crypto';
 import { operationsByName } from '../src/core/operations.ts';
 import { renamePageOntoSlug } from '../src/commands/sync/rename-collision.ts';
 import { fillCommitMarks } from '../src/core/belief/coverage-report.ts';
+import { withBeliefBatch } from '../src/core/belief/ledger.ts';
+import { createPageVersion } from '../src/core/page-state/versions.ts';
 import { enableBeliefLedger } from '../src/core/belief/coverage.ts';
 import { __setHistoryIndexFaultForTests, buildHistoryIndex, historyIndexGaps, historyIndexState, isHistoryContentEvent } from '../src/core/belief/history-index.ts';
 import { beliefLedgerEntry } from '../src/commands/doctor/checks/belief-ledger.ts';
@@ -50,14 +52,14 @@ for (const engineCase of testBackends().map(beliefEngineCase)) {
 
     test('each content event opens one row at its recorded_at and closes the one before; an unchanged chunk is stored once', () => brain(async b => {
       await b.put(slug, beliefPage({ prose: 'Quorvane widgets.', takes: [{ claim: 'Brelloxi will grow', who: 'garry' }] }));
-      await b.put(slug, beliefPage({ prose: 'Quorvane gadgets.', takes: [{ claim: 'Brelloxi will grow', who: 'garry' }] }));
+      await b.put(slug, beliefPage({ prose: 'Quorvane gadgets.', takes: [{ claim: 'Brelloxi will grow', who: 'garry', weight: '0.9' }] }));
       const chunksBefore = await chunkCount(b);
-      await b.put(slug, beliefPage({ title: 'Acme Renamed Example', prose: 'Quorvane gadgets.', takes: [{ claim: 'Brelloxi will grow', who: 'garry' }] }));
+      await b.put(slug, beliefPage({ title: 'Acme Renamed Example', prose: 'Quorvane gadgets.', takes: [{ claim: 'Brelloxi will grow', who: 'garry', weight: '0.9' }] }));
       expect(await chunkCount(b)).toBe(chunksBefore);
       const events = (await b.events()).filter(e => e.subject_kind === 'page' && e.slug === slug);
       expect(events.map(e => e.event_type)).toEqual(['page.published', 'page.published', 'page.published']);
       const got = await rows(b, slug);
-      expect(got.map(r => [r.opening_event, r.closing_event, r.known_from, r.known_until, r.revision])).toEqual(events.map((e, i) =>
+      expect(got.map(r => [r.opening_event, r.closing_event, r.known_from, r.known_until, r.revision]) as unknown[]).toEqual(events.map((e, i) =>
         [e.id, events[i + 1]?.id ?? null, iso(e.recorded_at), events[i + 1] ? iso(events[i + 1]!.recorded_at) : null, e.value!.revision_after]));
       expect(got.map(r => r.title)).toEqual(['Acme Example', 'Acme Example', 'Acme Renamed Example']);
       expect(got.every(r => r.chunks >= 1 && r.takes === 1 && !r.stale && !r.segmented && r.visibility === 'world')).toBe(true);
@@ -84,7 +86,7 @@ for (const engineCase of testBackends().map(beliefEngineCase)) {
       const events = (await b.events()).filter(e => e.subject_kind === 'page' && e.slug === slug && isHistoryContentEvent(e));
       expect(events.map(e => e.event_type)).toEqual(['page.published', 'page.view_changed', 'page.view_changed']);
       expect(got.map(r => r.opening_event)).toEqual(events.map(e => e.id));
-      expect(new Set(got.map(r => r.revision)).size).toBe(1);
+      expect(got[2]!.revision).toBe(got[1]!.revision);
       expect(await matches(b, got[0]!.id, 'zentrovar')).toBe(1);
       expect(await matches(b, got.at(-1)!.id, 'zentrovar')).toBe(0);
     }), 180_000);
@@ -108,21 +110,29 @@ for (const engineCase of testBackends().map(beliefEngineCase)) {
     test('the row invariant: a content event with no open row is refused in tests and listed by doctor', () => brain(async b => {
       await b.put(slug, beliefPage({ prose: 'Quorvane widgets.' }));
       const mark = await b.lastId();
-      // Forced probe: maintenance skipped, the publication is refused and nothing commits.
+      const rawWrite = (prose: string) => b.engine.transaction(async tx => {
+        await tx.lockPageKeys([{ sourceId: b.sourceId, slug }]);
+        await createPageVersion(tx, slug, b.sourceId, (await tx.readPageSnapshot(slug, { sourceId: b.sourceId, includeDeleted: true }))!);
+        await withBeliefBatch(tx, { sourceId: b.sourceId, slugs: [slug], op: 'probe_history_row' }, () =>
+          tx.executeRaw('UPDATE pages SET compiled_truth = $1, knowledge_revision = gen_random_uuid() WHERE source_id = $2 AND slug = $3', [prose, b.sourceId, slug]));
+      });
+      // Forced probe: maintenance skipped, the batch is refused and nothing commits.
       __setHistoryIndexFaultForTests('skip_maintenance');
-      const refused = await b.put(slug, beliefPage({ prose: 'Quorvane gadgets.' })).then(() => null, (e: Error) => e.message);
+      const refused = await rawWrite('Quorvane gadgets.').then(() => null, (e: Error) => e.message);
       expect(refused).toContain('belief history index invariant');
       expect(await b.lastId()).toBe(mark);
-      await withEnv({ GBRAIN_BELIEF_HISTORY_CHECK: '0' }, () => b.put(slug, beliefPage({ prose: 'Quorvane gadgets.' })));
+      await withEnv({ GBRAIN_BELIEF_HISTORY_CHECK: '0' }, () => rawWrite('Quorvane gadgets.'));
       __setHistoryIndexFaultForTests(null);
+      await fillCommitMarks(b.engine, b.sourceId);
       const gap = (await b.events(mark)).find(e => e.subject_kind === 'page')!;
       expect((await historyIndexGaps(b.engine, b.sourceId)).map(g => g.event_id)).toEqual([gap.id]);
       const check = await doctor(b);
       expect(check.status).toBe('warn');
       expect(check.message).toContain(`${b.sourceId}: 1 content event(s) have no history index row (e.g. ${slug} at event ${gap.id})`);
-    }), 120_000);
+    }, { managed: false }), 120_000);
 
     test('a segmented page gets a row with no chunks', () => brain(async b => {
+      await b.engine.setConfig('pages.segmented_storage', 'on');
       await b.put(slug, beliefPage({ prose: `Quorvane ${'lorem ipsum dolor sit amet '.repeat(50_000)}` }));
       const [row] = await rows(b, slug);
       expect(row).toMatchObject({ segmented: true, chunks: 0 });

@@ -32,7 +32,7 @@ import { parseFactsFence } from '../facts-fence.ts';
 import { parseTakesFence, TAKE_RESERVATION_SOURCE } from '../takes-fence.ts';
 import { opError } from '../ops/contract.ts';
 import { privatePagesFilterFragment } from '../search/private-visibility.ts';
-import { factKey, lifetimeRef, pageKey, sha256Hex, takeClaimHash, takeKey, valueHash } from './keys.ts';
+import { factKey, keyedFenceTakes, lifetimeRef, pageKey, sha256Hex, takeClaimHash, takeKey, valueHash } from './keys.ts';
 import { appendBeliefEvents, markBeliefCommits, type BeliefEventDraft } from './append.ts';
 import { readLedgerSource } from './ledger.ts';
 import { resolveLifetimes } from './lifetimes.ts';
@@ -76,17 +76,13 @@ export async function bodySubjects(engine: BrainEngine, lifetime: string, text: 
   const rows = takes.takes.filter(t => t.source !== TAKE_RESERVATION_SOURCE);
   const takeFps = rows.length ? await engine.executeRaw<{ fp: string }>('SELECT gbrain_fact_fingerprint(c) AS fp FROM unnest($1::text[]) WITH ORDINALITY AS t(c, n) ORDER BY n',
     [rows.map(t => t.claim)]) : [];
-  const byClaim = new Map<string, Array<{ t: typeof rows[number]; fp: string }>>();
-  rows.forEach((t, i) => { const h = takeClaimHash(t.claim, t.kind, t.holder); byClaim.set(h, [...byClaim.get(h) ?? [], { t, fp: takeFps[i]!.fp }]); });
-  for (const [hash, group] of byClaim) {
-    group.sort((a, b) => (a.t.sinceDate ?? '').localeCompare(b.t.sinceDate ?? '') || a.t.rowNum - b.t.rowNum);
-    group.forEach(({ t, fp }, ordinal) => {
-      const value = takeValue({ id: 0, page_id: 0, row_num: t.rowNum, claim: t.claim, claim_fp: fp, kind: t.kind, holder: t.holder, weight: t.weight,
-        since_date: t.sinceDate ?? null, until_date: t.untilDate ?? null, source: t.source ?? null, active: t.active, resolved_at: dateIso(t.resolvedAt),
-        resolved_outcome: t.resolvedOutcome ?? null, resolved_value: t.resolvedValue ?? null, resolved_unit: t.resolvedUnit ?? null,
-        resolved_source: t.resolvedEvidence ?? null, resolved_by: t.resolvedBy ?? null, resolved_quality: t.resolvedQuality ?? null, tier: '' });
-      subjects.push({ kind: 'take', key: takeKey(lifetime, hash, ordinal), value, vhash: valueHash(value), visibility: pageVisibility, claimFp: fp, validFrom: null, validUntil: null });
-    });
+  for (const { take: t, index, key } of keyedFenceTakes(lifetime, rows)) {
+    const fp = takeFps[index]!.fp;
+    const value = takeValue({ id: 0, page_id: 0, row_num: t.rowNum, claim: t.claim, claim_fp: fp, kind: t.kind, holder: t.holder, weight: t.weight,
+      since_date: t.sinceDate ?? null, until_date: t.untilDate ?? null, source: t.source ?? null, active: t.active, resolved_at: dateIso(t.resolvedAt),
+      resolved_outcome: t.resolvedOutcome ?? null, resolved_value: t.resolvedValue ?? null, resolved_unit: t.resolvedUnit ?? null,
+      resolved_source: t.resolvedEvidence ?? null, resolved_by: t.resolvedBy ?? null, resolved_quality: t.resolvedQuality ?? null, tier: '' });
+    subjects.push({ kind: 'take', key, value, vhash: valueHash(value), visibility: pageVisibility, claimFp: fp, validFrom: null, validUntil: null });
   }
   return { subjects, warnings: [...facts.warnings, ...takes.warnings] };
 }

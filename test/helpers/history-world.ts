@@ -19,6 +19,8 @@ import { buildHistoryIndex } from '../../src/core/belief/history-index.ts';
 import { historicalBody, historicalScore, historyBodyChunks, historyTakeRows, readHistoricalCandidates } from '../../src/core/belief/historical-search.ts';
 import { cacheRowId } from '../../src/core/search/query-cache.ts';
 import { waitForValue } from './wait-for.ts';
+import { withCoordinatedWrite, withTrustPromotion } from '../../src/core/persistence/context.ts';
+import { TEST_WRITE_ATTRIBUTION } from './write-attribution.ts';
 import { beliefBrain, beliefPage, type BeliefBrain } from './belief-ledger.ts';
 
 export function rng(seed: number): () => number {
@@ -210,7 +212,11 @@ export async function applyLaterHistory(b: BeliefBrain, w: World): Promise<numbe
   }
   for (const slug of [w.special.baseline, w.special.forget]) {
     const to = slug.replace('-example', '-renamed-example');
+    const [{ tier }] = await b.engine.executeRaw<{ tier: string }>('SELECT trust_tier AS tier FROM pages WHERE source_id = $1 AND slug = $2', [b.sourceId, slug]);
     await renamePageOntoSlug(b.engine, { sourceId: b.sourceId, oldSlug: slug, newSlug: to, to: to + '.md' });
+    // A sync rename retiers the moved page; restoring its tier keeps the later history free of restrictions (the trust cell tests a demotion).
+    await b.engine.transaction(tx => withCoordinatedWrite(tx, [b.sourceId], () => withTrustPromotion(tx, 'user_confirmed', () =>
+      tx.executeRaw('UPDATE pages SET trust_tier = $3 WHERE source_id = $1 AND slug = $2', [b.sourceId, to, tier])), TEST_WRITE_ATTRIBUTION));
     changes++;
   }
   for (const p of live.filter(x => !removedPages.has(x.slug) && !x.private).slice(5, 7)) {

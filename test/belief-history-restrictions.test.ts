@@ -13,7 +13,7 @@ import { runThink } from '../src/core/think/index.ts';
 import { replayPurgesInRestore } from '../src/core/belief/purge-mirror.ts';
 import { fillCommitMarks } from '../src/core/belief/coverage-report.ts';
 import { buildHistoryIndex } from '../src/core/belief/history-index.ts';
-import { removeSource } from '../src/core/sources-ops.ts';
+import { addSource, removeSource } from '../src/core/sources-ops.ts';
 import { withCoordinatedWrite, withTrustPromotion } from '../src/core/persistence/context.ts';
 import { TEST_WRITE_ATTRIBUTION } from './helpers/write-attribution.ts';
 import { testBackends } from './helpers/test-backends.ts';
@@ -174,7 +174,7 @@ for (const engineCase of testBackends().map(beliefEngineCase)) {
       expect(await refusal(search(b.ctx, { ...q, known_as_of: inGap }))).toMatchObject({ code: 'coverage_gap', reason: 'restore' });
       expect(await refusal(thinkAt(inGap))).toMatchObject({ code: 'coverage_gap' });
       const other = `${b.sourceId}-uncovered`;
-      await b.engine.executeRaw('INSERT INTO sources (id, name) VALUES ($1, $1)', [other]);
+      await addSource(b.engine, { id: other, name: other } as never);
       const both = await refusal(runThink(b.engine, { question: 'zentrovar', knownAsOf: await quiescentInstant(b), remote: false, allowedSources: [b.sourceId, other], stubResponse: stub }));
       expect(both).toMatchObject({ code: 'coverage_from' });
       expect(both!.message).toContain(other);
@@ -223,7 +223,7 @@ for (const engineCase of testBackends().map(beliefEngineCase)) {
       await quiescentInstant(b);
       const listed = await takes.handler(b.ctx, { page_slug: takePage.slug, known_as_of: w.T }) as Array<Record<string, any>>;
       expect(listed.map(r => r.claim)).toEqual(atT);
-      const garryPage = w.pages.find(p => p.takes.some(t => t.who === 'garry') && !p.private && p.slug !== w.special.deletedAtT)!;
+      const garryPage = w.pages.find(p => p.takes.some(t => t.who === 'garry') && !p.private && p.slug !== w.special.deletedAtT && p.slug !== takePage.slug)!;
       const [, remote] = callers(b);
       const remoteRows = await takes.handler(remote!.ctx, { page_slug: garryPage.slug, known_as_of: w.T }) as Array<Record<string, any>>;
       expect(remoteRows.every(r => r.holder === 'world')).toBe(true);
