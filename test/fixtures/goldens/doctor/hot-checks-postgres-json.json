@@ -2467,6 +2467,73 @@
           {
             "category": "brain",
             "details": {
+              "docs": "docs/guides/on-commit-sync.md",
+              "fail_seconds": 3600,
+              "graded": false,
+              "on_commit": false,
+              "sources": [
+                {
+                  "commit_to_embedded": {
+                    "p50_seconds": null,
+                    "p95_seconds": null,
+                    "pending": 0,
+                    "samples": 0
+                  },
+                  "commit_to_searchable": {
+                    "p50_seconds": null,
+                    "p95_seconds": null,
+                    "samples": 0
+                  },
+                  "commits": 0,
+                  "source_id": "default",
+                  "unresolved_commits": 0,
+                  "window_hours": 24
+                },
+                {
+                  "commit_to_embedded": {
+                    "p50_seconds": null,
+                    "p95_seconds": null,
+                    "pending": 0,
+                    "samples": 0
+                  },
+                  "commit_to_searchable": {
+                    "p50_seconds": null,
+                    "p95_seconds": null,
+                    "samples": 0
+                  },
+                  "commits": 0,
+                  "source_id": "notes",
+                  "unresolved_commits": 0,
+                  "window_hours": 24
+                },
+                {
+                  "commit_to_embedded": {
+                    "p50_seconds": null,
+                    "p95_seconds": null,
+                    "pending": 0,
+                    "samples": 0
+                  },
+                  "commit_to_searchable": {
+                    "p50_seconds": null,
+                    "p95_seconds": null,
+                    "samples": 0
+                  },
+                  "commits": 0,
+                  "source_id": "plain",
+                  "unresolved_commits": 0,
+                  "window_hours": 24
+                }
+              ],
+              "target_seconds": 300
+            },
+            "elapsed_ms": "<volatile>",
+            "message": "No commit→searchable samples in the last 24 h (no managed sync imported a new commit).",
+            "name": "managed_sync_latency",
+            "status": "ok"
+          },
+          {
+            "category": "brain",
+            "details": {
               "checkouts": 1,
               "tracked": []
             },
@@ -6590,6 +6657,73 @@
             "elapsed_ms": "<volatile>",
             "message": "No configured collectors declare output paths",
             "name": "db_only_collector_collision",
+            "status": "ok"
+          },
+          {
+            "category": "brain",
+            "details": {
+              "docs": "docs/guides/on-commit-sync.md",
+              "fail_seconds": 3600,
+              "graded": false,
+              "on_commit": false,
+              "sources": [
+                {
+                  "commit_to_embedded": {
+                    "p50_seconds": null,
+                    "p95_seconds": null,
+                    "pending": 0,
+                    "samples": 0
+                  },
+                  "commit_to_searchable": {
+                    "p50_seconds": null,
+                    "p95_seconds": null,
+                    "samples": 0
+                  },
+                  "commits": 0,
+                  "source_id": "default",
+                  "unresolved_commits": 0,
+                  "window_hours": 24
+                },
+                {
+                  "commit_to_embedded": {
+                    "p50_seconds": null,
+                    "p95_seconds": null,
+                    "pending": 0,
+                    "samples": 0
+                  },
+                  "commit_to_searchable": {
+                    "p50_seconds": null,
+                    "p95_seconds": null,
+                    "samples": 0
+                  },
+                  "commits": 0,
+                  "source_id": "notes",
+                  "unresolved_commits": 0,
+                  "window_hours": 24
+                },
+                {
+                  "commit_to_embedded": {
+                    "p50_seconds": null,
+                    "p95_seconds": null,
+                    "pending": 0,
+                    "samples": 0
+                  },
+                  "commit_to_searchable": {
+                    "p50_seconds": null,
+                    "p95_seconds": null,
+                    "samples": 0
+                  },
+                  "commits": 0,
+                  "source_id": "plain",
+                  "unresolved_commits": 0,
+                  "window_hours": 24
+                }
+              ],
+              "target_seconds": 300
+            },
+            "elapsed_ms": "<volatile>",
+            "message": "No commit→searchable samples in the last 24 h (no managed sync imported a new commit).",
+            "name": "managed_sync_latency",
             "status": "ok"
           },
           {

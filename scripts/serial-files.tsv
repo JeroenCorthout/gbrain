@@ -360,6 +360,9 @@ test/search/relational-rerank-pin-hybrid.serial.test.ts	R1	R1: mutates process.e
 test/seed-pglite.serial.test.ts	global-state	global-state: R3: constructs PGLiteEngine outside beforeAll; R4: PGLiteEngine without an afterAll disconnect
 test/self-upgrade-checkonly.serial.test.ts	R1	R1: mutates process.env (GBRAIN_HOME)
 test/serve-http-mcp-dispatch-context.serial.test.ts	R2	R2: mock.module(../src/mcp/dispatch.ts) replaces modules for every file in the process
+test/on-commit-embedding.serial.test.ts	global-state	global-state: installs the gateway embedding transport (__setEmbedTransportForTests) and starts syncs through the process-wide delegated-sync runner singleton; withEnv scopes GBRAIN_HOME
+test/serve-head-watcher-managed.serial.test.ts	global-state	global-state: starts real syncs through the process-wide delegated-sync runner singleton (reset with __resetDelegatedSyncForTests); withEnv scopes GBRAIN_HOME
+test/serve-http-head-watcher.serial.test.ts	R1	R1: mutates process.env (GBRAIN_HOME, GBRAIN_SERVE_HEAD_POLL_MS); spies on global setInterval/clearInterval, emits SIGINT on the process and reads the process-wide cleanup registry
 test/serve-http-run-teardown.serial.test.ts	R1	R1: mutates process.env (GBRAIN_HOME)
 test/serve-http-status-mode.serial.test.ts	R1	R1: sets process.env.GBRAIN_HOME for the status marker reads; binds local servers/ports
 test/serve-idle-sweep-source.serial.test.ts	R2	R2: mock.module(../src/core/sweep.ts) replaces modules for every file in the process

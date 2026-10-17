@@ -10,6 +10,35 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.280.0] - 2026-10-17
+
+**A managed brain can now make a commit searchable in seconds, and every managed source reports how long that takes.** Until now a commit reached search only when the next scheduled sync ran, which on a managed brain could be most of an hour. Turn on `sync.on_commit` and `gbrain serve` notices the commit within about 3 seconds, waits 3 more for the commit burst to settle, and runs one managed sync for that source. The setting is off by default, so nothing changes until you turn it on.
+
+### What you'd see
+
+| Situation | Before | Now |
+|---|---|---|
+| a commit to a managed source while `gbrain serve` runs, with `sync.on_commit` on | searchable after the next scheduled sync | searchable about 5 to 15 s later (notice, 3 s debounce, the page write) |
+| the same, with `sync.on_commit` off (the default) | the next scheduled sync | unchanged |
+| with `sync.on_commit` on, a commit that lands while a sync is running | (no on-commit sync) | gets one more sync when the running one ends, unless that sync already took it |
+| `gbrain sync status --source <id>` | no latency figure | a `freshness` line, and a `freshness` block in `--json`: p50 and p95 of commit→searchable and commit→embedded over the last 24 h |
+| `gbrain status` | no latency figure | one freshness line per managed source |
+| `gbrain doctor` | nothing about latency | a new check, `managed_sync_latency`, that reports the numbers; it warns over the target and fails over an hour only when `sync.on_commit` is on or `sync.freshness_target_seconds` is set |
+
+### What to do
+
+To turn it on, run `gbrain config set sync.on_commit true` on the brain host. The serve picks it up within 30 seconds; no restart is needed. Change the latency target with `gbrain config set sync.freshness_target_seconds <seconds>` (default 300). Nothing is rewritten on upgrade and there is no migration.
+
+### Itemized changes
+
+- New `src/core/serve-head-watcher.ts`, started next to the movement watch in `gbrain serve` and `gbrain serve --http`. With `sync.on_commit` on it polls `git rev-parse HEAD` in the checkout of each managed source this host owns every 3 s (`GBRAIN_SERVE_HEAD_POLL_MS`, 1 to 30 s), with an `fs.watch` on the git directory that only brings the next poll forward, debounces 3 s (`GBRAIN_SERVE_HEAD_DEBOUNCE_MS`) and starts one managed sync through the existing `startDelegatedSync` as this host's CLI writer. It never starts beside a running delegated sync or a held drain lease, skips a commit the source has already synced, resumes a resumable stop up to three times, never writes into the checkout or `.git`, and logs each distinct error once. With the setting off it makes no git call.
+- New `src/core/persistence/sync-freshness.ts`: commit→searchable and commit→embedded p50/p95 per managed source from existing columns (the commit's committer time from git, `persistence_requests.completed_at` of committed `managed_sync_import` receipts, `content_chunks.embedded_at`). Commit→embedded counts only a receipt that is still the page's current revision, and only an embedding at or after its write, so a later revision never rewrites an earlier sample. First syncs and working-tree entries are not counted; a run that spans several commits is dated by its newest. No schema change.
+- New guide `docs/guides/on-commit-sync.md` (linked from the `sync.*` tunables in `docs/guides/live-sync.md`; indexed in `llms.txt` but not inlined in `llms-full.txt`, which master had within 233 bytes of its 800,000-byte budget).
+- Embedding needs no inline-embed flag: a managed sync import queues an `embedding` publication effect with the page write, and the serve runs it right after, so a small page is embedded seconds after the write (commit→embedded within about a second of commit→searchable, measured with a mock provider on PGLite and Postgres). A run with `--no-embed` or a cost-gate deferral still queues none and leaves the page for `embed-backfill`. Tests: `test/on-commit-embedding.serial.test.ts`.
+- New config keys `sync.on_commit` and `sync.freshness_target_seconds` (tunables in `src/core/sync-config-keys.ts`).
+- New doctor check `managed_sync_latency` (`src/commands/doctor/checks/managed-sync-latency.ts`); the doctor goldens are regenerated for it. With grading on it also warns when the synced commits are not in this host's git checkout (the latency cannot be measured), and `doctor --source` grades only that source.
+- Tests: `test/serve-head-watcher.test.ts` (debounce, single flight, follow-up, resume cap, error handling, stop), `test/serve-head-watcher-managed.serial.test.ts` (a real managed source on PGLite and Postgres: a commit becomes searchable with no manual sync), `test/serve-http-head-watcher.serial.test.ts` (the watcher starts with `gbrain serve --http` and its poll interval is cleared on shutdown), `test/sync-freshness-6858.test.ts` (percentiles, exclusions, doctor thresholds, the additive `sync status --json` block). The two database tests are listed in `test/postgres-unit-arms.txt`.
+
 ## [0.60.279.0] - 2026-10-17
 
 **An ordinary incremental sync no longer overwrites a page you edited in the database (#6712).** If an agent saved a page with `put_page` while `sync.write_through` was off, and someone later edited and committed that page's file, the next plain `gbrain sync` published the file over the database edit. It raised no hold, took no backup and reported `synced`. The database edit survived only as an old page version. Now sync holds that file as `file_drift` and the page keeps its edit until you choose which version wins. A first sync, `--full` and a failed Git delta already guarded this case. The ordinary delta sync didn't.

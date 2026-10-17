@@ -126,6 +126,7 @@ test/managed-sync-row-parity.test.ts
 test/managed-sync-stale-group-head.test.ts
 test/migration-persistence-request-id-index.test.ts
 test/migration-persistence-request-slug-index.test.ts
+test/on-commit-embedding.serial.test.ts
 test/owner-refusal.test.ts
 test/pack-relation-direction-engine.test.ts
 test/page-embedding-budget.test.ts
@@ -189,6 +190,7 @@ test/scripts/test-stress-postgres.test.ts
 test/search/page-rank-cut.test.ts
 test/search/rerank-gate-hybrid.test.ts
 test/search/rerank-gate-telemetry.test.ts
+test/serve-head-watcher-managed.serial.test.ts
 test/shared-content-freshness.test.ts
 test/shared-skills-catalog.test.ts
 test/shared-skills-retention-capacity.test.ts
@@ -205,6 +207,7 @@ test/sync-drain-head-blocked-6543.test.ts
 test/sync-drain-inpass-stall.test.ts
 test/sync-drain-write-capacity.test.ts
 test/sync-exits-l4-6712.test.ts
+test/sync-freshness-6858.test.ts
 test/sync-frontmatter-recovery.test.ts
 test/sync-frontmatter-slug-conflict.test.ts
 test/sync-full-cursor-slices-6349.test.ts
