@@ -5,8 +5,6 @@
   "test/backstop-same-page-shadow-managed-6333.test.ts": 7387,
   "test/behavior-change-notice.test.ts": 7392,
   "test/belief-history-index.test.ts": 21000,
-  "test/belief-history-invariance.slow.test.ts": 624000,
-  "test/belief-history-mutants.slow.test.ts": 283000,
   "test/belief-history-restrictions.test.ts": 38000,
   "test/belief-ledger-coverage.test.ts": 126854,
   "test/belief-ledger-group.test.ts": 16434,
