@@ -448,7 +448,9 @@ for f in "${files[@]}"; do
   case "$file_timeout" in ''|*[!0-9]*) file_timeout=180 ;; esac
   case "$f" in
     # graduation-crash-*: one graduation per custody or rollback boundary (5-6 SIGKILL-and-resume cases of ~16 s per file).
-    */skills.test.ts|*/serve-http-multi-agent.test.ts|*/graduation-cli*.test.ts|*/graduation-crash-*.test.ts|*/graduation-faults.test.ts|*/graduation-copy.test.ts|*/graduation-legacy-copy.test.ts) file_timeout=$((file_timeout * 4)) ;;
+    # belief-history-*-postgres: the W3 gate's Postgres arms build a seeded world of ~30 s per seed or forced probe
+    # (10 seeds or 11 probes per file).
+    */belief-history-*-postgres.test.ts|*/skills.test.ts|*/serve-http-multi-agent.test.ts|*/graduation-cli*.test.ts|*/graduation-crash-*.test.ts|*/graduation-faults.test.ts|*/graduation-copy.test.ts|*/graduation-legacy-copy.test.ts) file_timeout=$((file_timeout * 4)) ;;
   esac
   if command -v gtimeout >/dev/null 2>&1; then
     TIMEOUT_CMD="gtimeout $file_timeout"
