@@ -72,6 +72,7 @@ export const REPAIR_HELP = `Usage: gbrain repair [<kind>] [--apply] [--source <i
        gbrain repair stuck-recovery [--source <id>] [--request-id <uuid>]
                                     [--keep prior|disk --apply --expect <preview-hash> --yes] [--json]
        gbrain repair ghost-pages --source <id> [--apply --expect <preview-hash> --yes] [--json]
+       gbrain repair legacy-twins --source <id> [--apply --expect <preview-hash> --yes] [--json]
 ${REPAIR_CONTENT_HELP}
 
 Repair residual damage that \`gbrain doctor\` reports. Dry run unless --apply.
@@ -117,8 +118,8 @@ Options:
                  stuck-recovery --apply: the version of each blocked file to keep (the user's choice from the preview).
   --request-id <uuid>
                  stuck-recovery: resolve only this request's recovery (default: every blocked record of the source).
-  --yes          frontmatter, conversation-labels, stuck-recovery, ghost-pages --apply: the user agreed to the previewed changes (destructive
-                 consent; without it a terminal asks, and a non-interactive run exits 3 with the consent payload).
+  --yes          frontmatter, conversation-labels, stuck-recovery, ghost-pages, legacy-twins --apply: the user agreed to the previewed
+                 changes (destructive consent; without it a terminal asks, and a non-interactive run exits 3 with the consent payload).
   --json         Machine-readable output with a stable shape (frontmatter: every per-file diff).
 
 Any other option is refused. --max-usd caps only a paid-model kind's model spend; to cap
@@ -134,7 +135,7 @@ const BOOLEAN_FLAGS = new Set(['--apply', '--all', '--json', '--no-embed', '--in
 const VALUE_FLAGS = new Set(['--source', '--limit', '--expect', '--only', '--skip', '--slug', '--max-usd', '--prefer', '--request', '--class', '--since', '--keep', '--request-id', '--older-than']);
 /** Flags only some kinds accept, with the kinds that do. */
 const KIND_FLAGS: Record<string, readonly string[]> = {
-  '--only': ['frontmatter', 'fences', 'slug-conflicts', 'file-drift', CONTENT_LANE], '--skip': ['frontmatter', 'fences', 'slug-conflicts', 'file-drift', CONTENT_LANE], '--diff': ['frontmatter', 'fences', 'slug-conflicts', CONTENT_LANE], '--yes': ['frontmatter', 'conversation-labels', 'stuck-recovery', 'ghost-pages'],
+  '--only': ['frontmatter', 'fences', 'slug-conflicts', 'file-drift', CONTENT_LANE], '--skip': ['frontmatter', 'fences', 'slug-conflicts', 'file-drift', CONTENT_LANE], '--diff': ['frontmatter', 'fences', 'slug-conflicts', CONTENT_LANE], '--yes': ['frontmatter', 'conversation-labels', 'stuck-recovery', 'ghost-pages', 'legacy-twins'],
   '--slug': ['fences', 'file-drift'], '--prefer': ['file-drift'], '--request': ['file-drift'], '--all-drifted': ['file-drift'], '--class': ['file-drift'], '--since': ['file-drift'],
   '--keep': ['stuck-recovery'], '--request-id': ['stuck-recovery'],
   '--older-than': ['receipt-compaction'], '--include-failures': ['receipt-compaction'], '--force': ['receipt-compaction'],

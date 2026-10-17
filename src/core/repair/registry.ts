@@ -66,6 +66,7 @@ import { frontmatterKeysRepair } from './frontmatter-keys.ts';
 import { fileDriftRepair } from './file-drift.ts';
 import { stuckRecoveryRepair } from './stuck-recovery.ts';
 import { ghostPagesRepair, GHOST_CONSENT_TEXT, GHOST_CONSEQUENCES, GHOST_PURGE_FUSE_HOURS } from './ghost-pages.ts';
+import { legacyTwinsRepair, LEGACY_TWINS_CONSENT_TEXT, LEGACY_TWINS_PURGE_FUSE_HOURS } from './legacy-twins.ts';
 import { receiptCompactionRepair } from './receipt-compaction.ts';
 import { aliasesRepair } from './aliases.ts';
 import { ERROR_CATALOGUE, catalogueError } from '../error-catalogue.ts';
@@ -353,6 +354,17 @@ const SPECS: Record<RepairKind, Omit<RepairKindSpec, 'kind'>> = {
       + 'dangling_aliases reports as orphaned. Aliases of a soft-deleted page are kept for gbrain restore and counted; a redirect from an old name '
       + 'of a page that still exists is never touched. Each target slug is rechecked under its page lock; coordinated maintenance write on a managed '
       + 'brain, no journal admission. Runs only when named.',
+  },
+  'legacy-twins': {
+    handler: legacyTwinsRepair, embeds: 'none', checks: [], explicit_only: true, preview_bound: true, consent: 'destructive',
+    consentText: LEGACY_TWINS_CONSENT_TEXT,
+    summary: 'Merge page pairs older syncs forked before #6857 (#6885): a legacy page with no recorded origin whose slug the current slug fold spells '
+      + 'differently, and its twin at the folded slug recording the file. Needs --source; refused off the canonical owner host (not_owner_host). The preview '
+      + 'lists each pair (both ids, slugs and revisions, the path, whether the content matches) and, as decisions never merged automatically, pairs whose '
+      + 'content differs, several legacy candidates for one twin, and twins whose file is missing or drifted. --apply --expect <hash> --yes merges exactly '
+      + 'the approved pairs, one coordinated write each: the legacy page records the file and keeps its id, links and history; the twin\'s links, timeline '
+      + 'rows and aliases move to it, its slug becomes an alias, its sync import record follows, and the twin is soft-deleted with its file untouched '
+      + `(purged after ${LEGACY_TWINS_PURGE_FUSE_HOURS} h). Refused when the pairs are over half of the source\'s file-backed pages unless GBRAIN_ALLOW_MASS_RECONCILE=1. Runs only when named.`,
   },
 };
 
