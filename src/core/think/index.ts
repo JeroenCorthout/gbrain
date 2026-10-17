@@ -33,7 +33,7 @@ import { chat as gatewayChat, probeChatModel, isThinkingModel, type ChatResult }
 import { AIConfigError } from '../ai/errors.ts';
 import { normalizeModelId } from '../model-id.ts';
 import { hasAnthropicKey } from '../ai/anthropic-key.ts';
-import { resolveThinkWindow } from './temporal-window.ts';
+import { resolveThinkWindow, type TemporalWindow } from './temporal-window.ts';
 import { resolveThinkTemporalContext } from './temporal-context.ts';
 import { resolveExcludePrivatePages } from '../search/private-visibility.ts';
 import { deliverEvidence, effectivePlan, resolveEvidencePlan, EVIDENCE_BLOCK_CHAR_CAP, THINK_RETURN_UNIT_CONFIG_KEY, type DeliveryMeta } from '../search/evidence-delivery.ts';
@@ -608,6 +608,42 @@ async function embedThinkQuestion(engine: BrainEngine, opts: RunThinkOpts, warni
   }
 }
 /**
+ * The GATHER phase: the current-state streams, or under known_as_of the views bounded by T (W3, section 6), with the
+ * stream warnings and, for the current streams, each page's and take's trust tier (#5575 A6).
+ */
+async function gatherThink(engine: BrainEngine, opts: RunThinkOpts, at: Date | null, window: TemporalWindow | null, warnings: string[]) {
+  // Optional question embedding — caller decides whether to pay the embedder; an opted-out brain never does.
+  const questionEmbedding = at ? undefined : await embedThinkQuestion(engine, opts, warnings);
+  const thinkDecide = at ? undefined : await startThinkDecide(engine, opts, classifyIntent(opts.question)).catch(() => undefined); // System One S2/S4; undefined when both are off
+  const historical = at ? await gatherAtTime(engine, {
+    question: opts.question, at, anchor: opts.anchor, sources: await historicalSources(engine, opts), remote: opts.remote !== false,
+    holders: opts.remote === false ? undefined : opts.takesHoldersAllowList ?? ['world'], window,
+  }) : null;
+  const gather = historical?.gather ?? await runGather(engine, {
+    question: opts.question,
+    anchor: opts.anchor,
+    questionEmbedding,
+    ...(window ? { window } : {}),
+    takesHoldersAllowList: opts.remote === false ? opts.takesHoldersAllowList : opts.takesHoldersAllowList ?? ['world'],
+    excludePrivate: opts.excludePrivate ?? await resolveExcludePrivatePages(engine, opts.remote),
+    remote: opts.remote,
+    ...(opts.sourceId !== undefined ? { sourceId: opts.sourceId } : {}),
+    ...(opts.allowedSources !== undefined ? { sourceIds: opts.allowedSources } : {}),
+    ...(thinkDecide?.searchIntent ? { decideIntent: thinkDecide.searchIntent } : {}),
+  });
+  // D6: per-stream gather failures surface as typed codes (GATHER_*_FAILED);
+  // raw error text stays on stderr. Distinguishes an errored stream from a
+  // legitimately-empty one for MCP/remote callers.
+  for (const w of gather.warnings) warnings.push(w);
+  if (gather.diagnostics.window?.dropped) warnings.push(`WINDOW_EXCLUDED_${gather.diagnostics.window.dropped}_PAGES`);
+  if (!historical) {
+    await stampPageTrust(engine, gather.pages);
+    gather.takes = await stampRowTrust(engine, 'takes', gather.takes, t => ('take_id' in t ? t.take_id : (t as { id: number }).id));
+  }
+  return { gather, historical, thinkDecide };
+}
+
+/**
  * Run the think pipeline. Returns a ThinkResult — caller decides whether
  * to print, persist as synthesis page, or surface as MCP response.
  */
@@ -648,37 +684,7 @@ export async function runThink(
     }
   }
 
-  // Optional question embedding — caller decides whether to pay the embedder; an opted-out brain never does.
-  const questionEmbedding = at ? undefined : await embedThinkQuestion(engine, opts, warnings);
-
-  const thinkDecide = at ? undefined : await startThinkDecide(engine, opts, classifyIntent(opts.question)).catch(() => undefined); // System One S2/S4; undefined when both are off
-  // GATHER (W3: under known_as_of, the views bounded by T)
-  const historical = at ? await gatherAtTime(engine, {
-    question: opts.question, at, anchor: opts.anchor, sources: await historicalSources(engine, opts), remote: opts.remote !== false,
-    holders: opts.remote === false ? undefined : opts.takesHoldersAllowList ?? ['world'], window,
-  }) : null;
-  const gather = historical?.gather ?? await runGather(engine, {
-    question: opts.question,
-    anchor: opts.anchor,
-    questionEmbedding,
-    ...(window ? { window } : {}),
-    takesHoldersAllowList: opts.remote === false ? opts.takesHoldersAllowList : opts.takesHoldersAllowList ?? ['world'],
-    excludePrivate: opts.excludePrivate ?? await resolveExcludePrivatePages(engine, opts.remote),
-    remote: opts.remote,
-    ...(opts.sourceId !== undefined ? { sourceId: opts.sourceId } : {}),
-    ...(opts.allowedSources !== undefined ? { sourceIds: opts.allowedSources } : {}),
-    ...(thinkDecide?.searchIntent ? { decideIntent: thinkDecide.searchIntent } : {}),
-  });
-  // D6: per-stream gather failures surface as typed codes (GATHER_*_FAILED);
-  // raw error text stays on stderr. Distinguishes an errored stream from a
-  // legitimately-empty one for MCP/remote callers.
-  for (const w of gather.warnings) warnings.push(w);
-  if (gather.diagnostics.window?.dropped) warnings.push(`WINDOW_EXCLUDED_${gather.diagnostics.window.dropped}_PAGES`);
-  // #5575 A6: every page and take reaches the prompt with its trust tier.
-  if (!historical) {
-    await stampPageTrust(engine, gather.pages);
-    gather.takes = await stampRowTrust(engine, 'takes', gather.takes, t => ('take_id' in t ? t.take_id : (t as { id: number }).id));
-  }
+  const { gather, historical, thinkDecide } = await gatherThink(engine, opts, at, window, warnings);
 
   // Render evidence blocks for the prompt. #4510: the per-page excerpt is
   // budget-aware — 600 chars is the FLOOR (a big gather never collapses each

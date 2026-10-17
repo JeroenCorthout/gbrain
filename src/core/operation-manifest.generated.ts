@@ -1087,6 +1087,11 @@ export const OPERATION_MANIFEST: OperationMeta[] = [
         ],
         "description": "Lowest trust tier to return (the connection floor still applies).",
         "fullSurfaceOnly": true
+      },
+      "known_as_of": {
+        "type": "string",
+        "fullSurfaceOnly": true,
+        "description": "Recorded time: the pages as this brain had recorded them at this ISO 8601 instant, ranked by the lexical historical retriever. Not as_of, which is valid time."
       }
     },
     "scope": "read",
@@ -3580,6 +3585,11 @@ export const OPERATION_MANIFEST: OperationMeta[] = [
         ],
         "description": "Lowest trust tier to return (the connection floor still applies).",
         "fullSurfaceOnly": true
+      },
+      "known_as_of": {
+        "type": "string",
+        "fullSurfaceOnly": true,
+        "description": "Recorded time: the take rows of page_slug's body as this brain had recorded it at this ISO 8601 instant. Needs page_slug."
       }
     },
     "cliHints": {
@@ -3669,6 +3679,11 @@ export const OPERATION_MANIFEST: OperationMeta[] = [
       "reference_date": {
         "type": "string",
         "description": "YYYY-MM-DD the question's relative time words resolve against (default: today in brain.timezone)."
+      },
+      "known_as_of": {
+        "type": "string",
+        "fullSurfaceOnly": true,
+        "description": "Recorded time: think over the evidence as this brain had recorded it at this ISO 8601 instant (lexical retrieval; refuses save and take)."
       }
     },
     "mutating": true,

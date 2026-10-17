@@ -1,10 +1,11 @@
 # Historical retrieval for `think {known_as_of}`: design
 
-Status: **design, not built.** This is wave 4b's W3 design item in the 10x
-memory-advantage plan (gbrain-evals `docs/plans/2026-10-07-10x-memory-advantage/PLAN.md`,
-wave 4, row W3). No code ships with it. The plan builds W3 only if this design
-closes within wave 4's budget and its invariance gate is specified. Section 9
-gives the verdict. Every `file:line` below was read on master `28ebe6b2b`
+Status: **built** (draft PR #6895, with W2's reshaped second slice). This is
+wave 4b's W3 design item in the 10x memory-advantage plan (gbrain-evals
+`docs/plans/2026-10-07-10x-memory-advantage/PLAN.md`, wave 4, row W3). The
+design was approved as written, with open question 1 taken at its default
+(section 12). Section 13 records what the build changed or measured. Section 9
+gives the verdict the build was gated on. Every `file:line` below was read on master `28ebe6b2b`
 (v0.60.274.0). It builds on what wave 4a shipped: W1's `belief_events` ledger
 (#6806), W2's page-at-time on validity intervals (#6850) and W4's weekly belief
 diff (#6866), all described in [the ledger design](../designs/BELIEF_LEDGER.md),
@@ -563,10 +564,44 @@ cannot fix.
 
 ## 12. Open questions
 
-1. **Uncovered sources.** Section 5 refuses the whole call when any source in
-   scope is uncovered. The alternative is to answer from the covered sources
-   with a disclosure. Refusing is the conservative default; the maintainer may
-   prefer partial answers for federated owners.
+1. **Uncovered sources. Taken: refuse.** Section 5 refuses the whole call when
+   any source in scope is uncovered, naming the source; it never answers
+   partially with a disclosure. The maintainer may still prefer partial answers
+   for federated owners later.
 2. **The reranker over T text (branch 6).** It is allowed in principle and
    off in V1 so the gate stays deterministic. Turning it on later needs a gate
    cell with a deterministic stub reranker.
+
+## 13. Build notes
+
+What the build changed from the text above, or measured, so a reader of the
+code finds no surprise:
+
+- **Migration v251** (`belief_history_index`) adds four tables, not three:
+  `belief_text_revisions`, `belief_text_chunks`, `belief_text_revision_chunks`
+  and `belief_text_index_state`. The fourth holds each source's index cut and
+  build pass, so the cut stays unset until build pass 1 completes. A source
+  enabled after the migration gets its cut at its coverage start.
+- **The body every caller reads** goes through `sanitizeRemoteBody` and
+  `credentialSafeProjection`. This is the same projection the current gather
+  renders for local callers too (`boundedProjectedPrefix`). So a withdrawn fact
+  row is dropped rather than struck, private rows stay out of a local page block
+  just as they do today, and takes reach the prompt only as take blocks.
+- **Restrictions on the body** reuse W4's rule (`changes.ts` `subjectsOf`).
+  A restricted fact row enters the withdrawal overlay as a purge tombstone, so
+  one overlay pass applies the withdrawal union and the restriction together.
+- **The write-cost bench** was a put_page bench in scratch, because
+  `test/bench-publish.test.ts` only tests baseline files. It ran interleaved
+  with master on both engines (3 rounds × 15 runs), then 6 more rounds × 30 runs
+  of PGLite typical pages. The largest p50 change was +11.8% (PGLite, one-fact
+  edit of a typical page), inside the 15% budget.
+- **Mutant (b)** reads candidates from today's `content_chunks` and truncates
+  at the limit before the T filter, which is the shape of filtering today's
+  ranking by T. Without the truncation, the OR query matches nearly every page
+  of the synthetic world, and the gate cannot tell the mutant apart.
+- **The world fixture** restores the trust tier of its two renamed pages after
+  each rename. A sync rename retiers the moved page to `unknown`, which is a
+  restriction (branch 16), and assertions 1 and 2 compare under a later history
+  with no restriction. The trust cell of assertion 5 tests a demotion.
+- **The CLI** is `gbrain beliefs history-index --source <id> [--apply] [--json]`.
+  It previews by default and resumes on a rerun.

@@ -200,7 +200,8 @@ const remoteNow = (alias: string) => `AND ${alias}.visibility = 'world' AND EXIS
 
 async function pageCandidates(engine: BrainEngine, q: HistoricalQuery, offset: number, n: number): Promise<CandidateRow[]> {
   if (mutant === 'current_candidates') {
-    const rows = await engine.executeRaw<CandidateRow>(`WITH q AS (SELECT ${tsquerySql('$1')} AS q)
+    const rows = await engine.executeRaw<CandidateRow>(`-- chunk-visibility-ok: test-only mutant (b), never reached outside __setHistoricalMutantForTests
+      WITH q AS (SELECT ${tsquerySql('$1')} AS q)
       SELECT r.id, r.source_id, r.page_lifetime::text AS lifetime, r.revision::text AS revision, r.title, r.opening_event,
         max(ts_rank_cd(c.search_vector, q.q))::float8 AS chunk_score, (to_tsvector('english', gbrain_fts_input(COALESCE(r.title, ''))) @@ q.q) AS title_hit
       FROM q JOIN content_chunks c ON c.search_vector @@ q.q JOIN pages p ON p.id = c.page_id
@@ -284,8 +285,8 @@ const scopeOf = (q: HistoricalQuery, c: Confirmed): HistoricalScope => ({ source
   current: mutant === 'current_text', restrict: mutant !== 'no_later_private_restriction' });
 
 /** One confirmed page as evidence: its body at T as the reader may see it now, trust at T and the content date of its revision. */
-async function hydratePage(engine: BrainEngine, q: HistoricalQuery, c: Confirmed, score: number): Promise<HistoricalPage> {
-  const body = await historicalBody(engine, scopeOf(q, c));
+async function hydratePage(engine: BrainEngine, q: HistoricalQuery, c: Confirmed, score: number, read?: { compiled_truth: string; timeline: string }): Promise<HistoricalPage> {
+  const body = read ?? await historicalBody(engine, scopeOf(q, c));
   const [row] = await engine.executeRaw<{ content_date: string | null }>('SELECT content_date::text AS content_date FROM belief_text_revisions WHERE opening_event = $1',
     [c.state.content_event]);
   return { source_id: c.sourceId, slug: c.interval.slug, lifetime: c.interval.lifetime, revision: c.interval.revision, event_id: c.interval.event.id,
@@ -317,7 +318,7 @@ export async function readHistoricalCandidates(engine: BrainEngine, q: Historica
       const body = await historicalBody(engine, scopeOf(q, c));
       const score = (await historicalScore(engine, q.query, [{ key: r.lifetime, title: c.interval.page!.title, chunks: historyBodyChunks(body.compiled_truth, body.timeline) }])).get(r.lifetime);
       if (score == null) continue;
-      pages.push(await hydratePage(engine, q, c, score));
+      pages.push(await hydratePage(engine, q, c, score, body));
     }
     pages.sort((a, b) => b.score - a.score || byText(a.source_id, b.source_id) || byText(a.lifetime, b.lifetime));
     if (truncated || rows.length < batch) break;
