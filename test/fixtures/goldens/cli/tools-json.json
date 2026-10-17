@@ -2,8 +2,8 @@
   "golden": {
     "exitCode": 0,
     "stderr": "",
-    "stdoutBytes": 241057,
-    "stdoutSha256": "49eb8473ee380c158399b9e9e48d8ed817820ebb11018fac1a81cee2e169f78e",
+    "stdoutBytes": 241845,
+    "stdoutSha256": "f209b4cc0b5908c7a60772de1fe3852d0f582a78158cda666c5d7e5cfc3daff5",
     "toolNames": [
       "remember",
       "entity",
@@ -1256,6 +1256,7 @@
         "parameters": {
           "cursor": "string?",
           "fields": "string?",
+          "known_as_of": "string?",
           "limit": "number?",
           "match": "string?",
           "min_trust": "string?",
@@ -1284,6 +1285,10 @@
                 "lean",
                 "full"
               ],
+              "type": "string"
+            },
+            "known_as_of": {
+              "description": "Recorded time: the pages as this brain had recorded them at this ISO 8601 instant, ranked by the lexical historical retriever. Not as_of, which is valid time.",
               "type": "string"
             },
             "limit": {
@@ -4253,6 +4258,7 @@
           "active": "boolean?",
           "holder": "string?",
           "kind": "string?",
+          "known_as_of": "string?",
           "limit": "number?",
           "min_trust": "string?",
           "offset": "number?",
@@ -4273,6 +4279,10 @@
             },
             "kind": {
               "description": "Filter to this kind (fact|take|bet|hunch)",
+              "type": "string"
+            },
+            "known_as_of": {
+              "description": "Recorded time: the take rows of page_slug's body as this brain had recorded it at this ISO 8601 instant. Needs page_slug.",
               "type": "string"
             },
             "limit": {
@@ -4363,6 +4373,7 @@
         "name": "think",
         "parameters": {
           "anchor": "string?",
+          "known_as_of": "string?",
           "model": "string?",
           "question": "string",
           "reference_date": "string?",
@@ -4377,6 +4388,10 @@
           "properties": {
             "anchor": {
               "description": "Pull the entity subgraph around this slug",
+              "type": "string"
+            },
+            "known_as_of": {
+              "description": "Recorded time: think over the evidence as this brain had recorded it at this ISO 8601 instant (lexical retrieval; refuses save and take).",
               "type": "string"
             },
             "model": {
