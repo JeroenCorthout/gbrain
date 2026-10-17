@@ -21,7 +21,9 @@
  * A terminal request whose recovery record is still set is refused (`recovery_choice_refused`): its outcome is immutable,
  * recovery never restores its canonical file, and `--keep prior` would roll back a committed write. A withdrawal-mirror
  * effect recovery blocking the worktree is listed as refused (`recovery_effect_unsupported`): it only finishes forward,
- * and either choice could put withdrawn content back on disk.
+ * and either choice could put withdrawn content back on disk. So is a page recovery whose prior file is over the
+ * single-string ceiling (`recovery_large_file_unsupported`: its diff would read both files whole), when it is blocked on
+ * unexpected bytes or its file (hashed in pieces) matches neither recorded version.
  *
  * The apply runs on the owner host under the worktree lock, so the resident recovery pass cannot interleave. Each
  * record moves through a journal (`op_checkpoints`, op `stuck-recovery-resolution`, keyed by request and preview
@@ -52,6 +54,7 @@ import { isTerminal, recoveryFiles, type FileRecoveryRecord, type WriteRequest }
 import { finishUnpublishedFailure, publishPersistenceFile, recoverPublication, transientDatabaseFailure } from './coordinator.ts';
 import { mayReprepare } from './semantic.ts';
 import { cleanupRecoveryStaging, upgradeRecoveryStaging } from './staging.ts';
+import { hashFile } from './large-file.ts';
 import { withFilesystemPublication } from './filesystem-guard.ts';
 import { readHeadBlockers } from './head-blocker.ts';
 import { previewChangedError } from './preview-approval.ts';
@@ -82,8 +85,11 @@ export interface StuckRecovery {
   /** Digest of the identity, each file's disk bytes and the page revision: what an apply re-verifies. */
   digest: string;
 }
-/** A blocked terminal request or a withdrawal-mirror effect recovery: listed, never resolved (see the module comment). */
-export interface RefusedRecovery { code: 'recovery_choice_refused' | 'recovery_effect_unsupported'; request_id: string; source_id: string; slug: string; state: string;
+/**
+ * A blocked terminal request, a withdrawal-mirror effect recovery or a page recovery whose prior file is over the
+ * single-string ceiling: listed, never resolved (see the module comment).
+ */
+export interface RefusedRecovery { code: 'recovery_choice_refused' | 'recovery_effect_unsupported' | 'recovery_large_file_unsupported'; request_id: string; source_id: string; slug: string; state: string;
   blocked_reason: string | null; reason: string; effect_id?: string }
 export interface StuckRecoveryScan { items: StuckRecovery[]; residuals: Record<string, number>; refused: RefusedRecovery[];
   heads: Array<{ source_id: string; queued_request_id: string | null; blocked_by: string | null }> }
@@ -174,6 +180,8 @@ function writeArtifacts(dir: string, item: { files: RecoveryFileView[] }, record
 async function readItem(engine: BrainEngine, row: WriteRequest, binding: WorktreeBinding): Promise<{ item: StuckRecovery; records: FileRecoveryRecord[]; disks: Array<Buffer | null> }> {
   if (row.recovery?.version === 2) throw catalogueError('recovery_bundle_unsupported', `Request ${row.request_id} in source ${row.source_id} is a shared-skill bundle recovery, which gbrain repair stuck-recovery does not resolve.`,
     `Nothing was changed. Inspect it read-only with gbrain sources writer status --source ${row.source_id} --json and ask the user which version of each skill file to keep; resolve the bundle by hand, then let the resident writer finish its recovery.`);
+  if (row.recovery?.version === 1 && row.recovery.staging?.before) throw catalogueError('recovery_large_file_unsupported', largeFileReason(row),
+    `Nothing was changed. Inspect it read-only with gbrain sources writer status --source ${row.source_id} --json and ask the user which version of the file to keep; its prior bytes are the staged copy the record names. Put the chosen bytes in place by hand, then let the resident writer finish its recovery.`);
   const records = recoveryFiles(row.recovery!);
   const [page] = await engine.executeRaw<{ revision: string | null }>('SELECT knowledge_revision::text AS revision FROM pages WHERE source_id=$1 AND slug=$2', [row.source_id, row.slug]);
   const disks: Array<Buffer | null> = [];
@@ -249,6 +257,17 @@ export async function scanStuckRecoveries(engine: BrainEngine, sourceIds: string
         continue;
       }
       if (row.blocked_reason === 'unexpected_staging_bytes') { residual('unexpected_staging_bytes'); continue; }
+      if (!opts.requestId && row.recovery?.version === 1 && row.recovery.staging?.before) {
+        const record = row.recovery;
+        const contained = isWriteTargetContained(record.path, record.root) && isWriteTargetContained(record.path, binding.local_path!);
+        const leaf = contained ? lstatSync(record.path, { throwIfNoEntry: false }) : undefined;
+        const disk = !contained ? undefined : !leaf ? null : leaf.isFile() ? hashFile(record.path) : undefined;
+        if (row.blocked_reason !== 'unexpected_file_bytes' && (disk === record.beforeHash || disk === record.afterHash)) { residual('recovers_on_its_own'); continue; }
+        scan.refused.push({ code: 'recovery_large_file_unsupported', request_id: row.request_id, source_id: row.source_id, slug: row.slug, state: row.state,
+          blocked_reason: row.blocked_reason ?? null, reason: largeFileReason(row) });
+        residual('large_file_refused');
+        continue;
+      }
       const { item, records, disks } = await readItem(engine, row, binding);
       if (row.blocked_reason !== 'unexpected_file_bytes' && item.files.every(file => file.matches !== 'neither')) { residual('recovers_on_its_own'); continue; }
       if (opts.artifacts) {
@@ -267,6 +286,9 @@ function terminalReason(row: WriteRequest): string {
   return `Request ${row.request_id} already ended ${row.state}; a terminal outcome is immutable and its recovery never restores the canonical file, so `
     + `--keep prior would roll back ${row.state === 'committed' ? 'a committed write' : 'the outcome it recorded'} and --keep disk has nothing to abandon. Its recovery only waits `
     + `for staging cleanup (${row.blocked_reason}), which this command does not perform.`;
+}
+function largeFileReason(row: WriteRequest): string {
+  return `Request ${row.request_id} in source ${row.source_id} holds a page recovery whose prior file is over the single-string ceiling, which gbrain repair stuck-recovery does not resolve.`;
 }
 function effectReason(kind: string): string {
   return `A ${kind} effect recovery blocks the worktree. It only finishes forward (it never restores the bytes from before a withdrawal), and either `

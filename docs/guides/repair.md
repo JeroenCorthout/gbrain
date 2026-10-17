@@ -326,6 +326,12 @@ newest (so a fresh edit behind a large image queue is reached at once) and 400
 from a cursor that walks the queue in key order and wraps, so every row is
 reached within one lap. The resident never seals images.
 
+Pages stored in segments are drained first, one build each; a page another
+gbrain process is building (its claim renewed within the last 60 seconds) is
+left to that process. This is how a brain with no resident (CLI only, or
+driven by cron) makes a large new page searchable after its post-commit build
+died.
+
 To drain now:
 
 ```bash
@@ -2595,6 +2601,21 @@ changed. Inspect the request read-only with `gbrain sources writer status
 put those bytes in place by hand, and let the resident writer finish the
 recovery. Pass `--request-id` to resolve the page recoveries on the same
 source.
+
+### Recovery large file unsupported
+
+`recovery_large_file_unsupported`: `gbrain repair stuck-recovery` found a page
+recovery whose prior file is over the 24 MiB single-string ceiling. Its prior
+bytes are kept as a staged copy beside the file (named in the record, with its
+SHA-256) instead of inside the record, and the preview's diff would read both
+files whole, so nothing was changed. The preview lists such a recovery under
+`refused` with this code and still lists the source's other recoveries; with
+`--request-id` naming it, the command refuses with this code. Inspect the request read-only with
+`gbrain sources writer status --source <id> --json`, ask the user which version
+to keep, put those bytes at the canonical path by hand (the staged copy holds
+the prior bytes; never delete it), and let the resident writer finish the
+recovery: it renames the copy back when the file holds the published bytes, and
+removes it when the file holds the prior ones.
 
 ### Recovery choice refused
 

@@ -420,11 +420,13 @@ test/v0_37_fix_wave.serial.test.ts	R1	R1: mutates process.env (GBRAIN_HOME, GBRA
 test/v0_37_gap_fill.serial.test.ts	R1	R1: mutates process.env (GBRAIN_HOME, GBRAIN_NON_INTERACTIVE)
 test/worker-lock-renewal-e2e.serial.test.ts	R1	R1: mutates process.env (GBRAIN_AUDIT_DIR)
 test/worker-registry.serial.test.ts	R1	R1: mutates process.env (GBRAIN_HOME)
+test/workspace-push-large-blob.serial.test.ts	R1	R1: mutates process.env (HOME, GBRAIN_HOME, GBRAIN_GIT_ALLOW_FILE_TRANSPORT) so spawned git uses a scratch home and a local file remote
 test/workspace-push.serial.test.ts	R1	R1: mutates process.env (HOME, GBRAIN_HOME, GBRAIN_GIT_ALLOW_FILE_TRANSPORT, PATH (+1 more))
 test/write-path-no-egress.serial.test.ts	global-state	global-state: binds a local port for the egress-recording server the brain points its providers at
 test/write-path-zero-llm.serial.test.ts	R1	R1: mutates process.env (ANTHROPIC_API_KEY, OPENAI_API_KEY) so gated chat and embedding paths are live
 test/writeback-nudge.serial.test.ts	global-state	global-state: patches process stdout/stderr/console
 test/writeback-review-fixes.serial.test.ts	global-state	global-state: process-wide test seams __resetCheckpointHarvestForTests; patches process stdout/stderr/console
+test/large-pages/segmented-think-compile-leads.serial.test.ts	global-state	global-state: process-wide test seams __setEmbedTransportForTests
 test/resolve-ipc-rebind.serial.test.ts	global-state	global-state: binds real Unix sockets and spawns a child serve that is SIGKILLed; withEnv scopes GBRAIN_HOME
 test/backup-preflight-6649.serial.test.ts	global-state	global-state: R3: constructs PGLiteEngine inside the restore-drill and fixture-brain steps (each disconnected in finally); creates symlinked homes and 8 GiB sparse files
 test/windows-ipc-long-path-6573.serial.test.ts	R1	R1: mutates process.env (USERPROFILE) to place the per-user run dir under a non-ASCII profile path; native windows-latest only

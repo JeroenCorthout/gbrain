@@ -31,6 +31,7 @@ import { jsonbParam, type SqlExecutor } from './executor.ts';
 import type { LegacyUnscopedRead, ScopedRead } from './brands.ts';
 import type { ScopedReadRunner } from './cjk-search.ts';
 import { compileRowNormalizer } from './normalize.ts';
+import { stagingNeedsTextSql } from '../page-body/schema.ts';
 import { createPageVersion } from '../page-state/versions.ts';
 import { renderFragment, sqlFragment, trustedSql } from './fragment.ts';
 import { quoteIdentifier, resolveWriteColumnFromConfigRows } from '../search/embedding-column.ts';
@@ -314,17 +315,30 @@ export async function purgeDeletedPages(
       }));
       return { slugs: pages.map((p) => p.slug), count: pages.length, pages };
     }
-    const { rows } = await exec.run<{ slug: string }>(sqlFragment`
-      DELETE FROM pages
-      WHERE deleted_at IS NOT NULL
-        AND deleted_at < now() - (${hours} || ' hours')::interval
-        -- #6729: the old page of an open rename-identity downgrade waits for its disposition (identityDowngradePurgeHold).
-        AND NOT EXISTS (SELECT 1 FROM op_checkpoints dg WHERE dg.op = 'sync-identity-downgrade' AND dg.fingerprint = pages.id::text
-          AND dg.completed_keys->0->>'disposition' IS NULL AND pages.deleted_at = (dg.completed_keys->0->>'old_deleted_at')::timestamptz)
-      RETURNING slug
-    `);
-    const slugs = rows.map((r) => r.slug);
-    return { slugs, count: slugs.length };
+    // Wave B (spec 11): segment texts only the purged pages' manifests reference go in the same purge, not by later GC.
+    return exec.transaction(async (tx) => {
+      const { rows: texts } = await tx.run<{ source_id: string; sha: string }>(sqlFragment`
+        SELECT DISTINCT m.source_id, encode(m.sha256, 'hex') AS sha FROM page_body_manifest m JOIN pages p ON p.id = m.page_id
+        WHERE p.deleted_at IS NOT NULL AND p.deleted_at < now() - (${hours} || ' hours')::interval`);
+      const { rows } = await tx.run<{ slug: string; source_id: string }>(sqlFragment`
+        DELETE FROM pages
+        WHERE deleted_at IS NOT NULL
+          AND deleted_at < now() - (${hours} || ' hours')::interval
+          -- #6729: the old page of an open rename-identity downgrade waits for its disposition (identityDowngradePurgeHold).
+          AND NOT EXISTS (SELECT 1 FROM op_checkpoints dg WHERE dg.op = 'sync-identity-downgrade' AND dg.fingerprint = pages.id::text
+            AND dg.completed_keys->0->>'disposition' IS NULL AND pages.deleted_at = (dg.completed_keys->0->>'old_deleted_at')::timestamptz)
+        RETURNING slug, source_id
+      `);
+      if (rows.length) await tx.run(sqlFragment`DELETE FROM page_body_stagings s USING unnest(${rows.map(r => r.source_id)}::text[], ${rows.map(r => r.slug)}::text[]) AS d(source_id, slug)
+        WHERE s.source_id = d.source_id AND s.slug = d.slug`);
+      if (texts.length) await tx.run(sqlFragment`DELETE FROM page_segment_texts t
+        USING unnest(${texts.map(r => r.source_id)}::text[], ${texts.map(r => r.sha)}::text[]) AS d(source_id, sha)
+        WHERE t.source_id = d.source_id AND t.sha256 = decode(d.sha, 'hex')
+          AND NOT EXISTS (SELECT 1 FROM page_body_manifest m WHERE m.source_id = t.source_id AND m.sha256 = t.sha256)
+          AND NOT ${trustedSql(stagingNeedsTextSql('t'))}`);
+      const slugs = rows.map((r) => r.slug);
+      return { slugs, count: slugs.length };
+    });
   }
 
 export async function refreshPageBody(
@@ -761,13 +775,13 @@ export async function listStalePagesForExtraction(exec: ScopedRead, opts: {
     // #1768: project a deterministic full-µs UTC string alongside updated_at.
     // to_char (not ::text — DateStyle-fragile) so extractStaleFromDB can stamp
     // links_extracted_at = the exact updated_at and the staleness predicate clears.
-    // A segmented page is not listed (its body columns are NULL: extracting ''
-    // would delete its derived links) but stays counted as stale until the
-    // per-segment extraction reads it.
+    // A segmented page is listed like an inline one (count and list share
+    // stalePagesWhere): its body columns are NULL, so every extractor reads
+    // its snapshot and, for a segmented page, the body block by block.
     const { text, params } = renderFragment(sqlFragment`SELECT id, slug, source_id, type, title, compiled_truth, timeline, frontmatter, updated_at,
                 to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS updated_at_iso
            FROM pages
-           WHERE ${stalePagesWhere(opts)} AND body_storage = 'inline'${afterClause}
+           WHERE ${stalePagesWhere(opts)}${afterClause}
            ORDER BY id
            LIMIT ${opts.batchSize}`);
     const { rows } = await exec.unsafe(text, params);

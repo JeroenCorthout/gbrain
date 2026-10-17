@@ -92,30 +92,34 @@
     "getCallersOf#default": {},
     "getCallersOf#sourceId": {},
     "getChunkPage#default": {
-      "raw": 1
+      "raw": 2
     },
     "getChunkPage#sourceIds+excludePrivate": {
+      "raw": 2
+    },
+    "getChunkWindows#default": {
       "raw": 1
     },
-    "getChunkWindows#default": {},
-    "getChunkWindows#scopedPrivateSafe": {},
-    "getChunks#default": {
+    "getChunkWindows#scopedPrivateSafe": {
       "raw": 1
+    },
+    "getChunks#default": {
+      "raw": 2
     },
     "getChunks#excludePrivate": {
-      "raw": 1
+      "raw": 2
     },
     "getChunks#includeEmbedding": {
-      "raw": 1
+      "raw": 2
     },
     "getChunks#includeUnsealed": {
-      "raw": 1
+      "raw": 2
     },
     "getChunks#requireSafeChunks": {
-      "raw": 1
+      "raw": 2
     },
     "getChunks#sourceIds": {
-      "raw": 1
+      "raw": 2
     },
     "getChunksWithEmbeddings#default": {},
     "getChunksWithEmbeddings#sourceId+includeUnsealed": {},

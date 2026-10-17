@@ -10,6 +10,31 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.290.0] - 2026-10-17
+
+**Every part of gbrain can now read, protect, forget and export pages stored in segments, so large-page storage is ready to turn on in a later release.** Segmented storage (`pages.segmented_storage`) stays off by default, and with it off nothing changes for your brain: pages over 1 MiB are still stored inline up to 24 MiB. This release adds the read side and the safety work that has to exist before the switch can be turned on: reads, row-level security, forget and purge, delete and restore, export and backup, and the derived passes all handle segmented pages. A writer gate keeps the switch off while any recent writer can't read segments.
+
+### What changed
+
+| Area | With segmented storage on | With it off (the default) |
+|---|---|---|
+| Reads (`get_page`, `fetch`, `entity`, evidence, `gbrain get`) | read segmented pages in windows, with withdrawn facts, fences and credentials applied; `body: 'full'` refuses and points at `body: 'auto'` | unchanged |
+| Privacy | row-level security on the six segment tables; `docs/ENGINES.md` has a source-scoped policy recipe | search, `get_page`, `put_page`, `remember`, sync and embedding need no segment-table grant |
+| `forget` and `purge_fact` | work at any page size and never delete text an in-flight write still holds | unchanged |
+| Delete and restore | lossless up to `pages.max_bytes` on file-backed sources | unchanged |
+| Export and backup | segmented pages export byte-identical to inline pages; PGLite backups restore them | unchanged |
+| Derived passes (links, timeline, takes, facts, tags, dedup, sweep, stale extraction) | read segmented pages in blocks; a page the sweep can't fit in its budget is deferred | unchanged |
+| Search | a new page up to 4 MiB is searchable when the write returns; a larger one reports `searchable: "pending"` | unchanged |
+| Tag, timeline, takes and facts writes | `add_tag`/`remove_tag` work at any size; the others work up to 24 MiB and refuse above it, naming the limit | unchanged |
+| `gbrain doctor` | seven whole-body checks report `skipped_segmented: N`; `segmented_storage` reports the writer gate | `segmented_storage` reports the switch as off |
+| Ceilings | 256 MiB on Postgres, 128 MiB on PGLite | 24 MiB |
+
+Migrations v252–v256 add a segment-text GC index, `page_view_digests`, segment-reader marks on write requests, consumers and `ingest_log`, `page_body_staging_texts`, and a chunk retirement index. On Postgres the indexes build `CONCURRENTLY`.
+
+### What you need to do
+
+Nothing. Leave `pages.segmented_storage` unset. `gbrain doctor` shows the switch's state, and the release that turns it on will say so in its notes.
+
 ## [0.60.289.0] - 2026-10-17
 
 **The unit test matrix runs 10 shards instead of 8, so one slow CI runner no longer turns master red.** Master run 39030803745 lost `test (2)` to the 22-minute job timeout. The tests were fine: CPU steal on that runner was 2–3x the usual and every file ran about 1.5x slower. At 8 shards each shard carried about 908s of measured test time, so a normal job took about 16.5 minutes and a 1.5x slower runner overran the timeout. At 10 shards each carries about 727s.

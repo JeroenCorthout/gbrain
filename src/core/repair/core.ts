@@ -12,8 +12,8 @@
  * `op_checkpoints` under a fingerprint of (kind, brain, sources): a rerun with
  * the same scope resumes after it, and a finished scan clears it.
  *
- * An item whose apply refuses `invalid_params` or `source_changed` is a
- * per-item verdict, not a run failure: it is recorded in `failed[]`, left as
+ * An item whose apply refuses `invalid_params`, `source_changed` or
+ * `page_body_segmented` is a per-item verdict, not a run failure: it is recorded in `failed[]`, left as
  * it was, and the loop continues without a cursor write for it. A later
  * success writes a higher cursor, so a resumed run does not retry it; the next
  * full scan (a run with no stored cursor, which every completed run leaves
@@ -136,8 +136,11 @@ export interface RepairHandler {
 export interface RepairItemOutcome { applied: boolean; outcome: string; reason?: string; detail?: Record<string, unknown>; llm_usd?: number;
   stop?: { reason: string; message: string; fix?: Action } }
 
-/** Refusal codes that are one item's verdict: the item is recorded in `failed[]` and the run goes on. */
-export const REPAIR_ITEM_FAILURE_CODES: ReadonlySet<string> = new Set(['invalid_params', 'source_changed']);
+/**
+ * Refusal codes that are one item's verdict: the item is recorded in `failed[]` and the run goes on.
+ * `page_body_segmented`: the item's page stores its body in segments and the kind rewrites the whole body as one string.
+ */
+export const REPAIR_ITEM_FAILURE_CODES: ReadonlySet<string> = new Set(['invalid_params', 'source_changed', 'page_body_segmented']);
 
 /** An item whose apply refused with a per-item code; its page, file and rows are exactly as before. The next full scan retries it. */
 export interface RepairFailedItem { item: string; source_id: string; slug: string; reason: string; message: string; retry: 'next_full_scan' }

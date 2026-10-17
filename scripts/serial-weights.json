@@ -415,6 +415,7 @@
   "test/windows-ipc-long-path-6573.serial.test.ts": 0,
   "test/worker-lock-renewal-e2e.serial.test.ts": 3,
   "test/worker-registry.serial.test.ts": 0,
+  "test/workspace-push-large-blob.serial.test.ts": 6,
   "test/workspace-push.serial.test.ts": 6,
   "test/write-path-no-egress.serial.test.ts": 27,
   "test/write-path-zero-llm.serial.test.ts": 4,

@@ -4,7 +4,7 @@
  * recovery path must finish: publication boundaries, after an effect's side
  * effect but before its completion is recorded, before a recovery record is
  * cleared, between sync checkpoints, after the consumer prepared a
- * claimed request, (`consumer:claiming`) before the consumer claims a request or a lane head, (`sync:after_freeze`) after a managed sync import entry is frozen and before it is admitted, (`lane:applied`) when a lane group has applied its pages and waits for its commit turn, (`stuck_recovery:*`) between the steps of a stuck-recovery resolution, and (`segmented:*`) between the stages of a segmented write. Production never installs a hook, so every call is a
+ * claimed request, (`consumer:claiming`) before the consumer claims a request or a lane head, (`sync:after_freeze`) after a managed sync import entry is frozen and before it is admitted, (`lane:applied`) when a lane group has applied its pages and waits for its commit turn, (`stuck_recovery:*`) between the steps of a stuck-recovery resolution, (`segmented:*`) between the stages of a segmented write, and (`large_file:*`) while a large prior file is copied to its before stage. Production never installs a hook, so every call is a
  * no-op there; the gate's workers install one that SIGKILLs or stalls the
  * process at a chosen point.
  */
@@ -40,7 +40,10 @@ export type FaultPoint = `publication:${PublicationBoundary}` | `effect:${Effect
   | 'stuck_recovery:backed_up' | 'stuck_recovery:written' | 'stuck_recovery:abandoned' | 'stuck_recovery:recovered'
   // Wave B segmented writes (spec 3.4 crash windows): after the texts, the staged manifest rows and the staged chunks of a
   // preparation, after the generation flip (inside the publication transaction), and after a projection staged its chunks (before its seal).
-  | 'segmented:texts_staged' | 'segmented:manifest_staged' | 'segmented:chunks_staged' | 'segmented:flipped' | 'segmented:projection_staged';
+  | 'segmented:texts_staged' | 'segmented:manifest_staged' | 'segmented:chunks_staged' | 'segmented:flipped' | 'segmented:projection_staged'
+  // A prior file over the single-string ceiling copied to its before stage (large-file.ts `stageBeforeCopy`): after the copy is
+  // written under its temporary name (unverified, unflushed: a crash during the copy) and once it is flushed, before its rename.
+  | 'large_file:stage_copying' | 'large_file:stage_flushed';
 /**
  * `signal` (#6278, `consumer:preparing` only): the preparation's abort signal, so
  * a stalling hook can model both the reporter's cases: a preparer that honours

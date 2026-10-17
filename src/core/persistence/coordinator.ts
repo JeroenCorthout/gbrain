@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, statSync, unlinkSync } from 'node:fs';
+import { closeSync, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync } from 'node:fs';
 import { dirname } from 'node:path';
 import type { BrainEngine } from '../engine.ts';
 import type { PageSnapshot } from '../page-state/types.ts';
@@ -6,7 +6,7 @@ import { OperationError, opError } from '../ops/contract.ts';
 import { readFix } from '../ops/op-fix.ts';
 import type { Action } from '../agent-output.ts';
 import { pageIdentityError } from './page-identity.ts';
-import { atomicWriteFileSync, mkdirPrivate } from '../atomic-write.ts';
+import { atomicStagingPath, atomicWriteFileSync, mkdirPrivate, validateAtomicStagingPath } from '../atomic-write.ts';
 import { flushDirectory } from '../fs-durable.ts';
 import { isWriteTargetContained } from '../path-confine.ts';
 import { sha256 } from './digest.ts';
@@ -31,7 +31,9 @@ import type { GitCommitNote } from './effect-model.ts';
 import { authorizePageVisibility } from './page-visibility.ts';
 import { withNoRepoWriteThroughWarning } from '../write-through.ts';
 import { assertUnboundPublication, classifyUnboundPage, unboundWriteWarning } from './unbound-source.ts';
-import { assertRecoveryStagingAbsent, cleanupRecoveryStaging, recoveryStagingFile, upgradeRecoveryStaging } from './staging.ts';
+import { assertRecoveryStagingAbsent, cleanupRecoveryStaging, recoveryStagingFile, restoreBeforeStage, upgradeRecoveryStaging, type RecoveryStagingFile } from './staging.ts';
+import { assertManagedFilesystemWrite } from './filesystem-guard.ts';
+import { beforeStagePath, fileContentBytes, fileContentHash, hashDescriptor, hashFile, isStreamedContent, LARGE_FILE_MIN_BYTES, stageBeforeCopy, stageStreamedContent, type StreamedFileContent } from './large-file.ts';
 import { declarePublication, publicationTransaction } from './publication-deadline.ts';
 import { assertMutationProtocol, assertSharedSkillPersistence, declareDurablePersistence, PERSISTENCE_PROTOCOL_PREDICATE } from './protocol.ts';
 import { assertBundleRecoveryBinding, bundleFileHash, prepareBundleRecovery, publishStagedBundleFile, stageBundleFile, type MutationFile } from './bundle-files.ts';
@@ -99,7 +101,8 @@ export interface PublicationHooks {
   fileBoundary?(name: 'before_file' | 'staging_flushed' | 'file_replaced' | 'directory_flushed' | 'after_file'
     | 'before_restore' | 'restoration_staging_flushed' | 'restoration_file_replaced' | 'restoration_directory_flushed' | 'after_restore', request: WriteRequest, index: number): void;
 }
-function fileHash(path: string): string | null { return existsSync(path) ? sha256(readFileSync(path)) : null; }
+/** SHA-256 of the file at `path` read in pieces (large-file.ts), null when absent. */
+const fileHash = hashFile;
 const ownerStatusFix = (sourceId?: string): Action => readFix(sourceId
   ? `Shows source ${sourceId}'s canonical owner with its pending, failed and recovering write requests, read-only.`
   : 'Shows every source\'s canonical owner with its pending, failed and recovering write requests, read-only.',
@@ -119,7 +122,8 @@ function unexpectedRecoveryBytes(message: string, row: WriteRequest, when: strin
     `A canonical file of request ${row.request_id} in source ${row.source_id} ${when} matches neither its prior nor its published bytes, so recovery left it untouched and the worktree stays blocked. Inspect the owner and ask the user which version to keep; do not delete the file to unblock it.`,
     { fix: ownerStatusFix(row.source_id) });
 }
-function publishFile(file: PageMutationFile, stagingPath?: string, afterStagingFlush?: () => void, mode?: number | null): void {
+/** Creates the file's parent directories, confined to its source root. */
+function prepareParent(file: Pick<PageMutationFile, 'path' | 'root' | 'publishMode'>): void {
   if (!isWriteTargetContained(file.path, file.root)) throw opError('storage_error', 'Canonical file target escapes its source root.',
     `The file path resolves outside its source's canonical root (a symlinked directory or a moved checkout), so the file was not written. ${confinementCheck}`,
     { fix: ownerStatusFix() });
@@ -128,11 +132,47 @@ function publishFile(file: PageMutationFile, stagingPath?: string, afterStagingF
   if (!isWriteTargetContained(file.path, file.root)) throw opError('storage_error', 'Canonical parent path changed during publication.',
     `A directory on the file's path was replaced (for example by a symlink) while gbrain created it, so the file was not written. ${confinementCheck}`,
     { fix: ownerStatusFix() });
+}
+function publishFile(file: PageMutationFile, stagingPath?: string, afterStagingFlush?: () => void, mode?: number | null): void {
+  prepareParent(file);
   const openMode = mode ?? file.publishMode;
   if (file.content === null) {
     try { unlinkSync(file.path); } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
-  } else atomicWriteFileSync(file.path, file.content, { durable: true, stagingPath, ...(openMode === undefined ? {} : { mode: openMode }), afterStagingFlush });
+  } else if (isStreamedContent(file.content)) publishStagedContent(file.path, file.content, stagingPath, afterStagingFlush);
+  else atomicWriteFileSync(file.path, file.content, { durable: true, stagingPath, ...(openMode === undefined ? {} : { mode: openMode }), afterStagingFlush });
   flushDirectory(dirname(file.path));
+}
+/**
+ * The rename half of a streamed content's publication: `stageLargeFiles` wrote and verified its staging file before
+ * the publication transaction; here it must still be that regular file of the measured length.
+ */
+function publishStagedContent(path: string, content: StreamedFileContent, stagingPath: string | undefined, afterStagingFlush?: () => void): void {
+  assertManagedFilesystemWrite(path);
+  if (!stagingPath) throw opError('storage_error', 'A streamed canonical file has no reserved staging file.',
+    'The publication recorded no staging file for its streamed content, so nothing was written. Inspect the owner and report it to the user; do not resubmit it unchanged.', { fix: ownerStatusFix() });
+  validateAtomicStagingPath(path, stagingPath);
+  const staged = lstatSync(stagingPath);
+  if (!staged.isFile() || staged.nlink !== 1 || staged.size !== content.bytes) throw opError('unexpected_staging_bytes', 'The staged canonical file changed before publication.',
+    'A recovery staging file changed outside gbrain. Inspect the pending recovery in writer status and tell the user; never delete or edit staging files by hand.', { fix: ownerStatusFix() });
+  afterStagingFlush?.();
+  renameSync(stagingPath, path);
+}
+/**
+ * A before stage and streamed content (large-file.ts): once the recovery record naming the stages is durable and
+ * before the publication transaction, the prior file is copied to its before stage and a streamed content is written
+ * into its publication stage. A prior file that changed since its digest was recorded refuses as a local edit.
+ */
+async function stageLargeFiles(engine: BrainEngine, row: WriteRequest, file: PageMutationFile, record: FileRecoveryRecord): Promise<void> {
+  const before = record.staging?.before, publication = record.staging?.publication;
+  if (!before && !isStreamedContent(file.content)) return;
+  await withFilesystemPublication([file.root], async () => {
+    if (before && !await stageBeforeCopy(file.path, before, record.mode,
+      phase => faultPoint(`large_file:${phase}`, { requestId: row.request_id, sourceId: row.source_id, operation: row.operation }))) throw localEditRefusal('The canonical file changed after preparation.', row, false, 'while its prior bytes were being staged');
+    if (isStreamedContent(file.content)) {
+      prepareParent(file);
+      await stageStreamedContent(engine, file.path, file.content, publication!, record.mode);
+    }
+  });
 }
 // Effect recovery uses the same confined durable publication primitive, under
 // its own recovery record and native root capability.
@@ -255,21 +295,49 @@ export function decoratePublicationOutcome(row: WriteRequest, prepared: Prepared
  * while holding the worktree's native lock, before any file is touched.
  */
 export function pageRecoveryRecord(row: WriteRequest, file: PageMutationFile, binding: WorktreeBinding): { record: FileRecoveryRecord; bytes: number } {
+  const large = largeRecoveryRecord(row, file, binding);
+  if (large) return large;
   const before = existsSync(file.path) ? readFileSync(file.path) : null;
   const record: FileRecoveryRecord = {
     version: 1, path: file.path, root: file.root,
     before: before?.toString('base64') ?? null, beforeHash: before ? sha256(before) : null,
-    afterHash: file.content === null ? null : sha256(file.content),
+    afterHash: file.content === null ? null : fileContentHash(file.content),
     mode: before ? statSync(file.path).mode & 0o7777 : null,
     ownerEpoch: String(binding.owner_epoch), attempt: row.execution_token!,
     staging: {
-      ...(file.content === null ? {} : { publication: recoveryStagingFile(file.path, file.content) }),
+      ...(file.content === null ? {} : { publication: publicationStage(file.path, file.content) }),
       ...(before === null ? {} : { restoration: recoveryStagingFile(file.path, before) }),
     },
   };
-  const nextBytes = file.content === null ? 0 : typeof file.content === 'string' ? Buffer.byteLength(file.content) : file.content.byteLength;
+  const nextBytes = file.content === null ? 0 : fileContentBytes(file.content);
   const beforeBytes = before?.byteLength ?? 0;
   return { record, bytes: Math.max(beforeBytes * 3 + nextBytes * 2, Buffer.byteLength(JSON.stringify(record)) + beforeBytes + nextBytes) + 4096 };
+}
+
+function publicationStage(path: string, content: string | Uint8Array | StreamedFileContent): RecoveryStagingFile {
+  return isStreamedContent(content) ? { path: atomicStagingPath(path), hash: content.hash, bytes: content.bytes } : recoveryStagingFile(path, content);
+}
+/**
+ * A prior file over the single-string ceiling is hashed in pieces and named as the before stage (path, SHA-256,
+ * length) its copy is written to, never embedded (model.ts). The reservation counts the copy and the publication stage
+ * on disk plus the record. Null for a smaller or absent prior file (its bytes are embedded).
+ */
+function largeRecoveryRecord(row: WriteRequest, file: PageMutationFile, binding: WorktreeBinding): { record: FileRecoveryRecord; bytes: number } | null {
+  if (!existsSync(file.path) || statSync(file.path).size <= LARGE_FILE_MIN_BYTES) return null;
+  const fd = openSync(file.path, 'r');
+  let prior: { hash: string; bytes: number; mode: number };
+  try { prior = { ...hashDescriptor(fd), mode: fstatSync(fd).mode & 0o7777 }; } finally { closeSync(fd); }
+  const record: FileRecoveryRecord = {
+    version: 1, path: file.path, root: file.root, before: null, beforeHash: prior.hash,
+    afterHash: file.content === null ? null : fileContentHash(file.content), mode: prior.mode,
+    ownerEpoch: String(binding.owner_epoch), attempt: row.execution_token!,
+    staging: {
+      ...(file.content === null ? {} : { publication: publicationStage(file.path, file.content) }),
+      before: { path: beforeStagePath(file.path), hash: prior.hash, bytes: prior.bytes },
+    },
+  };
+  const nextBytes = file.content === null ? 0 : fileContentBytes(file.content);
+  return { record, bytes: Buffer.byteLength(JSON.stringify(record)) + prior.bytes + nextBytes + 4096 };
 }
 
 export async function publishMutation(engine: BrainEngine, row: WriteRequest, prepared: PreparedMutation,
@@ -362,6 +430,7 @@ export async function publishMutation(engine: BrainEngine, row: WriteRequest, pr
       }
       await prepareRecovery(engine, row, record, bytes);
       recovery = record;
+      await stageLargeFiles(engine, row, prepared.file, record);
       await hooks.boundary?.('prepared', row);
     }
     const done = await publicationTransaction(engine, async tx => {
@@ -441,7 +510,12 @@ export async function publishMutation(engine: BrainEngine, row: WriteRequest, pr
     });
     await hooks.boundary?.('after_commit', done);
     if (beliefReport.appended && done.state === 'committed') await markBeliefCommits(engine, [row.id]).catch(() => undefined);
-    if (recovery) await clearResolvedRecovery(engine, row.id, done);
+    if (recovery) {
+      // A version 3 record's prior-file copy is removed once the outcome is durable, before its record is cleared.
+      const staged = recovery;
+      if (staged.version === 1 && staged.staging?.before) await withFilesystemPublication([staged.root], async () => cleanupRecoveryStaging(staged));
+      await clearResolvedRecovery(engine, row.id, done);
+    }
     afterCommitDue = done.state === 'committed';
     return done;
   } catch (error) {
@@ -516,9 +590,39 @@ export async function recoverPublication(engine: BrainEngine, id: string, hostId
           const actual = current.recovery.version === 2 ? bundleFileHash(record) : fileHash(record.path);
           if (actual !== record.beforeHash && actual !== record.afterHash) throw unexpectedRecoveryBytes('Canonical recovery bytes changed outside publication.', current, 'was edited outside gbrain and');
         }
+        // A terminal outcome's prior-file copy is dropped unread when its canonical file still holds the prior bytes.
         await withFilesystemPublication([...new Set(records.map(record => record.root))], async () => {
-          for (const record of records) cleanupRecoveryStaging(record);
+          for (const record of records) cleanupRecoveryStaging(record, { keepBefore: !isTerminal(current),
+            priorIntact: isTerminal(current) && !!record.staging?.before && fileHash(record.path) === record.beforeHash });
         });
+        // A live request's restoration runs inside this guard too, so a refusal there is recorded as its blocked reason.
+        if (!isTerminal(current)) for (let index = 0; index < records.length; index++) {
+          const record = records[index];
+          hooks.fileBoundary?.('before_restore', current, index);
+          const actual = current.recovery.version === 2 ? bundleFileHash(record) : fileHash(record.path);
+          if (actual !== record.beforeHash && actual !== record.afterHash) throw unexpectedRecoveryBytes('Canonical recovery bytes changed during restoration.', current, 'changed while recovery was restoring it and');
+          if (record.staging?.before) {
+            await withFilesystemPublication([record.root], async () => {
+              if (actual === record.afterHash && actual !== record.beforeHash) restoreBeforeStage(record, phase => hooks.fileBoundary?.(`restoration_${phase}`, current, index));
+              else cleanupRecoveryStaging(record, { priorIntact: actual === record.beforeHash });
+            });
+          } else if (actual === record.afterHash && actual !== record.beforeHash) {
+            await withFilesystemPublication([record.root], async () => {
+              const file = { path: record.path, root: record.root, content: record.before === null ? null : Buffer.from(record.before, 'base64') };
+              if (current.recovery!.version === 2) {
+                const restored = { ...record, beforeHash: record.afterHash, afterHash: record.beforeHash,
+                  mode: record.afterHash === null ? null : record.afterMode ?? record.mode, afterMode: record.mode ?? undefined,
+                  staging: { publication: record.staging?.restoration } };
+                stageBundleFile(file, restored);
+                if (file.content !== null) hooks.fileBoundary?.('restoration_staging_flushed', current, index);
+                publishStagedBundleFile(restored, phase => hooks.fileBoundary?.(`restoration_${phase}`, current, index));
+              } else publishFile(file, record.staging?.restoration?.path,
+                () => hooks.fileBoundary?.('restoration_staging_flushed', current, index), record.mode);
+            });
+          }
+          hooks.fileBoundary?.('after_restore', current, index);
+          assertRecoveryStagingAbsent(record);
+        }
       }
       catch (error) {
         if (!(error instanceof OperationError) || !['unexpected_staging_bytes','unexpected_file_bytes','storage_error'].includes(error.code)) throw error;
@@ -531,28 +635,6 @@ export async function recoverPublication(engine: BrainEngine, id: string, hostId
       // A delivered or durable terminal outcome is immutable. Only its known
       // temporary files are cleaned; its canonical file is never restored.
       if (isTerminal(current)) return { ...current, blocked_reason: null };
-      for (let index = 0; index < records.length; index++) {
-        const record = records[index];
-        hooks.fileBoundary?.('before_restore', current, index);
-        const actual = current.recovery.version === 2 ? bundleFileHash(record) : fileHash(record.path);
-        if (actual !== record.beforeHash && actual !== record.afterHash) throw unexpectedRecoveryBytes('Canonical recovery bytes changed during restoration.', current, 'changed while recovery was restoring it and');
-        if (actual === record.afterHash && actual !== record.beforeHash) {
-          await withFilesystemPublication([record.root], async () => {
-            const file = { path: record.path, root: record.root, content: record.before === null ? null : Buffer.from(record.before, 'base64') };
-            if (current.recovery!.version === 2) {
-              const restored = { ...record, beforeHash: record.afterHash, afterHash: record.beforeHash,
-                mode: record.afterHash === null ? null : record.afterMode ?? record.mode, afterMode: record.mode ?? undefined,
-                staging: { publication: record.staging?.restoration } };
-              stageBundleFile(file, restored);
-              if (file.content !== null) hooks.fileBoundary?.('restoration_staging_flushed', current, index);
-              publishStagedBundleFile(restored, phase => hooks.fileBoundary?.(`restoration_${phase}`, current, index));
-            } else publishFile(file, record.staging?.restoration?.path,
-              () => hooks.fileBoundary?.('restoration_staging_flushed', current, index), record.mode);
-          });
-        }
-        hooks.fileBoundary?.('after_restore', current, index);
-        assertRecoveryStagingAbsent(record);
-      }
       // Withdrawal is authoritative DB state and is never rolled back here.
       const failure: PublicationFailure | undefined = terminalError ?? (current.error_code ? {code:current.error_code,message:current.error_message ?? 'Publication failed before database completion.',
         ...(current.error_detail ? { detail: current.error_detail as unknown as PublicationFailureDetail } : {})} : undefined);

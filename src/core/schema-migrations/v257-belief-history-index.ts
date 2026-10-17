@@ -10,8 +10,8 @@ import { BELIEF_HISTORY_INDEX_SCHEMA_SQL } from '../belief/schema.ts';
 // rewrites data on upgrade. A source with ledger history from before this
 // migration has no state row, so every instant refuses
 // `history_index_incomplete` until `gbrain beliefs history-index --apply`.
-export const v252: Migration = {
-  version: 252,
+export const v257: Migration = {
+  version: 257,
   name: 'belief_history_index',
   idempotent: true,
   sql: BELIEF_HISTORY_INDEX_SCHEMA_SQL,

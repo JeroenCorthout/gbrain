@@ -105,7 +105,13 @@ build's output is in `logs/local-typecheck.log`. Items run through the `ci:local
 (`scripts/ubicloud/ci-item.sh`): `run-unit-shard.sh`, `run-serial-tests.sh` and
 `run-slow-tests.sh` accept explicit file arguments for this purpose, and
 `run-e2e.sh` runs each E2E file against its slot's own server and pooler. The
-unit, serial and slow lanes run with database URLs unset. Tests run natively as
+unit, serial and slow lanes run with database URLs unset. The `pg-arms` lane
+runs every file in `test/postgres-unit-arms.txt` the way persistence-validation's
+`unit-postgres-arms` step does (`bun --no-env-file test --timeout=120000`,
+`GBRAIN_TEST_ALLOW_DATABASE_URL=1`, no timeout multiplier) against the slot's
+own empty `gbrain_arms_test` database. The summary sums its measured durations over
+that job's `ARM_SHARDS` partition, and a shard over the step's 20-minute timeout
+fails the run, since GitHub would cut that shard off mid-list. Tests run natively as
 a non-root user on Ubuntu 24.04, the same OS as the CI runners, instead of as
 root in the `oven/bun` container.
 

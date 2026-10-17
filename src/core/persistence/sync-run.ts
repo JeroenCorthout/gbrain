@@ -21,6 +21,7 @@ import { isImageFilePath, isMultimodalEnabled } from '../sync.ts';
 import { assertSyncPageOrigin, sameSyncOrigin, syncOriginScope } from './sync-origin.ts';
 import { assertManagedSyncActive, assertSyncDispatchActive, managedSyncAuthority, validateSyncAuthority, validateManagedSyncOptions, syncProcessingOptions, SYNC_PROCESSING_KEYS, type SyncAuthority, type SyncProcessingOptions } from './sync-authority.ts';
 import { prepareManagedSyncMutation, type SyncCursorOptions, type SyncIntent } from './sync-prepare.ts';
+import { streamedSyncBodyRef, type SyncBodyRef } from './sync-streamed.ts';
 import { startClaimPhase } from './claim-phase.ts';
 import { screeningRequest } from './noop-kernel.ts';
 import { noopWaiversEnabled, prescreenedHead, raceSyncBudget, screenWaiver, syncPreparationBudgetMs, unfinishedPageRequestParams, UNFINISHED_PAGE_REQUEST_SQL, waiveNoopEntry, waiveNoopRun, waivePrescreenedRun, waiverBatchEnabled, type NoopWaiver, type WaiverRunEntry } from './sync-waivers.ts';
@@ -46,7 +47,7 @@ import { laneApplyMsPerMember, lanePolicy, openLanes } from './sync-lanes.ts';
 import { isContentRefusal } from '../import-screen.ts';
 import { isRetryableConnError, isStatementTimeoutError } from '../retry-matcher.ts';
 import { SYNC_READ_BOUND, type TreeBlob } from './sync-blobs.ts';
-import { driftBaselineContent, dryRunScreen, heldImageEntry, isSyncReadBound, loadSyncScreenRun, oversizeHold, pinnedBlob, pinnedContent, pinnedImageBytes, preparationStalledHold, prepareTimeFenceHold, screenFrozenImport, type HeldEntry, type SyncScreenRun } from './sync-screen.ts';
+import { driftBaselineContent, dryRunScreen, heldImageEntry, isSyncReadBound, loadSyncScreenRun, oversizeHold, pinnedBlob, pinnedContent, pinnedImageBytes, preparationStalledHold, prepareTimeFenceHold, screenFrozenImport, streamedRefusalHold, type HeldEntry, type SyncScreenRun } from './sync-screen.ts';
 import { frozenImageIntent, sameImageBytes } from './sync-image.ts';
 import { fenceReceiptLocation } from '../fence-repair/refusal.ts';
 import { managedSyncWriteDiagnostic, writeWaitOf } from './sync-write-diagnostic.ts';
@@ -338,7 +339,7 @@ async function freezeEntry(engine: BrainEngine, cursor: Cursor, key: string, ass
   let frozenSnapshot: PageSnapshot | null | undefined;
   // #5988: company-profile sources never hold; their approved manifest keeps refusing.
   const screening = entry?.action === 'import' && !cursor.companyPlan ? run.screen ?? null : null;
-  let blob: TreeBlob | null = null, oversize: { size: number | null } | undefined;
+  let blob: TreeBlob | null = null, oversize: { size: number | null } | undefined, bodyRef: SyncBodyRef | null = null;
   // #6529: an image entry is frozen as its bytes (base64) for the coordinated image importer when multimodal embedding is on.
   const image = !!entry && entry.action === 'import' && !cursor.companyPlan && isImageFilePath(entry.path);
   let imageBytes: Buffer | null = null;
@@ -367,13 +368,23 @@ async function freezeEntry(engine: BrainEngine, cursor: Cursor, key: string, ass
     }
     let bytes: Buffer | null = null;
     try { bytes = readSyncFile(cursor.root, entry.path); }
-    catch (error) { if (!screening || !isSyncReadBound(error)) throw error; oversize = { size: null }; }
-    if ((screening || image) && !entry.working) {
+    catch (error) {
+      if (!isSyncReadBound(error)) throw error;
+      // Wave B: with segmented storage on, a Markdown file over the read bound is frozen by reference and streamed by its owner.
+      if (entry.action === 'import' && !cursor.companyPlan && !image) {
+        bodyRef = await streamedSyncBodyRef(engine, { root: cursor.root, path: entry.path, target: cursor.target, working: entry.working,
+          blob: () => (blob = pinnedBlob(cursor, entry.path)) });
+        assertActive();
+      }
+      if (!bodyRef && !screening) throw error;
+      if (!bodyRef) oversize = { size: null };
+    }
+    if ((screening || image) && !entry.working && !bodyRef) {
       // #5988: an over-bound pinned blob is held by its size before its content is loaded.
       blob = pinnedBlob(cursor, entry.path);
       if (blob && blob.size > SYNC_READ_BOUND) oversize = { size: blob.size };
     }
-    rawHash = bytes === null ? null : sha256(bytes);
+    rawHash = bodyRef ? bodyRef.sha256 : bytes === null ? null : sha256(bytes);
     if (image && oversize) return { hold: oversizeHold(entry, entry.slug!, entry.pageId ?? null, oversize.size, blob) };
     if (image) imageBytes = pinnedImageBytes(cursor, entry);
     if (entry.action === 'import' && cursor.companyPlan) {
@@ -384,7 +395,7 @@ async function freezeEntry(engine: BrainEngine, cursor: Cursor, key: string, ass
         `Source ${cursor.sourceId}'s approved company-brain content manifest no longer includes ${entry.path} for this run (its approval changed, or the file is no longer an included path), so nothing was imported for it. If the approval changed, inspect and approve the repository again first (gbrain sources inspect --help).`);
       content = (await readCommittedBlob(cursor.companyPlan.revision!, blob, cursor.companyPlan.limits)).toString('utf8');
       assertActive();
-    } else content = imageBytes ? frozenImageIntent(imageBytes).content : entry.action === 'import' && !oversize ? pinnedContent(cursor, entry) : null;
+    } else content = imageBytes ? frozenImageIntent(imageBytes).content : entry.action === 'import' && !oversize && !bodyRef ? pinnedContent(cursor, entry) : null;
     // #6340: working-tree bytes that differ from the pinned blob but are committed at HEAD (a commit past the pin on a
     // live checkout) are imported as HEAD has them; the pin..HEAD diff later re-imports the same bytes as a no-op.
     // Uncommitted bytes keep the pinned content and reach the publication screen (idea from PR #6323).
@@ -447,7 +458,7 @@ async function freezeEntry(engine: BrainEngine, cursor: Cursor, key: string, ass
       return { hold: fileDriftHold(entry, slug, pageId, frozenIntent, { sides: entry.drift, revision: snapshot.revision, proof, sharedOrigin: await sharedOriginSurvivor(engine, cursor.sourceId, entry.sourcePath) }) };
     }
     if (screening && !image) {
-      const hold = await screenFrozenImport(engine, { cursor, entry, slug, pageId, snapshot, content, rawHash, lineEndingOnly, blob, oversize,
+      const hold = await screenFrozenImport(engine, { cursor, entry, slug, pageId, snapshot, content, rawHash, lineEndingOnly, blob, oversize, streamed: !!bodyRef,
         retryCommand: checkpointRetryCommand(retry) }, screening);
       assertActive();
       if (hold) return { hold };
@@ -457,7 +468,7 @@ async function freezeEntry(engine: BrainEngine, cursor: Cursor, key: string, ass
   assertActive();
   if (entry?.action === 'import') await faultPoint('sync:after_freeze', { sourceId: cursor.sourceId, slug, path: entry.path });
   return remember(frozenSnapshot, { requestId: randomUUID(), slug, pageId, ...(occupantRebound ? { rebound: true as const } : {}), intent: { kind: !entry ? 'managed_sync_checkpoint' : entry.action === 'import' ? 'managed_sync_import' : 'managed_sync_delete',
-    expected_revision: revision, sourcePath: entry?.sourcePath ?? null, path: entry?.path ?? null, rawHash, content, lineEndingOnly,
+    expected_revision: revision, sourcePath: entry?.sourcePath ?? null, path: entry?.path ?? null, rawHash, content, lineEndingOnly, ...(bodyRef ? { body_ref: bodyRef } : {}),
     ...(entry?.unownedDeletion ? { unownedDeletion: true } : {}),
     ...(entry?.renameFrom ? { renameFrom: entry.renameFrom } : {}),
     ...(run.observedAt ? { holdObservedAt: run.observedAt } : {}), ...(blob ? { blobOid: blob.oid } : {}), ...(entry && run.embedDeferred ? { embedDeferred: true } : {}),
@@ -741,7 +752,7 @@ async function holdFailedFenceRequest(engine: BrainEngine, cursor: Cursor, key: 
   const entry = entryOf(cursor, pending);
   if (!entry || entry.path !== pending.intent.path) return null;
   const stalled = preparationStalled(done);
-  const page = pending.intent.kind === 'managed_sync_import' && typeof pending.intent.content === 'string';
+  const page = pending.intent.kind === 'managed_sync_import' && (typeof pending.intent.content === 'string' || !!pending.intent.body_ref);
   if (!stalled && !page && pending.intent.kind !== 'managed_sync_delete') return null;
   let base = withoutPending(cursor);
   if (stalled) {
@@ -758,9 +769,12 @@ async function holdFailedFenceRequest(engine: BrainEngine, cursor: Cursor, key: 
   const fault = stalled || fence ? null : await receiptPageFaultHold(engine, { sourceId: cursor.sourceId, incarnation: cursor.incarnation, entry, pending, done });
   const observedAt = run.observedAt ?? new Date().toISOString();
   if (!stalled && !fence && !fault && page && fileChangedAfterAdmission(done)) return deferChangedEntry(engine, { cursor, key, pending, assertActive, observedAt, waitMs, base });
-  if (!stalled && !fence && !fault) return null;
+  // Wave B: a file the streamed preparation refuses (a fence, a frontmatter problem) is held with the refusal's code.
+  const streamed = !stalled && !fence && !fault && pending.intent.body_ref && isContentRefusal(done.error_code, null)
+    ? streamedRefusalHold(entry, pending.slug, pending.pageId, done, pending.intent.blobOid) : null;
+  if (!stalled && !fence && !fault && !streamed) return null;
   const hold = stalled ? preparationStalledHold(entry, pending.slug, pending.pageId, done, pending.intent.content ?? null, pending.intent.blobOid, resumeArgsOf(cursor, run))
-    : fence ? prepareTimeFenceHold(entry, pending.slug, pending.pageId, fence, pending.intent.content!, pending.intent.blobOid) : fault!;
+    : fence ? prepareTimeFenceHold(entry, pending.slug, pending.pageId, fence, pending.intent.content!, pending.intent.blobOid) : fault ?? streamed!;
   return holdUnderGate(engine, { cursor, key, pending, hold, assertActive, observedAt, waitMs, base });
 }
 

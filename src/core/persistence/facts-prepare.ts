@@ -7,7 +7,7 @@ import type { Action } from '../agent-output.ts';
 import type { RegistryCode } from '../error-registry.ts';
 import { factsFenceSection, parseFactsFence, strikeFactRowInPage, upsertFactRow, formatFenceDate } from '../facts-fence.ts';
 import { serializePageToMarkdown } from '../markdown.ts';
-import { assertInlineBody } from '../page-body/page-shape.ts';
+import { wholeBodySnapshot } from './segmented-apply.ts';
 import { assertFactNotWithdrawn, decideSingleFact, factWithdrawnRefusal, type FactCandidate } from '../facts/single-prepare.ts';
 import { assertFactNotPurged, isFactWithdrawn } from '../facts/withdrawal.ts';
 import { samePageRewording, warnSamePageShadow } from '../facts/same-page-shadow.ts';
@@ -134,8 +134,8 @@ export async function prepareManagedFactsMutation(engine: BrainEngine, row: Writ
       ...(wouldDedupSamePage ? { would_dedup_same_page: wouldDedupSamePage } : {}),
       fact_ids: done.flatMap(item => item.outcome.fact_ids ?? []) };
   } };
-  const snapshot = await engine.readPageSnapshot(row.slug, { sourceId: row.source_id, includeDeleted: true });
-  if (snapshot?.page.deleted_at || (snapshot?.page.id ?? null) !== row.page_id || (snapshot?.revision ?? null) !== (p.expected_revision ?? null)) {
+  const stored = await engine.readPageSnapshot(row.slug, { sourceId: row.source_id, includeDeleted: true });
+  if (stored?.page.deleted_at || (stored?.page.id ?? null) !== row.page_id || (stored?.revision ?? null) !== (p.expected_revision ?? null)) {
     throw factsRefusal('revision_conflict', 'The fact entity changed after extraction admission.', row,
       `Entity page ${row.slug} changed or was deleted after these facts were admitted, so none were published.`);
   }
@@ -143,12 +143,13 @@ export async function prepareManagedFactsMutation(engine: BrainEngine, row: Writ
   // writeSingleFact's opt-in: an unattributed row keeps its fallback entity slug, database-only.
   const fallback = (fact: { entity_slug: string | null }) => p.attribute_fallback === true && row.slug === 'memory/unattributed'
     && fact.entity_slug !== null && fact.entity_slug !== row.slug;
-  if (!facts.length || facts.some(fact => !fallback(fact) && (fact.entity_slug !== null && fact.entity_slug !== row.slug || fact.entity_slug !== null && !snapshot))) {
+  if (!facts.length || facts.some(fact => !fallback(fact) && (fact.entity_slug !== null && fact.entity_slug !== row.slug || fact.entity_slug !== null && !stored))) {
     throw factsRefusal('invalid_params', 'The prepared facts do not match their entity.', row,
       `The request holds no facts, or facts attributed to a page other than ${row.slug}, so none were published.`);
   }
+  // Wave B: a segmented entity page within 24 MiB is read back whole and its fence written as a normal put; a larger one refuses.
+  const snapshot = await wholeBodySnapshot(engine, stored, 'facts fence write');
   // #6188 (D20): the entity's stored fence is normalized in this same write; a residual refuses typed `target_fence_malformed`.
-  if (snapshot) assertInlineBody(snapshot.page, 'facts fence write');
   const target = snapshot ? await normalizeTargetFences(engine, { sourceId: row.source_id, slug: row.slug, kind: 'facts', page: snapshot.page }) : null;
   // #6686: the fence is edited in the section it lives in (a lone timeline fence stays below the sentinel); the other section is kept byte for byte.
   const fenced = { compiled_truth: target?.page.compiled_truth ?? '', timeline: target?.page.timeline ?? '' };

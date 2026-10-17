@@ -78,7 +78,13 @@ export async function checkProjectionReadiness(engine: BrainEngine, scope: PageR
     return { name: 'text_projection_readiness', status: 'warn', details: { readiness: 'unknown', ready: false },
       message: 'Text projection readiness is unknown because its read-only probe failed; index completeness could not be verified.' };
   }
-  const details = { readiness: readiness.status, ready: readiness.ready, ...classDetails(backlog) };
+  // Wave B: pages stored in segments whose chunks were not built after their write committed (not searchable yet);
+  // counted brain-wide, so only for an unscoped (local) doctor.
+  const segmented = readiness.status === 'projection_pending' && Object.keys(scope).length === 0 ? Number((await engine.executeRaw<{ n: number }>(`SELECT count(*)::int AS n FROM pages
+    WHERE deleted_at IS NULL AND body_storage='segmented' AND text_projection_revision IS DISTINCT FROM knowledge_revision`).catch(() => []))[0]?.n ?? 0) : 0;
+  const segmentedNote = segmented ? ` ${segmented} page(s) stored in segments are not searchable yet; ${opts.resident
+    ? 'the resident builds them too.' : '`gbrain projections drain` builds them as well.'}` : '';
+  const details = { readiness: readiness.status, ready: readiness.ready, ...classDetails(backlog), ...(segmented ? { segmented_pending: segmented } : {}) };
   const work = backlog.pending + backlog.sealable + backlog.reimport;
   if (work === 0 && readiness.status !== 'projection_pending') {
     const byDesign = classSentences(backlog, false);
@@ -90,7 +96,7 @@ export async function checkProjectionReadiness(engine: BrainEngine, scope: PageR
   const text = backlog.pending || work === 0
     ? `Visible pages have missing or stale text projections${backlog.pending ? ` (${backlog.pending} queued Markdown/code page(s)${backlog.failed ? `, ${backlog.failed} last failed` : ''})` : ''}; search and code results may be incomplete. ${opts.resident
       ? 'The resident gbrain process that holds this PGLite brain is rebuilding queued Markdown and code projections (up to 100 pages per pass, fewer while writes wait). On the brain host, `gbrain doctor --only text_projection_readiness --json` shows the counts and how to drain faster.'
-      : 'Run `gbrain projections drain` to rebuild queued Markdown and code projections now; it is safe while `gbrain serve` runs on Postgres.'} ${CODE_REPAIR}`
+      : 'Run `gbrain projections drain` to rebuild queued Markdown and code projections now; it is safe while `gbrain serve` runs on Postgres.'}${segmentedNote} ${CODE_REPAIR}`
     : '';
   const { fix, blocked } = opts.resident ? {} : projectionFix(backlog, opts);
   const unavailable = blocked ? ` Re-importing images needs multimodal embeddings, which are off (set ${blocked}=true on the brain host, then preview with \`gbrain embed --stale --images --dry-run\`).` : '';

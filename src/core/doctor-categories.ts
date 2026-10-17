@@ -315,6 +315,7 @@ export const OPS_CHECK_NAMES: ReadonlySet<string> = new Set([
   'vector_plan',
   'keyword_plan',
   'writer_version',
+  'segmented_storage',
   'pgbouncer_prepare',
   'pglite_data_dir',
   // #6573: a local IPC socket path over the platform's AF_UNIX budget (doctor/checks/local-ipc.ts).

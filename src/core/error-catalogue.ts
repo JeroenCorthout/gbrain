@@ -52,6 +52,8 @@ export const ERROR_CATALOGUE = {
   repair_kind_unavailable: { code: 'unavailable', docs: 'docs/guides/repair.md#explicit-only-repair-kinds' },
   // #6650: gbrain repair stuck-recovery resolves page recovery records only; a shared-skill bundle record is refused.
   recovery_bundle_unsupported: { code: 'recovery_bundle_unsupported', docs: 'docs/guides/repair.md#recovery-bundle-unsupported' },
+  // Wave B: a page recovery whose prior file is over the single-string ceiling (staged as a copy) is refused: its preview diff would read both files whole.
+  recovery_large_file_unsupported: { code: 'recovery_large_file_unsupported', docs: 'docs/guides/repair.md#recovery-large-file-unsupported' },
   // #6650: a (request state, --keep) pair stuck-recovery cannot make safe: a terminal request, or a choice the record cannot support.
   recovery_choice_refused: { code: 'recovery_choice_refused', docs: 'docs/guides/repair.md#recovery-choice-refused' },
   // #6650: a withdrawal-mirror effect recovery only finishes forward, so stuck-recovery lists it as refused.

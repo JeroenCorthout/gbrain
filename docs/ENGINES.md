@@ -173,14 +173,14 @@ describes bounded candidate recovery and incomplete-result metadata.
 
 On Postgres the same refresh also analyzes the page columns every search
 filter reads (`deleted_at`, `source_id`, `type`, `slug`) and
-`content_chunks(model, modality, page_id, body_generation, retired_generation)`, and an embed drain that embedded
+`content_chunks(model, modality, page_id, body_generation)`, and an embed drain that embedded
 anything analyzes those chunk columns once at its end (each ANALYZE bounded by
 a 30 s statement and 2 s lock timeout). Without those statistics the vector
 candidate statement sorts every eligible chunk instead of walking the HNSW
 index, and at 1M chunks and above that sort runs past the 8 s vector budget,
 so hybrid search falls back to keyword-only results until autovacuum
 analyzes the tables. If a refresh is skipped (a lock, or a role that does not
-own the tables), run `ANALYZE content_chunks(model, modality, page_id, body_generation, retired_generation)` and
+own the tables), run `ANALYZE content_chunks(model, modality, page_id, body_generation)` and
 `ANALYZE pages` as the table owner.
 
 ### Vector index sizing
@@ -248,6 +248,88 @@ per-request scope binding — unwrapped paths (writes, admin/maintenance reads)
 run under the role default and are not backstopped per caller. This is layer 2;
 the app-layer source filters remain layer 1 and stay mandatory. Behavioral pins
 live in `test/postgres-engine-rls-scope.test.ts`.
+
+**Segmented page tables.** A page over 1 MiB stored in segments (`pages.segmented_storage`)
+keeps its text in `page_segment_texts`, its layout and headings in
+`page_body_manifest`, uploads in progress in `page_body_stagings` /
+`page_body_staging_parts` (with the segment texts each one holds in
+`page_body_staging_texts`), and view sizes in `page_view_digests`. gbrain
+enables RLS on all six on every schema replay, as it does on `pages` and
+`content_chunks`, so with no policy a role that does not bypass RLS reads no row
+of them. Title search, the source-scoped vector scan, the chunk windows search
+reads around its hits, `get_chunks` and get_page check a chunk of a page stored
+in segments against `page_body_manifest`. A restricted read role that can see
+such a chunk (a segmented page of one of its sources) needs `SELECT` on it;
+without it those reads fail with `permission_denied` (42501). A role that sees
+no such chunk, as every role does while no page is segmented
+(`pages.segmented_storage` is off by default), reads as before without the
+grant (`test/e2e/segmented-switch-off-rls.test.ts`). Grant it together with
+these policies, never with an open one, or the role reads every source's segment
+text. A scoped role then sees exactly the segment rows of its sources:
+
+<!-- gbrain:segmented-rls-recipe:begin (applied verbatim by test/e2e/segmented-rls-scope.test.ts) -->
+```sql
+-- The pages_scope_filter predicate, on each table's own source_id.
+CREATE POLICY page_segment_texts_scope_filter ON page_segment_texts
+  USING (current_setting('app.scopes', true) = '*'
+         OR source_id = ANY(string_to_array(current_setting('app.scopes', true), ',')));
+CREATE POLICY page_body_manifest_scope_filter ON page_body_manifest
+  USING (current_setting('app.scopes', true) = '*'
+         OR source_id = ANY(string_to_array(current_setting('app.scopes', true), ',')));
+CREATE POLICY page_body_stagings_scope_filter ON page_body_stagings
+  USING (current_setting('app.scopes', true) = '*'
+         OR source_id = ANY(string_to_array(current_setting('app.scopes', true), ',')));
+-- A write role records the texts each staging holds here; without a policy its
+-- segmented writes are refused.
+CREATE POLICY page_body_staging_texts_scope_filter ON page_body_staging_texts
+  USING (current_setting('app.scopes', true) = '*'
+         OR source_id = ANY(string_to_array(current_setting('app.scopes', true), ',')));
+-- Search joins sources; a scoped role sees its own.
+CREATE POLICY sources_scope_filter ON sources
+  USING (current_setting('app.scopes', true) = '*'
+         OR id = ANY(string_to_array(current_setting('app.scopes', true), ',')));
+-- No source_id of their own: visible exactly when their staging or page is
+-- (the pages policy filters the subquery). content_chunks holds every page's
+-- chunk text, segmented or not.
+CREATE POLICY page_body_staging_parts_scope_filter ON page_body_staging_parts
+  USING (current_setting('app.scopes', true) = '*'
+         OR EXISTS (SELECT 1 FROM page_body_stagings s WHERE s.id = staging_id));
+CREATE POLICY page_view_digests_scope_filter ON page_view_digests
+  USING (current_setting('app.scopes', true) = '*'
+         OR EXISTS (SELECT 1 FROM pages p WHERE p.id = page_id));
+CREATE POLICY content_chunks_scope_filter ON content_chunks
+  USING (current_setting('app.scopes', true) = '*'
+         OR EXISTS (SELECT 1 FROM pages p WHERE p.id = page_id));
+
+-- A read role that searches and reads pages. The other tables it reads
+-- (config, timeline_entries, facts, ...) need policies of their own.
+GRANT SELECT ON pages, content_chunks, page_body_manifest, page_segment_texts,
+  page_view_digests, sources TO <reader-role>;
+
+-- If the runtime role OWNS these tables, as for pages:
+ALTER TABLE page_segment_texts FORCE ROW LEVEL SECURITY;
+ALTER TABLE page_body_manifest FORCE ROW LEVEL SECURITY;
+ALTER TABLE page_body_stagings FORCE ROW LEVEL SECURITY;
+ALTER TABLE page_body_staging_parts FORCE ROW LEVEL SECURITY;
+ALTER TABLE page_body_staging_texts FORCE ROW LEVEL SECURITY;
+ALTER TABLE page_view_digests FORCE ROW LEVEL SECURITY;
+ALTER TABLE content_chunks FORCE ROW LEVEL SECURITY;
+```
+<!-- gbrain:segmented-rls-recipe:end -->
+
+A role whose reads do not run through the scoped helper is scoped by its own
+default (`ALTER ROLE <reader-role> SET app.scopes = 'source-a,source-b'`). The
+policies read `app.scopes` only; the app-layer source filters stay layer 1.
+
+A write role that does not own the tables needs `SELECT, INSERT, UPDATE, DELETE`
+on all six, as on any table a migration adds, even while no page is segmented:
+purging soft-deleted pages, fact withdrawal (`forget_fact`, `purge_fact`), the
+maintenance sweep's facts pass, doctor's credential check and the segment
+storage sweep name them. Its ordinary writes (`put_page`, `remember`, sync
+imports, their embedding and the unchanged-file check) do not, while it sees no
+segmented chunk (`test/e2e/segmented-switch-off-write-role.test.ts`). With the
+policies above it creates segmented pages and sees only its sources' rows
+(`test/e2e/segmented-rls-scope.test.ts`).
 
 **In engine-sql.** A read in a migrated domain takes a `ScopedRead` when it
 runs through this helper and a `LegacyUnscopedRead` when it runs on the pool
@@ -343,6 +425,7 @@ and the fix is the read-only `gbrain migrate --to postgres --plan --json`.
 | Cost | Free | Supabase Pro ($25/mo) |
 | Concurrency | Single process | Connection pooling |
 | Backups | Manual (file copy) | Managed by Supabase |
+| Largest page | 24 MiB; 128 MiB stored in segments with `pages.segmented_storage on` (`pages.max_bytes`) | 24 MiB; 256 MiB stored in segments with `pages.segmented_storage on` (`pages.max_bytes`) |
 
 **The belief ledger lives only in the database.** `belief_events` and its side tables record what the brain had recorded, and when (`gbrain beliefs status`). Markdown carries only current state, so a rebuild from Markdown, `gbrain reinit-pglite` or a dropped database starts an empty history; back up the database itself. After restoring a Postgres (or PGLite) backup, replay the purges made after the backup was taken: until then content purged later is readable again, and `gbrain doctor --only belief_ledger_coverage` reports a restore whose purge replay was partial, unavailable or unverified. Graduation copies the ledger verbatim (equal event keys and digests); the legacy copier refuses a brain that has one.
 

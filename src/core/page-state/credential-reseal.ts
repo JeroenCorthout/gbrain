@@ -9,13 +9,17 @@
  */
 import type { BrainEngine } from '../engine.ts';
 import { resealSafeChunks } from './projections.ts';
+import { buildSegmentedProjection } from '../page-body/projection.ts';
 import { PageRevisionConflictError } from './types.ts';
 
 const KEY_MARKER = `'-----(BEGIN|END) [A-Z ]*PRIVATE KEY-----'`;
 const REBUILDABLE = `(p.page_kind='markdown' OR (p.page_kind='code' AND COALESCE(p.frontmatter->>'file',p.source_path) IS NOT NULL))`;
+/** Wave B: a segmented page's private keys are its live manifest rows' `pem` regions (its body columns are NULL). */
+const SEGMENTED_KEYS = `EXISTS (SELECT 1 FROM page_body_manifest m WHERE m.page_id=p.id AND m.gen_to IS NULL AND m.staging_id IS NULL
+    AND m.protected_regions @> '[{"kind":"pem"}]'::jsonb)`;
 const PENDING = `p.deleted_at IS NULL AND p.page_kind IN ('markdown','code')
   AND p.text_projection_revision IS DISTINCT FROM p.knowledge_revision
-  AND (p.compiled_truth ~ ${KEY_MARKER} OR COALESCE(p.timeline,'') ~ ${KEY_MARKER})`;
+  AND (p.compiled_truth ~ ${KEY_MARKER} OR COALESCE(p.timeline,'') ~ ${KEY_MARKER} OR (p.body_storage='segmented' AND ${SEGMENTED_KEYS}))`;
 
 export interface CredentialPending { rebuildable: number; kept: number }
 
@@ -33,13 +37,17 @@ export interface CredentialResealResult { resealed: number; superseded: number; 
 
 /** Re-seal every rebuildable pending page, one page per transaction, so an interrupted run resumes where it stopped. */
 export async function resealCredentialProjections(engine: BrainEngine): Promise<CredentialResealResult> {
-  const rows = await engine.executeRaw<{ source_id: string; slug: string }>(`SELECT p.source_id,p.slug
+  const rows = await engine.executeRaw<{ source_id: string; slug: string; body_storage: string }>(`SELECT p.source_id,p.slug,p.body_storage
     FROM pages p JOIN sources s ON s.id=p.source_id AND s.archived IS NOT TRUE
     WHERE ${PENDING} AND ${REBUILDABLE} ORDER BY p.id`);
   const result: CredentialResealResult = { resealed: 0, superseded: 0, failed: 0, kept: 0 };
   for (const row of rows) {
     try {
-      if (await resealSafeChunks(engine, row.slug, row.source_id)) result.resealed++;
+      // A segmented page's chunks are built from its stored pem regions; its projection rebuild re-seals it.
+      const resealed = row.body_storage === 'segmented'
+        ? (await buildSegmentedProjection(engine, { sourceId: row.source_id, slug: row.slug })).sealed
+        : await resealSafeChunks(engine, row.slug, row.source_id);
+      if (resealed) result.resealed++;
       else result.superseded++;
     } catch (error) {
       if (error instanceof PageRevisionConflictError) { result.superseded++; continue; }

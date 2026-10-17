@@ -646,6 +646,93 @@ export function upsertFactRow(
 }
 
 /**
+ * #3625 (adversarial review, 2 rounds): whether `timeline` contains a
+ * GENUINE Facts fence marker, as opposed to the marker text merely being
+ * mentioned inside a fenced code example or quoted prose. A naive
+ * `.includes(FACTS_FENCE_BEGIN)` false-positives on both — e.g. a page
+ * whose real fence WAS removed, but whose timeline documents the fence
+ * syntax in a ```markdown code block or a `> ...` blockquote, would wrongly
+ * be treated as "misplaced" and block a genuine deletion, leaving stale
+ * facts indexed indefinitely.
+ *
+ * Round 1 tried reusing fence-scan.ts's scanFencedBlocks() + string removal
+ * of its extracted fence bodies. Round-2 adversarial review broke that:
+ * scanFencedBlocks normalizes line endings (splits on `\r\n|\r|\n`, joins
+ * fence bodies with plain `\n`) and strips opener indentation before
+ * returning fence text — so `stripped.split(fenceText).join('')` on the
+ * ORIGINAL (un-normalized) string silently fails to match a CRLF or
+ * indented code block, leaving the marker inside it undetected and still
+ * false-positive. Reconstructed-text removal can't safely undo a lossy
+ * normalization.
+ *
+ * Fix: a self-contained single-pass line scanner (mirroring fence-scan.ts's
+ * own CommonMark-subset opener/closer grammar, applied directly against
+ * `timeline.split(/\r\n|\r|\n/)` — ONE split, no re-normalization, no
+ * text-based removal) that skips lines between a real ``` /~~~ opener and
+ * its closer, then checks whether any remaining line, trimmed, exactly
+ * equals the marker. A real fence marker is always written as its own line
+ * (see FENCE_BODY-shaped output from fence-write.ts / upsertFactRow), so
+ * exact-line-match — on lines outside any code fence — rules out both
+ * hazards without needing a full markdown AST (mirrors
+ * findTimelineSplitIndex's own `trimmed === sentinel` pattern for the same
+ * class of problem on the timeline sentinel itself). An unclosed opener
+ * runs to EOF (matches fence-scan.ts's documented behavior) — a marker
+ * appearing after it is inside an ambiguous, unclosed block and is not
+ * trusted as genuine.
+ */
+export function timelineHasGenuineFactsFenceMarker(timeline: string): boolean {
+  if (!timeline.includes(FACTS_FENCE_BEGIN)) return false;
+  const lines = timeline.split(/\r\n|\r|\n/);
+  const OPEN_RE = /^ {0,3}(`{3,}|~{3,})(.*)$/;
+  const CLOSE_RE = /^ {0,3}(`{3,}|~{3,})[ \t]*$/;
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i]!;
+    const open = OPEN_RE.exec(line);
+    if (open) {
+      const marker = open[1]!;
+      const fenceChar = marker[0]!;
+      const info = open[2]!.trim();
+      // Mirrors fence-scan.ts: a backtick opener whose info string contains
+      // a backtick is inline code, not a fence opener.
+      if (!(fenceChar === '`' && info.includes('`'))) {
+        let j = i + 1;
+        for (; j < lines.length; j++) {
+          const close = CLOSE_RE.exec(lines[j]!);
+          if (close && close[1]![0] === fenceChar && close[1]!.length >= marker.length) {
+            j++;
+            break;
+          }
+        }
+        i = j; // unclosed fence: j reaches lines.length, ending the scan
+        continue;
+      }
+    }
+    if (line.trim() === FACTS_FENCE_BEGIN) return true;
+    i++;
+  }
+  return false;
+}
+
+/**
+ * What the fence reconcile reads from a page body: each section's parsed fence, which sections hold a fence outside
+ * code (factsFenceSections) and whether the timeline holds a genuine begin marker line
+ * (timelineHasGenuineFactsFenceMarker). Built from the strings here; a segmented body builds it segment by segment
+ * (page-body/segment-facts.ts).
+ */
+export interface FactsFenceView {
+  body: FactsFenceParseResult;
+  timeline: FactsFenceParseResult;
+  sections: { body: boolean; timeline: boolean };
+  timelineMarker: boolean;
+}
+
+export function factsFenceView(page: { compiled_truth: string | null; timeline?: string | null }): FactsFenceView {
+  return { body: parseFactsFence(page.compiled_truth ?? ''), timeline: parseFactsFence(page.timeline ?? ''), sections: factsFenceSections(page),
+    timelineMarker: timelineHasGenuineFactsFenceMarker(page.timeline ?? '') };
+}
+
+/**
  * The ONE fence-placement rule, shared by every writer that materializes a
  * fence into a page body (upsertFactRow, the phantom-redirect canonical
  * append, the importer's hidden-row merge). Replaces an existing fence in

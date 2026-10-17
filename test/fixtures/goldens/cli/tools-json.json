@@ -2,8 +2,8 @@
   "golden": {
     "exitCode": 0,
     "stderr": "",
-    "stdoutBytes": 243672,
-    "stdoutSha256": "2e13e5466c191c94a2bbc5f293f7e3b7d88c9bfb77fb314fcb5254239a7a6c3d",
+    "stdoutBytes": 242920,
+    "stdoutSha256": "746130fbb9b8f33b5e8f81d8b9377ae133c1f3866c76c891b155f9d50971cb3e",
     "toolNames": [
       "remember",
       "entity",
@@ -451,7 +451,7 @@
             },
             "bytes": {
               "additionalProperties": false,
-              "description": "Window: UTF-8 bytes (snapped to a line start).",
+              "description": "Window: UTF-8 bytes of size.total_bytes, not body_bytes (snapped to a line start).",
               "properties": {
                 "length": {
                   "type": "number"
@@ -1266,7 +1266,6 @@
         "parameters": {
           "cursor": "string?",
           "fields": "string?",
-          "known_as_of": "string?",
           "limit": "number?",
           "match": "string?",
           "min_trust": "string?",
@@ -1295,10 +1294,6 @@
                 "lean",
                 "full"
               ],
-              "type": "string"
-            },
-            "known_as_of": {
-              "description": "Recorded time: the pages as this brain had recorded them at this ISO 8601 instant, ranked by the lexical historical retriever. Not as_of, which is valid time.",
               "type": "string"
             },
             "limit": {
@@ -4268,7 +4263,6 @@
           "active": "boolean?",
           "holder": "string?",
           "kind": "string?",
-          "known_as_of": "string?",
           "limit": "number?",
           "min_trust": "string?",
           "offset": "number?",
@@ -4289,10 +4283,6 @@
             },
             "kind": {
               "description": "Filter to this kind (fact|take|bet|hunch)",
-              "type": "string"
-            },
-            "known_as_of": {
-              "description": "Recorded time: the take rows of page_slug's body as this brain had recorded it at this ISO 8601 instant. Needs page_slug.",
               "type": "string"
             },
             "limit": {
@@ -4383,7 +4373,6 @@
         "name": "think",
         "parameters": {
           "anchor": "string?",
-          "known_as_of": "string?",
           "model": "string?",
           "question": "string",
           "reference_date": "string?",
@@ -4398,10 +4387,6 @@
           "properties": {
             "anchor": {
               "description": "Pull the entity subgraph around this slug",
-              "type": "string"
-            },
-            "known_as_of": {
-              "description": "Recorded time: think over the evidence as this brain had recorded it at this ISO 8601 instant (lexical retrieval; refuses save and take).",
               "type": "string"
             },
             "model": {

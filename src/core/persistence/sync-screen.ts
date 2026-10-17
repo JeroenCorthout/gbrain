@@ -11,11 +11,11 @@
  * normalized file; a dry run lists it in `would_normalize`), and a residual
  * fence is held as `invalid_fence`.
  */
-import { realpathSync } from 'node:fs';
-import { relative, resolve, sep } from 'node:path';
+import { realpathSync, statSync } from 'node:fs';
+import { join, relative, resolve, sep } from 'node:path';
 import type { BrainEngine } from '../engine.ts';
 import { OperationError, opError } from '../ops/contract.ts';
-import { loadImportSanityConfig, screenNormalized, type ImportSanityConfig, type ImportScreenResult } from '../import-screen.ts';
+import { loadImportSanityConfig, screenNormalized, type ContentRefusal, type ImportSanityConfig, type ImportScreenResult } from '../import-screen.ts';
 import { fencesNormalizeEnabled } from '../fence-repair/config.ts';
 import type { FenceFix } from '../fence-repair/types.ts';
 import { parseMarkdown, RECOVERY_VERSION } from '../markdown.ts';
@@ -27,6 +27,7 @@ import { isImageFilePath, isMultimodalEnabled, resolveSlugForPath } from '../syn
 import { loadActivePackForEngine } from '../schema-pack/engine-resolution.ts';
 import { VERSION } from '../../version.ts';
 import { sha256 } from './digest.ts';
+import { readPageBodyPolicy, type PageBodyPolicy } from '../page-body/limits.ts';
 import { readPagePurgeTombstones } from './page-purge.ts';
 import { listTrustAllowRules } from '../trust/allow-rules.ts';
 import { readSyncContent, readSyncFile, syncGitPath, type SyncDiscovery, type SyncEntry } from './sync-discovery.ts';
@@ -186,6 +187,13 @@ export function managedImageHold(entry: Pick<SyncEntry, 'path' | 'sourcePath' | 
 }
 
 /** #5988: the hold of a file over the sync read bound, whose content is never read (#6529: shared with the image freeze). */
+/** Wave B: the hold for a file its streamed preparation refused, by the receipt's content-refusal code and message. */
+export function streamedRefusalHold(entry: Pick<SyncEntry, 'path' | 'sourcePath' | 'working' | 'renameFrom' | 'renameHeld'>, slug: string, pageId: number | null,
+  done: Pick<WriteRequest, 'error_code' | 'error_message'>, blobOid: string | null | undefined): HeldEntry {
+  return heldEntry(entry, slug, pageId, { code: done.error_code as ContentRefusal['code'], message: done.error_message ?? 'The streamed import refused this file.' },
+    null, blobOid ? { oid: blobOid } : null);
+}
+
 export function oversizeHold(entry: Pick<SyncEntry, 'path' | 'sourcePath' | 'working' | 'renameFrom' | 'renameHeld'>, slug: string, pageId: number | null, size: number | null, blob: TreeBlob | null | undefined): HeldEntry {
   return heldEntry(entry, slug, pageId, { code: 'file_too_large',
     message: `File too large (${size ?? `over ${SYNC_READ_BOUND}`} bytes; the sync read bound is the ${SYNC_READ_BOUND}-byte (24 MiB) page ceiling). Pages up to the ceiling are chunked and searchable; leave this file out of the source (sync.exclude) or keep it outside the brain repo. See docs/guides/memory-boundaries.md#large-pages.` }, null, blob);
@@ -221,6 +229,8 @@ export interface FrozenImportScreen {
   /** null only for an over-size file, whose content is never read. */
   content: string | null; rawHash: string | null; lineEndingOnly: boolean;
   blob?: TreeBlob | null; oversize?: { size: number | null };
+  /** Wave B: frozen by reference (`content` is null); its owner's streamed preparation screens it, and a refusal there is held. */
+  streamed?: boolean;
   /** The `--retry-failed` command that resumes after a parser-regression fix. */
   retryCommand: string;
   /** #6188 dry run: told the fixes when Tier 1 admits the file by rewriting a fence. */
@@ -255,7 +265,7 @@ export async function screenFrozenContent(screenInput: SyncImportScreenInput, ru
  */
 export async function screenFrozenImport(engine: BrainEngine, input: FrozenImportScreen, run: SyncScreenRun): Promise<HeldEntry | null> {
   const { entry, slug, pageId, snapshot, content, blob } = input;
-  if (input.oversize || content === null) return oversizeHold(entry, slug, pageId, input.oversize?.size ?? blob?.size ?? null, blob);
+  if (input.oversize || (content === null && !input.streamed)) return oversizeHold(entry, slug, pageId, input.oversize?.size ?? blob?.size ?? null, blob);
   if (entry.renameHeld) {
     return heldEntry(entry, slug, pageId, { code: 'rename_held', reason: 'rename_source_changed', message: `${entry.path} is a rename of page ${entry.renameHeld.slug}, which changed after the rename was recorded, so the page was not moved.` }, content, blob);
   }
@@ -270,6 +280,7 @@ export async function screenFrozenImport(engine: BrainEngine, input: FrozenImpor
       + `record${several ? '' : 's'} no file${several ? ' and sync cannot tell which is its page' : ' and has a slug sync cannot write as it stands'}, so sync held the file instead of creating another page.` }, content, blob);
     return { ...held, meta: { ...held.meta, legacy_slugs: entry.legacySlugs } };
   }
+  if (content === null) return null;
   // #6188: a fence Tier 1 rewrites is admitted (publication writes the normalized file back); with fences.normalize=false it is held.
   const screen = await screenFrozenContent(await frozenImportScreenInput(engine, { ...input, content }, run), run);
   if (screen.status === 'importable' && screen.fences?.fixes.length) input.onNormalized?.(screen.fences.fixes);
@@ -308,6 +319,7 @@ export async function dryRunScreen(engine: BrainEngine, discovery: SyncDiscovery
   const held: GitHoldItem[] = [];
   const normalized: Array<{ path: string; classes: string[] }> = [];
   const skipped: Array<{ path: string; code: string }> = [];
+  let policy: PageBodyPolicy | undefined;
   const observed = new Date().toISOString();
   for (const entry of entries) {
     try {
@@ -324,6 +336,9 @@ export async function dryRunScreen(engine: BrainEngine, discovery: SyncDiscovery
       let bytes: Buffer | null = null, oversize: { size: number | null } | undefined;
       try { bytes = readSyncFile(discovery.root, entry.path); } catch (error) { if (!isSyncReadBound(error)) throw error; oversize = { size: null }; }
       if (blob && blob.size > SYNC_READ_BOUND) oversize = { size: blob.size };
+      // Wave B: a Markdown file the real run streams (sync-streamed.ts) is screened only by its owner's preparation.
+      if (oversize && /\.mdx?$/i.test(entry.path) && (policy ??= await readPageBodyPolicy(engine)).segmented
+        && (oversize.size ?? statSync(join(discovery.root, entry.path)).size) <= policy.maxBytes) { skipped.push({ path: entry.path, code: 'page_body_segmented' }); continue; }
       const content = oversize ? null : entry.working ? bytes?.toString('utf8') ?? null : blob ? contents.get(blob.oid) ?? null : null;
       if (!oversize && content === null) { skipped.push({ path: entry.path, code: 'source_changed' }); continue; }
       const snapshot = await engine.readPageSnapshot(entry.slug!, { sourceId: discovery.sourceId, includeDeleted: true });

@@ -107,7 +107,11 @@ function managedSyncFix(sourceId: string, why: string): Action {
   return { argv: ['gbrain', 'sync', '--no-pull', '--source', sourceId], consent: [], actor: 'agent', requires_exclusive: false, why,
     verify: { argv: ['gbrain', 'sources', 'status', sourceId] } };
 }
-export function readSyncFile(root: string, path: string): Buffer | null {
+/**
+ * The checked absolute path of a sync file: inside its registered root, no symlink component, a regular file of at
+ * most `maxBytes`; null when it is gone. Wave B: a streamed import (sync-streamed.ts) passes the page ceiling.
+ */
+export function syncFilePath(root: string, path: string, maxBytes = SYNC_READ_BOUND): string | null {
   if (realpathSync(root) !== resolve(root)) throw syncTargetRefusal('source_changed', 'The registered source root was replaced by a symlink.',
     `The registered root holding ${path} is now a symlink.`);
   const absolute = resolve(root, path);
@@ -123,10 +127,14 @@ export function readSyncFile(root: string, path: string): Buffer | null {
     }
     if (!lstatSync(absolute).isFile()) throw syncTargetRefusal('source_changed', 'Sync target is not a regular file.',
       `${path} is not a regular file.`);
-    if (lstatSync(absolute).size > SYNC_READ_BOUND) throw opError('request_too_large', 'Sync file exceeds the bounded import size.',
+    if (lstatSync(absolute).size > maxBytes) throw opError('request_too_large', 'Sync file exceeds the bounded import size.',
       `${path} is larger than the ${SYNC_READ_BOUND}-byte (24 MiB) page ceiling, so nothing was imported from it. Pages up to that size are chunked and searchable; above it, add the file to the sync.exclude config (or keep it outside the brain repo), then sync its source again. See docs/guides/memory-boundaries.md#large-pages.`);
-    return readFileSync(absolute);
+    return absolute;
   } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null; throw error; }
+}
+export function readSyncFile(root: string, path: string): Buffer | null {
+  const absolute = syncFilePath(root, path);
+  try { return absolute === null ? null : readFileSync(absolute); } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null; throw error; }
 }
 /** Whether a file backs `path` in the working tree; a file that exists but cannot be read as a sync target (a symlink, oversized) still counts as present. */
 function workingTreeFilePresent(root: string, path: string): boolean {

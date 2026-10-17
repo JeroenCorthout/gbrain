@@ -19,7 +19,7 @@ export const WRITE_ERROR_CODES = [
   'invalid_connector_text', 'connector_holds_exhausted', 'connector_fence_below_timeline',
   'core_budget_exceeded', 'core_mark_owner_only', 'core_remote_edit_refused', 'core_delete_owner_only',
   'timeline_rows_would_be_removed', 'purged_content', 'preparation_stalled',
-  'fence_unrenderable',
+  'fence_unrenderable', 'page_body_segmented',
   'write_outcome_unknown',
 ] as const;
 
