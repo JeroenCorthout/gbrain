@@ -238,6 +238,7 @@ describe('routeThinClientCommand — (b) host-bound forms return false', () => {
     ['quarantine', ['scan']],
     ['quarantine', ['clear']],
     ['takes', ['extract']],
+    ['takes', ['grades']],
     ['beliefs', ['changes', '--source', 'notes']],
     ['beliefs', ['status']],
   ];

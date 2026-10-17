@@ -309,6 +309,84 @@ async function cmdScorecard(engine: BrainEngine, args: string[]): Promise<void> 
 }
 
 /**
+ * W6: the review surface for grade_takes. The cycle caches a verdict per take
+ * (`take_grade_cache`) and, with auto-resolve off, applies none; this lists
+ * the newest verdict per take so the owner can review them, marking verdicts
+ * whose judge model and prompt the W6 eval did not measure
+ * (`GRADE_TAKES_MEASURED_MODELS`, `GRADE_TAKES_MEASURED_PROMPT_VERSION`).
+ * Trusted local only: there is no MCP op, so a thin client refuses it.
+ */
+async function cmdGrades(engine: BrainEngine, args: string[]): Promise<void> {
+  const json = flagPresent(args, '--json');
+  const verdict = flagValue(args, '--verdict');
+  const minRaw = flagValue(args, '--min-confidence');
+  const limitRaw = flagValue(args, '--limit');
+  const applied = flagPresent(args, '--applied');
+  const unapplied = flagPresent(args, '--unapplied');
+  if (verdict !== undefined && !['correct', 'incorrect', 'partial', 'unresolvable'].includes(verdict)) {
+    console.error(`Invalid --verdict "${verdict}". Expected correct, incorrect, partial or unresolvable.`);
+    process.exit(1);
+  }
+  const minConfidence = minRaw === undefined ? undefined : Number(minRaw);
+  if (minConfidence !== undefined && (!Number.isFinite(minConfidence) || minConfidence < 0 || minConfidence > 1)) {
+    console.error(`Invalid --min-confidence "${minRaw}". Expected a number from 0 to 1.`);
+    process.exit(1);
+  }
+  const limit = limitRaw === undefined ? 50 : Number(limitRaw);
+  if (!Number.isInteger(limit) || limit < 1) {
+    console.error(`Invalid --limit "${limitRaw}". Expected a positive integer.`);
+    process.exit(1);
+  }
+  if (applied && unapplied) {
+    console.error('Error: --applied and --unapplied are mutually exclusive (choose one).');
+    process.exit(1);
+  }
+
+  const { gradeJudgeMeasured } = await import('../core/cycle/grade-takes-measured.ts');
+  const rows = await engine.executeRaw<{
+    take_id: number; source_id: string; page_slug: string; row_num: number; claim: string; holder: string; since_date: string | null;
+    verdict: string; confidence: number; applied: boolean; judge_model_id: string; prompt_version: string; graded_at: string | Date;
+  }>(
+    `SELECT * FROM (
+       SELECT DISTINCT ON (g.take_id)
+              g.take_id, p.source_id, p.slug AS page_slug, t.row_num, t.claim, t.holder, t.since_date,
+              g.verdict, g.confidence, g.applied, g.judge_model_id, g.prompt_version, g.graded_at
+         FROM take_grade_cache g
+         JOIN takes t ON t.id = g.take_id
+         JOIN pages p ON p.id = t.page_id
+        WHERE p.deleted_at IS NULL
+        ORDER BY g.take_id, g.graded_at DESC
+     ) latest
+     WHERE ($1::text IS NULL OR verdict = $1)
+       AND ($2::real IS NULL OR confidence >= $2)
+       AND ($3::boolean IS NULL OR applied = $3)
+     ORDER BY graded_at DESC, take_id DESC
+     LIMIT $4`,
+    [verdict ?? null, minConfidence ?? null, applied ? true : unapplied ? false : null, limit],
+  );
+  const grades = rows.map(r => ({
+    ...r,
+    confidence: Number(r.confidence),
+    graded_at: r.graded_at instanceof Date ? r.graded_at.toISOString() : String(r.graded_at),
+    judge_measured: gradeJudgeMeasured(r.judge_model_id, r.prompt_version),
+  }));
+
+  if (json) {
+    console.log(JSON.stringify(grades, null, 2));
+    return;
+  }
+  if (grades.length === 0) {
+    console.log('No grade_takes verdicts match.');
+    return;
+  }
+  console.log(`# grade_takes verdicts (newest per take, ${grades.length} shown)`);
+  for (const g of grades) {
+    console.log(`  ${g.page_slug}#${g.row_num} [${g.holder}] ${g.verdict} @ ${g.confidence.toFixed(2)}${g.applied ? ' applied' : ''}  judge ${g.judge_model_id}${g.judge_measured ? '' : ' (not measured by W6)'}  ${g.graded_at.slice(0, 10)}`);
+    console.log(`      ${g.claim}${g.since_date ? `  (made ${g.since_date})` : ''}`);
+  }
+}
+
+/**
  * v0.30.0: calibration curve. Bins resolved correct+incorrect bets by stated
  * weight and reports observed vs predicted frequency per bucket. The diagonal
  * (observed ≈ predicted in every bucket) is perfect calibration.
@@ -497,6 +575,9 @@ Subcommands:
                                           Aggregate calibration scorecard (v0.30.0)
   takes calibration [<holder>] [--bucket-size 0.1] [--json]
                                           Calibration curve binned by stated weight (v0.30.0)
+  takes grades [--verdict v] [--min-confidence 0.95] [--applied|--unapplied] [--limit 50] [--json]
+                                          Review grade_takes verdicts: the newest cached verdict per take,
+                                          newest first; marks verdicts whose judge the W6 eval did not measure
 
 Common flags:
   --dir <path>    Verify the configured canonical directory for mutations
@@ -528,6 +609,7 @@ Common flags:
     case 'propose':     return cmdPropose(engine, rest, await resolveTakesSourceId(engine));
     case 'scorecard':   return cmdScorecard(engine, rest);
     case 'calibration': return cmdCalibration(engine, rest);
+    case 'grades':      return cmdGrades(engine, rest);
     case 'revisit':     return cmdRevisit(engine, rest);
     case 'extract':     return cmdExtract(engine, rest);
     default:

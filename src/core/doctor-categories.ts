@@ -75,6 +75,7 @@ export const BRAIN_CHECK_NAMES: ReadonlySet<string> = new Set([
   'ontology_facts_fenced',
   'orphan_persistence_bindings',
   'foreign_ownership_marker',
+  'coordination_lock_location',
   'safe_index_pending',
   'self_capture',
   'brain_score',

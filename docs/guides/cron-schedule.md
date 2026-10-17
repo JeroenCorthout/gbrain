@@ -138,8 +138,13 @@ per-transcript synthesis subagents. The dials:
 - `dream.triage.threshold` (default 0.5) — the score bar, and the first of the
   two ways a transcript passes the gate (the verified-segment rescue below is
   the second). Scores are cached, so retuning it re-gates instantly with
-  **zero** new LLM calls. Raise it if too much routine content synthesizes;
-  lower it if real signal is being skipped.
+  **zero** new LLM calls. Lower it if real signal is being skipped. Raising it
+  alone may not cut volume (#6753): the rescue band below is
+  `[rescue_floor, threshold)`, so it widens with the threshold, and
+  transcripts that stop passing directly can still pass through the rescue.
+  To cut volume, raise `dream.triage.rescue_floor` or
+  `dream.triage.rescue_min_segments` along with it (`0` turns the rescue
+  off), and compare `details.triage.rescue_fired` before and after.
 - `models.dream.triage` — the triage model (default: utility tier / Haiku).
 - `dream.triage.max_chars` (default 24000, floor 1000) — per-transcript
   sample window (head/middle/tail) sent to the judge. Not part of cache

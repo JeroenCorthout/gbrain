@@ -196,7 +196,7 @@ test/get-page-federated-scope.test.ts	#2555 get_chunks federated scope	5	source-
 test/get-page-federated-scope.test.ts	#4275 alias hop scope: archived sources, include_deleted, fuzzy precedence, grant precedence	5	source-surface-helper
 test/grant-execution-prerequisites.test.ts	execution prerequisite table	1	readFileSync
 test/harness-onboarding.test.ts	harness identity and private handoff	6	readFileSync
-test/hook-command.serial.test.ts	user-prompt	17	source-surface-helper
+test/hook-command.serial.test.ts	user-prompt	18	source-surface-helper
 test/hook-push-spawn-env.test.ts	spawnDetachedPush env handoff	2	readFileSync
 test/hook-push-spawn-env.test.ts	tryExecAsync env handoff	1	readFileSync
 test/init-mode-picker.test.ts	cost matrix: newest models, priced from model-pricing	6	readFileSync
@@ -287,6 +287,7 @@ test/scripts/ci-bounded-run.test.ts	(file-level)	7	readFileSync
 test/scripts/ci-executed-counts.test.ts	CLI	2	readFileSync
 test/scripts/ci-gates.test.ts	CI execution evidence	6	readFileSync
 test/scripts/ci-gates.test.ts	test:full exit status	0	readFileSync
+test/scripts/ci-hydrate-admin-dist.test.ts	#6756 ci:local hydrates the admin/dist volume from the worktree	7	readFileSync
 test/scripts/ci-local-rendering.test.ts	ci-local command rendering	1	readFileSync
 test/scripts/ci-local-rendering.test.ts	ci-local execution coverage	7	readFileSync
 test/scripts/ci-local-rendering.test.ts	local test configuration through run-e2e	2	readFileSync

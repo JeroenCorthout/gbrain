@@ -9,7 +9,7 @@ fixes those and the other kinds listed in
 [What each kind fixes](#what-each-kind-fixes). Every run is a preview unless
 you pass `--apply`.
 The explicit-only kinds, among them `google-file-modes`, `stale-atoms`, `extractor-facts`,
-`captured-facts`, `loop-facts`, `ontology-facts`, `orphan-children`, `failed-writes`, `frontmatter`, `managed-sync-orphans`, `stuck-recovery` and `aliases`, run only when you name them (see [Explicit-only repair kinds](#explicit-only-repair-kinds)).
+`captured-facts`, `loop-facts`, `ontology-facts`, `orphan-children`, `failed-writes`, `frontmatter`, `managed-sync-orphans`, `stuck-recovery`, `aliases` and `rename-identity`, run only when you name them (see [Explicit-only repair kinds](#explicit-only-repair-kinds)).
 `gbrain doctor --remediation-plan` lists the same kinds as repair steps, and
 `gbrain doctor --remediate --yes --include-repairs --expect <plan_hash>` runs them under a budget
 (see [Run repairs through doctor](#run-repairs-through-doctor)).
@@ -147,6 +147,7 @@ work behind exits 0, so scripts should also check `results[].complete`.
 | `ghost-pages` | `ghost_pages` | Explicit-only, preview-bound, destructive consent. Soft-deletes live pages whose canonical file is missing on the owner host (ghost pages: every write refuses `canonical_file_missing` and no sync can import a file that is not there), through `delete_page` bound to the previewed owner, path and revision. `--apply --expect <hash> --yes`. See [ghost pages](#ghost-pages). | Declared db_only and never-filed derived pages (never listed); a page whose file came back before the apply (`file_restored`); pages changed after the preview (`changed_since_preview`). |
 | `receipt-compaction` | `persistence_capacity` (terminal bytes) | Explicit-only, preview-bound, destructive consent. Compacts terminal write receipts now instead of on the idle maintenance tick (#6696): the intent and error message are dropped, the outcome, error code and detail stay, and the unused reservation returns to the receipt-bytes counters. `--older-than <72h\|30d>` is floored at the configured retention unless `--force`; committed receipts only unless `--include-failures`. No admission, so it runs at a full cap. See [receipt compaction](#receipt-compaction). | `failures_kept`: failed, conflict and cancelled receipts left without `--include-failures`. Receipts of a run whose sync cursor is still open, and the newest sync receipt of each worktree, are never listed. |
 | `aliases` | `dangling_aliases` (orphaned rows) | Explicit-only. Deletes free-text page aliases and slug redirects whose target page has no row at all (a page purged before purge removed its aliases, #6619, or a hard-deleted page), each target rechecked under its page lock; a coordinated maintenance write on a managed brain. A redirect from an old name of a page that still exists is never touched. See [aliases](#aliases). | `soft_deleted_target`: aliases of a soft-deleted page, kept for `gbrain restore` and removed when the page is purged. |
+| `rename-identity` | `rename_identity_downgrades` | Explicit-only, preview-bound, destructive consent. For an inexact Git rename that sync split into a delete plus an add (#6729): carries the old page's identity (id, version history, timeline, links, facts, aliases) onto the new slug, imports the new file onto it as an edit and retires the provisional page; or, with `--close`, settles the pair and moves nothing. `--slug <new-slug>` (and `--from <old-slug>`) names one pair; `--apply --expect <hash> --yes`. See [rename identity](#rename-identity). | `fact_rows_collide` (a fence row of the old page the new file does not keep with the same claim); `managed_remedy_unavailable` (a carry on a managed source; `--close` is the remedy there); pages changed after the preview (`changed_since_preview`). |
 
 Timeline rows that an earlier version of a page produced and its current text
 no longer has are removals, not history, so `timeline` neither counts nor
@@ -835,6 +836,60 @@ mirror pages and pages written while their source was unbound publish to the
 database only and are never ghosts. Doctor `undeclared_db_only_pages` is a
 separate audit. A preview lists at most 1,000 ghosts; apply them, then preview
 again for the rest. Sync never removes ghost pages by itself.
+
+<a id="rename-identity"></a>
+### Rename identity
+
+When sync cannot confirm an inexact Git rename (#6729), it imports the pair as a
+delete plus an add: the new file starts a fresh page and the old page keeps its
+history, facts, links and aliases on its soft-deleted slug. The sync report,
+`gbrain sync status --source <id> --json` (`identity_downgrades`) and doctor
+`rename_identity_downgrades` name each open pair with its remedy, and the purge
+leaves the old page alone until the pair is settled or the old page is restored
+or purged. A person picks one of three routes per pair:
+
+- **Carry the identity** (a deferred true rename): the old page id takes the
+  new slug with its version history, timeline, links, facts and aliases; the
+  new file is imported onto it as an edit; the provisional page is retired
+  (soft-deleted under a purged slug, its history and edges moved onto the
+  carried page) and the old slug redirects to the new one.
+- **Close the pair**: nothing moves; the old page is purged with the next purge
+  after its soft-delete window.
+- **Keep both pages**: `gbrain restore <old-slug> --source-id <id> --force`.
+
+```bash
+gbrain repair rename-identity --source default                     # lists the open pairs, each with its preview command
+gbrain repair rename-identity --source default --slug notes/roadmap # preview one pair (add --from <old-slug> when two pairs share it, --close to close)
+gbrain repair rename-identity --source default --slug notes/roadmap --apply --expect <hash> --yes
+```
+
+The preview writes nothing; it binds both page ids, both revisions and the
+disposition into its hash. The apply needs the user's consent (destructive):
+without `--yes` a non-interactive run exits 3 with the consent payload and
+changes nothing. It re-reads both pages under their page locks and refuses
+`changed_since_preview` when anything moved, and it settles the pair
+(`remedied` or `closed`) in the same transaction. A rerun finds no open pair
+and writes nothing.
+
+A carry keeps the facts of both pages or refuses. Every row of the old page's
+`## Facts` fence must be in the new file's fence at the same row number with
+the same claim; the old row (its id, `created_at` and `valid_from`) survives
+with the new row's fence fields. Anything else refuses
+[`fact_rows_collide`](error-codes.md#fact_rows_collide) before writing, naming
+the rows: give each old claim its own row in the new file, commit, sync and
+preview again, or take another route.
+
+A carry runs on classic sources only. On a managed source page tables change
+only through coordinated publications, so carrying is unavailable there
+([`managed_remedy_unavailable`](error-codes.md#managed_remedy_unavailable)):
+the preview says so and writes nothing, an apply refuses with that code, and
+the sync report, `sync status` and doctor name `--close` (its preview and
+its apply with consent) as the pair's remedy. `--close` releases the purge
+hold without carrying identity, on both kinds of source; restoring the old page
+also works on both.
+
+Explicit-only: `gbrain repair --all`, the maintenance cycle and the doctor
+remediation plan never run it.
 
 ### Stale atoms
 

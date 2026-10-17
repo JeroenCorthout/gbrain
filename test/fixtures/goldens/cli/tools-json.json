@@ -2,8 +2,8 @@
   "golden": {
     "exitCode": 0,
     "stderr": "",
-    "stdoutBytes": 241845,
-    "stdoutSha256": "f209b4cc0b5908c7a60772de1fe3852d0f582a78158cda666c5d7e5cfc3daff5",
+    "stdoutBytes": 243221,
+    "stdoutSha256": "cd67da9568c51ae7b1e53f8d488162ddca20a4c9d72f554141da37fda7c5a9d9",
     "toolNames": [
       "remember",
       "entity",
@@ -298,7 +298,9 @@
         "name": "entity",
         "parameters": {
           "name": "string?",
-          "names": "array?"
+          "names": "array?",
+          "prefer_source_id": "string?",
+          "source_id": "string?"
         },
         "required_scopes": [],
         "schema": {
@@ -313,6 +315,14 @@
                 "type": "string"
               },
               "type": "array"
+            },
+            "prefer_source_id": {
+              "description": "Source to try first (thin clients send .gbrain-source here); never narrows.",
+              "type": "string"
+            },
+            "source_id": {
+              "description": "Read only this source. Default: your source first, then every source you can read.",
+              "type": "string"
             }
           },
           "required": [],
@@ -6104,12 +6114,15 @@
           "budget_tokens": "number?",
           "counterparty": "string?",
           "entities": "string?",
+          "entity_refs": "array?",
           "include_private": "boolean?",
           "include_quarantined": "boolean?",
           "intent": "string?",
           "min_trust": "string?",
+          "prefer_source_id": "string?",
           "session_id": "string?",
-          "since": "string?"
+          "since": "string?",
+          "source_id": "string?"
         },
         "required_scopes": [],
         "schema": {
@@ -6125,6 +6138,23 @@
             "entities": {
               "description": "Comma-separated names or slugs (max 8).",
               "type": "string"
+            },
+            "entity_refs": {
+              "description": "Source-qualified entities: [{\"source_id\":\"wiki\",\"slug\":\"people/alice-example\"}].",
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "slug": {
+                    "type": "string"
+                  },
+                  "source_id": {
+                    "type": "string"
+                  }
+                },
+                "required": [],
+                "type": "object"
+              },
+              "type": "array"
             },
             "include_private": {
               "description": "Local trusted callers only.",
@@ -6154,12 +6184,20 @@
               ],
               "type": "string"
             },
+            "prefer_source_id": {
+              "description": "Source to try first (thin clients send .gbrain-source here); never narrows.",
+              "type": "string"
+            },
             "session_id": {
               "description": "Opaque session id.",
               "type": "string"
             },
             "since": {
               "description": "Open-thread events after this ISO time.",
+              "type": "string"
+            },
+            "source_id": {
+              "description": "Resolve entities in this source only. Default: your source first, then every source you can read.",
               "type": "string"
             }
           },

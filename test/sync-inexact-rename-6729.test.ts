@@ -112,9 +112,10 @@ for (const kind of testBackends()) describe(`inexact Git rename identity (#6729,
     expect((await purgeDeletedPagesCoordinated(engine, 0)).slugs.filter(slug => slug.endsWith('-x-com'))).toEqual([]);
     expect(await pageRow(s.id, 'people/a-x-com')).toBeDefined();
 
-    // Doctor names them; the fix restores the first old page once the user asks (ask_user), and verify clears it.
+    // Doctor names them; the fix is the first pair's preview-bound remedy (ask_user, destructive) and restoring the old page is
+    // the alternative it names. Take the alternative here (the remedy has its own suite), then verify clears that pair.
     const { renameIdentityDowngradesEntry } = await import('../src/commands/doctor/checks/rename-identity-downgrades.ts');
-    const doctor = async () => (await renameIdentityDowngradesEntry.run({ engine } as unknown as DoctorContext)) as unknown as Array<{ status: string; details: { count: number; by_source: Array<{ source_id: string; count: number }>; restore_unavailable_sources?: string[] }; fix?: Record<string, unknown> & { argv: string[]; verify: { argv: string[] } } }>;
+    const doctor = async () => (await renameIdentityDowngradesEntry.run({ engine } as unknown as DoctorContext)) as unknown as Array<{ status: string; details: { count: number; by_source: Array<{ source_id: string; count: number }>; samples: Array<{ old_slug: string; new_slug: string }>; restore_unavailable_sources?: string[] }; fix?: Record<string, unknown> & { argv: string[]; why: string; plan_hash: string; verify: { argv: string[] } } }>;
     const mine = (finding: Awaited<ReturnType<typeof doctor>>[number]) => finding.details.by_source.find(entry => entry.source_id === s.id)?.count ?? 0;
     const [finding] = await doctor();
     expect(finding!.status).toBe('warn');
@@ -125,7 +126,11 @@ for (const kind of testBackends()) describe(`inexact Git rename identity (#6729,
     if (kind === 'postgres') {
       // An unbound classic Postgres source refuses page writes outside its checkout, so no surface offers the restore
       // there; the pairs still hold their old pages, with no time window, until a disposition.
-      expect(finding!.fix).toBeUndefined();
+      // The doctor fix there is the pair's remedy (a classic carry).
+      const { new_slug: carryOnto } = finding!.details.samples[0]!;
+      const carryPreview = ['gbrain', 'repair', 'rename-identity', '--source', s.id, '--slug', carryOnto];
+      expect(structuredClone(finding!.fix)).toMatchObject({ argv: [...carryPreview, '--apply', '--expect', finding!.fix!.plan_hash, '--yes'], preview_argv: carryPreview, consent: ['destructive'], ask_user: true });
+      expect(finding!.fix!.why).not.toContain('gbrain restore');
       expect(finding!.details.restore_unavailable_sources).toContain(s.id);
       await age(); await purgeStaleCheckpoints(engine);
       expect((await purgeDeletedPagesCoordinated(engine, 0)).slugs.filter(slug => slug.endsWith('-x-com'))).toEqual([]);
@@ -134,14 +139,17 @@ for (const kind of testBackends()) describe(`inexact Git rename identity (#6729,
       expect((await purgeDeletedPagesCoordinated(engine, 0)).slugs).toContain('people/a-x-com');
       return;
     }
-    const [, , slug, , sourceId] = finding!.fix!.argv;
+    const { old_slug: slug, new_slug: newSlug } = finding!.details.samples[0]!, sourceId = s.id;
     const restored = { 'people/a-x-com': { id: a.id, fact: 'A works on payments', alias: 'ali' }, 'people/b-x-com': { id: b.id, fact: 'B works on search', alias: 'bea' } }[slug!]!;
     const other = slug === 'people/a-x-com' ? { slug: 'people/b-x-com', id: b.id } : { slug: 'people/a-x-com', id: a.id };
-    expect(finding!.fix).toMatchObject({ argv: ['gbrain', 'restore', expect.stringMatching(/^people\/[ab]-x-com$/), '--source-id', s.id, '--force'], consent: [], actor: 'agent', ask_user: true,
-      user_message: expect.stringContaining(slug!), verify: { argv: ['gbrain', 'doctor', '--only', 'rename_identity_downgrades', '--json'] } });
+    expect(slug).toMatch(/^people\/[ab]-x-com$/);
+    const preview = ['gbrain', 'repair', 'rename-identity', '--source', s.id, '--slug', newSlug];
+    expect(structuredClone(finding!.fix)).toMatchObject({ argv: [...preview, '--apply', '--expect', finding!.fix!.plan_hash, '--yes'], preview_argv: preview, consent: ['destructive'], actor: 'agent', ask_user: true,
+      user_message: expect.stringContaining(slug), verify: { argv: ['gbrain', 'doctor', '--only', 'rename_identity_downgrades', '--json'] } });
+    expect(finding!.fix!.why).toContain(`gbrain restore ${slug} --source-id ${s.id} --force`);
     const { deriveNext } = await import('../src/core/agent-output.ts');
     expect(deriveNext(finding!.fix as never, { transport: 'cli', isCallable: () => false, preapproved: () => true })).toBe('ask_user');
-    // Run the argv (gbrain restore <slug> --source-id <id> --force) through its operation, then the verify.
+    // Run the alternative (gbrain restore <slug> --source-id <id> --force) through its operation, then the verify.
     const { operationsByName } = await import('../src/core/operations.ts');
     await operationsByName.restore_page!.handler({ ...repairCtx(engine), sourceId } as never, { slug, source_id: sourceId, force: true });
     expect((await pageRow(s.id, slug!))).toMatchObject({ id: restored.id, deleted_at: null });

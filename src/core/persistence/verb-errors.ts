@@ -131,7 +131,7 @@ export function writeFailureDiagnostic(code: string, message?: string | null): {
   if (code === 'purged_content') return { reason: code, message: 'This content was purged from this source and cannot be saved again.',
     suggestion: PURGED_SUGGESTION };
   const memory = code === 'invalid_params' ? MEMORY_REFUSAL.exec(message ?? '') : null;
-  if (memory) return { reason: code, message: message!, suggestion: MEMORY_REFUSAL_SUGGESTION[memory[1]!]! };
+  if (memory) return { reason: code, message: message!, suggestion: MEMORY_REFUSAL_SUGGESTION[/, extracted from that conversation page\.$/.test(message!) ? 'replaces_cross_page_derived' : memory[1]!]! };
   const reason = isWriteErrorCode(code) ? code : 'storage_error';
   return { reason, message: `The write did not commit: it ended with ${reason}, and nothing was saved.`,
     suggestion: 'Resolve the reported write failure before starting a corrected attempt.' };
@@ -148,6 +148,7 @@ const MEMORY_REFUSAL_SUGGESTION: Record<string, string> = {
   target_expired: 'Remember the new claim without replaces.',
   replaces_entity_mismatch: 'Pass the same entity as the fact being replaced, or forget the old fact and remember the new one separately.',
   replaces_cross_page: 'Forget the old fact, then remember the new one.',
+  replaces_cross_page_derived: 'Re-extract the conversation page named here to change its facts: preview with gbrain extract-conversation-facts --slugs <page> --force --dry-run, then run it with --max-cost-usd <n> (paid).',
   replaces_duplicate: 'Forget the replaced fact if it is no longer true; the existing fact named here already says the new claim.',
 };
 

@@ -7,6 +7,7 @@ import { loadConfigSnapshot } from './config-snapshot.ts';
 import { loadGbrainEnvFile } from './gbrain-env-file.ts';
 import { dotenvValuesForKey } from './env-trust.ts';
 import { REMOTE_PRIVATE_PAGES_KEY } from './search/private-visibility.ts';
+import { RUNTIME_READER_CONFIG_KEYS } from './config-runtime-keys.ts';
 
 /**
  * Where is the active DB URL coming from? Pure introspection, no connection
@@ -1792,6 +1793,7 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = [
   'planner.auto_analyze', 'planner.first_read_budget_ms', 'import.analyze_every_pages', 'health.cache_ttl_ms',
   // Wave B segmented page storage (src/core/page-body/limits.ts PAGE_BODY_CONFIG_KEYS; switch defaults off).
   'pages.segmented_storage', 'pages.max_bytes', 'pages.flip_retire_max_rows', 'versions.segmented_max_per_page', 'versions.segmented_max_pinned_bytes',
+  ...RUNTIME_READER_CONFIG_KEYS, // #6780: getConfig() runtime knobs (config-runtime-keys.ts)
 ];
 
 /**

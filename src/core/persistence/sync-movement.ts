@@ -23,11 +23,14 @@
  * between cron runs; informational, never scored), `held` (the newest activity
  * is a hold: #6298's containment, not a stall), `moving` (a commit or a step
  * advance within `persistence.preparation_ceiling_ms`), `not_moving` (none for
- * longer than the ceiling while something live should have produced one).
+ * longer than the ceiling while something live should have produced one),
+ * `unknown` (#6781: the backlog read failed, so whether work is pending is not
+ * known; `unknown.reason` is `backlog_read_failed`; never `nothing_pending`).
  * `data_moving` is true/false for the live states and null otherwise;
  * `not_moving_since` is the last watermark. `judgeMovement` compares two
  * snapshots over a window for the standalone command (`moved`,
- * `within_allowance`, `held`, `parked`, `not_moving`, `nothing_pending`).
+ * `within_allowance`, `held`, `parked`, `not_moving`, `nothing_pending`,
+ * `unknown`).
  * `startMovementWatch` is the serve's unref'd ticker that prints one
  * `[gbrain notice managed_sync_not_moving]` when a source flips to not moving
  * and one line when it moves again.
@@ -38,7 +41,9 @@ import { claimStateOf, type ClaimState } from './claim-phase.ts';
 import { readPreparationPolicy } from './switches.ts';
 import { listHostConsumers } from './consumer-heartbeat.ts';
 
-export type MovementState = 'moving' | 'held' | 'parked' | 'not_moving' | 'nothing_pending';
+export type MovementState = 'moving' | 'held' | 'parked' | 'not_moving' | 'nothing_pending' | 'unknown';
+/** #6781: why a source's movement is `unknown`; `error` is the failed read's message, bounded. */
+export interface MovementUnknown { reason: 'backlog_read_failed'; error: string }
 export interface MovementHead {
   request_id: string;
   state: string;
@@ -74,6 +79,8 @@ export interface SourceMovement {
   ceiling_ms: number;
   owner_is_this_host: boolean | null;
   writer_status_command: string;
+  /** Set only when `movement_state` is `unknown`. */
+  unknown?: MovementUnknown;
 }
 
 export const MOVEMENT_WATCH_MS = 60_000;
@@ -121,7 +128,12 @@ export async function readSourceMovement(engine: BrainEngine, opts: { sourceIds?
     FROM persistence_source_bindings b JOIN sources s ON s.id=b.source_id AND s.incarnation=b.source_incarnation
     JOIN persistence_worktrees w ON w.id=b.worktree_id WHERE ($1::text[] IS NULL OR b.source_id=ANY($1::text[])) ORDER BY b.source_id`, [opts.sourceIds ?? null]);
   if (!bindings.length) return [];
-  const backlog = new Map((await readManagedSyncBacklog(engine, bindings.map(b => b.source_id)).catch(() => [])).map(b => [b.source_id, b]));
+  let unknown: MovementUnknown | null = null;
+  let backlogRows: ManagedSyncBacklog[] = [];
+  try { backlogRows = await readManagedSyncBacklog(engine, bindings.map(b => b.source_id)); } catch (error) {
+    unknown = { reason: 'backlog_read_failed', error: (error instanceof Error ? error.message : String(error)).slice(0, 300) };
+  }
+  const backlog = new Map(backlogRows.map(b => [b.source_id, b]));
   const policy = await readPreparationPolicy(engine);
   const { localHostId } = await import('./identity.ts');
   const { persistenceConsumerStatus } = await import('./service.ts');
@@ -162,7 +174,7 @@ export async function readSourceMovement(engine: BrainEngine, opts: { sourceIds?
       cursor: cursor ? { index: cursor.index, total: cursor.total, remaining: cursor.remaining, held: cursor.held, last_progress_at: cursor.last_progress_at, resume_command: cursor.resume_command, resume_args: cursor.resume_args } : null,
       head, holds, admitted, admitted_since: iso(mark?.admitted_since), live: { drain: !!drain || !!jobDrain, drain_pid: drain?.holder_pid ?? null, drain_job_id: jobDrain, consumer }, ceiling_ms: policy.ceilingMs, owner_is_this_host: ownerHere,
       writer_status_command: writerStatusCommand(binding.source_id) };
-    out.push({ ...base, ...verdict(base, now) });
+    out.push(unknown ? { ...base, movement_state: 'unknown', data_moving: null, not_moving_since: null, unknown } : { ...base, ...verdict(base, now) });
   }
   return out;
 }
@@ -183,6 +195,9 @@ function safeJson(text: string): unknown { try { return JSON.parse(text); } catc
 /** One human line per source for `gbrain sources status`; null for a source with nothing pending. */
 export function formatSourceMovement(m: SourceMovement): string | null {
   if (m.movement_state === 'nothing_pending') return null;
+  if (m.movement_state === 'unknown') {
+    return `${m.source_id}: managed sync movement UNKNOWN: the sync backlog could not be read (${m.unknown?.reason ?? 'backlog_read_failed'}: ${m.unknown?.error ?? 'no detail'}); this is not a report that nothing is pending. Recheck: gbrain sources writer movement ${m.source_id}`;
+  }
   const where = m.head?.step ? ` head at step ${m.head.step}${m.head.waiting_on && m.head.waiting_on !== 'unknown' ? ` (waiting on ${m.head.waiting_on})` : ''}${m.head.owner ? `, ${m.head.owner.kind} pid ${m.head.owner.pid}` : ''};` : '';
   switch (m.movement_state) {
     case 'not_moving': return `${m.source_id}: managed sync NOT MOVING since ${m.not_moving_since} (no committed page or step advance for longer than ${Math.round(m.ceiling_ms / 1000)}s while a ${m.live.drain ? 'sync' : 'consumer'} is live);${where} inspect: ${m.writer_status_command}`;
@@ -193,9 +208,10 @@ export function formatSourceMovement(m: SourceMovement): string | null {
 }
 
 /** The command's verdict over a window: what changed between two snapshots of one source. */
-export type MovementVerdict = 'moved' | 'within_allowance' | 'held' | 'parked' | 'not_moving' | 'nothing_pending';
+export type MovementVerdict = 'moved' | 'within_allowance' | 'held' | 'parked' | 'not_moving' | 'nothing_pending' | 'unknown';
 export function judgeMovement(before: SourceMovement | undefined, after: SourceMovement): MovementVerdict {
-  if (after.movement_state === 'nothing_pending') return 'nothing_pending';
+  if (after.movement_state === 'nothing_pending' || after.movement_state === 'unknown') return after.movement_state;
+  if (before?.movement_state === 'unknown') return 'unknown';
   if (!before) return after.movement_state === 'moving' ? 'moved' : after.movement_state;
   if (after.last_commit_at && (!before.last_commit_at || after.last_commit_at > before.last_commit_at)) return 'moved';
   if (after.holds.last_hold_at && (!before.holds.last_hold_at || after.holds.last_hold_at > before.holds.last_hold_at)) return 'held';
@@ -208,7 +224,9 @@ export function judgeMovement(before: SourceMovement | undefined, after: SourceM
 export interface MovementWatch { stop(): void; tick(): Promise<void> }
 /**
  * The serve's ticker: reads movement every `everyMs` and logs one notice when a source flips to `not_moving`
- * (and one recovery line when it moves again). Read failures are swallowed; the timer never keeps the process alive.
+ * (and one recovery line when it moves again). Read failures are swallowed, and a source whose backlog read failed
+ * (`unknown`, #6781) keeps its flip state, so a failed read neither repeats nor clears the notice; the timer never keeps
+ * the process alive.
  */
 export function startMovementWatch(engine: BrainEngine, opts: { log: (line: string) => void; everyMs?: number; setInterval?: typeof setInterval; clearInterval?: typeof clearInterval } ): MovementWatch {
   const flipped = new Set<string>();
@@ -218,6 +236,7 @@ export function startMovementWatch(engine: BrainEngine, opts: { log: (line: stri
     inflight = true;
     try {
       for (const m of await readSourceMovement(engine)) {
+        if (m.movement_state === 'unknown') continue;
         if (m.movement_state === 'not_moving' && !flipped.has(m.source_id)) {
           flipped.add(m.source_id);
           opts.log(`[gbrain notice managed_sync_not_moving kind=degraded] ${formatSourceMovement(m)}\nnext: run ${m.writer_status_command} (read-only) and act on the running claim's next step.`);

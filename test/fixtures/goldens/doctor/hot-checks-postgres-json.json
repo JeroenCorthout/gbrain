@@ -506,18 +506,18 @@
                     "days_to_exhaustion": null,
                     "exhaustion_date": null,
                     "limit": 68719476736,
-                    "max_day_7d": 196014,
+                    "max_day_7d": 196974,
                     "net_per_day_7d": 58822,
                     "pct": 0,
-                    "per_day_7d": 196014,
-                    "reclaimable_bytes": 137192,
+                    "per_day_7d": 196974,
+                    "reclaimable_bytes": 138152,
                     "recommended_limit": 137438953472,
                     "resource": "terminal_bytes",
                     "scope": "brain",
                     "spike_day": null,
                     "status": "ok",
                     "under_reserved_receipts": 0,
-                    "used": 196014,
+                    "used": 196974,
                     "window_days": 1
                   },
                   {
@@ -543,18 +543,18 @@
                     "days_to_exhaustion": null,
                     "exhaustion_date": null,
                     "limit": 17179869184,
-                    "max_day_7d": 196014,
+                    "max_day_7d": 196974,
                     "net_per_day_7d": 58822,
                     "pct": 0,
-                    "per_day_7d": 196014,
-                    "reclaimable_bytes": 137192,
+                    "per_day_7d": 196974,
+                    "reclaimable_bytes": 138152,
                     "recommended_limit": 34359738368,
                     "resource": "terminal_bytes",
                     "scope": "principal:local_cli:<uuid>",
                     "spike_day": null,
                     "status": "ok",
                     "under_reserved_receipts": 0,
-                    "used": 196014,
+                    "used": 196974,
                     "window_days": 1
                   }
                 ],
@@ -1631,6 +1631,18 @@
           {
             "category": "brain",
             "details": {
+              "checkouts": [],
+              "count": 0,
+              "docs": "docs/architecture/topologies.md#coordination-lock"
+            },
+            "elapsed_ms": "<volatile>",
+            "message": "Every checkout's recorded coordination lock agrees with GBRAIN_COORDINATION_HOME, or the variable does not apply.",
+            "name": "coordination_lock_location",
+            "status": "ok"
+          },
+          {
+            "category": "brain",
+            "details": {
               "sources": [],
               "total": 0
             },
@@ -2552,12 +2564,14 @@
           {
             "category": "brain",
             "details": {
+              "conversation": null,
               "fix": "preview links: gbrain facts relink --dry-run",
               "inferred_7d": {
                 "mention": 0,
                 "page": 0
               },
               "new_7d": {
+                "conversation_unresolved": 0,
                 "eligible": 3,
                 "facts": 3,
                 "no_subject": 0,
@@ -2571,6 +2585,7 @@
               "window": {
                 "active": 3,
                 "capped": false,
+                "conversation": 0,
                 "fence_owned": 0,
                 "unlinked": 0
               }
@@ -3590,7 +3605,7 @@
           {
             "category": "brain",
             "elapsed_ms": "<volatile>",
-            "message": "No retrieval-affecting files changed in working tree.",
+            "message": "1 retrieval-affecting file(s) changed since HEAD: src/core/search/relational-recall.ts. Re-run `gbrain eval run-all` after committing these changes.",
             "name": "eval_drift",
             "status": "ok"
           },
@@ -3864,14 +3879,14 @@
           {
             "category": "meta",
             "elapsed_ms": "<volatile>",
-            "message": "Active pack gbrain-base-v2@1.3.0+a50a67b9 is current (no successor declared)",
+            "message": "Active pack gbrain-base-v2@1.4.0+1c5ba903 is current (no successor declared)",
             "name": "pack_upgrade_available",
             "status": "ok"
           },
           {
             "category": "meta",
             "elapsed_ms": "<volatile>",
-            "message": "5 distinct typed values (pack gbrain-base-v2 declares 20)",
+            "message": "5 distinct typed values (pack gbrain-base-v2 declares 21)",
             "name": "type_proliferation",
             "status": "ok"
           },
@@ -4701,18 +4716,18 @@
                     "days_to_exhaustion": null,
                     "exhaustion_date": null,
                     "limit": 68719476736,
-                    "max_day_7d": 196014,
+                    "max_day_7d": 196974,
                     "net_per_day_7d": 58822,
                     "pct": 0,
-                    "per_day_7d": 196014,
-                    "reclaimable_bytes": 137192,
+                    "per_day_7d": 196974,
+                    "reclaimable_bytes": 138152,
                     "recommended_limit": 137438953472,
                     "resource": "terminal_bytes",
                     "scope": "brain",
                     "spike_day": null,
                     "status": "ok",
                     "under_reserved_receipts": 0,
-                    "used": 196014,
+                    "used": 196974,
                     "window_days": 1
                   },
                   {
@@ -4738,18 +4753,18 @@
                     "days_to_exhaustion": null,
                     "exhaustion_date": null,
                     "limit": 17179869184,
-                    "max_day_7d": 196014,
+                    "max_day_7d": 196974,
                     "net_per_day_7d": 58822,
                     "pct": 0,
-                    "per_day_7d": 196014,
-                    "reclaimable_bytes": 137192,
+                    "per_day_7d": 196974,
+                    "reclaimable_bytes": 138152,
                     "recommended_limit": 34359738368,
                     "resource": "terminal_bytes",
                     "scope": "principal:local_cli:<uuid>",
                     "spike_day": null,
                     "status": "ok",
                     "under_reserved_receipts": 0,
-                    "used": 196014,
+                    "used": 196974,
                     "window_days": 1
                   }
                 ],
@@ -5826,6 +5841,18 @@
           {
             "category": "brain",
             "details": {
+              "checkouts": [],
+              "count": 0,
+              "docs": "docs/architecture/topologies.md#coordination-lock"
+            },
+            "elapsed_ms": "<volatile>",
+            "message": "Every checkout's recorded coordination lock agrees with GBRAIN_COORDINATION_HOME, or the variable does not apply.",
+            "name": "coordination_lock_location",
+            "status": "ok"
+          },
+          {
+            "category": "brain",
+            "details": {
               "sources": [],
               "total": 0
             },
@@ -6747,12 +6774,14 @@
           {
             "category": "brain",
             "details": {
+              "conversation": null,
               "fix": "preview links: gbrain facts relink --dry-run",
               "inferred_7d": {
                 "mention": 0,
                 "page": 0
               },
               "new_7d": {
+                "conversation_unresolved": 0,
                 "eligible": 3,
                 "facts": 3,
                 "no_subject": 0,
@@ -6766,6 +6795,7 @@
               "window": {
                 "active": 3,
                 "capped": false,
+                "conversation": 0,
                 "fence_owned": 0,
                 "unlinked": 0
               }
@@ -7785,7 +7815,7 @@
           {
             "category": "brain",
             "elapsed_ms": "<volatile>",
-            "message": "No retrieval-affecting files changed in working tree.",
+            "message": "1 retrieval-affecting file(s) changed since HEAD: src/core/search/relational-recall.ts. Re-run `gbrain eval run-all` after committing these changes.",
             "name": "eval_drift",
             "status": "ok"
           },
@@ -8059,14 +8089,14 @@
           {
             "category": "meta",
             "elapsed_ms": "<volatile>",
-            "message": "Active pack gbrain-base-v2@1.3.0+a50a67b9 is current (no successor declared)",
+            "message": "Active pack gbrain-base-v2@1.4.0+1c5ba903 is current (no successor declared)",
             "name": "pack_upgrade_available",
             "status": "ok"
           },
           {
             "category": "meta",
             "elapsed_ms": "<volatile>",
-            "message": "5 distinct typed values (pack gbrain-base-v2 declares 20)",
+            "message": "5 distinct typed values (pack gbrain-base-v2 declares 21)",
             "name": "type_proliferation",
             "status": "ok"
           },

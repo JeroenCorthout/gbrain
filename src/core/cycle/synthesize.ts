@@ -3103,10 +3103,10 @@ async function writeSummaryPage(
     {
       dream_generated: true,
       dream_cycle_date: summaryDate,
-      // #4337: immutable mirror — reruns preserve the first cycle date via
-      // stampDreamProvenance/renderPageToMarkdown; the summary is per-date so
-      // both keys are simply the summary's own date.
+      // #4337: immutable mirror (reruns keep the first date via stampDreamProvenance); #6773: `created` is the
+      // temporal key lint requires. The summary is per-date, so each key is simply the summary's own date.
       dream_created_cycle_date: summaryDate,
+      created: summaryDate,
       // #1978: deterministic index page — no source document of its own;
       // raw traces live on the listed pages. Explicit exemption keeps the
       // doctor raw_provenance check quiet.
