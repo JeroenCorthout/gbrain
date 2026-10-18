@@ -56,7 +56,8 @@ const PROBE_MS = Number(flag('probe-ms', '100'));
 const GROOT = resolve(flag('gbrain-root', REPO));
 const WORK = resolve(flag('work-dir', join(REPO, '.context/bench/sync-freshness')));
 const CLI = join(GROOT, 'src/cli.ts');
-const REV = git(GROOT, 'rev-parse', '--short=8', 'HEAD');
+/** The product revision (last commit touching src/), so bench-only commits keep reusing the same brains. */
+const REV = git(GROOT, 'log', '-1', '--format=%h', '--abbrev=8', '--', 'src', 'package.json');
 const LABEL = flag('label', git(GROOT, 'rev-parse', '--abbrev-ref', 'HEAD') + '@' + REV);
 const INTERVAL = Number(flag('interval', TRIGGER === 'autopilot' ? '300' : '60'));
 const TIMEOUT_S = Number(flag('timeout', String(TRIGGER === 'autopilot' ? INTERVAL * 2 + 600 : TRIGGER === 'watch' ? INTERVAL + 300 : COMMIT === 'backlog' ? 3600 : 300)));
@@ -125,6 +126,22 @@ async function syncUntilDone(home: string, label: string): Promise<{ ms: number;
   }
 }
 
+/**
+ * A full import leaves the mention-link pass to later (links_extraction_lag), and a managed sync then spends its tail on
+ * that backlog. Cells measure steady state, so the build clears it the way the sync's own hint says.
+ */
+async function settleLinks(home: string): Promise<{ ms: number; runs: number; last: string }> {
+  const t = now();
+  let last = '';
+  for (let i = 0; i < 20; i++) {
+    const r = await gb(['extract', '--stale', '--catch-up', '--source-id', 'bench', '--brain', 'host'], { home, allowFail: true });
+    last = (r.stdout + r.stderr).trim().split('\n').slice(-3).join(' | ').slice(0, 400);
+    log('links settle pass ' + (i + 1) + ' (' + round1((now() - t) / 1000) + ' s): ' + last);
+    if (r.code !== 0 || !/Actionable: [1-9]\d* page\(s\) still need|[1-9]\d* page\(s\) due for the mention pass/.test(r.stdout + r.stderr)) return { ms: round1(now() - t), runs: i + 1, last };
+  }
+  return { ms: round1(now() - t), runs: 20, last };
+}
+
 async function activate(home: string): Promise<number> {
   const t = now();
   let state = (await gb(['sources', 'writer', 'status', '--json'], { home })).json.admin_state as string;
@@ -139,7 +156,14 @@ async function activate(home: string): Promise<number> {
 async function ensureBrain(mode: 'classic' | 'managed'): Promise<Record<string, unknown>> {
   const dir = brainDir(mode), home = join(dir, 'home'), root = join(dir, 'repo');
   const ready = join(dir, 'ready.json');
-  if (existsSync(ready) && !has('rebuild')) return JSON.parse(readFileSync(ready, 'utf8'));
+  if (existsSync(ready) && !has('rebuild')) {
+    const prior = JSON.parse(readFileSync(ready, 'utf8'));
+    if (prior.links_settled) return prior;
+    writeConfig(home, mode);
+    prior.links_settled = await settleLinks(home);
+    writeFileSync(ready, JSON.stringify(prior, null, 2));
+    return prior;
+  }
   rmSync(dir, { recursive: true, force: true });
   mkdirSync(dir, { recursive: true });
   const build: Record<string, unknown> = { engine: ENGINE, mode, pages: PAGES, rev: REV, built_at: new Date().toISOString() };
@@ -185,9 +209,11 @@ async function ensureBrain(mode: 'classic' | 'managed'): Promise<Record<string, 
     build.initial_import_ms = round1(s.ms);
     build.initial_import_pages_per_s = round1(PAGES / (s.ms / 1000));
   }
+  if (mode === 'classic') build.links_settled = await settleLinks(home);
   if (mode === 'managed') {
     build.activate_ms = round1(await activate(home));
     build.first_managed_sync = await syncUntilDone(home, 'post-activation');
+    build.links_settled = await settleLinks(home);
   }
   writeFileSync(ready, JSON.stringify(build, null, 2));
   return build;
