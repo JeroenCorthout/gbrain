@@ -10,6 +10,29 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.294.0] - 2026-10-17
+
+**A Git index lock left by a killed git no longer stops a managed brain's Git backups until someone removes it, and large checkouts stop killing git in the first place.** Hotfix for #6932, plus #6936.
+
+### What changed
+
+| Situation | Before | Now |
+|---|---|---|
+| A git step of the canonical writer was SIGKILLed after it created `.git/index.lock` (a step past its deadline, a job group killed after its grace, the OOM killer) (#6932) | every later Git effect in that checkout failed `git_index_locked`, then `git_index_stale`, and parked; commits for the whole source stopped until a person removed the lock and ran `gbrain sources writer retry-effects` | while it holds its writer lock, the writer reclaims a lock it can prove abandoned: on Linux with the whole process table visible and a local filesystem, no process has the lock open, no git runs in the checkout or points at it through `GIT_DIR`/`GIT_WORK_TREE`/`GIT_COMMON_DIR`/`GIT_INDEX_FILE`, and the lock is empty and at least 5 s old, or older than 10 minutes. It then retries the step and gives effects that lock had parked one more attempt. Each reclaim leaves a receipt under `GBRAIN_HOME/persistence/index-lock-reclaims.jsonl` and a log line, and doctor `parked_effects` reports reclaims from the last 7 days |
+| An index lock the writer cannot prove abandoned (a live git, another platform, a container, a network filesystem) | `git_index_stale` told you to remove it if no git was running | the lock still stays, and `git_index_stale` now says why it was kept and carries an `ask_user` fix: check that no git runs in that checkout, remove the lock, then retry the parked effects |
+| A one-file Git effect on a large checkout under heavy I/O (a 48 MB index took 35–39 s for `commit --only` in a throttled test) | each git step had 20 s, then 2 s between SIGTERM and SIGKILL, so a slow git was killed mid-write and left its lock | each step gets 20 s plus 2 s per MiB of index (at most 120 s; 98 s for a 39 MB index) and 10 s to exit after SIGTERM, and read-only steps run with `GIT_OPTIONAL_LOCKS=0`, so `git status` never takes the index lock |
+| An advisor check that throws (#6936) | it was dropped silently: with no other findings the report said the brain looked healthy and `gbrain advisor` exited 0 | the check is reported as a warn finding `collector_failed:<check>` (static text, no error details, nothing `--apply` can run), so the run exits 1; findings from other checks and critical precedence are unchanged |
+
+### What you need to do
+
+Nothing. If doctor `parked_effects` still shows effects parked with `git_index_stale`, its message says why the lock was kept; follow the fix it names.
+
+### For contributors
+
+- `commitGitTargets` and `publishGitEffect` take an optional `GitEffectOwner` (the caller's writer lock). Only callers that pass one can reclaim a lock; the effect worker passes it.
+- `execFileBounded` takes `termGraceMs` (default 2 s).
+- `test/persistence-index-lock-reclaim-6932.test.ts` kills a real `git add` with SIGKILL while it holds the lock. Where the process table isn't fully visible (macOS, containers), the same cases assert the refusal instead.
+
 ## [0.60.293.0] - 2026-10-17
 
 **CI only: the unit-lane PostgreSQL arms run in 14 shards, sized from fresh measured timings.** Nothing changes for gbrain users.
