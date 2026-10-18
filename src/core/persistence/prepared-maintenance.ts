@@ -139,15 +139,20 @@ async function validateMaintenance(engine: BrainEngine, authority: MaintenanceAu
 
 async function submitMaintenance(engine: BrainEngine, authority: MaintenanceAuthority, slug: string,
   intent: Record<string, unknown>, requestId: string, file = true): Promise<Record<string, unknown>> {
+  const probe = (globalThis as { __mwwProbe?: (step: string) => void }).__mwwProbe;
+  probe?.('start');
   await validateMaintenance(engine, authority, slug);
+  probe?.('validate');
   const wait = authority.wait ??= new MaintenanceWriteWait();
   const prior = await getWriteRequest(engine, authority.writer.principal, requestId);
+  probe?.('getWriteRequest');
   if (prior) {
     await authorizeStoredRequest(engine, prior);
     assertReplayIntent(prior, intentDigest({ operation: 'submit_job', sourceId: authority.writer.sourceId, slug, callerIntent: intent }));
     return writeResponse(wait.observe(await waitForWrite(engine, prior, loadConfig() ?? { engine: engine.kind }, wait.ms())));
   }
   const snapshot = await engine.readPageSnapshot(slug, { sourceId: authority.writer.sourceId, includeDeleted: true });
+  probe?.('readPageSnapshot');
   // A deleted-page intent (extract_facts expiring a soft-deleted page's facts) admits only a page that is still soft-deleted.
   if (intent.deleted_page === true && !snapshot?.page.deleted_at) {
     throw opError('page_identity_changed', 'The deleted page was restored or purged before maintenance admitted its request.',
@@ -179,14 +184,20 @@ async function submitMaintenance(engine: BrainEngine, authority: MaintenanceAuth
     // #6696 (A12): the recorded canonical file is gone, so publication would refuse source_changed; refuse before a request exists.
     if (live.reason === CANONICAL_FILE_MISSING && !PUBLISHES_WITHOUT_FILE.has(String(intent.kind))) throw maintenanceGhostRefusal(authority.writer.sourceId, slug);
   }
+  probe?.('liveFileDrift');
   // #6696 (A12): the same write refused K times in the window is not admitted again until something it depends on changes.
   await assertRefusalBreakerClosed(engine, { principal: authority.writer.principal, sourceId: authority.writer.sourceId, slug,
     digest: intentDigest({ operation: 'submit_job', sourceId: authority.writer.sourceId, slug, callerIntent: intent }) });
+  probe?.('refusalBreaker');
   const row = await admitWrite(engine, { principal: authority.writer.principal, requestId, operation: 'submit_job',
     sourceId: authority.writer.sourceId, sourceIncarnation: authority.writer.sourceIncarnation, slug,
     pageId: snapshot?.page.id ?? null, authority: authority.writer, callerIntent: intent, intent,
     worktreeId: file ? authority.binding?.worktree_id : null, topologyGeneration: file ? authority.binding?.topology_generation : null });
-  return writeResponse(wait.observe(await waitForWrite(engine, row, loadConfig() ?? { engine: engine.kind }, wait.ms())));
+  probe?.('admitWrite');
+  const waitMs = wait.ms();
+  const waited = await waitForWrite(engine, row, loadConfig() ?? { engine: engine.kind }, waitMs);
+  probe?.(`waitForWrite(${waitMs})`);
+  return writeResponse(wait.observe(waited));
 }
 
 /** #6643: `source_changed` / `file_database_drift` before admission: the audit and repair commands, never a new request. */
