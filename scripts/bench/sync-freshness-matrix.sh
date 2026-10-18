@@ -4,7 +4,7 @@
 # Cells run one at a time (they share the CPU). Each writes <work-dir>/results/<cell>.json;
 # render the table with: bun scripts/bench/sync-freshness.ts --report <work-dir>/results
 set -uo pipefail
-SET=\${1:?set}; W=\${2:-$PWD/.context/bench/sync-freshness}; PR4B=\${3:-}
+SET=${1:?set}; W=${2:-$PWD/.context/bench/sync-freshness}; PR4B=${3:-}
 B="bun $(dirname "$0")/sync-freshness.ts --work-dir $W"
 run() { echo "== $*" >&2; $B "$@" 2>&1 | grep -E '^\[freshness' | grep -E 'wrote|ERROR|never|cell ' >&2 || true; }
 case "$SET" in
@@ -53,7 +53,7 @@ case "$SET" in
       run --engine $E --mode $M --pages $P --commit backlog --trigger manual --reps 2
     done; done; done ;;
   pr4b)
-    : "\${PR4B:?pr4b checkout path}"
+    : "${PR4B:?pr4b checkout path}"
     for ROOT in "$(cd "$(dirname "$0")/../.." && pwd)" "$PR4B"; do
       run --gbrain-root "$ROOT" --engine postgres --mode managed --pages 10000 --commit single --trigger manual --reps 20
       run --gbrain-root "$ROOT" --engine postgres --mode managed --pages 10000 --commit single --trigger serve --reps 20
