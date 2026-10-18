@@ -251,6 +251,11 @@ export async function runJobsWork({ args, engine, queue }: JobsCommandContext): 
   try {
     reportWorkerStarting('worker_startup');
     worker.once('ready', () => reportWorkerReady(childIdentity));
+    if (process.env.GBRA133_NO_BOOT_CONSUMER !== '1') {
+      const { startPersistenceConsumer } = await import('../../core/persistence/service.ts');
+      const { loadConfig } = await import('../../core/config.ts');
+      startPersistenceConsumer(engine, loadConfig() ?? { engine: engine.kind });
+    }
     await worker.start();
   } finally {
     unregisterWorker();
