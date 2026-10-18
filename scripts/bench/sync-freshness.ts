@@ -116,6 +116,13 @@ async function admin<T>(fn: (sql: ReturnType<typeof postgres>) => Promise<T>, db
   try { return await fn(sql); } finally { await sql.end(); }
 }
 async function dbExists(db: string): Promise<boolean> { return admin(async sql => (await sql.unsafe('SELECT 1 FROM pg_database WHERE datname=$1', [db])).length > 0); }
+/** A cached brain counts only while its database still exists: a recreated gbrain-bench-pg container (machine restart) loses every database. */
+async function brainBuilt(mode: 'classic' | 'managed'): Promise<boolean> {
+  if (!existsSync(join(brainDir(mode), 'ready.json'))) return false;
+  if (ENGINE !== 'postgres' || await dbExists(dbName(mode))) return true;
+  log('cached ' + brainKey(mode) + ' has no database ' + dbName(mode) + '; rebuilding');
+  return false;
+}
 
 async function syncUntilDone(home: string, label: string): Promise<{ ms: number; runs: number }> {
   const t = now();
@@ -158,7 +165,7 @@ async function activate(home: string): Promise<number> {
 async function ensureBrain(mode: 'classic' | 'managed'): Promise<Record<string, unknown>> {
   const dir = brainDir(mode), home = join(dir, 'home'), root = join(dir, 'repo');
   const ready = join(dir, 'ready.json');
-  if (existsSync(ready) && !has('rebuild')) {
+  if (!has('rebuild') && await brainBuilt(mode)) {
     const prior = JSON.parse(readFileSync(ready, 'utf8'));
     if (prior.links_settled) return prior;
     writeConfig(home, mode);
@@ -169,8 +176,7 @@ async function ensureBrain(mode: 'classic' | 'managed'): Promise<Record<string, 
   rmSync(dir, { recursive: true, force: true });
   mkdirSync(dir, { recursive: true });
   const build: Record<string, unknown> = { engine: ENGINE, mode, pages: PAGES, rev: REV, built_at: new Date().toISOString() };
-  const classicReady = join(brainDir('classic'), 'ready.json');
-  if (mode === 'managed' && existsSync(classicReady)) {
+  if (mode === 'managed' && await brainBuilt('classic')) {
     log('cloning classic ' + brainKey('classic') + ' for managed');
     const t = now();
     copyDir(join(brainDir('classic'), 'repo'), root);
@@ -275,7 +281,7 @@ async function main(): Promise<void> {
   if (ENGINE === 'postgres') harness = await startHarness({ pgPort: 55432, proxyPort: Number(flag('proxy-port', String(56000 + (process.pid % 1000)))), apiPort: 58474, keep: true });
   const stub = EMBED === 'stub' ? await startEmbeddingStub({ latencyMs: EMBED_LATENCY_MS, maxConcurrent: 8, dims: 1536 }) : null;
   if (stub) stubUrl = stub.url;
-  if (MODE === 'managed' && !existsSync(join(brainDir('classic'), 'ready.json')) && PAGES >= 10000) await ensureBrain('classic');
+  if (MODE === 'managed' && !(await brainBuilt('classic')) && PAGES >= 10000) await ensureBrain('classic');
   const build = await ensureBrain(MODE);
   const brainUrl = ENGINE === 'postgres' ? (RTT ? harness!.proxyUrl(dbName(MODE)) : directUrl()) : undefined;
   writeConfig(HOME, MODE, brainUrl);
