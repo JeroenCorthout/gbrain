@@ -281,7 +281,7 @@ async function main(): Promise<void> {
   writeConfig(HOME, MODE, brainUrl);
   let measuredRtt: number | null = null;
   if (ENGINE === 'postgres') { await harness!.setRtt(RTT); measuredRtt = await measureRtt(brainUrl!); }
-  const cellId = [ENGINE, MODE, PAGES, COMMIT, TRIGGER, RTT ? 'rtt' + RTT : '', SCENARIO !== 'plain' ? SCENARIO : '', EMBED === 'stub' ? 'embed' : '', LABEL.replace(/[^\w.-]/g, '_')].filter(Boolean).join('-');
+  const cellId = [ENGINE, MODE, PAGES, COMMIT, TRIGGER, RTT ? 'rtt' + RTT : '', SCENARIO !== 'plain' ? SCENARIO : '', EMBED === 'stub' ? 'embed' + EMBED_LATENCY_MS : '', LABEL.replace(/[^\w.-]/g, '_')].filter(Boolean).join('-');
   const outDir = join(WORK, 'results');
   mkdirSync(join(outDir, 'logs'), { recursive: true });
   const logFile = join(outDir, 'logs', cellId + '-' + Date.now() + '.log');
@@ -346,7 +346,7 @@ async function main(): Promise<void> {
         r.phases.db_round_trips = recs.length;
         r.phases.db_ms = round1(recs.reduce((a, x) => a + x.ms, 0));
         if (recs.length) r.phases.db_span_ms = round1(Math.max(...recs.map(x => x.t + x.ms)) - Math.min(...recs.map(x => x.t)));
-        (r as Rep & { sql?: unknown }).sql = { by_class: Object.fromEntries(Object.entries(byClass).map(([k, v]) => [k, { n: v.n, ms: round1(v.ms) }])), top: groupStatements(recs, 1, 12).map(g => ({ sql: g.sql, count: g.count, total_ms: g.total_ms })) };
+        (r as Rep & { sql?: unknown }).sql = { by_class: Object.fromEntries(Object.entries(byClass).map(([k, v]) => [k, { n: v.n, ms: round1(v.ms) }])), top: groupStatements(recs, 1, 100000).sort((a, b) => b.total_ms - a.total_ms).slice(0, 12).map(g => ({ sql: g.sql, count: g.count, total_ms: g.total_ms })) };
       }
       reps.push(r);
       log('noop rep ' + (rep + 1) + '/' + REPS + ': exit ' + r.exit_ms + ' ms ' + JSON.stringify(r.phases) + (r.error ? ' ERROR ' + r.error : ''));
