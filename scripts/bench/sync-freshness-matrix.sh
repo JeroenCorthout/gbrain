@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # GBRA-133 lane A: the cell sets behind docs of scripts/bench/sync-freshness.ts.
-#   scripts/bench/sync-freshness-matrix.sh <core|rtt|pollers|extras|embed|big|backlog|pr4b> [work-dir] [pr4b-checkout]
+#   scripts/bench/sync-freshness-matrix.sh <core|rtt|pollers|extras|embed|big|backlog|noop|pr4b> [work-dir] [pr4b-checkout]
 # Cells run one at a time (they share the CPU). Each writes <work-dir>/results/<cell>.json;
 # render the table with: bun scripts/bench/sync-freshness.ts --report <work-dir>/results
 set -uo pipefail
@@ -52,6 +52,12 @@ case "$SET" in
     for P in 10000 100000; do for E in postgres pglite; do for M in classic managed; do
       run --engine $E --mode $M --pages $P --commit backlog --trigger manual --reps 2
     done; done; done ;;
+  noop)
+    for P in 10000 100000; do
+      run --engine postgres --mode managed --pages $P --commit noop --trigger manual --reps 10 --trace
+      run --engine pglite --mode managed --pages $P --commit noop --trigger manual --reps 10
+    done
+    run --engine postgres --mode managed --pages 10000 --commit noop --trigger manual --reps 10 --trace --rtt 57 ;;
   pr4b)
     : "${PR4B:?pr4b checkout path}"
     for ROOT in "$(cd "$(dirname "$0")/../.." && pwd)" "$PR4B"; do
