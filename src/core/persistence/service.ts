@@ -206,6 +206,8 @@ export const BLOCKED_WRITE_REASONS = ['recovery_required', 'owner_unavailable', 
 const FATAL_READ_REASONS: readonly PgAccessReason[] = ['auth_failed', 'permission_denied', 'tenant_not_found', 'db_missing', 'schema_missing', 'storage_corrupt'];
 /** CEO-A7: the first poll waits this long (at most half the wait) for an in-process handoff, or not at all when this process already settled the request; later polls back off from 50 to 250 ms. */
 export const WRITE_POLL_START_MS = 200;
+/** @internal Work counts for tests (test/helpers/work-counts.ts): each time `awaitWrite` sleeps waiting for a write to settle. */
+export const writeWaitWork = { sleeps: 0 };
 export type WriteWait =
   | { kind: 'terminal' | 'pending'; row: WriteRequest }
   | { kind: 'blocked'; row: WriteRequest; request_id: string; cause: typeof BLOCKED_WRITE_REASONS[number]; command: string }
@@ -243,6 +245,7 @@ export async function awaitWrite(engine: BrainEngine, row: WriteRequest, config:
       if (handed) { row = handed; handed = undefined; if (isTerminal(row)) return { kind: 'terminal', row }; }
       const remaining = deadline - performance.now();
       if (remaining <= 0) break;
+      writeWaitWork.sleeps++;
       await new Promise<void>(resolve => {
         const done = () => { clearTimeout(timer); wake = undefined; opts.signal?.removeEventListener('abort', done); resolve(); };
         const timer = setTimeout(done, Math.min(delay, remaining));
