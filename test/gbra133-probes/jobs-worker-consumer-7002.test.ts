@@ -60,18 +60,20 @@ afterAll(async () => {
 });
 
 /** Admits one managed write while this process's consumer cannot publish it, then stops that consumer: a queued request with no consumer anywhere. */
-async function strandedRequest(): Promise<{ sourceId: string; slug: string }> {
-  const root = join(home, `brain-${randomUUID().slice(0, 8)}`); mkdirSync(root);
-  const sourceId = `p7002-${randomUUID().slice(0, 8)}`;
-  await engine.executeRaw('UPDATE persistence_brain SET enabled=false WHERE singleton=1');
-  await engine.executeRaw('INSERT INTO sources(id,name,local_path) VALUES($1,$1,$2)', [sourceId, root]);
-  await engine.setConfig('sync.write_through', 'true');
-  await claimWorktree(engine, sourceId, root);
-  await engine.executeRaw('UPDATE persistence_brain SET enabled=true WHERE singleton=1');
+async function strandedRequest(reuse?: string): Promise<{ sourceId: string; slug: string }> {
+  const sourceId = reuse ?? `p7002-${randomUUID().slice(0, 8)}`;
+  if (!reuse) {
+    const root = join(home, `brain-${randomUUID().slice(0, 8)}`); mkdirSync(root);
+    await engine.executeRaw('UPDATE persistence_brain SET enabled=false WHERE singleton=1');
+    await engine.executeRaw('INSERT INTO sources(id,name,local_path) VALUES($1,$1,$2)', [sourceId, root]);
+    await engine.setConfig('sync.write_through', 'true');
+    await claimWorktree(engine, sourceId, root);
+    await engine.executeRaw('UPDATE persistence_brain SET enabled=true WHERE singleton=1');
+  }
   __setMaintenanceWriteWaitForTests(300);
   const authority = (await maintenancePreflight(engine, sourceId))!;
   const lock = (await acquireWorktree((await getWorktreeBinding(engine, sourceId))!, 1000))!;
-  const slug = 'wiki/stranded';
+  const slug = `wiki/stranded-${randomUUID().slice(0, 6)}`;
   try {
     await publishMaintenancePage(engine, authority, slug, '---\ntitle: Stranded\ntype: note\n---\nStranded body.', { expectedRevision: null }).catch(() => undefined);
     await disposePersistenceConsumer(engine);
@@ -83,7 +85,7 @@ const state = async (sourceId: string, slug: string) =>
 async function pollCommitted(sourceId: string, slug: string, ms: number): Promise<string | undefined> {
   const deadline = Date.now() + ms;
   let last: string | undefined;
-  while (Date.now() < deadline) { last = await state(sourceId, slug); if (last === 'committed') return last; await Bun.sleep(500); }
+  while (Date.now() < deadline) { last = await state(sourceId, slug); if (last === 'committed') return last; await Bun.sleep(100); }
   return last;
 }
 async function stop(child: ReturnType<typeof Bun.spawn>) {
@@ -160,5 +162,26 @@ describe.skipIf(!hasDatabase())('#7002 idle jobs worker on managed Postgres', ()
       } finally { await stop(worker); }
       await Bun.sleep(2_000);
     }
+  }), 240_000);
+  test('#6913 context: how long an idle owner in another process takes to publish a write it was not woken for (n=6)', () => withEnv({ GBRAIN_HOME: home }, async () => {
+    await engine.setConfig('persistence.single_consumer', 'true'); resetWriteSwitches();
+    const port = await freePort();
+    const serve = Bun.spawn([process.execPath, '--no-env-file', join(REPO, 'src', 'cli.ts'), 'serve', '--http', '--port', String(port)], { cwd: REPO, env: childEnv(), stdout: 'pipe', stderr: 'pipe' });
+    const samples: number[] = [];
+    try {
+      const deadline = Date.now() + 60_000;
+      while (Date.now() < deadline && !(await engine.executeRaw<{ n: number }>("SELECT count(*)::int AS n FROM persistence_consumers WHERE pid=$1 AND kind='serve'", [serve.pid]))[0]?.n) await Bun.sleep(250);
+      const first = await strandedRequest();
+      await pollCommitted(first.sourceId, first.slug, 30_000);
+      for (let i = 0; i < 6; i++) {
+        await Bun.sleep(12_000);
+        const { sourceId, slug } = await strandedRequest(first.sourceId);
+        const started = Date.now();
+        const observed = await pollCommitted(sourceId, slug, 30_000);
+        samples.push(observed === 'committed' ? Date.now() - started : -1);
+      }
+    } finally { await stop(serve); }
+    console.log(`[gbra133 #6913] idle serve owner pickup of a cross-process admission (same source, ms, poll 100 ms): ${JSON.stringify(samples)}`);
+    expect(samples.every(ms => ms >= 0)).toBe(true);
   }), 240_000);
 });
