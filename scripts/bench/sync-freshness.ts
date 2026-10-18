@@ -30,7 +30,7 @@ import { join, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { readdirSync } from 'node:fs';
 import postgres from '#postgres';
-import { startHarness, measureRtt, startEmbeddingStub, type Harness } from './managed-sync-catchup-lib.ts';
+import { startHarness, measureRtt, startEmbeddingStub, readTrace, groupStatements, classify, type Harness } from './managed-sync-catchup-lib.ts';
 import {
   copyDir, engineProber, existsSync, git, machineInfo, makeChange, mcpProber, McpClient, mkdirSync, now, pollVisible, readFileSync, rmSync, round1,
   sleep, spawnChild, stats, waitLine, writeCorpus, writeFileSync, writeState, getTargets, slugOf, expectedHits,
@@ -42,12 +42,12 @@ const argv = process.argv.slice(2);
 const flag = (name: string, fallback: string) => { const i = argv.indexOf('--' + name); return i >= 0 && argv[i + 1] ? argv[i + 1]! : fallback; };
 const has = (name: string) => argv.includes('--' + name);
 
-if (has('report')) { report(resolve(flag('report', '.'))); process.exit(0); }
+if (has('report')) { report(flag('report', '.').split(',').map(d => resolve(d)).join(',')); process.exit(0); }
 
 const ENGINE = flag('engine', 'pglite') as 'pglite' | 'postgres';
 const MODE = flag('mode', 'classic') as 'classic' | 'managed';
 const PAGES = Number(flag('pages', '1000'));
-const COMMIT = flag('commit', 'single') as CommitKind;
+const COMMIT = flag('commit', 'single') as CommitKind | 'noop';
 const TRIGGER = flag('trigger', 'manual') as 'serve' | 'autopilot' | 'jobs' | 'watch' | 'manual';
 const REPS = Number(flag('reps', '10'));
 const RTT = Number(flag('rtt', '0'));
@@ -65,7 +65,9 @@ const JSON_OUT = has('json');
 const EMBED = flag('embed', 'off') as 'off' | 'stub';
 const EMBED_LATENCY_MS = Number(flag('embed-latency-ms', '200'));
 let stubUrl = '';
-if (!['pglite', 'postgres'].includes(ENGINE) || !['classic', 'managed'].includes(MODE) || !['single', 'batch', 'backlog'].includes(COMMIT)
+const TRACE = has('trace');
+if (COMMIT === 'noop' && TRIGGER !== 'manual') { console.error('--commit noop measures a manual sync with nothing to do; use --trigger manual'); process.exit(2); }
+if (!['pglite', 'postgres'].includes(ENGINE) || !['classic', 'managed'].includes(MODE) || !['single', 'batch', 'backlog', 'noop'].includes(COMMIT)
   || !['serve', 'autopilot', 'jobs', 'watch', 'manual'].includes(TRIGGER) || !(PAGES > 0) || !(REPS > 0)) {
   console.error('usage: see the header of scripts/bench/sync-freshness.ts'); process.exit(2);
 }
@@ -322,8 +324,37 @@ async function main(): Promise<void> {
     await pollVisible(prober, c, now() + 120_000, 200);
   }
 
-  try {
+  if (COMMIT === 'noop') {
+    await gb(['sync', '--source', 'bench', '--no-pull', '--json'], { allowFail: true });
+    notes.push('noop: HEAD equals the last synced commit (one unrecorded sync converged it first); each rep is one manual sync with nothing to do, timed spawn to exit');
     for (let rep = 0; rep < REPS; rep++) {
+      await sleep(300);
+      const trace = TRACE && ENGINE === 'postgres' ? join(outDir, 'logs', cellId + '-rep' + rep + '-sql.jsonl') : undefined;
+      if (trace) rmSync(trace, { force: true });
+      const child = spawnChild([process.execPath, CLI, 'sync', '--source', 'bench', '--no-pull', '--json'], { cwd: HOME, env: childEnv(trace ? { GBRAIN_SQL_TRACE: trace, GBRAIN_SQL_TRACE_LABEL: 'noop-sync' } : {}), logFile });
+      const code = await child.exited;
+      const r: Rep = { rep, sha: git(ROOT, 'rev-parse', '--short=12', 'HEAD'), token: '', files: 0, get_ms: null, search_ms: null, first_hit_ms: null, commit_git_ms: 0, source: 'exit', phases: {} };
+      r.exit_ms = round1(child.exitAt! - child.startedAt);
+      for (const [k, v] of Object.entries(phaseMarks(child.lines, child.startedAt, now()))) r.phases[k] = v;
+      const out = child.stdoutRaw();
+      try { const j = JSON.parse(out.slice(out.indexOf('{'))); r.phases.sync_status = j.sync_status; } catch { /* not json */ }
+      if (code !== 0) r.error = 'sync exited ' + code;
+      if (trace && existsSync(trace)) {
+        const recs = readTrace(trace);
+        const byClass: Record<string, { n: number; ms: number }> = {};
+        for (const x of recs) { const c = byClass[classify(x.sql)] ??= { n: 0, ms: 0 }; c.n++; c.ms += x.ms; }
+        r.phases.db_round_trips = recs.length;
+        r.phases.db_ms = round1(recs.reduce((a, x) => a + x.ms, 0));
+        if (recs.length) r.phases.db_span_ms = round1(Math.max(...recs.map(x => x.t + x.ms)) - Math.min(...recs.map(x => x.t)));
+        (r as Rep & { sql?: unknown }).sql = { by_class: Object.fromEntries(Object.entries(byClass).map(([k, v]) => [k, { n: v.n, ms: round1(v.ms) }])), top: groupStatements(recs, 1, 12).map(g => ({ sql: g.sql, count: g.count, total_ms: g.total_ms })) };
+      }
+      reps.push(r);
+      log('noop rep ' + (rep + 1) + '/' + REPS + ': exit ' + r.exit_ms + ' ms ' + JSON.stringify(r.phases) + (r.error ? ' ERROR ' + r.error : ''));
+    }
+  }
+
+  try {
+    for (let rep = 0; rep < (COMMIT === 'noop' ? 0 : REPS); rep++) {
       if (TRIGGER === 'watch' || TRIGGER === 'autopilot') await sleep(Math.random() * INTERVAL * 1000);
       else await sleep(TRIGGER === 'serve' ? 3500 : 300);
       let pre: Change | null = null;
@@ -332,7 +363,7 @@ async function main(): Promise<void> {
         if (TRIGGER === 'serve' && resident) await waitLine(resident, /started managed sync job/, 60_000, pre.t_commit);
         await sleep(Number(flag('during-delay-ms', '500')));
       }
-      const c = makeChange(ROOT, DIR, COMMIT);
+      const c = makeChange(ROOT, DIR, COMMIT as CommitKind);
       const deadline = c.t_commit + TIMEOUT_S * 1000;
       const r: Rep = { rep, sha: c.sha.slice(0, 12), token: c.token, files: c.edited.length + c.added.length + c.deleted.length, get_ms: null, search_ms: null, first_hit_ms: null,
         commit_git_ms: round1(c.t_commit - c.t_commit_start), source: '', phases: {} };
@@ -403,7 +434,7 @@ async function main(): Promise<void> {
       scenario: SCENARIO, probe_ms: PROBE_MS, timeout_s: TIMEOUT_S, keyless: EMBED === 'off', embed: EMBED === 'stub' ? { provider: 'loopback OpenAI stub', latency_ms: EMBED_LATENCY_MS } : null },
     machine: machineInfo(), build, notes: [...new Set(notes)],
     get_page: stats(ok('get_ms')), search: stats(ok('search_ms')), exit: stats(reps.map(r => r.exit_ms).filter((x): x is number => typeof x === 'number')),
-    phases: phaseStats, failures: reps.filter(r => r.error || (r.source !== 'none' && r.search_ms === null)).length, reps, log: logFile,
+    phases: phaseStats, failures: reps.filter(r => r.error || (r.source !== 'none' && r.source !== 'exit' && r.search_ms === null)).length, reps, log: logFile,
   };
   const file = join(outDir, cellId + '.json');
   writeFileSync(file, JSON.stringify(result, null, 2) + '\n');
@@ -411,11 +442,11 @@ async function main(): Promise<void> {
   log('wrote ' + file + ': search p50 ' + result.search.p50 + ' p95 ' + result.search.p95 + ' max ' + result.search.max + ' cv ' + result.search.cv + ' (n=' + result.search.n + ')');
 }
 
-function report(dir: string): void {
-  const rows = readdirSync(dir).filter(f => f.endsWith('.json')).map(f => JSON.parse(readFileSync(join(dir, f), 'utf8'))).filter(r => r.schema === 'gbrain-sync-freshness/1')
+function report(dirs: string): void {
+  const rows = dirs.split(',').flatMap(dir => readdirSync(dir).filter(f => f.endsWith('.json')).map(f => JSON.parse(readFileSync(join(dir, f), 'utf8')))).filter(r => r.schema === 'gbrain-sync-freshness/1')
     .sort((a, b) => a.cell.localeCompare(b.cell));
   const s = (x: Stats | undefined) => x && x.n ? (x.p50 !== null ? (x.p50 / 1000).toFixed(2) : '-') + ' / ' + (x.p95 !== null ? (x.p95 / 1000).toFixed(2) : '-') + ' / ' + (x.max !== null ? (x.max / 1000).toFixed(2) : '-') : '-';
-  const ph = (r: any) => Object.entries(r.phases as Record<string, Stats>).filter(([, v]) => v.n && v.p50 !== null).map(([k, v]) => k + ' ' + (v.p50! / 1000).toFixed(2)).join(', ');
+  const ph = (r: any) => Object.entries(r.phases as Record<string, Stats>).filter(([k, v]) => v.n && v.p50 !== null && !['written', 'spawn_after_commit_ms', 'submit_cli_ms'].includes(k)).map(([k, v]) => k + ' ' + (v.p50! / 1000).toFixed(2)).join(', ');
   console.log('| cell | engine | mode | pages | commit | trigger | rtt | n | get_page p50/p95/max s | search p50/p95/max s | search cv | exit p50/p95/max s | phases (p50 s) | gbrain |');
   console.log('|---|---|---|---|---|---|---|---|---|---|---|---|---|---|');
   for (const r of rows) {
