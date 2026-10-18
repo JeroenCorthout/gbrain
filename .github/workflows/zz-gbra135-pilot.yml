@@ -1,0 +1,466 @@
+name: zz GBRA-135 pilot (scratch, never merged)
+
+# GBRA-135 efficiency pilot. Lives only on capy/gbra135-pilot; deleted by the
+# branch's last commit. Each job copies the setup of the real job it measures.
+on:
+  push:
+    branches: [capy/gbra135-pilot]
+
+permissions:
+  contents: read
+
+jobs:
+  # E1 a/b/c: persistence-validation.yml unit-postgres-arms, Bun 1.4.3 cell.
+  e1:
+    name: E1 ${{ matrix.variant }} ${{ matrix.shard }}/19
+    runs-on: ubicloud-standard-${{ matrix.vcpu }}-ubuntu-2404
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 24
+      matrix:
+        variant: [a-baseline, b-pgonly, c-std2]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
+        include:
+          - variant: a-baseline
+            vcpu: 4
+          - variant: b-pgonly
+            vcpu: 4
+          - variant: c-std2
+            vcpu: 2
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: gbrain_test
+          POSTGRES_PASSWORD: gbrain_test
+          POSTGRES_DB: gbrain_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U gbrain_test -d gbrain_test"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    steps:
+      - name: Pilot memory sampler
+        shell: bash
+        run: (while true; do free -m | awk '/^Mem:/{print $3, $7}' >> "$RUNNER_TEMP/mem.log"; sleep 5; done) > /dev/null 2>&1 &
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+        with:
+          bun-version: 1.4.3
+      - name: Install dependencies (bounded, retried once)
+        timeout-minutes: 8
+        run: bun scripts/ci-bun-install.ts --frozen-lockfile --ignore-scripts
+      - name: Require PostgreSQL arms of unit-lane suites
+        timeout-minutes: 20
+        shell: bash
+        env:
+          DATABASE_URL: postgres://gbrain_test:gbrain_test@127.0.0.1:5432/gbrain_test
+          GBRAIN_TEST_ALLOW_DATABASE_URL: '1'
+          SHARD: ${{ matrix.shard }}
+          PILOT_VARIANT: ${{ matrix.variant }}
+          GBRAIN_TEST_RECEIPT_DIR: ${{ runner.temp }}/receipts
+          GBRAIN_TEST_RECEIPT_LANE: pg-arms-bun-1.4.3
+        run: |
+          : "${DATABASE_URL:?unit-lane PostgreSQL arms require the explicit test database}"
+          if [ "$PILOT_VARIANT" = b-pgonly ]; then export GBRAIN_TEST_BACKEND=postgres; fi
+          pilot_t0=$(date +%s%3N)
+          . scripts/lib/test-env.sh
+          receipts_init pg-arms || exit 2
+          selected=$(bun scripts/postgres-unit-arms.ts shard "$SHARD" 19)
+          files=()
+          while IFS= read -r file; do [ -n "$file" ] && files+=("$file"); done <<< "$selected"
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "::error::shard $SHARD/19 selected no files" >&2
+            exit 1
+          fi
+          failed=()
+          for file in "${files[@]}"; do
+            echo "::group::$file"
+            receipt_begin primary "s$SHARD-$(basename "$file" .ts)" "$SHARD" 8 postgres "$file"
+            rc=0
+            bun --no-env-file test --timeout=120000 ${RECEIPT_ARGS[@]+"${RECEIPT_ARGS[@]}"} "$file" || rc=$?
+            receipt_end "$rc"
+            [ "$rc" -eq 0 ] || failed+=("$file")
+            echo "::endgroup::"
+          done
+          for file in ${failed[@]+"${failed[@]}"}; do
+            echo "::error file=$file::PostgreSQL arm failed. Reproduce: DATABASE_URL=<pgvector test database> GBRAIN_TEST_ALLOW_DATABASE_URL=1 bun test --timeout=120000 $file"
+          done
+          echo "PILOT_SHARD lever=E1 variant=$PILOT_VARIANT shard=$SHARD files=${#files[@]} wall_ms=$(( $(date +%s%3N) - pilot_t0 )) failed=${#failed[@]} ${failed[*]:-}"
+          [ "${#failed[@]}" -eq 0 ]
+      - name: Pilot report
+        if: always()
+        shell: bash
+        run: |
+          echo "PILOT_MEM peak_used_mb=$(sort -n -k1 "$RUNNER_TEMP/mem.log" | tail -1 | cut -d' ' -f1) min_avail_mb=$(sort -n -k2 "$RUNNER_TEMP/mem.log" | head -1 | cut -d' ' -f2) total_mb=$(free -m | awk '/^Mem:/{print $2}') nproc=$(nproc) loadavg=$(cut -d' ' -f1-3 /proc/loadavg)"
+
+  # E1 d: two files at a time per 4-vCPU job, each worker on its own Postgres.
+  e1d:
+    name: E1 d-pair ${{ matrix.pair }}/10
+    runs-on: ubicloud-standard-4-ubuntu-2404
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        pair: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: gbrain_test
+          POSTGRES_PASSWORD: gbrain_test
+          POSTGRES_DB: gbrain_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U gbrain_test -d gbrain_test"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+      postgres2:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: gbrain_test
+          POSTGRES_PASSWORD: gbrain_test
+          POSTGRES_DB: gbrain_test
+        ports: ['5433:5432']
+        options: >-
+          --health-cmd "pg_isready -U gbrain_test -d gbrain_test"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    steps:
+      - name: Pilot memory sampler
+        shell: bash
+        run: (while true; do free -m | awk '/^Mem:/{print $3, $7}' >> "$RUNNER_TEMP/mem.log"; sleep 5; done) > /dev/null 2>&1 &
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+        with:
+          bun-version: 1.4.3
+      - name: Install dependencies (bounded, retried once)
+        timeout-minutes: 8
+        run: bun scripts/ci-bun-install.ts --frozen-lockfile --ignore-scripts
+      - name: PostgreSQL arms, two workers
+        timeout-minutes: 20
+        shell: bash
+        env:
+          PILOT_DB_URL_1: postgres://gbrain_test:gbrain_test@127.0.0.1:5432/gbrain_test
+          PILOT_DB_URL_2: postgres://gbrain_test:gbrain_test@127.0.0.1:5433/gbrain_test
+          GBRAIN_TEST_ALLOW_DATABASE_URL: '1'
+          PAIR: ${{ matrix.pair }}
+          PILOT_RECEIPT_DIR: ${{ runner.temp }}/receipts
+        run: |
+          mkdir -p "$PILOT_RECEIPT_DIR"
+          pilot_t0=$(date +%s%3N)
+          selected=$(bun scripts/postgres-unit-arms.ts shard "$PAIR" 10)
+          files=()
+          while IFS= read -r file; do [ -n "$file" ] && files+=("$file"); done <<< "$selected"
+          rc=0
+          bun scripts/zz-gbra135-pair-runner.ts "${files[@]}" || rc=$?
+          echo "PILOT_SHARD lever=E1 variant=d-pair shard=$PAIR files=${#files[@]} wall_ms=$(( $(date +%s%3N) - pilot_t0 )) rc=$rc"
+          exit "$rc"
+      - name: Pilot report
+        if: always()
+        shell: bash
+        run: |
+          echo "PILOT_MEM peak_used_mb=$(sort -n -k1 "$RUNNER_TEMP/mem.log" | tail -1 | cut -d' ' -f1) min_avail_mb=$(sort -n -k2 "$RUNNER_TEMP/mem.log" | head -1 | cut -d' ' -f2) total_mb=$(free -m | awk '/^Mem:/{print $2}') nproc=$(nproc) loadavg=$(cut -d' ' -f1-3 /proc/loadavg)"
+
+  # E2 a/c: test.yml job test, 18 shards.
+  e2:
+    name: E2 ${{ matrix.variant }} ${{ matrix.shard }}/18
+    runs-on: ubicloud-standard-${{ matrix.vcpu }}-ubuntu-2404
+    timeout-minutes: 22
+    strategy:
+      fail-fast: false
+      max-parallel: 18
+      matrix:
+        variant: [a-baseline, c-std2]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18]
+        include:
+          - variant: a-baseline
+            vcpu: 4
+          - variant: c-std2
+            vcpu: 2
+    steps:
+      - name: Pilot memory sampler
+        shell: bash
+        run: (while true; do free -m | awk '/^Mem:/{print $3, $7}' >> "$RUNNER_TEMP/mem.log"; sleep 5; done) > /dev/null 2>&1 &
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6  # v2
+        with:
+          bun-version: 1.4.3
+      - uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684  # v4.2.3
+        with:
+          path: ~/.bun/install/cache
+          key: bun-cache-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+          restore-keys: bun-cache-${{ runner.os }}-
+      - uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684  # v4.2.3
+        with:
+          path: |
+            test/fixtures/pglite-snapshot.tar
+            test/fixtures/pglite-snapshot.version
+          key: pglite-snapshot-${{ runner.os }}-${{ hashFiles('src/core/*.ts', 'src/core/audit/redact-connection-info.ts', 'src/core/engine-sql/bootstrap.ts', 'src/core/schema-migrations/**', 'src/core/ai/defaults.ts', 'src/core/company-brain/receipt-schema.ts', 'src/core/entities/resolve.ts', 'src/core/facts/withdrawal-schema.ts', 'src/core/facts/relink-schema.ts', 'src/core/google/*.ts', 'src/core/grants/*.ts', 'src/core/minions/tools/brain-allowlist.ts', 'src/core/ops/contract.ts', 'src/core/ops/execution-prerequisites.ts', 'src/core/page-body/page-shape.ts', 'src/core/page-body/schema.ts', 'src/core/page-state/*schema.ts', 'src/core/persistence/*.ts', 'src/core/schema-pack/link-inference.ts', 'src/core/schema-pack/redos-guard.ts', 'src/core/search/alias-normalize.ts', 'src/core/search/private-visibility.ts', 'src/core/search/projection-statistics.ts', 'src/core/search/relational-intent.ts', 'src/core/shared-skills/*schema*.ts', 'src/core/ai/decide/schema.ts', 'test/helpers/legacy-embedding-config.ts', 'scripts/build-pglite-snapshot.ts', 'src/core/facts/purge-schema.ts', 'src/core/facts/fts-index.ts', 'src/core/eligibility/generation-schema.ts', 'src/core/trust/schema.ts', 'src/core/trust/tier.ts', 'src/core/trust/allow-rules.ts', 'src/core/write-gate-schema.ts', 'src/core/questions/schema.ts', 'src/core/questions/identity.ts', 'src/core/questions/auto-think-migration.ts', 'src/core/loops/loops-schema.ts', 'src/core/postgres-engine/schema-lock-timeout.ts', 'src/core/belief/schema.ts', 'src/core/fence-repair/reasons.ts', 'src/core/fence-repair/measured.ts', 'src/core/ai/errors.ts') }}
+      - name: Install dependencies (bounded, retried once)
+        timeout-minutes: 8
+        run: bun scripts/ci-bun-install.ts --frozen-lockfile
+      - name: Run test shard ${{ matrix.shard }}/18
+        shell: bash
+        run: |
+          pilot_t0=$(date +%s%3N)
+          rc=0
+          bun scripts/capture-test-log.ts --job 'test (${{ matrix.shard }})' --out "$RUNNER_TEMP/unit.log" -- bash scripts/test-shard.sh ${{ matrix.shard }} 18 || rc=$?
+          echo "PILOT_SHARD lever=E2 variant=${{ matrix.variant }} shard=${{ matrix.shard }} wall_ms=$(( $(date +%s%3N) - pilot_t0 )) rc=$rc"
+          exit "$rc"
+        env:
+          COVERAGE_DIR: ${{ runner.temp }}/coverage
+          GBRAIN_TEST_RECEIPT_DIR: ${{ runner.temp }}/receipts
+      - name: Pilot report
+        if: always()
+        shell: bash
+        run: |
+          echo "PILOT_MEM peak_used_mb=$(sort -n -k1 "$RUNNER_TEMP/mem.log" | tail -1 | cut -d' ' -f1) min_avail_mb=$(sort -n -k2 "$RUNNER_TEMP/mem.log" | head -1 | cut -d' ' -f2) total_mb=$(free -m | awk '/^Mem:/{print $2}') nproc=$(nproc) loadavg=$(cut -d' ' -f1-3 /proc/loadavg)"
+
+  # E2 b: 9 jobs, each running two of the 18 shards concurrently on 4 vCPUs.
+  e2b:
+    name: E2 b-pair ${{ matrix.pair }}/9
+    runs-on: ubicloud-standard-4-ubuntu-2404
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        pair: [1, 2, 3, 4, 5, 6, 7, 8, 9]
+    steps:
+      - name: Pilot memory sampler
+        shell: bash
+        run: (while true; do free -m | awk '/^Mem:/{print $3, $7}' >> "$RUNNER_TEMP/mem.log"; sleep 5; done) > /dev/null 2>&1 &
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6  # v2
+        with:
+          bun-version: 1.4.3
+      - uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684  # v4.2.3
+        with:
+          path: ~/.bun/install/cache
+          key: bun-cache-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+          restore-keys: bun-cache-${{ runner.os }}-
+      - uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684  # v4.2.3
+        with:
+          path: |
+            test/fixtures/pglite-snapshot.tar
+            test/fixtures/pglite-snapshot.version
+          key: pglite-snapshot-${{ runner.os }}-${{ hashFiles('src/core/*.ts', 'src/core/audit/redact-connection-info.ts', 'src/core/engine-sql/bootstrap.ts', 'src/core/schema-migrations/**', 'src/core/ai/defaults.ts', 'src/core/company-brain/receipt-schema.ts', 'src/core/entities/resolve.ts', 'src/core/facts/withdrawal-schema.ts', 'src/core/facts/relink-schema.ts', 'src/core/google/*.ts', 'src/core/grants/*.ts', 'src/core/minions/tools/brain-allowlist.ts', 'src/core/ops/contract.ts', 'src/core/ops/execution-prerequisites.ts', 'src/core/page-body/page-shape.ts', 'src/core/page-body/schema.ts', 'src/core/page-state/*schema.ts', 'src/core/persistence/*.ts', 'src/core/schema-pack/link-inference.ts', 'src/core/schema-pack/redos-guard.ts', 'src/core/search/alias-normalize.ts', 'src/core/search/private-visibility.ts', 'src/core/search/projection-statistics.ts', 'src/core/search/relational-intent.ts', 'src/core/shared-skills/*schema*.ts', 'src/core/ai/decide/schema.ts', 'test/helpers/legacy-embedding-config.ts', 'scripts/build-pglite-snapshot.ts', 'src/core/facts/purge-schema.ts', 'src/core/facts/fts-index.ts', 'src/core/eligibility/generation-schema.ts', 'src/core/trust/schema.ts', 'src/core/trust/tier.ts', 'src/core/trust/allow-rules.ts', 'src/core/write-gate-schema.ts', 'src/core/questions/schema.ts', 'src/core/questions/identity.ts', 'src/core/questions/auto-think-migration.ts', 'src/core/loops/loops-schema.ts', 'src/core/postgres-engine/schema-lock-timeout.ts', 'src/core/belief/schema.ts', 'src/core/fence-repair/reasons.ts', 'src/core/fence-repair/measured.ts', 'src/core/ai/errors.ts') }}
+      - name: Install dependencies (bounded, retried once)
+        timeout-minutes: 8
+        run: bun scripts/ci-bun-install.ts --frozen-lockfile
+      - name: Run two test shards concurrently
+        shell: bash
+        env:
+          PAIR: ${{ matrix.pair }}
+        run: |
+          run_one() {
+            local s=$1 t0 rc=0
+            t0=$(date +%s%3N)
+            COVERAGE_DIR="$RUNNER_TEMP/coverage-$s" GBRAIN_TEST_RECEIPT_DIR="$RUNNER_TEMP/receipts-$s" \
+              bun scripts/capture-test-log.ts --job "test ($s)" --out "$RUNNER_TEMP/unit-$s.log" -- bash scripts/test-shard.sh "$s" 18 > "$RUNNER_TEMP/console-$s.txt" 2>&1 || rc=$?
+            echo "$rc $(( $(date +%s%3N) - t0 ))" > "$RUNNER_TEMP/result-$s"
+          }
+          a=$((2 * PAIR - 1)); b=$((2 * PAIR))
+          pilot_t0=$(date +%s%3N)
+          run_one "$a" & run_one "$b" & wait
+          job_wall=$(( $(date +%s%3N) - pilot_t0 ))
+          status=0
+          for s in "$a" "$b"; do
+            read -r rc ms < "$RUNNER_TEMP/result-$s"
+            echo "::group::shard $s/18 (rc=$rc, ${ms}ms)"
+            cat "$RUNNER_TEMP/console-$s.txt"
+            echo "::endgroup::"
+            echo "PILOT_SHARD lever=E2 variant=b-pair pair=$PAIR shard=$s wall_ms=$ms rc=$rc"
+            [ "$rc" -eq 0 ] || status=1
+          done
+          echo "PILOT_PAIR lever=E2 pair=$PAIR wall_ms=$job_wall"
+          ls -d "$RUNNER_TEMP"/coverage-*/* "$RUNNER_TEMP"/receipts-*/* 2>&1 | head -40
+          exit "$status"
+      - name: Pilot report
+        if: always()
+        shell: bash
+        run: |
+          echo "PILOT_MEM peak_used_mb=$(sort -n -k1 "$RUNNER_TEMP/mem.log" | tail -1 | cut -d' ' -f1) min_avail_mb=$(sort -n -k2 "$RUNNER_TEMP/mem.log" | head -1 | cut -d' ' -f2) total_mb=$(free -m | awk '/^Mem:/{print $2}') nproc=$(nproc) loadavg=$(cut -d' ' -f1-3 /proc/loadavg)"
+
+  # E3: e2e.yml tier1 on 16 vCPUs (baseline) against 8.
+  e3:
+    name: E3 tier1 on ${{ matrix.vcpu }} vCPU
+    runs-on: ubicloud-standard-${{ matrix.vcpu }}-ubuntu-2404
+    timeout-minutes: 70
+    strategy:
+      fail-fast: false
+      matrix:
+        vcpu: [16, 8]
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: gbrain_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      pgbouncer:
+        image: edoburu/pgbouncer:latest
+        env:
+          DB_HOST: postgres
+          DB_PORT: '5432'
+          DB_USER: postgres
+          DB_PASSWORD: postgres
+          POOL_MODE: transaction
+          AUTH_TYPE: plain
+          MAX_CLIENT_CONN: '200'
+          DEFAULT_POOL_SIZE: '10'
+          IGNORE_STARTUP_PARAMETERS: extra_float_digits,statement_timeout,idle_in_transaction_session_timeout,search_path
+        ports:
+          - 55433:5432
+    steps:
+      - name: Pilot memory sampler
+        shell: bash
+        run: (while true; do free -m | awk '/^Mem:/{print $3, $7}' >> "$RUNNER_TEMP/mem.log"; sleep 5; done) > /dev/null 2>&1 &
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6  # v2
+        with:
+          bun-version: 1.4.3
+      - uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684  # v4.2.3
+        with:
+          path: ~/.bun/install/cache
+          key: bun-cache-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+          restore-keys: bun-cache-${{ runner.os }}-
+      # PGLite snapshot (restore-only; test.yml's serial-tests job saves).
+      # run-e2e.sh builds it when absent/stale — this just avoids paying the
+      # build once per job. KEY: byte-identical with the homes in test.yml.
+      - uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684  # v4.2.3
+        with:
+          path: |
+            test/fixtures/pglite-snapshot.tar
+            test/fixtures/pglite-snapshot.version
+          key: pglite-snapshot-${{ runner.os }}-${{ hashFiles('src/core/*.ts', 'src/core/audit/redact-connection-info.ts', 'src/core/engine-sql/bootstrap.ts', 'src/core/schema-migrations/**', 'src/core/ai/defaults.ts', 'src/core/company-brain/receipt-schema.ts', 'src/core/entities/resolve.ts', 'src/core/facts/withdrawal-schema.ts', 'src/core/facts/relink-schema.ts', 'src/core/google/*.ts', 'src/core/grants/*.ts', 'src/core/minions/tools/brain-allowlist.ts', 'src/core/ops/contract.ts', 'src/core/ops/execution-prerequisites.ts', 'src/core/page-body/page-shape.ts', 'src/core/page-body/schema.ts', 'src/core/page-state/*schema.ts', 'src/core/persistence/*.ts', 'src/core/schema-pack/link-inference.ts', 'src/core/schema-pack/redos-guard.ts', 'src/core/search/alias-normalize.ts', 'src/core/search/private-visibility.ts', 'src/core/search/projection-statistics.ts', 'src/core/search/relational-intent.ts', 'src/core/shared-skills/*schema*.ts', 'src/core/ai/decide/schema.ts', 'test/helpers/legacy-embedding-config.ts', 'scripts/build-pglite-snapshot.ts', 'src/core/facts/purge-schema.ts', 'src/core/facts/fts-index.ts', 'src/core/eligibility/generation-schema.ts', 'src/core/trust/schema.ts', 'src/core/trust/tier.ts', 'src/core/trust/allow-rules.ts', 'src/core/write-gate-schema.ts', 'src/core/questions/schema.ts', 'src/core/questions/identity.ts', 'src/core/questions/auto-think-migration.ts', 'src/core/loops/loops-schema.ts', 'src/core/postgres-engine/schema-lock-timeout.ts', 'src/core/belief/schema.ts', 'src/core/fence-repair/reasons.ts', 'src/core/fence-repair/measured.ts', 'src/core/ai/errors.ts') }}
+      - name: Install dependencies (bounded, retried once)
+        timeout-minutes: 8
+        run: bun scripts/ci-bun-install.ts --frozen-lockfile
+      # Bare `bun test` job — activate the restored snapshot (see jsonb-parity).
+      - name: Ensure PGLite snapshot (build-or-validate, non-fatal)
+        run: |
+          . scripts/lib/test-env.sh
+          ensure_pglite_snapshot tier1
+          # Export absolute (CLI children spawn with varying cwd); keep an
+          # already-absolute inherited path as-is; export nothing on build failure.
+          if [ -n "${GBRAIN_PGLITE_SNAPSHOT:-}" ]; then
+            case "$GBRAIN_PGLITE_SNAPSHOT" in
+              /*) echo "GBRAIN_PGLITE_SNAPSHOT=$GBRAIN_PGLITE_SNAPSHOT" >> "$GITHUB_ENV" ;;
+              *)  echo "GBRAIN_PGLITE_SNAPSHOT=$PWD/$GBRAIN_PGLITE_SNAPSHOT" >> "$GITHUB_ENV" ;;
+            esac
+          fi
+      - name: Run Tier 1 E2E tests
+        # job-isolation rides tier1 deliberately: e2e.yml runs only explicitly
+        # NAMED files (no glob) — an unwired e2e file is silent coverage loss.
+        # sync-reconcile-postgres joins for the same reason (#4568): it only
+        # ran nightly via the coverage-full-e2e schedule-only glob, so a
+        # regression in the reconcile's real-Postgres array-parameter
+        # binding path could reach master with every PR lane green. It
+        # already uses the same setupDB/teardownDB TRUNCATE-reset pattern
+        # (test/e2e/helpers.ts) as the other DB-backed files on this line.
+        # Also added to the E2E_EXCLUSIONS in scripts/e2e-matrix.ts so a PR
+        # touching sync.ts doesn't run it a second time there.
+        run: bash scripts/run-with-receipt.sh tier1 mechanical -- bun test --timeout=60000 test/e2e/mechanical.test.ts test/e2e/job-isolation.test.ts test/e2e/sync-reconcile-postgres.test.ts
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/gbrain_test
+          # #3485 preload guard: this job intentionally tests against a DB.
+          GBRAIN_TEST_ALLOW_DATABASE_URL: '1'
+          GBRAIN_TEST_RECEIPT_DIR: ${{ runner.temp }}/receipts
+      - name: Run engine parity suite
+        # The behavioral parity pin for the two engines (containment-sprint
+        # engine peels lean on it). Own invocation line: this suite has only
+        # ever run one-process-per-file via run-e2e.sh — do not fold it into
+        # the shared-process tier1 line above.
+        run: bash scripts/run-with-receipt.sh tier1 engine-parity -- bun test --timeout=60000 test/e2e/engine-parity.test.ts
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/gbrain_test
+          GBRAIN_TEST_ALLOW_DATABASE_URL: '1'
+          GBRAIN_TEST_RECEIPT_DIR: ${{ runner.temp }}/receipts
+      - name: Run engine graduation suites (direct Postgres and PgBouncer)
+        # PGLite -> Postgres graduation (docs/guides/move-to-postgres.md): the
+        # agent flow, stale clients and respawned serves, SIGKILL at every
+        # custody boundary, faults, and the legacy copier. Every PR, with the
+        # transaction-mode pooler as a second target route (pooledUrl).
+        # Excluded from the selected matrix (scripts/e2e-matrix.ts) so they
+        # run once. Named files only, no glob.
+        shell: bash
+        run: bash scripts/run-e2e.sh test/e2e/graduation-cli.test.ts test/e2e/graduation-cli-topologies.test.ts test/e2e/graduation-cli-history.test.ts test/e2e/graduation-cli-zero-mutation-1.test.ts test/e2e/graduation-cli-zero-mutation-2.test.ts test/e2e/graduation-cli-zero-mutation-3.test.ts test/e2e/graduation-clients.test.ts test/e2e/graduation-clients-serve.test.ts test/e2e/graduation-crash-run-1.test.ts test/e2e/graduation-crash-run-2.test.ts test/e2e/graduation-crash-run-3.test.ts test/e2e/graduation-crash-rollback-1.test.ts test/e2e/graduation-crash-rollback-2.test.ts test/e2e/graduation-faults.test.ts test/e2e/graduation-legacy-copy.test.ts
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/gbrain_test
+          GBRAIN_PGBOUNCER_URL: postgresql://postgres:postgres@localhost:55433/gbrain_test?prepare=false
+          GBRAIN_TEST_ALLOW_DATABASE_URL: '1'
+          GBRAIN_TEST_DB: '1'
+          E2E_FILE_TIMEOUT_SECS: '900'
+          GBRAIN_TEST_RECEIPT_DIR: ${{ runner.temp }}/receipts
+          GBRAIN_TEST_RECEIPT_LANE: tier1
+      - name: Run multi-agent serve suite
+        # cathedral-6 (T7): multi-agent continuity + isolation over a real
+        # `gbrain serve --http`. Own invocation line (engine-parity
+        # precedent): the file spawns two serves on fixed ports
+        # (19133/19134) and SIGKILLs one mid-hammer — never fold it into the
+        # shared-process tier1 line above. Named files only, no glob.
+        run: bash scripts/run-with-receipt.sh tier1 serve-http-multi-agent -- bun test --timeout=60000 test/e2e/serve-http-multi-agent.test.ts
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/gbrain_test
+          GBRAIN_TEST_ALLOW_DATABASE_URL: '1'
+          GBRAIN_TEST_RECEIPT_DIR: ${{ runner.temp }}/receipts
+      - name: Create isolated database for the bootstrap suite
+        # The bootstrap suite rewinds the schema ledger and replays every
+        # migration; replayed constraint-adds (e.g. facts_source_id_fkey)
+        # break on rows earlier tier1 suites legitimately leave in
+        # gbrain_test (the suite's own TRUNCATE list predates facts). The
+        # nightly lane masks this via preceding files' TRUNCATE CASCADE —
+        # here it gets a database of its own instead.
+        run: PGPASSWORD=postgres psql -h localhost -U postgres -d gbrain_test -c 'CREATE DATABASE gbrain_bootstrap_test'
+      - name: Run Postgres bootstrap suite
+        # Forward-reference bootstrap on REAL Postgres (#366/#375/#378, the
+        # v121/#2626 wedge class, v0.46.26 private-queue lifecycle incl. the
+        # token-only probe). Previously reachable only via the nightly
+        # coverage-full-e2e glob, so a broken PostgresEngine bootstrap block
+        # could reach master with every PR lane green. Own invocation line
+        # and its OWN database (see the step above). Named files only, no glob.
+        run: bash scripts/run-with-receipt.sh tier1 postgres-bootstrap -- bun test --timeout=60000 test/e2e/postgres-bootstrap.test.ts
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/gbrain_bootstrap_test
+          # #3485 preload guard: this job intentionally tests against a DB.
+          GBRAIN_TEST_ALLOW_DATABASE_URL: '1'
+          GBRAIN_TEST_RECEIPT_DIR: ${{ runner.temp }}/receipts
+      - name: Run serve-delegated sync suite
+        # Serve-delegated sync (PGLite): a real `gbrain serve` owns the
+        # single-writer lock while real `gbrain sync` subprocesses delegate
+        # through its IPC socket, get SIGKILLed mid-run, and resume. Own
+        # invocation line, and deliberately NO DATABASE_URL — the suite is
+        # PGLite-only (env DATABASE_URL is a live gbrain config source and
+        # would flip the sandboxed brain to Postgres; the file also
+        # self-strips). Named files only, no glob.
+        run: bash scripts/run-with-receipt.sh tier1 sync-delegation -- bun test --timeout=240000 test/e2e/sync-delegation-under-serve.serial.test.ts
+        env:
+          GBRAIN_TEST_RECEIPT_DIR: ${{ runner.temp }}/receipts
+      - name: Run PGLite inline subagent drain suite
+        # dream-synthesize-pglite pins the inline drain's per-child lease
+        # keepalive (v0.46.26 private-queue lifecycle) — previously nightly-
+        # glob-only, where the keepalive pin broke silently. Deliberately NO
+        # DATABASE_URL: the suite is PGLite-only. Named files only, no glob.
+        run: bash scripts/run-with-receipt.sh tier1 dream-synthesize -- bun test --timeout=120000 test/e2e/dream-synthesize-pglite.test.ts
+        env:
+          GBRAIN_TEST_RECEIPT_DIR: ${{ runner.temp }}/receipts
+      - name: Upload receipts
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: receipts-tier1-${{ matrix.vcpu }}
+          path: ${{ runner.temp }}/receipts
+          retention-days: 14
+          if-no-files-found: warn
+          overwrite: true
+      - name: Pilot report
+        if: always()
+        shell: bash
+        run: |
+          echo "PILOT_MEM peak_used_mb=$(sort -n -k1 "$RUNNER_TEMP/mem.log" | tail -1 | cut -d' ' -f1) min_avail_mb=$(sort -n -k2 "$RUNNER_TEMP/mem.log" | head -1 | cut -d' ' -f2) total_mb=$(free -m | awk '/^Mem:/{print $2}') nproc=$(nproc) loadavg=$(cut -d' ' -f1-3 /proc/loadavg)"
