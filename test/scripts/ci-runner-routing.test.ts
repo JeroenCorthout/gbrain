@@ -46,7 +46,9 @@ describe('CI runner routing', () => {
     for (const name of ['jsonb-parity', 'tier2', 'tier1-backend-matrix', 'coverage-full-unit', 'coverage-full-slow', 'coverage-full-e2e']) {
       expect(load('e2e.yml').jobs[name]['runs-on'], name).toBe(single);
     }
-    expect(load('e2e.yml').jobs.tier1['runs-on']).toBe(normal);
+    // Tier 1 on 8 vCPUs (GBRA-135 pilot, two matched runs): 934-957s on 16, 894-1167s on 8,
+    // no failures, peak memory 3.3 GB; its mechanical step took 40-48s on both.
+    expect(load('e2e.yml').jobs.tier1['runs-on']).toBe(pooled);
     expect(load('e2e.yml').jobs['coverage-full-serial']['runs-on']).toBe(pooled);
     expect(load('persistence-validation.yml').jobs['read-performance']['runs-on']).toBe(single);
     expect(load('persistence-validation.yml').jobs.invariants['runs-on']).toBe(single);

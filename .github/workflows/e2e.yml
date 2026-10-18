@@ -275,10 +275,12 @@ jobs:
 
   tier1:
     name: Tier 1 (Mechanical)
-    # Tier 1 stays on 16 vCPUs: on 4 its CLI `init --url` spawns in
+    # Tier 1 runs on 8 vCPUs: on 4 its CLI `init --url` spawns in
     # mechanical.test.ts went from ~2s to past their 15-30s kill timeouts
-    # (measured September 29, 2026), while every other E2E lane ran as fast.
-    runs-on: ubicloud-standard-16-ubuntu-2404
+    # (measured September 29, 2026). On 8 the GBRA-135 pilot (two matched runs,
+    # October 18, 2026) took 894-1167s against 934-957s on 16 with no failures,
+    # the mechanical step 42-48s against 40-44s, and peak memory 3.3 GB.
+    runs-on: ubicloud-standard-8-ubuntu-2404
     timeout-minutes: 70
     services:
       postgres:
@@ -451,7 +453,7 @@ jobs:
   # The backend matrix (scripts/e2e-backend-matrix.txt) runs each file on
   # direct Postgres and again through transaction-mode PgBouncer, one file at
   # a time, so it needs no more than 4 vCPUs (C5). Split from Tier 1, which
-  # keeps 16 vCPUs for its CLI-spawn timing. It is the PR owner of every
+  # keeps 8 vCPUs for its CLI-spawn timing. It is the PR owner of every
   # listed test/e2e/ file: scripts/e2e-matrix.ts excludes them from Selected
   # E2E (C3).
   tier1-backend-matrix:
