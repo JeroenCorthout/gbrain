@@ -272,7 +272,7 @@ interface Rep { rep: number; sha: string; token: string; files: number; get_ms: 
 
 async function main(): Promise<void> {
   mkdirSync(WORK, { recursive: true });
-  if (ENGINE === 'postgres') harness = await startHarness({ pgPort: 55432, proxyPort: 55433, apiPort: 58474, keep: true });
+  if (ENGINE === 'postgres') harness = await startHarness({ pgPort: 55432, proxyPort: Number(flag('proxy-port', String(56000 + (process.pid % 1000)))), apiPort: 58474, keep: true });
   const stub = EMBED === 'stub' ? await startEmbeddingStub({ latencyMs: EMBED_LATENCY_MS, maxConcurrent: 8, dims: 1536 }) : null;
   if (stub) stubUrl = stub.url;
   if (MODE === 'managed' && !existsSync(join(brainDir('classic'), 'ready.json')) && PAGES >= 10000) await ensureBrain('classic');
