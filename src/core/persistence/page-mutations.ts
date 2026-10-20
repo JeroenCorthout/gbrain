@@ -374,6 +374,8 @@ export async function preparePageAdmission(ctx: OperationContext,
   const sandbox = ctx.viaSubagent === true && !(ctx.allowedSlugPrefixes?.length);
   const configuredWriteThrough = !/^(false|0|off|no)$/i.test(writeThroughSetting ?? 'true');
   const writeThrough = configuredWriteThrough && !sandbox && !input.databaseOnly;
+  // #7085: a managed file import is fenced by the source's owner even when it publishes database-only (write_through off).
+  const ownerFenced = writeThrough || (!configuredWriteThrough && input.managedFileImport === true && p.kind === 'managed_file_import');
   const root = source.local_path || repoPath;
   if (sandbox) authority.databaseOnlyReason = 'subagent_sandbox';
   else if (input.databaseOnly) authority.databaseOnlyReason = input.databaseOnly;
@@ -416,5 +418,5 @@ export async function preparePageAdmission(ctx: OperationContext,
   return { typeWarning, slugAdvisory, admission: { origin: ctx.admissionOrigin, principal, operation: input.operation, sourceId, sourceIncarnation: source.incarnation,
     slug, pageId: snapshot?.page.id ?? null, requestId, clientRequestId: input.batch ? undefined : clientRequestIdOf(params.request_id), callerIntent, intent, authority,
     ...(input.operation === 'edit_page' ? { terminalReservation: receiptReservation({ intent, authority }, (await import('./page-edit.ts')).EDIT_PAGE_RECEIPT_RESERVE) } : {}),
-    worktreeId: writeThrough ? binding?.worktree_id : null, topologyGeneration: writeThrough ? binding?.topology_generation : null } };
+    worktreeId: ownerFenced ? binding?.worktree_id : null, topologyGeneration: ownerFenced ? binding?.topology_generation : null } };
 }

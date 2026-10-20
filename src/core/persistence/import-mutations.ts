@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { existsSync, lstatSync } from 'node:fs';
-import { isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { basename, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import type { BrainEngine } from '../engine.ts';
 import { isImageFilePath, type ImportResult } from '../import-file.ts';
 import { loadConfig } from '../config.ts';
@@ -15,8 +15,9 @@ import { assertPersistenceAccepting, waitForWrites } from './service.ts';
 import type { WriteAdmission } from './journal.ts';
 import type { WriteRequest } from './model.ts';
 import { digest, sha256 } from './digest.ts';
-import { assertImportPaths, managedImportContent, managedStreamedIdentity, prepareManagedImportMutation, readImportBytes, type ImportPack, type ManagedImportBodyRef,
-  type ManagedImportIntent } from './import-prepare.ts';
+import { assertImportPaths, managedImportContent, managedStreamedIdentity, prepareManagedImportMutation, readImportBytes, writeThroughDisabledImport, type ImportPack,
+  type ManagedImportBodyRef, type ManagedImportIntent } from './import-prepare.ts';
+import { writeThroughConfigured } from './switches.ts';
 import { readPageBodyPolicy } from '../page-body/limits.ts';
 import { submissionAuthority } from './authority.ts';
 import { inspectUnchanged, screeningRequest } from './noop-kernel.ts';
@@ -62,6 +63,20 @@ export async function settleManagedImportBatch(engine: BrainEngine, batch: reado
   if (Date.now() - t0 > 5000 * open.length) console.error(`[gbrain phase] import.process_batch slow ${Date.now() - t0}ms files=${open.length} first=${sourcePathOf(open[0]!)}`);
   return batch.map(file => settled[open.indexOf(file)]);
 }
+/**
+ * #7085: a managed import of `input` (a file or directory) from outside the source's checkout while sync.write_through is off,
+ * refused once before any file is read or admitted; null when the import may proceed (or another check owns the refusal).
+ */
+export async function managedImportWriteThroughRefusal(engine: BrainEngine, sourceId: string, input: string): Promise<OperationError | null> {
+  if (writeThroughConfigured(await engine.getConfig('sync.write_through'))) return null;
+  const binding = await getWorktreeBinding(engine, sourceId);
+  if (!binding?.local_path) return null;
+  const root = join(binding.local_path, binding.relative_path);
+  const rel = relative(root, input);
+  if (rel === '' || !isAbsolute(rel) && rel !== '..' && !rel.startsWith(`..${sep}`)) return null;
+  return writeThroughDisabledImport(input, lstatSync(input).isFile() ? join(root, basename(input)) : root, sourceId);
+}
+
 const IMPORT_OP = 'managed-file-import';
 /** How long an import waits for one file's publication, as a single import always has. */
 const IMPORT_WAIT_MS = 30_000;
@@ -107,6 +122,7 @@ export async function importManagedFiles(engine: BrainEngine, files: readonly Ma
   const ctx = { engine, remote: false, sourceId, config: loadConfig() ?? { engine: engine.kind } } as OperationContext;
   const reads = batchSharedReads(engine);
   const bodyPolicy = await readPageBodyPolicy(engine);
+  const writeThrough = writeThroughConfigured(await engine.getConfig('sync.write_through'));
   const planned: Array<{ i: number; slug: string; content?: string; bodyRef?: ManagedImportBodyRef; sourcePath: string; path: string; inputPath: string; inputHash: string; target: string }> = [];
   const slugs = new Set<string>();
   let rest = files.length;
@@ -125,6 +141,7 @@ export async function importManagedFiles(engine: BrainEngine, files: readonly Ma
       if (canonicalInput && !opts.slugRoot) sourcePath = canonicalRelative;
       const path = canonicalInput ? canonicalRelative : sourcePath;
       const target = resolve(root, path);
+      if (!writeThrough && target !== inputPath) throw writeThroughDisabledImport(inputPath, target, sourceId);
       await assertImportPaths(reads, sourceId, root, inputPath, target);
       const streamed = await managedStreamedIdentity(sourcePath, inputPath, target, bodyPolicy, sourceId);
       const bytes = streamed ? null : readImportBytes(inputPath);

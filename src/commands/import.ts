@@ -40,7 +40,7 @@ import { realpathOrResolve } from '../core/path-confine.ts';
 import { slog } from '../core/console-prefix.ts';
 import { refreshProjectionStatistics } from '../core/search/projection-statistics.ts';
 import { importAnalyzeEveryPages, maybeRefreshPlannerStats, PLANNER_STATS_REPAIR_COMMAND } from '../core/planner-stats.ts';
-import { importManagedFile, nextImportBatch, settleManagedImportBatch } from '../core/persistence/import-mutations.ts';
+import { importManagedFile, managedImportWriteThroughRefusal, nextImportBatch, settleManagedImportBatch } from '../core/persistence/import-mutations.ts';
 import { acceptedPendingReceipt } from '../core/persistence/accepted-pending.ts';
 import { estimateCostFromChars, lookupEmbeddingPrice } from '../core/embedding-pricing.ts';
 import { getEmbeddingModel } from '../core/ai/gateway.ts';
@@ -563,6 +563,15 @@ export async function runImport(
         `Pass --allow-noncanonical-root to bypass deliberately.`,
       );
       throw new ImportAbortError('configured-root admission failed closed');
+    }
+  }
+
+  if (managedImport) {
+    const refusal = await managedImportWriteThroughRefusal(engine, sourceId ?? 'default', dir);
+    if (refusal) {
+      console.error(`Error [${refusal.code}]: ${refusal.message}`);
+      console.error(`Fix: ${refusal.suggestion}`);
+      throw new ImportAbortError(`${refusal.code}: ${refusal.message}`, 1, undefined, refusal);
     }
   }
 
