@@ -14,6 +14,7 @@
  * normalized file; a dry run lists it in `would_normalize`), and a residual
  * fence is held as `invalid_fence`.
  */
+import { randomUUID } from 'node:crypto';
 import { realpathSync, statSync } from 'node:fs';
 import { join, relative, resolve, sep } from 'node:path';
 import type { BrainEngine } from '../engine.ts';
@@ -35,9 +36,10 @@ import { readPagePurgeTombstones } from './page-purge.ts';
 import { listTrustAllowRules } from '../trust/allow-rules.ts';
 import { readSyncContent, readSyncFile, syncGitPath, UNREADABLE_SYNC_FILE, type SyncDiscovery, type SyncEntry } from './sync-discovery.ts';
 import { pinnedWindowBlock, readBlobBytes, readBlobContents, readPinnedBlob, readPinnedBytes, readPinnedContent, readTreeBlobs, SYNC_READ_BOUND, type TreeBlob } from './sync-blobs.ts';
-import { screenSyncImport, type SyncImportScreenInput } from './sync-prepare.ts';
+import { prepareManagedSyncMutation, screenSyncImport, type SyncImportScreenInput, type SyncIntent } from './sync-prepare.ts';
+import { screeningRequest } from './noop-kernel.ts';
 import { committedContentOrMissing, nullBytesRefusal } from './sync-entry-fault.ts';
-import type { SyncProcessingOptions } from './sync-authority.ts';
+import type { SyncAuthority, SyncProcessingOptions } from './sync-authority.ts';
 import { GIT_HOLD_CAP, gitHoldItem, readSyncHoldPolicy, readSyncImportProvenance, type GitHoldCode, type GitHoldItem, type GitHoldRecord, type PreparationStallMeta, type SyncHoldPolicy } from './sync-holds.ts';
 import type { WriteRequest } from './model.ts';
 
@@ -372,8 +374,9 @@ export async function screenFrozenImport(engine: BrainEngine, input: FrozenImpor
 }
 
 /** #7087: one importable dry-run entry, for the read-only screening preparation that says what publication would do to its file. */
-export interface DryRunWritebackInput { entry: SyncEntry; content: string; rawHash: string | null; lineEndingOnly: boolean; snapshot: Snapshot }
-export type DryRunWriteback = (input: DryRunWritebackInput) => Promise<{ rewrite: boolean; databaseOnlyReason?: string }>;
+interface DryRunWritebackInput { entry: SyncEntry; content: string; rawHash: string | null; lineEndingOnly: boolean; snapshot: Snapshot }
+/** A dry run's discovery; a cursor also carries the authority and options its screening preparations are made under. */
+type DryRunDiscovery = SyncDiscovery & { index?: number; runId?: string; authority?: SyncAuthority; processingOptions?: SyncProcessingOptions };
 export interface DryRunPreview {
   dry_run: true; added: number; modified: number; deleted: number; renamed: number;
   would_import?: Array<{ path: string; slug: string; change: 'add' | 'modify' | 'rename'; from?: string }>; would_import_count?: number;
@@ -388,12 +391,11 @@ export interface DryRunPreview {
  * Dry run: screens every pending import entry read-only (batched Git reads)
  * and lists the holds a real run would record. Entries the screen cannot
  * judge are reported in `screen_skipped`, never as holds. #7087: it also lists the
- * imports and deletions a real run would publish, and (through `writeback`, the
+ * imports and deletions a real run would publish, and (through `dryRunWriteback`, the
  * preparer's read-only screening preparation) the files it would rewrite with
  * canonical frontmatter or keep database-only.
  */
-export async function dryRunScreen(engine: BrainEngine, discovery: SyncDiscovery & { index?: number }, run: SyncScreenRun | null, retryCommand: string,
-  writeback?: DryRunWriteback): Promise<DryRunPreview> {
+export async function dryRunScreen(engine: BrainEngine, discovery: DryRunDiscovery, run: SyncScreenRun | null, retryCommand: string): Promise<DryRunPreview> {
   const pending = discovery.entries.slice(discovery.index ?? 0);
   const deletes = pending.filter(entry => entry.action === 'delete' && !entry.unownedDeletion && entry.slug);
   const imports = pending.filter(entry => entry.action === 'import' && entry.slug);
@@ -401,8 +403,8 @@ export async function dryRunScreen(engine: BrainEngine, discovery: SyncDiscovery
   const rewrites: Array<{ path: string; slug: string }> = [];
   const kept: Array<{ path: string; slug: string; reason: string }> = [];
   const screened = run && !discovery.companyPlan ? await dryRunHolds(engine, discovery, imports, run, retryCommand, async input => {
-    if (!writeback || isCodeFilePath(input.entry.path)) return;
-    const verdict = await writeback(input);
+    if (!discovery.authority || isCodeFilePath(input.entry.path)) return;
+    const verdict = await dryRunWriteback(engine, discovery as DryRunDiscovery & { authority: SyncAuthority }, input);
     if (verdict.rewrite) rewrites.push({ path: input.entry.path, slug: input.entry.slug! });
     else if (verdict.databaseOnlyReason) kept.push({ path: input.entry.path, slug: input.entry.slug!, reason: verdict.databaseOnlyReason });
   }) : { held: [], normalized: [], skipped: [] };
@@ -418,6 +420,21 @@ export async function dryRunScreen(engine: BrainEngine, discovery: SyncDiscovery
     ...listed('would_rewrite', rewrites), ...listed('would_keep_database_only', kept),
     ...listed('would_hold', screened.held), ...listed('would_normalize', screened.normalized),
     ...(screened.skipped.length ? { screen_skipped: screened.skipped } : {}) };
+}
+
+/**
+ * #7087: what publishing one dry-run import would do to its file, from the preparer's own screening preparation (read-only,
+ * never admitted): rewrite it with canonical frontmatter, or keep that metadata database-only (write_through off, a mirror).
+ */
+async function dryRunWriteback(engine: BrainEngine, discovery: DryRunDiscovery & { authority: SyncAuthority }, input: DryRunWritebackInput): Promise<{ rewrite: boolean; databaseOnlyReason?: string }> {
+  const { entry, snapshot } = input;
+  const intent: SyncIntent = { kind: 'managed_sync_import', expected_revision: snapshot?.revision ?? null, sourcePath: entry.sourcePath, path: entry.path, rawHash: input.rawHash,
+    content: input.content, lineEndingOnly: input.lineEndingOnly, processingOptions: discovery.processingOptions, ownerEpoch: String(discovery.binding.owner_epoch),
+    syncAuthority: discovery.authority, cursorKey: `dry-run:${discovery.sourceId}`, runId: discovery.runId ?? randomUUID(), index: 0, total: 1, slugMode: discovery.slugMode,
+    from: discovery.from, target: discovery.target, working: entry.working, ...(entry.renameFrom ? { renameFrom: entry.renameFrom } : {}) };
+  const prepared = await prepareManagedSyncMutation(engine, screeningRequest({ source_id: discovery.sourceId, source_incarnation: discovery.incarnation, slug: entry.slug!,
+    page_id: snapshot?.page.id ?? null, worktree_id: discovery.binding.worktree_id, authority: discovery.authority.writer, intent }), { engine: engine.kind }, undefined, { unsaved: true });
+  return { rewrite: !!prepared.file, ...(prepared.databaseOnlyReason ? { databaseOnlyReason: prepared.databaseOnlyReason } : {}) };
 }
 
 /** The hold screen of a dry run's imports; `importable` sees each entry the screen admits, and a throw there skips the entry. */

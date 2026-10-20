@@ -159,11 +159,16 @@ export class ImportAbortError extends Error {
 // without printing, so each refusal below prints its reason and the next
 // command to stderr before the caller throws the returned abort.
 
-/** A managed import of a symlinked input root: name the path, its target and the command that works. */
-function symlinkedRootAbort(dirArg: string, dir: string): ImportAbortError {
-  console.error(`Managed import refuses a symlinked input root: ${dirArg} resolves to ${dir}.`);
-  console.error(`Fix: gbrain import ${dir}`);
-  return new ImportAbortError('managed import refuses a symlinked input root');
+/** A managed import's input root: never a symlink, and (#7085) inside the source checkout while sync.write_through is off; a refusal names the fix. */
+async function assertManagedImportRoot(engine: BrainEngine, dirArg: string, dir: string, sourceId: string | undefined): Promise<void> {
+  if (dir !== resolve(dirArg)) {
+    console.error(`Managed import refuses a symlinked input root: ${dirArg} resolves to ${dir}.`);
+    console.error(`Fix: gbrain import ${dir}`);
+    throw new ImportAbortError('managed import refuses a symlinked input root');
+  }
+  const refusal = await managedImportWriteThroughRefusal(engine, sourceId ?? 'default', dir);
+  if (refusal) console.error(`Error [${refusal.code}]: ${refusal.message}\nFix: ${refusal.suggestion}`);
+  if (refusal) throw new ImportAbortError(`${refusal.code}: ${refusal.message}`, 1, undefined, refusal);
 }
 
 /** A refused source filesystem lock admission: print its code, message and fix, and keep it as the cause. */
@@ -518,7 +523,7 @@ export async function runImport(
   }
 
   const managedImport = await readManagedMode(engine);
-  if (managedImport && dir !== resolve(dirArg)) throw symlinkedRootAbort(dirArg, dir);
+  if (managedImport) await assertManagedImportRoot(engine, dirArg, dir, sourceId);
   const singleFile = managedImport && lstatSync(dir).isFile();
   const importRoot = singleFile ? dirname(dir) : dir;
 
@@ -563,15 +568,6 @@ export async function runImport(
         `Pass --allow-noncanonical-root to bypass deliberately.`,
       );
       throw new ImportAbortError('configured-root admission failed closed');
-    }
-  }
-
-  if (managedImport) {
-    const refusal = await managedImportWriteThroughRefusal(engine, sourceId ?? 'default', dir);
-    if (refusal) {
-      console.error(`Error [${refusal.code}]: ${refusal.message}`);
-      console.error(`Fix: ${refusal.suggestion}`);
-      throw new ImportAbortError(`${refusal.code}: ${refusal.message}`, 1, undefined, refusal);
     }
   }
 
