@@ -359,6 +359,53 @@ test('probe: the writer recovers on its own: a Git effect parked by a held lock 
   } });
 }, 120_000);
 
+test('GBRA-133 PR 3: an owner whose reclaim switch is off never removes an abandoned lock, and the refusal names the switch', async () => {
+  const { root, home, lock } = staleEmptyLockRepo();
+  await withEnv({ GBRAIN_HOME: home }, async () => {
+    const writer = await writerLock(home);
+    const reclaims: unknown[] = [];
+    const error = await commitGitTargets(root, ['a.md'], undefined, undefined, { writerLock: writer, onReclaim: r => { reclaims.push(r); }, reclaimOff: 'sync.autofix.index_lock_reclaim' })
+      .then(() => null, e => e as { code?: string; suggestion?: string; message?: string });
+    expect(error?.code).toBe('git_index_stale');
+    expect(JSON.stringify(error)).toContain('automatic index-lock reclaim is off (sync.autofix.index_lock_reclaim false)');
+    expect(existsSync(lock)).toBe(true);
+    expect(reclaims).toEqual([]);
+    await writer.release();
+  });
+}, 60_000);
+
+test('GBRA-133 PR 3: sync.autofix.index_lock_reclaim false keeps an abandoned lock and writes no receipt; on, the reclaim leaves a sync-autofix receipt', async () => {
+  await managedBrain(async ({ engine, ctx, root }) => {
+    const lock = join(root, '.git', 'index.lock');
+    writeFileSync(lock, '');
+    age(lock, INDEX_LOCK_GRACE_FOR_TESTS + 60_000);
+    await engine.setConfig('sync.autofix.index_lock_reclaim', 'false');
+    await put(ctx, 'notes/first');
+    const first = await gitEffect(engine, 'notes/first');
+    for (let i = 0; i < 10 && (await gitEffect(engine, 'notes/first')).state !== 'failed'; i++) await runOnly(engine, ctx, first.id);
+    const parked = await gitEffect(engine, 'notes/first');
+    expect(parked).toMatchObject({ state: 'failed', error_code: 'targets_parked', data: { parked: [{ slug: 'notes/first', error_code: 'git_index_stale' }] } });
+    expect(existsSync(lock)).toBe(true);
+    const { readAutofixReceipts } = await import('../src/core/autofix/receipts.ts');
+    expect(await readAutofixReceipts(engine, 'default')).toEqual([]);
+
+    await engine.setConfig('sync.autofix.index_lock_reclaim', 'true');
+    await put(ctx, 'notes/second');
+    const second = await gitEffect(engine, 'notes/second');
+    await runOnly(engine, ctx, second.id);
+    if (!(await canProve())) { expect(existsSync(lock)).toBe(true); return; }
+    expect(existsSync(lock)).toBe(false);
+    expect(await gitEffect(engine, 'notes/second')).toMatchObject({ state: 'committed', error_code: null });
+    expect((await readAutofixReceipts(engine, 'default')).map(r => [r.kind, r.admission, r.outcome, r.code, r.path, r.disabling_key]))
+      .toEqual([['index_lock_reclaim', 'automatic', 'applied', 'git_index_stale', null, 'sync.autofix.index_lock_reclaim']]);
+  }, { setup: ({ root }) => {
+    git(root, 'init', '-q'); git(root, 'config', 'maintenance.auto', 'false'); git(root, 'config', 'gc.auto', '0');
+    writeFileSync(join(root, '.gitignore'), '\n'); durableGitRepo(root, ['.gitignore']);
+  } });
+}, 120_000);
+
+function staleEmptyLockRepo() { const r = repo(); writeFileSync(r.lock, ''); age(r.lock, INDEX_LOCK_GRACE_FOR_TESTS + 60_000); return r; }
+
 /**
  * Fixture process tables for the proof's /proc reader: pid directories with comm, status and an fd directory.
  * An fd directory with mode 000 denies its listing the way the kernel does for a process whose open files this

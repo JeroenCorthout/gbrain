@@ -122,6 +122,32 @@ work behind exits 0, so scripts should also check `results[].complete`.
 `gbrain doctor --remediate` reports a repair step with failed items as
 `failed`, never `completed`.
 
+## Automatic repairs
+
+A few repairs run by themselves, without a preview, because each one is reversible, receipted, kill-switched and previewable, never deletes or moves content without an undo, spends nothing and asks no consent (GBRA-133). Each file rewrite also keeps its recovery material: the bytes it replaced are in Git before it writes, it checks the file's revision and hash first, and it lands as one isolated commit. Everything else stays preview-first, as described above.
+
+| Kind | When | Its switch (and the umbrella `sync.autofix.enabled`) | Undo |
+|---|---|---|---|
+| Stray `slug:` line (`slug_line_heal`) | right after a managed sync, only on the files that sync held, for at most 10 s; the rest goes to the `content_repair` phase | `sync.slug_conflicts.auto_remove` | `gbrain sync undo` |
+| Verified origin twins (`origin_twin_merge`) | right after a managed sync | `sync.origin_twins.auto_resolve` | `gbrain restore <slug> --source-id <id>` for 72 h |
+| Fences and slug conflicts (`fence_repair`, `content_repair`) | the maintenance cycle | `fences.repair.enabled` | `gbrain sync undo` |
+| Re-screen of a stalled write (`preparation_rescreen`) | every sync, up to three attempts | `sync.autofix.preparation_rescreen` | nothing to undo |
+| Re-screen of a `worktree_dirty` file now committed (`worktree_dirty_rescreen`) | right after a managed sync | `sync.autofix.worktree_dirty_rescreen` | nothing to undo |
+| Abandoned Git index lock (`index_lock_reclaim`) | inside the Git effect | `sync.autofix.index_lock_reclaim` | nothing to undo |
+
+Every switch is `true` by default. `gbrain config set sync.autofix.enabled false` stops all of them; an operator's explicit `gbrain repair <kind> --apply` or `gbrain sync unblock --apply` still runs. Frontmatter repair and managed-sync orphans are never automatic.
+
+Each run leaves a receipt: `gbrain sync status --source <id> --json` lists them under `autofix.recent` (kind, codes, path, hashes, the repair commit once it lands, and its undo), what the next run will take under `autofix.pending`, and each kind's switch under `autofix.switches`. Receipts keep no file content and no command line; a remote reader sees counts and hashes, never a path or a slug.
+
+To undo a file repair, preview, then apply:
+
+```bash
+gbrain sync undo --source <id> --commit <sha>          # what it would restore; writes nothing
+gbrain sync undo --source <id> --commit <sha> --apply  # restores the bytes, one new commit
+```
+
+It reverts only a commit an autofix receipt recorded, under the source's writer lock, as a new commit (no force push, no history rewrite). It refuses `autofix_undo_conflict` if the file changed after the repair. The next sync screens the file as it was (held again if sync would hold it), and no automatic repair reapplies itself to those bytes until the file changes; turn the kind's switch off to stop it entirely.
+
 ## What each kind fixes
 
 | Kind | Doctor check that points here | What it does | Left alone and counted |
