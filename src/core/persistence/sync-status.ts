@@ -51,6 +51,8 @@ import { listIdentityDowngrades, withIdentityRemedies } from '../sync-identity-d
 import { GIT_PUSH_CODES, readGitPushHolds, type GitPushHold } from './git-push-holds.ts';
 
 export interface SyncStatusHold extends SyncFaultVerdict {
+  /** GBRA-133 PR 3: `<source>:<path>:<code>:<upstream_version[0:12]>`, the hold as it stands now (a new upstream version is a new item). */
+  item_id: string;
   code: string;
   /** #6712 PR 2: the `classifyTerminal` category of the hold's code and the public category beside it. */
   category: TerminalCategory;
@@ -241,7 +243,8 @@ function holdStatus(record: GitHoldRecord, auto?: FenceAutoRepair): SyncStatusHo
   const terminal = classifyRecordedFault({ source_id: record.source_id, code: record.code, slug: record.slug });
   const fix = gitHoldFix(record, auto);
   // #6712 PR 2: an abandoned edit is the person's to commit or restore; unblock then finds the file clean and schedules it.
-  return { code: record.code, category: terminal.category, public_category: terminal.public_category, slug: record.slug, path: record.path, attempts, held_since: record.held_at, ...verdict,
+  return { item_id: `${record.source_id}:${record.path}:${record.code}:${(record.upstream_version ?? 'none').slice(0, 12)}`,
+    code: record.code, category: terminal.category, public_category: terminal.public_category, slug: record.slug, path: record.path, attempts, held_since: record.held_at, ...verdict,
     retry_after: verdict.safe_actions[0] === 'retry' || verdict.safe_actions[0] === 'retry_when_clean' ? null : 'after the named step',
     fix: verdict.needs_human && record.code === 'worktree_dirty' ? { ...fix, ask_user: true, user_message: verdict.human_reason } : fix };
 }

@@ -158,6 +158,10 @@ const KIND_FLAGS: Record<string, readonly string[]> = {
   '--keep': ['stuck-recovery'], '--request-id': ['stuck-recovery'],
   '--older-than': ['receipt-compaction'], '--include-failures': ['receipt-compaction'], '--force': ['receipt-compaction'],
 };
+/** The kind-specific flags `gbrain repair <kind>` accepts (`--only`, `--slug`, ...). */
+export function repairKindFlags(kind: string): string[] {
+  return Object.entries(KIND_FLAGS).filter(([, kinds]) => kinds.includes(kind)).map(([flag]) => flag);
+}
 const VALUE_EXAMPLES: Record<string, string> = { '--source': 'default', '--limit': '50', '--expect': 'PLAN_HASH', '--only': 'notes/a.md', '--skip': 'notes/a.md',
   '--slug': 'notes/a', '--max-usd': '0.50', '--prefer': 'file', '--request': 'REQUEST_UUID', '--class': 'review_required', '--since': '7d', '--side': 'deleted', '--state': 'tombstone_edited', '--keep': 'prior',
   '--request-id': '123e4567-e89b-42d3-a456-426614174000', '--older-than': '30d', '--from': 'notes/old' };
@@ -165,7 +169,7 @@ const VALUE_EXAMPLES: Record<string, string> = { '--source': 'default', '--limit
 const invalid = (message: string, suggestion: string, preview: string[] = ['gbrain', 'repair', '--json']) => opError('invalid_params', message, suggestion,
   { fix: readFix('Previews the repair; without --apply it writes nothing.', { argv: preview }) });
 
-interface RepairArgs { kind?: string; apply: boolean; all: boolean; json: boolean; noEmbed: boolean; includeAmbiguous: boolean; diff: boolean; yes: boolean;
+export interface RepairArgs { kind?: string; apply: boolean; all: boolean; json: boolean; noEmbed: boolean; includeAmbiguous: boolean; diff: boolean; yes: boolean;
   noLlm: boolean; source?: string; limit?: string; expect?: string; maxUsd?: number; only: string[]; skip: string[]; slugs: string[];
   allDrifted: boolean; prefer?: 'file' | 'database'; requests: string[]; driftClass?: string; since?: string;
   held: boolean; side?: string; state?: string;
@@ -393,13 +397,9 @@ export async function runRepairCommand(engine: BrainEngine, args: string[]): Pro
     if (!auth) return;
   }
   const runner = await repairRunner(engine, { apply, noEmbed });
+  const parsed = { only, skip, slugs, noLlm, maxUsd, prefer, requests, allDrifted, driftClass, since, held, side, state, keep, requestId, olderThan, includeFailures, force, from, close };
   const results = await runRepairKinds(kinds, scope, { apply, source, noEmbed, named: kind !== undefined }, k => runner.run(k, scope, { limit, sourceFlag: source, explicit: k === kind, expect, includeAmbiguous,
-    ...(k === kind && KIND_FLAGS['--only']!.includes(k) ? { only, skip } : {}), ...(k === kind && slugs.length ? { slugs } : {}),
-    ...(k === kind && noLlm ? { noLlm } : {}), ...(k === kind && maxUsd !== undefined ? { maxLlmUsd: maxUsd } : {}),
-    ...(k === kind && k === 'file-drift' ? { prefer, requests, allDrifted, driftClass, since, ...(held ? { held } : {}), ...(side ? { side } : {}), ...(state ? { state } : {}) } : {}),
-    ...(k === kind && keep ? { keep } : {}), ...(k === kind && requestId ? { requestId } : {}),
-    ...(k === kind && k === 'receipt-compaction' ? { olderThan, includeFailures, force } : {}),
-    ...(k === kind && k === 'rename-identity' ? { from, close } : {}) }));
+    ...(k === kind ? namedKindRunOptions(k, parsed) : {}) }));
   if (apply) clearHealthMemo(engine);
   const paidKinds = results.filter(r => r.paid).map(r => r.kind);
   if (json) {
@@ -421,6 +421,21 @@ export async function runRepairCommand(engine: BrainEngine, args: string[]): Pro
     if (explicitKindsNotRun.length) console.log(`Explicit-only kinds (not run without their name; preview each): ${explicitKindsNotRun.map(n => n.preview_command).join('; ')}`);
   }
   if (repairExitVerdict(results) !== 0) setCliExitVerdict(1);
+}
+
+/**
+ * The kind-specific runner options of the kind the operator named (`gbrain repair <kind>` and the MCP repair ops share
+ * them): the path, slug, model and per-kind selections, each passed only to a kind that reads it.
+ */
+export function namedKindRunOptions(kind: RepairKind, a: Pick<RepairArgs, 'only' | 'skip' | 'slugs' | 'noLlm' | 'maxUsd' | 'prefer' | 'requests' | 'allDrifted' | 'driftClass' | 'since' | 'held'
+  | 'side' | 'state' | 'keep' | 'requestId' | 'olderThan' | 'includeFailures' | 'force' | 'from' | 'close'>) {
+  return { ...(KIND_FLAGS['--only']!.includes(kind) ? { only: a.only, skip: a.skip } : {}), ...(a.slugs.length ? { slugs: a.slugs } : {}),
+    ...(a.noLlm ? { noLlm: a.noLlm } : {}), ...(a.maxUsd !== undefined ? { maxLlmUsd: a.maxUsd } : {}),
+    ...(kind === 'file-drift' ? { prefer: a.prefer, requests: a.requests, allDrifted: a.allDrifted, driftClass: a.driftClass, since: a.since, ...(a.held ? { held: a.held } : {}),
+      ...(a.side ? { side: a.side } : {}), ...(a.state ? { state: a.state } : {}) } : {}),
+    ...(a.keep ? { keep: a.keep } : {}), ...(a.requestId ? { requestId: a.requestId } : {}),
+    ...(kind === 'receipt-compaction' ? { olderThan: a.olderThan, includeFailures: a.includeFailures, force: a.force } : {}),
+    ...(kind === 'rename-identity' ? { from: a.from, close: a.close } : {}) };
 }
 
 /**

@@ -12,7 +12,7 @@ import type { BrainEngine } from '../../core/engine.ts';
 import { cliRenderContext, renderAction } from '../../core/agent-output.ts';
 import { writeJsonDocument } from '../../core/cli-force-exit.ts';
 import { opError } from '../../core/ops/contract.ts';
-import { readSyncStatus, unblockSync, type SyncStatus } from '../../core/persistence/sync-status.ts';
+import { unblockSync, type SyncStatus } from '../../core/persistence/sync-status.ts';
 import { HOLD_ATTEMPTS_NEEDS_HUMAN, HOLD_ESCALATE_MS } from '../../core/persistence/sync-fault-class.ts';
 import { CONTENT_REPAIR_HOLD_KINDS } from '../../core/repair/content-lane.ts';
 import { resolveSourceIdEngineFree } from '../../core/source-resolver.ts';
@@ -135,26 +135,14 @@ function sourceOf(args: string[]): string {
 export async function runSyncStatus(engine: BrainEngine, args: string[]): Promise<void> {
   if (args.includes('--help') || args.includes('-h')) return printSyncStatusHelp();
   const sourceId = sourceOf(args);
-  const status = await readSyncStatus(engine, sourceId, { detail: args.includes('--detail') });
-  const ctx = cliRenderContext();
-  // #6696 (A4): the capacity picture rides every status read (unthrottled), from the 60 s snapshot.
-  // #6803 C4: one bounded wait per status read, shared with its notices; a slow snapshot reads unknown for this call only.
-  const { capacitySnapshotWithin, capacityNotices, CAPACITY_READ_WAIT_MS } = await import('../../core/persistence/capacity-snapshot.ts');
-  const { renderNotice } = await import('../../core/agent-output.ts');
-  const snapshot = await capacitySnapshotWithin(engine, Date.now() + CAPACITY_READ_WAIT_MS);
-  const notices = (await capacityNotices(engine, { throttle: false, snapshot })).map(notice => renderNotice(notice, ctx));
-  // #6858 ask 6: commit→searchable / commit→embedded latency over 24 h (null for a source with no managed binding).
-  const { readSyncFreshness, formatSyncFreshness } = await import('../../core/persistence/sync-freshness.ts');
-  const [freshness = null] = await readSyncFreshness(engine, { sourceIds: [sourceId] }).catch(() => []);
-  const { readNotifierBlock, formatNotifierBlock } = await import('../../core/notifier/status.ts');
-  const notifierBlock = await readNotifierBlock(engine, sourceId).catch(() => null);
-  const notifier = notifierBlock && { ...notifierBlock, fix: notifierBlock.fix ? renderAction(notifierBlock.fix, ctx) : null };
-  const read = (r: typeof status.cursors_read) => r.status === 'read' ? r : { ...r, fix: renderAction(r.fix, ctx) };
-  const rendered = { ...status, holds: status.holds.map(hold => ({ ...hold, fix: renderAction(hold.fix, ctx) })),
-    git_push_holds: status.git_push_holds.map(hold => ({ ...hold, fix: renderAction(hold.fix, ctx) })), next: status.next ? renderAction(status.next, ctx) : null,
-    checkpoint_blockers_read: read(status.checkpoint_blockers_read), cursors_read: read(status.cursors_read), terminal_failures_read: read(status.terminal_failures_read),
-    capacity: { status: snapshot.status, pause_pct: snapshot.pause_pct, low: snapshot.low, paused: snapshot.paused }, freshness, notifier, ...(notices.length ? { notices } : {}) };
-  if (args.includes('--json')) return writeJsonDocument(JSON.stringify(rendered, null, 2));
+  // GBRA-133 PR 3: one document for the CLI and the MCP sync_status op (identical field names): the status plus the capacity
+  // picture and its notices (#6696 A4, #6803 C4), freshness (#6858), the notifier block and the autofix block.
+  const { buildSyncStatusDocument } = await import('./status-document.ts');
+  const status = await buildSyncStatusDocument(engine, sourceId, { detail: args.includes('--detail'), viewer: { transport: 'cli', render: cliRenderContext() } });
+  if (args.includes('--json')) return writeJsonDocument(JSON.stringify(status, null, 2));
+  const { formatSyncFreshness } = await import('../../core/persistence/sync-freshness.ts');
+  const { formatNotifierBlock } = await import('../../core/notifier/status.ts');
+  const { freshness, notifier: notifierBlock, notices = [] } = status;
   const c = status.cursor;
   console.log(syncStatusHeadline(status));
   console.log(`  ${c ? c.done ? `last run finished at ${c.index}/${c.total} (pinned ${c.pinned_target?.slice(0, 8) ?? '?'})` : `cursor ${c.index}/${c.total} at pinned target ${c.pinned_target?.slice(0, 8) ?? '?'}`
@@ -182,7 +170,7 @@ export async function runSyncStatus(engine: BrainEngine, args: string[]): Promis
   const connector = status.connector_last_error;
   if (connector) console.log(`  connector: ${connector.stopped ? 'STOPPED, ' : ''}the last ${connector.consecutive} run(s) ended on ${connector.code}${connector.slug ? ` at ${connector.slug}` : ''}: ${connector.message}`);
   for (const notice of notices) console.log(`  [gbrain notice ${notice.code}] ${notice.why}`);
-  if (rendered.next) console.log(`  Next: ${rendered.next.command ?? rendered.next.argv?.join(' ')}\n  Why: ${rendered.next.why}`);
+  if (status.next) console.log(`  Next: ${status.next.command ?? status.next.argv?.join(' ')}\n  Why: ${status.next.why}`);
   else console.log('  Next: nothing; the source is synced and holds nothing.');
 }
 
