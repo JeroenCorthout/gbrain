@@ -138,6 +138,14 @@ export async function readDueMarkers(engine: Exec, sourceIds?: string[]): Promis
   return rows.map(toMarker);
 }
 
+/** GBRA-133 PR 3: the sources (of these) with unconsumed `sync-hold-retry` paths for their current incarnation; one indexed read. */
+export async function readHoldRetrySources(engine: Exec, sourceIds: string[]): Promise<Set<string>> {
+  if (!sourceIds.length) return new Set();
+  const rows = await engine.executeRaw<{ id: string }>(`SELECT s.id FROM sources s JOIN op_checkpoints c ON c.op = 'sync-hold-retry' AND c.fingerprint = s.id || ':' || s.incarnation::text
+      WHERE s.id = ANY($1::text[]) AND jsonb_array_length(COALESCE(c.completed_keys->0->'paths', '[]'::jsonb)) > 0`, [sourceIds]);
+  return new Set(rows.map(row => row.id));
+}
+
 /**
  * Deletes freshness and pull markers that name a head the source already reached (a CLI sync, a refresh or another
  * resident got there first). State-based, so a newer request naming a newer head is never matched.
