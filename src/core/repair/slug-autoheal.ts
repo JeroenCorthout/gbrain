@@ -21,7 +21,13 @@
  *   `SLUG_HEAL_MAX_FILES` attempts and `SLUG_HEAL_BUDGET_MS` (or the caller's deadline) per sync, one checkout scan
  *   per source; the rest are counted as pending for the next sync or the maintenance run;
  * - `sync.slug_conflicts.auto_remove false` turns it off (held until the maintenance run or an operator repairs
- *   them), and so does `fences.repair.enabled false` (the whole lane); a skipped heal says which setting skipped it.
+ *   them), and so does `fences.repair.enabled false` (the whole lane) and the umbrella `sync.autofix.enabled false`
+ *   (GBRA-133 PR 3, autofix/admission.ts); a skipped heal says which setting skipped it.
+ * GBRA-133 PR 3 (inline autofix): only the held files this sync screened (`result.held`) are taken, with no model and
+ * within `SLUG_HEAL_BUDGET_MS`; every other slug-conflict hold waits for the content_repair maintenance phase, so a
+ * backlog never delays the next commit. A file is edited only while its held bytes are in the checkout's Git objects
+ * (the recovery material its undo restores); each edit leaves a `sync-autofix` receipt (preimage hash and blob,
+ * postimage hash, request id; the repair commit's sha once it lands) whose undo is `gbrain git commit-push --revert`.
  * Nothing here runs at upgrade. A failure is counted and never fails the sync whose checkpoint already committed.
  */
 import type { BrainEngine } from '../engine.ts';
@@ -31,15 +37,20 @@ import { serr } from '../console-prefix.ts';
 import { currentSubmissionAuthority } from '../minions/submission-authority.ts';
 import { readGitSourceHolds } from '../persistence/sync-holds.ts';
 import { contentRepairLaneCurrent } from '../persistence/sync-fault-class.ts';
-import { FENCE_REPAIR_ENABLED_KEY, fenceRepairEnabled } from '../fence-repair/config.ts';
+import { FENCE_REPAIR_ENABLED_KEY } from '../fence-repair/config.ts';
+import { admitAutofix } from '../autofix/admission.ts';
+import { recordAutofixReceipts, type AutofixReceiptInput } from '../autofix/receipts.ts';
+import { AUTOFIX_ENABLED_KEY } from '../autofix/switches.ts';
+import { execFileSync } from '../spawn.ts';
+import { gitChildEnv } from '../git-env.ts';
 import { absentSlugHealRun, healAbsentSlugLine } from './slug-conflicts.ts';
 import { inspectLock, syncLockId } from '../db-lock.ts';
 import { currentDrainLease } from '../persistence/sync-lease.ts';
 import { readLivePassRows } from '../persistence/sync-pass-row.ts';
 
 export const SLUG_AUTO_REMOVE_KEY = 'sync.slug_conflicts.auto_remove';
-/** The longest one sync spends healing; a caller deadline that comes sooner wins. */
-export const SLUG_HEAL_BUDGET_MS = 60_000;
+/** The longest one sync spends healing (a small absolute deadline: inline repair never delays the next commit); a caller deadline that comes sooner wins. */
+export const SLUG_HEAL_BUDGET_MS = 10_000;
 /** The most held files one sync examines (each heal is one coordinated write and one commit); the rest wait for the next pass. */
 export const SLUG_HEAL_MAX_FILES = 200;
 
@@ -62,7 +73,7 @@ export interface SlugHealReport {
   /** Up to 20 of the files healed. */
   removed_paths: string[];
   /** Set when the pass did not run, naming why. */
-  skipped?: 'disabled' | 'lane_paused' | 'remote_authority' | 'sync_unfinished' | 'not_writable';
+  skipped?: 'disabled' | 'lane_paused' | 'autofix_disabled' | 'remote_authority' | 'sync_unfinished' | 'not_writable';
   notice: string;
   /** The read-only preview of what the content-repair lane would do with the rest, and the opt-out. */
   preview_argv: string[];
@@ -76,6 +87,7 @@ function noticeOf(sourceId: string, r: Omit<SlugHealReport, 'notice' | 'preview_
   const left = Object.values(r.left_by_reason).reduce((a, b) => a + b, 0);
   if (r.skipped) {
     const why = r.skipped === 'disabled' ? `${SLUG_AUTO_REMOVE_KEY} is false` : r.skipped === 'lane_paused' ? `content repair is paused (${FENCE_REPAIR_ENABLED_KEY} false)`
+      : r.skipped === 'autofix_disabled' ? `automatic repairs are off (${AUTOFIX_ENABLED_KEY} false)`
       : r.skipped === 'remote_authority' ? 'this sync runs under a remote job or agent, which may import but not rewrite files'
       : r.skipped === 'sync_unfinished' ? 'the source still has an unfinished sync' : 'this host may not write the source checkout';
     return `[sync] ${r.pending} held file(s) of source ${sourceId} have a stray frontmatter slug: line; sync left them held because ${why}. `
@@ -106,14 +118,17 @@ export async function healAfterManagedSync(engine: BrainEngine, outer: SyncOpts,
   if (outer.dryRun || !OK_STATUSES.includes(result.status)) return result;
   const sourceId = outer.sourceId ?? 'default';
   try {
-    const all = ((await readGitSourceHolds(engine, { sourceIds: [sourceId] }))[0]?.holds ?? []).filter(hold => hold.code === 'frontmatter_slug_conflict');
+    // GBRA-133 PR 3: only the holds this sync screened; a result that lists none (a direct caller) leaves the source's holds.
+    const touched = result.held ? new Set(result.held.map(item => item.path)) : null;
+    const all = ((await readGitSourceHolds(engine, { sourceIds: [sourceId] }))[0]?.holds ?? []).filter(hold => hold.code === 'frontmatter_slug_conflict' && (!touched || touched.has(hold.path)));
     if (!all.length) return result;
     const holds = all.filter(hold => !contentRepairLaneCurrent(hold.meta.content_repair));
     const judged = all.length - holds.length;
     const base = { removed: 0, pending: holds.length, failed: 0, left_by_reason: (judged ? { lane_verdict: judged } : {}) as Record<string, number>, removed_paths: [] as string[] };
     const authority = currentSubmissionAuthority();
-    const skipped: SlugHealReport['skipped'] = FALSE.test(String(await engine.getConfig(SLUG_AUTO_REMOVE_KEY) ?? '').trim()) ? 'disabled'
-      : !(await fenceRepairEnabled(engine)) ? 'lane_paused'
+    const admission = await admitAutofix(engine, 'slug_line_heal', { admission: 'automatic', sourceKind: 'managed' });
+    const skipped: SlugHealReport['skipped'] = !admission.admitted
+      ? admission.disabling_key === SLUG_AUTO_REMOVE_KEY ? 'disabled' : admission.disabling_key === FENCE_REPAIR_ENABLED_KEY ? 'lane_paused' : 'autofix_disabled'
       : authority && authority.kind !== 'application' ? 'remote_authority'
       : await unfinishedCursor(engine, sourceId) ? 'sync_unfinished' : undefined;
     const run = skipped ? null : await absentSlugHealRun(engine, sourceId, { embed: !outer.noEmbed && !outer.embedDeferred && !result.inherited_options?.includes('noEmbed') });
@@ -123,25 +138,47 @@ export async function healAfterManagedSync(engine: BrainEngine, outer: SyncOpts,
       remote: false, dryRun: false, sourceId } as unknown as OperationContext;
     const deadline = Math.min(now() + SLUG_HEAL_BUDGET_MS, outer.deadlineAtMs ?? Infinity);
     const healed: string[] = [];
+    const receipts: AutofixReceiptInput[] = [];
     let attempts = 0;
     for (const hold of [...holds].sort((a, b) => a.path.localeCompare(b.path))) {
       if (attempts++ >= SLUG_HEAL_MAX_FILES || now() >= deadline || outer.signal?.aborted) break;
       base.pending--;
+      // The recovery material: the held bytes must be in the checkout's Git objects before the file is edited.
+      if (!hold.upstream_version || !hold.meta.blob_oid || !run.src.root || !blobPresent(run.src.root, hold.meta.blob_oid)) {
+        base.left_by_reason.no_recovery_material = (base.left_by_reason.no_recovery_material ?? 0) + 1;
+        continue;
+      }
       try {
         const outcome = await healAbsentSlugLine(ctx, run, hold.path);
-        if (outcome.applied) { healed.push(hold.path); base.removed++; continue; }
+        if (outcome.applied) {
+          healed.push(hold.path); base.removed++;
+          const detail = outcome.detail as { request_id?: unknown; after_sha256?: unknown } | undefined;
+          receipts.push({ kind: 'slug_line_heal', admission: 'automatic', outcome: 'applied', code: hold.code, path: hold.path, disabling_key: SLUG_AUTO_REMOVE_KEY,
+            preimage: { sha256: hold.upstream_version, blob_oid: hold.meta.blob_oid }, postimage_sha256: typeof detail?.after_sha256 === 'string' ? detail.after_sha256 : null,
+            request_id: typeof detail?.request_id === 'string' ? detail.request_id : null, commit: { state: 'pending', sha: null } });
+          continue;
+        }
         const reason = outcome.reason ?? outcome.outcome;
         base.left_by_reason[reason] = (base.left_by_reason[reason] ?? 0) + 1;
       } catch (error) {
         base.failed++;
+        receipts.push({ kind: 'slug_line_heal', admission: 'automatic', outcome: 'failed', reason: 'write_failed', code: hold.code, path: hold.path, disabling_key: SLUG_AUTO_REMOVE_KEY,
+          preimage: { sha256: hold.upstream_version, blob_oid: hold.meta.blob_oid } });
         serr(`[sync] could not remove the slug: line of ${hold.path}: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
+    await recordAutofixReceipts(engine, sourceId, receipts).catch(error => serr(`[sync] could not record the autofix receipts of source ${sourceId}: ${error instanceof Error ? error.message : String(error)}`));
     return withReport(result, sourceId, { ...base, removed_paths: healed.slice(0, 20) }, healed);
   } catch (error) {
     serr(`[sync] the stray slug: line heal of source ${sourceId} did not run (${error instanceof Error ? error.message : String(error)}); the maintenance run repairs those files.`);
     return result;
   }
+}
+
+/** True when the blob is in the checkout's object store (`git cat-file -e`). */
+function blobPresent(root: string, oid: string): boolean {
+  if (!/^([0-9a-f]{40}|[0-9a-f]{64})$/.test(oid)) return false;
+  try { execFileSync('git', ['-C', root, 'cat-file', '-e', oid], { env: gitChildEnv({ GIT_OPTIONAL_LOCKS: '0' }), stdio: 'ignore' }); return true; } catch { return false; }
 }
 
 /** The result with the heal report, and the held files it cleared taken out of this run's hold fields. */
