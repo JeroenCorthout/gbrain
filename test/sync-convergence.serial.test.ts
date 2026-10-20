@@ -1076,13 +1076,28 @@ scenario(['f'], 'a pooler drop mid-bulk leaves no new hold and converges', () =>
     const at = await b.now();
     const how = PGBOUNCER_CONTAINER ? `docker restart -t 0 ${PGBOUNCER_CONTAINER}` : 'drop every pooled connection at the proxy';
     b.plan = [`${how} after 20 committed pages`];
+    const probeDir = LOG_DIR ? join(LOG_DIR, 'pooler-drop') : undefined;
+    if (probeDir) { mkdirSync(probeDir, { recursive: true }); process.env.GBRAIN_SQL_TRACE = join(probeDir, 'trace.jsonl'); }
     const run = b.sync(['--no-pull', '--no-delegate', '--json']);
+    delete process.env.GBRAIN_SQL_TRACE;
+    const mon = postgres(directTarget!, { max: 1, prepare: false, onnotice: () => {} });
+    let sampling = true;
+    const sampler = (async () => {
+      while (sampling) {
+        try {
+          const rows = await mon.unsafe("SELECT now()::time(0)::text AS t, pid, application_name AS app, client_port AS port, state, coalesce(wait_event_type,'')||':'||coalesce(wait_event,'') AS wait, round(extract(epoch from now()-state_change))::int AS state_s, round(extract(epoch from now()-xact_start))::int AS xact_s, pg_blocking_pids(pid)::text AS blocked_by, left(regexp_replace(query,'[[:space:]]+',' ','g'),400) AS q FROM pg_stat_activity WHERE datname = $1 AND state <> 'idle' ORDER BY pid", [b.database]);
+          if (probeDir) appendFileSync(join(probeDir, 'pgmon.txt'), rows.map(row => JSON.stringify(row)).join('\n') + '\n---\n');
+        } catch (e) { if (probeDir) appendFileSync(join(probeDir, 'pgmon.txt'), 'ERR ' + String(e) + '\n'); }
+        await new Promise(res => setTimeout(res, 3000));
+      }
+    })();
     const dropped = until(async () => (await b.committedSince(at)) >= 20, 'twenty committed pages', SYNC_TIMEOUT_MS).then(() => {
       if (PGBOUNCER_CONTAINER) execFileSync('docker', ['restart', '-t', '0', PGBOUNCER_CONTAINER], { stdio: 'ignore' });
       else b.note(`dropped ${b.pooledProxy!.drop()} pooled connections`);
       return 'dropped';
     });
     const r = await run.result;
+    sampling = false; await sampler; await mon.end();
     b.fired[b.plan[0]] = await dropped.catch(() => null);
     b.keepLog('dropped-run.log', `${r.out}\n${r.err}`);
     stall = worstStall(r.err);
