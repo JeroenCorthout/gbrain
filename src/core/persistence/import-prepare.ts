@@ -58,6 +58,18 @@ const moveIntoSourceFix = (inputPath: string, target: string, sourceId: string):
   user_message: `Move ${inputPath} to ${target}, inside source ${sourceId}'s root, then run this command.`,
   why: `A file over the single-string import limit imports only from its place inside the source root, since its canonical file is never rewritten; this imports it from ${target}.`,
 });
+/**
+ * #7085: with sync.write_through off gbrain creates no file in a source's checkout, so a managed import publishes only a file
+ * already in its place there (database-only); a file from elsewhere is refused before any request is admitted.
+ */
+export function writeThroughDisabledImport(inputPath: string, target: string, sourceId: string): OperationError {
+  return opError('write_through_disabled', 'sync.write_through is off, so import cannot copy a file into the source checkout.',
+    `${inputPath} is outside source ${sourceId}'s checkout, and with sync.write_through off gbrain writes no files there, so nothing was imported and no write was admitted. Copy it to ${target} and import it from there (it imports database-only), or ask the user whether to turn sync.write_through on.`,
+    { fix: { argv: ['gbrain', 'import', target, '--source', sourceId], consent: [], actor: 'user', requires_exclusive: false,
+      user_message: `sync.write_through is off, so gbrain does not create files in source ${sourceId}'s checkout. Copy ${inputPath} to ${target}, then run this command; or turn write-through on with gbrain config set sync.write_through true.`,
+      why: `Imports the file from its place inside source ${sourceId}'s checkout, which needs no file write; the page publishes database-only.` } });
+}
+
 /** The refusal of a Markdown file over the single-string ceiling imported from outside its source root: the message itself names the move. */
 function outsideRootTooLarge(inputPath: string, target: string, sourceId: string, bytes: number, suggestion: string, fix: Action = moveIntoSourceFix(inputPath, target, sourceId)): OperationError {
   return opError('invalid_params', `File too large (${bytes} bytes, max ${PAGE_MAX_BYTES}): a file over the single-string import limit imports only from its place inside the source root. Move it to ${target} and import it there.`,
@@ -208,6 +220,7 @@ export async function prepareManagedImportMutation(engine: BrainEngine, row: Wri
     `Source ${row.source_id}'s canonical owner changed or went away after import request ${row.request_id} was accepted, so it published nothing. Check the owner, then import ${p.sourcePath} again on the host that owns the source.`,
     { fix: ownerStatusFix(row.source_id) });
   const root = join(binding.local_path, binding.relative_path);
+  const databaseOnly = row.authority.databaseOnlyReason === 'disabled_by_config';
   const physicalPath = p.path ?? p.sourcePath;
   if (isAbsolute(physicalPath) || physicalPath.split(/[\\/]/).some(part => part === '..') || /(^|[\\/])skills([\\/]|$)/i.test(physicalPath)) {
     throw opError('invalid_params', 'The canonical import path must be source-relative knowledge, not a skill path.',
@@ -215,6 +228,7 @@ export async function prepareManagedImportMutation(engine: BrainEngine, row: Wri
       { fix: receiptFix(row) });
   }
   const path = resolve(root, physicalPath);
+  if (databaseOnly && resolve(p.inputPath) !== path) throw writeThroughDisabledImport(p.inputPath, path, row.source_id);
   const checkPlacement = async (tx: BrainEngine) => {
     const current = await getWorktreeBinding(tx, row.source_id);
     if (!current || current.worktree_id !== row.worktree_id || String(current.owner_epoch) !== p.ownerEpoch) throw opError('owner_unavailable', 'The import owner changed.',
@@ -270,10 +284,10 @@ export async function prepareManagedImportMutation(engine: BrainEngine, row: Wri
     ...(snapshot ? withoutBody(snapshot.page) : { id: 0, slug: row.slug, source_id: row.source_id, created_at: new Date(), updated_at: new Date() }), ...ready.parsedPage,
   } as Page, tags));
   const project = code || image ? undefined : await prepareCanonicalProjections(engine, ready.parsedPage!, row.slug, row.source_id, snapshot, 'file');
-  const mutation: PreparedMutation = { observedRevision: ready.observedRevision, noop: ready.noop && p.targetHash === sha256(rendered),
+  const mutation: PreparedMutation = { observedRevision: ready.observedRevision, noop: ready.noop && (databaseOnly || p.targetHash === sha256(rendered)),
     trust: await ownerImportTrust(engine, row, ready.parsedPage?.frontmatter, p.sourcePath), deferEmbedding: image || p.noEmbed, validate: async tx => { await checkPaths(tx); await ready.validate(tx); },
     ...(ready.afterCommit ? { afterCommit: ready.afterCommit } : {}),
-    file: { root, path, content: rendered, expectedBeforeHash: p.targetHash },
+    ...(databaseOnly ? {} : { file: { root, path, content: rendered, expectedBeforeHash: p.targetHash } }),
     apply: async tx => {
       const applied = await ready.apply(tx);
       await bindOrigin(tx, { sourceId: row.source_id, slug: row.slug, sourcePath: p.sourcePath });

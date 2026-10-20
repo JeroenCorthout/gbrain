@@ -14,6 +14,7 @@
  * normalized file; a dry run lists it in `would_normalize`), and a residual
  * fence is held as `invalid_fence`.
  */
+import { randomUUID } from 'node:crypto';
 import { realpathSync, statSync } from 'node:fs';
 import { join, relative, resolve, sep } from 'node:path';
 import type { BrainEngine } from '../engine.ts';
@@ -26,7 +27,7 @@ import { fenceMessage, type FenceMessageLocation } from '../fence-repair/reasons
 import { completeFenceLocation, FENCE_VERSION, type ReceiptFenceLocation } from '../fence-repair/refusal.ts';
 import { fenceFileLine } from '../fence-repair/hold-fix.ts';
 import { slugConflictHoldMessage } from '../import-file.ts';
-import { isImageFilePath, isMultimodalEnabled, resolveSlugForPath } from '../sync.ts';
+import { isCodeFilePath, isImageFilePath, isMultimodalEnabled, resolveSlugForPath } from '../sync.ts';
 import { loadActivePackForEngine } from '../schema-pack/engine-resolution.ts';
 import { VERSION } from '../../version.ts';
 import { sha256 } from './digest.ts';
@@ -35,10 +36,11 @@ import { readPagePurgeTombstones } from './page-purge.ts';
 import { listTrustAllowRules } from '../trust/allow-rules.ts';
 import { readSyncContent, readSyncFile, syncGitPath, UNREADABLE_SYNC_FILE, type SyncDiscovery, type SyncEntry } from './sync-discovery.ts';
 import { pinnedWindowBlock, readBlobBytes, readBlobContents, readPinnedBlob, readPinnedBytes, readPinnedContent, readTreeBlobs, SYNC_READ_BOUND, type TreeBlob } from './sync-blobs.ts';
-import { screenSyncImport, type SyncImportScreenInput } from './sync-prepare.ts';
+import { prepareManagedSyncMutation, screenSyncImport, type SyncImportScreenInput, type SyncIntent } from './sync-prepare.ts';
+import { screeningRequest } from './noop-kernel.ts';
 import { committedContentOrMissing, nullBytesRefusal } from './sync-entry-fault.ts';
-import type { SyncProcessingOptions } from './sync-authority.ts';
-import { gitHoldItem, readSyncHoldPolicy, readSyncImportProvenance, type GitHoldCode, type GitHoldItem, type GitHoldRecord, type PreparationStallMeta, type SyncHoldPolicy } from './sync-holds.ts';
+import type { SyncAuthority, SyncProcessingOptions } from './sync-authority.ts';
+import { GIT_HOLD_CAP, gitHoldItem, readSyncHoldPolicy, readSyncImportProvenance, type GitHoldCode, type GitHoldItem, type GitHoldRecord, type PreparationStallMeta, type SyncHoldPolicy } from './sync-holds.ts';
 import type { WriteRequest } from './model.ts';
 
 type Snapshot = Awaited<ReturnType<BrainEngine['readPageSnapshot']>>;
@@ -371,16 +373,73 @@ export async function screenFrozenImport(engine: BrainEngine, input: FrozenImpor
     ? { ...refusal, message: slugConflictHoldMessage(entry.path, resolveSlugForPath(entry.sourcePath)) } : refusal, content, blob);
 }
 
+/** #7087: one importable dry-run entry, for the read-only screening preparation that says what publication would do to its file. */
+interface DryRunWritebackInput { entry: SyncEntry; content: string; rawHash: string | null; lineEndingOnly: boolean; snapshot: Snapshot }
+/** A dry run's discovery; a cursor also carries the authority and options its screening preparations are made under. */
+type DryRunDiscovery = SyncDiscovery & { index?: number; runId?: string; authority?: SyncAuthority; processingOptions?: SyncProcessingOptions };
+export interface DryRunPreview {
+  dry_run: true; added: number; modified: number; deleted: number; renamed: number;
+  would_import?: Array<{ path: string; slug: string; change: 'add' | 'modify' | 'rename'; from?: string }>; would_import_count?: number;
+  would_delete?: Array<{ path: string; slug: string }>; would_delete_count?: number;
+  would_rewrite?: Array<{ path: string; slug: string }>; would_rewrite_count?: number;
+  would_keep_database_only?: Array<{ path: string; slug: string; reason: string }>; would_keep_database_only_count?: number;
+  would_hold?: GitHoldItem[]; would_hold_count?: number; would_normalize?: Array<{ path: string; classes: string[] }>; would_normalize_count?: number;
+  screen_skipped?: Array<{ path: string; code: string }>;
+}
+
 /**
  * Dry run: screens every pending import entry read-only (batched Git reads)
  * and lists the holds a real run would record. Entries the screen cannot
- * judge are reported in `screen_skipped`, never as holds.
+ * judge are reported in `screen_skipped`, never as holds. #7087: it also lists the
+ * imports and deletions a real run would publish, and (through `dryRunWriteback`, the
+ * preparer's read-only screening preparation) the files it would rewrite with
+ * canonical frontmatter or keep database-only.
  */
-export async function dryRunScreen(engine: BrainEngine, discovery: SyncDiscovery & { index?: number }, run: SyncScreenRun | null, retryCommand: string): Promise<{
-  dry_run: true; would_hold?: GitHoldItem[]; would_hold_count?: number; would_normalize?: Array<{ path: string; classes: string[] }>; would_normalize_count?: number;
-  screen_skipped?: Array<{ path: string; code: string }> }> {
-  if (!run || discovery.companyPlan) return { dry_run: true };
-  const entries = discovery.entries.slice(discovery.index ?? 0).filter(entry => entry.action === 'import' && entry.slug);
+export async function dryRunScreen(engine: BrainEngine, discovery: DryRunDiscovery, run: SyncScreenRun | null, retryCommand: string): Promise<DryRunPreview> {
+  const pending = discovery.entries.slice(discovery.index ?? 0);
+  const deletes = pending.filter(entry => entry.action === 'delete' && !entry.unownedDeletion && entry.slug);
+  const imports = pending.filter(entry => entry.action === 'import' && entry.slug);
+  const cap = run?.policy.cap ?? GIT_HOLD_CAP;
+  const rewrites: Array<{ path: string; slug: string }> = [];
+  const kept: Array<{ path: string; slug: string; reason: string }> = [];
+  const screened = run && !discovery.companyPlan ? await dryRunHolds(engine, discovery, imports, run, retryCommand, async input => {
+    if (!discovery.authority || isCodeFilePath(input.entry.path)) return;
+    const verdict = await dryRunWriteback(engine, discovery as DryRunDiscovery & { authority: SyncAuthority }, input);
+    if (verdict.rewrite) rewrites.push({ path: input.entry.path, slug: input.entry.slug! });
+    else if (verdict.databaseOnlyReason) kept.push({ path: input.entry.path, slug: input.entry.slug!, reason: verdict.databaseOnlyReason });
+  }) : { held: [], normalized: [], skipped: [] };
+  const heldPaths = new Set(screened.held.map(hold => hold.path));
+  const importing = imports.filter(entry => !heldPaths.has(entry.path)).map(entry => {
+    const from = entry.renameFrom && entry.renameFrom.slug !== entry.slug ? entry.renameFrom.slug : undefined;
+    return { path: entry.path, slug: entry.slug!, change: from ? 'rename' as const : (entry.pageId ?? null) === null ? 'add' as const : 'modify' as const, ...(from ? { from } : {}) };
+  });
+  const listed = <T>(name: string, list: T[]) => list.length ? { [name]: list.slice(0, cap), [`${name}_count`]: list.length } : {};
+  return { dry_run: true, added: importing.filter(item => item.change === 'add').length, modified: importing.filter(item => item.change === 'modify').length,
+    deleted: deletes.length, renamed: importing.filter(item => item.change === 'rename').length,
+    ...listed('would_import', importing), ...listed('would_delete', deletes.map(entry => ({ path: entry.path, slug: entry.slug! }))),
+    ...listed('would_rewrite', rewrites), ...listed('would_keep_database_only', kept),
+    ...listed('would_hold', screened.held), ...listed('would_normalize', screened.normalized),
+    ...(screened.skipped.length ? { screen_skipped: screened.skipped } : {}) };
+}
+
+/**
+ * #7087: what publishing one dry-run import would do to its file, from the preparer's own screening preparation (read-only,
+ * never admitted): rewrite it with canonical frontmatter, or keep that metadata database-only (write_through off, a mirror).
+ */
+async function dryRunWriteback(engine: BrainEngine, discovery: DryRunDiscovery & { authority: SyncAuthority }, input: DryRunWritebackInput): Promise<{ rewrite: boolean; databaseOnlyReason?: string }> {
+  const { entry, snapshot } = input;
+  const intent: SyncIntent = { kind: 'managed_sync_import', expected_revision: snapshot?.revision ?? null, sourcePath: entry.sourcePath, path: entry.path, rawHash: input.rawHash,
+    content: input.content, lineEndingOnly: input.lineEndingOnly, processingOptions: discovery.processingOptions, ownerEpoch: String(discovery.binding.owner_epoch),
+    syncAuthority: discovery.authority, cursorKey: `dry-run:${discovery.sourceId}`, runId: discovery.runId ?? randomUUID(), index: 0, total: 1, slugMode: discovery.slugMode,
+    from: discovery.from, target: discovery.target, working: entry.working, ...(entry.renameFrom ? { renameFrom: entry.renameFrom } : {}) };
+  const prepared = await prepareManagedSyncMutation(engine, screeningRequest({ source_id: discovery.sourceId, source_incarnation: discovery.incarnation, slug: entry.slug!,
+    page_id: snapshot?.page.id ?? null, worktree_id: discovery.binding.worktree_id, authority: discovery.authority.writer, intent }), { engine: engine.kind }, undefined, { unsaved: true });
+  return { rewrite: !!prepared.file, ...(prepared.databaseOnlyReason ? { databaseOnlyReason: prepared.databaseOnlyReason } : {}) };
+}
+
+/** The hold screen of a dry run's imports; `importable` sees each entry the screen admits, and a throw there skips the entry. */
+async function dryRunHolds(engine: BrainEngine, discovery: SyncDiscovery & { index?: number }, entries: SyncEntry[], run: SyncScreenRun, retryCommand: string,
+  importable: (input: DryRunWritebackInput) => Promise<void>): Promise<{ held: GitHoldItem[]; normalized: Array<{ path: string; classes: string[] }>; skipped: Array<{ path: string; code: string }> }> {
   const committed = entries.filter(entry => !entry.working);
   const blobs = readTreeBlobs(discovery.gitRoot, discovery.target, committed.map(entry => syncGitPath(discovery, entry.path)));
   const contents = readBlobContents(discovery.gitRoot, [...blobs.values()]);
@@ -416,11 +475,10 @@ export async function dryRunScreen(engine: BrainEngine, discovery: SyncDiscovery
         onNormalized: fixes => normalized.push({ path: entry.path, classes: [...new Set(fixes.map(fix => fix.class))] }) }, run);
       if (hold) held.push(gitHoldItem({ version: 1, source_id: discovery.sourceId, incarnation: discovery.incarnation, ...hold,
         observed_at: observed, held_at: observed, updated_at: observed, run_id: null, mode: 'managed' }));
+      else if (content !== null) await importable({ entry, content, rawHash: bytes === null ? null : sha256(bytes), lineEndingOnly, snapshot });
     } catch (error) {
       skipped.push({ path: entry.path, code: error instanceof OperationError ? error.code : 'storage_error' });
     }
   }
-  return { dry_run: true, ...(held.length ? { would_hold: held.slice(0, run.policy.cap), would_hold_count: held.length } : {}),
-    ...(normalized.length ? { would_normalize: normalized.slice(0, run.policy.cap), would_normalize_count: normalized.length } : {}),
-    ...(skipped.length ? { screen_skipped: skipped } : {}) };
+  return { held, normalized, skipped };
 }

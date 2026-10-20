@@ -1289,8 +1289,8 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = [
   'import.require_configured_root',
   'sync.last_commit',
   // Opt-out for the put_page/capture disk write-through (write-through.ts):
-  // 'false' makes every page write DB-only. For brains whose host repo is a
-  // shared working tree where stray root-level .md artifacts are unwanted.
+  // 'false' makes every page write, sync writeback and import DB-only (#7084,
+  // #7085). For brains whose host repo is a shared working tree (no stray .md).
   'sync.write_through',
   // Gateway-native subagent loop toggle (routes subagent jobs through the
   // provider-agnostic gateway.toolLoop for non-Anthropic providers). The

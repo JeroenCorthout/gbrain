@@ -544,7 +544,7 @@ async function adoptCursor(engine: BrainEngine, key: string, cursor: Cursor, inp
   if (writerChanged) await faultPoint('sync:cursor_adopted', { sourceId: cursor.sourceId });
   return saved;
 }
-/** #5988: a managed dry run lists the holds the pending (or newly discovered) imports would earn, read-only. */
+/** #5988, #7087: a managed dry run lists the holds, imports, deletions and file rewrites the pending (or newly discovered) entries would make, read-only. */
 async function managedDryRun(engine: BrainEngine, value: Cursor, base: Cursor, run: { company: boolean; processingOptions: SyncProcessingOptions;
   syncOptions: SyncCursorOptions; repoPath?: string; remote: boolean }): Promise<SyncResult> {
   const screen = run.company ? null : await loadSyncScreenRun(engine, value.sourceId, value.processingOptions ?? run.processingOptions, run.remote);

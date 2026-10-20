@@ -15,7 +15,7 @@ export { performSync } from './sync/perform.ts';
 export { parseMissingPathMode, partitionMissingPathSources, type MissingPathMode } from './sync/missing-path.ts';
 export { __resetPGLiteTierWarn, manageGitignore } from './sync/gitignore.ts';
 
-export interface SyncResult {
+export interface SyncResult extends Partial<import('../core/persistence/sync-screen.ts').DryRunPreview> {
   failures?: ManagedSyncFailure[];
   runId?: string;
   managedWrite?: import('../core/persistence/sync-run.ts').ManagedSyncWriteDiagnostic;
@@ -147,7 +147,7 @@ export interface SyncResult {
   converted_from_failed?: string[];
   /** Files imported by quoting unquoted frontmatter values, and (#6188) files whose fences Tier 1 rewrote, cumulative for the run. */
   recovered_frontmatter?: import('../core/persistence/sync-holds.ts').RecoveredFrontmatter; fences_normalized?: import('../core/fence-repair/report.ts').FencesNormalized; fence_issues?: ReturnType<ReturnType<typeof import('../core/fence-repair/report.ts').importFenceTally>['fields']>['fence_issues'];
-  /** Dry run: files the run would hold or (#6188) normalize, and entries the screen could not judge (never holds). */
+  /** Dry run: files the run would hold or (#6188) normalize, entries the screen could not judge (never holds) and (#7087, `DryRunPreview`) what a managed run would import, delete or rewrite. */
   dry_run?: true; would_normalize?: Array<{ path: string; classes: string[] }>; would_normalize_count?: number;
   would_hold?: import('../core/persistence/sync-holds.ts').GitHoldItem[];
   would_hold_count?: number;

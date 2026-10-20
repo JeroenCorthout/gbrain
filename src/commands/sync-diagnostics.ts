@@ -27,6 +27,15 @@ export function printHoldNotes(result: SyncResult, write: (line: string) => void
     for (const item of (result.would_hold ?? []).slice(0, HOLD_LINES)) write(holdLine(item, 'Would hold'));
     if (result.would_hold_count > HOLD_LINES) write(`  ... and ${result.would_hold_count - HOLD_LINES} more would be held (--json lists them).`);
   }
+  // #7087: what a managed dry run would publish.
+  for (const item of (result.would_import ?? []).slice(0, HOLD_LINES)) write(`  Would import ${item.path} (${item.change}${item.from ? ` from ${item.from}` : ''})`);
+  if ((result.would_import_count ?? 0) > HOLD_LINES) write(`  ... and ${result.would_import_count! - HOLD_LINES} more would be imported (--json lists them).`);
+  for (const item of (result.would_delete ?? []).slice(0, HOLD_LINES)) write(`  Would delete ${item.path}`);
+  if ((result.would_delete_count ?? 0) > HOLD_LINES) write(`  ... and ${result.would_delete_count! - HOLD_LINES} more would be deleted (--json lists them).`);
+  for (const item of (result.would_rewrite ?? []).slice(0, HOLD_LINES)) write(`  Would rewrite ${item.path} with its canonical frontmatter (the stored page keeps metadata the file does not state).`);
+  if ((result.would_rewrite_count ?? 0) > HOLD_LINES) write(`  ... and ${result.would_rewrite_count! - HOLD_LINES} more would be rewritten (--json lists them).`);
+  for (const item of (result.would_keep_database_only ?? []).slice(0, HOLD_LINES)) write(`  Would keep the canonical metadata of ${item.path} in the database only (${item.reason}); the file is not rewritten.`);
+  if ((result.would_keep_database_only_count ?? 0) > HOLD_LINES) write(`  ... and ${result.would_keep_database_only_count! - HOLD_LINES} more keep their metadata in the database only (--json lists them).`);
   for (const skipped of (result.screen_skipped ?? []).slice(0, HOLD_LINES)) write(`  Screen skipped ${skipped.path}: ${skipped.code} (not a content problem; the real sync reports it).`);
   for (const item of (result.held ?? []).slice(0, HOLD_LINES)) write(holdLine(item, 'Held'));
   const shown = Math.min(result.held?.length ?? 0, HOLD_LINES);
