@@ -35,7 +35,8 @@ export interface AutofixReceipt {
   kind: AutofixKind;
   /** `automatic`: admitted by gbrain itself; `operator`: an explicit apply someone ran. */
   admission: 'automatic' | 'operator';
-  outcome: 'applied' | 'scheduled' | 'failed';
+  /** `undone`: an operator reverted an applied repair (`gbrain sync undo`); its commit is the undo commit. */
+  outcome: 'applied' | 'scheduled' | 'failed' | 'undone';
   reason: string | null;
   code: string | null;
   path: string | null;
@@ -60,7 +61,7 @@ export function parseAutofixReceipt(value: unknown): AutofixReceipt | null {
   if (!value || typeof value !== 'object') return null;
   const r = value as Record<string, unknown>;
   if (!AUTOFIX_KINDS.includes(r.kind as AutofixKind) || (r.admission !== 'automatic' && r.admission !== 'operator')) return null;
-  if (!['applied', 'scheduled', 'failed'].includes(String(r.outcome)) || typeof r.disabling_key !== 'string' || !KEY.test(r.disabling_key)) return null;
+  if (!['applied', 'scheduled', 'failed', 'undone'].includes(String(r.outcome)) || typeof r.disabling_key !== 'string' || !KEY.test(r.disabling_key)) return null;
   const id = text(r.id, 64), at = text(r.at, 40);
   if (!id || !at || !Number.isFinite(Date.parse(at))) return null;
   const pre = r.preimage as Record<string, unknown> | null | undefined;
@@ -188,6 +189,7 @@ export function renderAutofixUndo(receipt: AutofixReceipt, opts: { sourceId: str
     if (opts.remote) return { available: false, reason: `host_only: the restore names a page, so it is shown on the brain host only (gbrain sync status --source ${opts.sourceId} --json there; restorable until ${receipt.restore.until})` };
     return { available: true, how: 'restore', slug: receipt.restore.slug, until: receipt.restore.until, argv: ['gbrain', 'restore', receipt.restore.slug, '--source-id', opts.sourceId] };
   }
+  if (receipt.outcome === 'undone') return { available: false, reason: `undone: this receipt records an operator undo${receipt.commit.sha ? ` (commit ${receipt.commit.sha.slice(0, 12)})` : ''}` };
   if (row.undo === 'not_needed') return { available: false, reason: 'nothing_to_undo: this repair changes no file and no page' };
   if (row.undo !== 'git_revert' || receipt.outcome !== 'applied') return { available: false, reason: 'no_git_undo: this receipt records no repair commit' };
   if (receipt.commit.state === 'pending') return { available: false, reason: 'commit_pending: the repair commit has not landed in the checkout yet (gbrain sources writer status shows its Git effect)' };

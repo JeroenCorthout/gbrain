@@ -29,6 +29,7 @@ import type { FenceReason } from '../fence-repair/types.ts';
 import { FENCE_REPAIR_ENABLED_KEY, FENCE_REPAIR_LLM_KEY, fenceRepairLlmEnabled } from '../fence-repair/config.ts';
 import { admitAutofix } from '../autofix/admission.ts';
 import { recordRepairRunReceipts } from '../autofix/receipts.ts';
+import { undoneRepairPaths } from '../autofix/undo.ts';
 import { isUncontainedPhaseError } from './phase-containment.ts';
 
 /** The longest one phase run spends repairing fences; inside a maintenance job it is also at most a third of the job's remaining time. */
@@ -70,7 +71,9 @@ export async function runFenceRepairPhase(engine: BrainEngine | null, opts: Fenc
   try {
     const runner = await repairRunner(engine, { apply: !opts.dryRun, logger: { info() {}, warn: console.warn, error: console.error },
       ...(opts.registry ? { registry: opts.registry } : {}) });
-    result = await runner.run('fences', await resolveRepairScope(engine), { deadline: start + timeBudgetMs });
+    const scope = await resolveRepairScope(engine);
+    const skip = opts.dryRun ? [] : await undoneRepairPaths(engine, scope.source_ids);
+    result = await runner.run('fences', scope, { deadline: start + timeBudgetMs, ...(skip.length ? { skip } : {}) });
   } catch (error) {
     if (isUncontainedPhaseError(error, opts.signal)) throw error;
     const rawCode = (error as { code?: unknown } | null)?.code;

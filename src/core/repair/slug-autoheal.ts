@@ -39,6 +39,7 @@ import { readGitSourceHolds } from '../persistence/sync-holds.ts';
 import { contentRepairLaneCurrent } from '../persistence/sync-fault-class.ts';
 import { FENCE_REPAIR_ENABLED_KEY } from '../fence-repair/config.ts';
 import { admitAutofix } from '../autofix/admission.ts';
+import { undoneSkipPaths } from '../autofix/undo.ts';
 import { recordAutofixReceipts, type AutofixReceiptInput } from '../autofix/receipts.ts';
 import { AUTOFIX_ENABLED_KEY } from '../autofix/switches.ts';
 import { execFileSync } from '../spawn.ts';
@@ -122,9 +123,11 @@ export async function healAfterManagedSync(engine: BrainEngine, outer: SyncOpts,
     const touched = result.held ? new Set(result.held.map(item => item.path)) : null;
     const all = ((await readGitSourceHolds(engine, { sourceIds: [sourceId] }))[0]?.holds ?? []).filter(hold => hold.code === 'frontmatter_slug_conflict' && (!touched || touched.has(hold.path)));
     if (!all.length) return result;
-    const holds = all.filter(hold => !contentRepairLaneCurrent(hold.meta.content_repair));
-    const judged = all.length - holds.length;
-    const base = { removed: 0, pending: holds.length, failed: 0, left_by_reason: (judged ? { lane_verdict: judged } : {}) as Record<string, number>, removed_paths: [] as string[] };
+    const undone = new Set(await undoneSkipPaths(engine, sourceId));
+    const holds = all.filter(hold => !contentRepairLaneCurrent(hold.meta.content_repair) && !undone.has(hold.path));
+    const judged = all.filter(hold => contentRepairLaneCurrent(hold.meta.content_repair)).length;
+    const reverted = all.length - holds.length - judged;
+    const base = { removed: 0, pending: holds.length, failed: 0, left_by_reason: { ...(judged ? { lane_verdict: judged } : {}), ...(reverted ? { undone: reverted } : {}) } as Record<string, number>, removed_paths: [] as string[] };
     const authority = currentSubmissionAuthority();
     const admission = await admitAutofix(engine, 'slug_line_heal', { admission: 'automatic', sourceKind: 'managed' });
     const skipped: SlugHealReport['skipped'] = !admission.admitted

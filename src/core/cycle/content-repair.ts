@@ -27,6 +27,7 @@ import { CONTENT_REPAIR_KINDS, contentLaneArgv, runContentLane, type ContentLane
 import { FENCE_REPAIR_ENABLED_KEY } from '../fence-repair/config.ts';
 import { admitAutofix } from '../autofix/admission.ts';
 import { recordRepairRunReceipts } from '../autofix/receipts.ts';
+import { undoneRepairPaths } from '../autofix/undo.ts';
 import { isUncontainedPhaseError } from './phase-containment.ts';
 
 /** The longest one phase run spends on the lane; inside a maintenance job it is also at most a third of the job's remaining time. */
@@ -84,7 +85,9 @@ export async function runContentRepairPhase(engine: BrainEngine | null, opts: Co
   }
   let lane: ContentLaneResult;
   try {
-    lane = await runContentLane(engine, await resolveRepairScope(engine), { apply: !opts.dryRun, kinds, deadline: start + timeBudgetMs,
+    const scope = await resolveRepairScope(engine);
+    const skip = opts.dryRun ? [] : await undoneRepairPaths(engine, scope.source_ids);
+    lane = await runContentLane(engine, scope, { apply: !opts.dryRun, kinds, deadline: start + timeBudgetMs, ...(skip.length ? { skip } : {}),
       logger: { info() {}, warn: console.warn, error: console.error }, ...(opts.registry ? { registry: opts.registry } : {}), ...(opts.signal ? { signal: opts.signal } : {}) });
   } catch (error) {
     if (isUncontainedPhaseError(error, opts.signal)) throw error;

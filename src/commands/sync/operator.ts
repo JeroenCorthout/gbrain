@@ -240,10 +240,11 @@ export async function runSyncUndo(engine: BrainEngine, args: string[]): Promise<
     console.log(`Usage: gbrain sync undo --source <id> --commit <sha> [--apply] [--json]
 
 Reverts one automatic repair commit that an autofix receipt of the source
-recorded: the source's persistence owner writes the file back to the bytes the
-repair replaced and its Git effect lands a new commit (no force push, no
-history rewrite). Refused when the file changed after the repair. Without
---apply it previews and writes nothing.`);
+recorded: under the source's writer lock it writes the file back to the bytes
+the repair replaced and commits that one path as a new commit (no force push,
+no history rewrite). Refused when the file changed after the repair. No
+automatic repair reapplies itself to the restored bytes. Without --apply it
+previews and writes nothing.`);
     return;
   }
   const sourceId = sourceOf(args);
@@ -253,6 +254,6 @@ history rewrite). Refused when the file changed after the repair. Without
   const outcome = await undoAutofixCommit(engine, { sourceId, sha, apply: args.includes('--apply') });
   if (args.includes('--json')) return writeJsonDocument(JSON.stringify(outcome, null, 2));
   console.log(outcome.status === 'reverted'
-    ? `Reverted ${outcome.commit.slice(0, 12)}: ${outcome.path} is back to the bytes the repair replaced (request ${outcome.request_id}); its commit lands with the source's next Git effect.`
+    ? `Reverted ${outcome.commit.slice(0, 12)}: ${outcome.path} is back to the bytes the repair replaced (undo commit ${outcome.undo_commit?.slice(0, 12) ?? '-'}); the next sync screens it as it was, and no automatic repair reapplies itself to those bytes. To stop that kind entirely: ${outcome.opt_out.join(' ')}`
     : `Would revert ${outcome.commit.slice(0, 12)}: ${outcome.path} goes back to the bytes the repair replaced. Run: gbrain sync undo --source ${sourceId} --commit ${outcome.commit} --apply`);
 }
