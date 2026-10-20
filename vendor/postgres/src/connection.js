@@ -341,6 +341,7 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
     ageTimer.cancel()
     const reason = kind === 'age' && received > 0 ? 'age' : 'idle'
     const stuck = { age_ms: Math.round(performance.now() - queryStart), queued: sent.length, statement: statementText(query), reason, budget_ms: query.inflightCaps ? query.inflightCaps[kind] : 0 }
+    try { process.stderr.write('[probe-stuck] ' + JSON.stringify({ chunk: chunk ? chunk.length : null, timer: nextWriteTimer !== null, ready: socket && socket.readyState, written: socket && socket.bytesWritten, read: socket && socket.bytesRead, destroyed: socket && socket.destroyed, sent: sent.length, reserved: !!connection.reserved, status: connection.status, inTx: inTransactionAfterSent, initial: !!initial, terminated, ending: !!ending, stmt: statementText(query), lastWritten: lastWritten === query, queue: connection.queue && connection.queue === queues.busy ? 'busy' : connection.queue === queues.reserved ? 'reserved' : connection.queue === queues.full ? 'full' : connection.queue === queues.open ? 'open' : 'other' }) + '\n') } catch (e) { process.stderr.write('[probe-stuck] err ' + e + '\n') }
     const s = socket
     recovering = recovering || 'stuck'
     error(Errors.connection('CONNECTION_STUCK', options, socket))
