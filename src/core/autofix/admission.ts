@@ -5,7 +5,7 @@
  * kill-switched and previewable, never deletes or moves user content without an undo, spends nothing and needs no
  * consent. A kind that rewrites a file must also carry a demonstrated complete inverse: recovery material (the
  * preimage hash and a bytes reference) preserved before the mutation, the revision and hash checked before writing,
- * and an isolated repair commit tracked to completion; that commit is what `gbrain git commit-push --revert` undoes.
+ * and an isolated repair commit tracked to completion; that commit is what `gbrain sync undo` reverts (autofix/undo.ts).
  * Every other kind stays preview-first: listed with its preview, run only by an operator's explicit apply.
  * Classic (unmanaged) sources take only kinds that rewrite nothing.
  *

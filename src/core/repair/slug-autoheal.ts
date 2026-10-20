@@ -27,7 +27,7 @@
  * within `SLUG_HEAL_BUDGET_MS`; every other slug-conflict hold waits for the content_repair maintenance phase, so a
  * backlog never delays the next commit. A file is edited only while its held bytes are in the checkout's Git objects
  * (the recovery material its undo restores); each edit leaves a `sync-autofix` receipt (preimage hash and blob,
- * postimage hash, request id; the repair commit's sha once it lands) whose undo is `gbrain git commit-push --revert`.
+ * postimage hash, request id; the repair commit's sha once it lands) whose undo is `gbrain sync undo` (autofix/undo.ts).
  * Nothing here runs at upgrade. A failure is counted and never fails the sync whose checkpoint already committed.
  */
 import type { BrainEngine } from '../engine.ts';
