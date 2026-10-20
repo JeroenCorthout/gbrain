@@ -46,7 +46,7 @@ import { managedSyncResumeArgs } from '../sync-reconcile.ts';
 import { laneApplyMsPerMember, lanePolicy, openLanes } from './sync-lanes.ts';
 import { isRetryableConnError, isStatementTimeoutError } from '../retry-matcher.ts';
 import { SYNC_READ_BOUND, type TreeBlob } from './sync-blobs.ts';
-import { driftBaselineContent, dryRunScreen, heldImageEntry, isSyncReadBound, loadSyncScreenRun, originConflictHold, oversizeHold, pinnedBlob, pinnedContent, pinnedImageBytes, preparationStalledHold, prepareTimeFenceHold, screenFrozenImport, streamedRefusalHold, unreadableFileHold, type HeldEntry, type SyncScreenRun } from './sync-screen.ts';
+import { driftBaselineContent, dryRunScreen, type DryRunWritebackInput, heldImageEntry, isSyncReadBound, loadSyncScreenRun, originConflictHold, oversizeHold, pinnedBlob, pinnedContent, pinnedImageBytes, preparationStalledHold, prepareTimeFenceHold, screenFrozenImport, streamedRefusalHold, unreadableFileHold, type HeldEntry, type SyncScreenRun } from './sync-screen.ts';
 import { frozenImageIntent, sameImageBytes } from './sync-image.ts';
 import { fenceReceiptLocation } from '../fence-repair/refusal.ts';
 import { managedSyncWriteDiagnostic, writeWaitOf } from './sync-write-diagnostic.ts';
@@ -544,12 +544,31 @@ async function adoptCursor(engine: BrainEngine, key: string, cursor: Cursor, inp
   if (writerChanged) await faultPoint('sync:cursor_adopted', { sourceId: cursor.sourceId });
   return saved;
 }
-/** #5988: a managed dry run lists the holds the pending (or newly discovered) imports would earn, read-only. */
+/**
+ * #5988: a managed dry run lists the holds the pending (or newly discovered) imports would earn, read-only. #7087: and the
+ * imports, deletions and file rewrites a real run would publish, with their counts.
+ */
 async function managedDryRun(engine: BrainEngine, value: Cursor, base: Cursor, run: { company: boolean; processingOptions: SyncProcessingOptions;
   syncOptions: SyncCursorOptions; repoPath?: string; remote: boolean }): Promise<SyncResult> {
   const screen = run.company ? null : await loadSyncScreenRun(engine, value.sourceId, value.processingOptions ?? run.processingOptions, run.remote);
   return { ...result(base, 'dry_run'), ...await dryRunScreen(engine, value, screen,
-    checkpointRetryCommand({ sourceId: value.sourceId, processingOptions: value.processingOptions, syncOptions: value.syncOptions ?? run.syncOptions, repoPath: run.repoPath })) };
+    checkpointRetryCommand({ sourceId: value.sourceId, processingOptions: value.processingOptions, syncOptions: value.syncOptions ?? run.syncOptions, repoPath: run.repoPath }),
+    input => dryRunWriteback(engine, value, input)) };
+}
+
+/**
+ * #7087: what publishing one dry-run import would do to its file, from the preparer's own screening preparation (read-only,
+ * never admitted): rewrite it with canonical frontmatter, or keep that metadata database-only (write_through off, a mirror).
+ */
+async function dryRunWriteback(engine: BrainEngine, cursor: Cursor, input: DryRunWritebackInput): Promise<{ rewrite: boolean; databaseOnlyReason?: string }> {
+  const { entry, snapshot } = input;
+  const intent: SyncIntent = { kind: 'managed_sync_import', expected_revision: snapshot?.revision ?? null, sourcePath: entry.sourcePath, path: entry.path, rawHash: input.rawHash,
+    content: input.content, lineEndingOnly: input.lineEndingOnly, processingOptions: cursor.processingOptions, ownerEpoch: String(cursor.binding.owner_epoch), syncAuthority: cursor.authority,
+    ...cursorIntent(cursor, `dry-run:${cursor.sourceId}`), slugMode: cursor.slugMode, from: cursor.from, target: cursor.target, working: entry.working ?? false,
+    ...(entry.renameFrom ? { renameFrom: entry.renameFrom } : {}) };
+  const prepared = await prepareManagedSyncMutation(engine, screeningRequest({ source_id: cursor.sourceId, source_incarnation: cursor.incarnation, slug: entry.slug!,
+    page_id: snapshot?.page.id ?? null, worktree_id: cursor.binding.worktree_id, authority: cursor.authority.writer, intent }), { engine: engine.kind }, undefined, { unsaved: true });
+  return { rewrite: !!prepared.file, ...(prepared.databaseOnlyReason ? { databaseOnlyReason: prepared.databaseOnlyReason } : {}) };
 }
 
 /** #5988: the hold clear that commits with the cursor step passing a waived entry. */

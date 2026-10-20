@@ -151,6 +151,11 @@ export interface SyncResult {
   dry_run?: true; would_normalize?: Array<{ path: string; classes: string[] }>; would_normalize_count?: number;
   would_hold?: import('../core/persistence/sync-holds.ts').GitHoldItem[];
   would_hold_count?: number;
+  /** #7087 managed dry run: the imports, deletions and canonical file rewrites a real run would publish (each list capped, with its count). */
+  would_import?: import('../core/persistence/sync-screen.ts').DryRunPreview['would_import']; would_import_count?: number;
+  would_delete?: import('../core/persistence/sync-screen.ts').DryRunPreview['would_delete']; would_delete_count?: number;
+  would_rewrite?: import('../core/persistence/sync-screen.ts').DryRunPreview['would_rewrite']; would_rewrite_count?: number;
+  would_keep_database_only?: import('../core/persistence/sync-screen.ts').DryRunPreview['would_keep_database_only']; would_keep_database_only_count?: number;
   screen_skipped?: Array<{ path: string; code: string }>;
 }
 
