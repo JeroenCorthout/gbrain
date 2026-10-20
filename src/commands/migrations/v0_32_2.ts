@@ -267,7 +267,7 @@ async function phaseCVerify(
 
     for (const g of groups) {
       let body: string;
-      const target = managed ? null : await resolvePageWriteTarget(engine, g.source_markdown_slug, g.source_id);
+      const target = managed ? null : await resolvePageWriteTarget(engine, g.source_markdown_slug, g.source_id, { read: true });
       const fileExists = target?.ok === true && existsSync(target.filePath);
       const root = localPathById.get(g.source_id) ?? (target?.ok ? target.writeRoot : null);
       let databaseOnly = managed || writeThroughOff || !!root && isSourceDbOnlySlug(root, g.source_markdown_slug, 'refuse');

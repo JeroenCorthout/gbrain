@@ -37,6 +37,7 @@ import {
 } from './brain-repo-durability.ts';
 import { bindOrigin } from './persistence/origin-guard.ts';
 import { urlCloneReadOnly } from './url-clone.ts';
+import { sourceMirrorReadOnly } from './persistence/mirror-read-only.ts';
 
 /** Minimal logger surface — structurally compatible with operations.ts `Logger`. */
 export interface WriteThroughLogger {
@@ -97,7 +98,7 @@ export interface WriteThroughResult {
    *   - over_push_scan_cap: the rendered file is over the pre-push secret-scan
    *     cap (PUSH_SCAN_MAX_FILE_BYTES), so committing it would block every push.
    */
-  skipped?: 'disabled_by_config' | 'url_clone' | 'no_repo_configured' | 'repo_not_found' | 'source_repo_belongs_to_other_source' | 'page_not_found_after_write' | 'path_escapes_source_root' | 'case_insensitive_collision' | 'file_changed' | 'over_push_scan_cap';
+  skipped?: 'disabled_by_config' | 'url_clone' | 'no_repo_configured' | 'repo_not_found' | 'source_repo_belongs_to_other_source' | 'page_not_found_after_write' | 'path_escapes_source_root' | 'case_insensitive_collision' | 'file_changed' | 'over_push_scan_cap' | 'mirror_read_only';
   /** Caller-visible advisory when a permitted DB-only outcome is still risky. */
   warning?: string;
   /** Set when the render/write/rename itself threw (EACCES, ENOTDIR, disk full). */
@@ -240,7 +241,7 @@ export type PageWriteTarget =
        */
       sourcePathToBind: string;
     }
-  | { ok: false; skipped: 'no_repo_configured' | 'repo_not_found' | 'source_repo_belongs_to_other_source' | 'path_escapes_source_root' };
+  | { ok: false; skipped: 'no_repo_configured' | 'repo_not_found' | 'source_repo_belongs_to_other_source' | 'path_escapes_source_root' | 'mirror_read_only' };
 
 /**
  * Scanner-convention `pages.source_path` for a file under `scanRoot` (the
@@ -321,13 +322,19 @@ export async function scannerSlugRootMode(engine: BrainEngine, sourceId: string,
  * appends to the page's file, so both writers MUST compute the identical
  * path or the fence lands in a file sync never reads back and the next
  * extract_facts reconcile deletes the fence-owned DB rows.
+ *
+ * #7098: a read-only mirror source (`gbrain sources mirror-readonly`, or an
+ * unmanaged brain's owned clone) has no write target (`mirror_read_only`), so
+ * every legacy file writer keeps its write database-only. `opts.read`: a
+ * caller that only reads or locates the file resolves it anyway.
  */
 export async function resolvePageWriteTarget(
   engine: BrainEngine,
   slug: string,
   sourceId: string,
-  opts: { includeDeleted?: boolean } = {},
+  opts: { includeDeleted?: boolean; read?: boolean } = {},
 ): Promise<PageWriteTarget> {
+  if (!opts.read && await sourceMirrorReadOnly(engine, sourceId)) return { ok: false, skipped: 'mirror_read_only' };
   let filePath: string;
   let writeRoot: string;
   let scanRoot: string;

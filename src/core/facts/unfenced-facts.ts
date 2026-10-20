@@ -508,7 +508,7 @@ async function fenceManaged(engine: BrainEngine, plan: UnfencedFactsPlan): Promi
         continue;
       }
       recordUnadoptable(outcome, entitySlug, fence.rejected);
-      const target = await resolvePageWriteTarget(engine, entitySlug, sourceId);
+      const target = await resolvePageWriteTarget(engine, entitySlug, sourceId, { read: true });
       await submitPlannedFactFenceAdoption(engine, authority, entitySlug, request,
         Boolean(snapshot.page.source_path) || snapshot.page.source_uri?.startsWith('file:') === true || (target.ok && existsSync(target.filePath)));
       outcome.fenced += fence.assignments.length;

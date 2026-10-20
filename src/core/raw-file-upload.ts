@@ -26,6 +26,6 @@ export function managedRawUploadRefusal(dest: string, filePath: string, pageSlug
 /** True when a git-storage upload for this page would land in a managed worktree (so upload-raw is refused). */
 export async function rawUploadRefusedFor(engine: BrainEngine, pageSlug: string, sourceId: string): Promise<boolean> {
   const { resolvePageWriteTarget } = await import('./write-through.ts');
-  const target = await resolvePageWriteTarget(engine, pageSlug, sourceId).catch(() => null);
+  const target = await resolvePageWriteTarget(engine, pageSlug, sourceId, { read: true }).catch(() => null);
   return !!target?.ok && managedFilesystemRootFor(target.filePath) !== null;
 }

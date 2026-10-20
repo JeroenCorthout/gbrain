@@ -54,7 +54,7 @@ export function inSyncableTree(path: string): boolean {
 export async function absentRecordedFile(engine: BrainEngine, sourceId: string, page: { slug: string; source_path?: string | null }): Promise<string | null> {
   const sourcePath = page.source_path?.trim();
   if (!sourcePath || !isSyncable(sourcePath)) return null;
-  const target = await resolvePageWriteTarget(engine, page.slug, sourceId, { includeDeleted: true });
+  const target = await resolvePageWriteTarget(engine, page.slug, sourceId, { includeDeleted: true, read: true });
   return target.ok && !inSyncableTree(target.filePath) ? sourcePath : null;
 }
 

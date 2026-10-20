@@ -247,7 +247,7 @@ async function canonicalCacheState(
   // non-canonical (fence-write.ts legacy fallback), so a stale mirror file must
   // not block reconcile here either.
   if (await isWriteThroughDisabled(engine)) return 'unavailable';
-  const target = await resolvePageWriteTarget(engine, slug, sourceId);
+  const target = await resolvePageWriteTarget(engine, slug, sourceId, { read: true });
   if (!target.ok || !existsSync(target.filePath)) return 'unavailable';
   try {
     if (isSegmentedPage(cached)) return await segmentedBodyMatchesFile(engine, cached, target.filePath);

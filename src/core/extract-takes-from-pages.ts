@@ -148,7 +148,7 @@ interface PageRow {
 /** Whether an unmanaged page's database body is its copy of record: write-through off, or its target in a storage.db_only directory. */
 async function databaseOnlyPage(engine: BrainEngine, slug: string, sourceId: string): Promise<boolean> {
   if (await isWriteThroughDisabled(engine)) return true;
-  const target = await resolvePageWriteTarget(engine, slug, sourceId);
+  const target = await resolvePageWriteTarget(engine, slug, sourceId, { read: true });
   if (!target.ok) return false;
   try {
     const storage = loadStorageConfig(target.writeRoot);

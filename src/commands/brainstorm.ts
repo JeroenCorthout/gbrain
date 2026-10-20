@@ -470,9 +470,9 @@ export function formatSaveOutcome(
       exitCode: 0,
     };
   }
-  if (dbSaved && writeThrough.skipped === 'url_clone') {
+  if (dbSaved && (writeThrough.skipped === 'url_clone' || writeThrough.skipped === 'mirror_read_only')) {
     return {
-      stdout: `\n_Saved to DB page \`${ctx.slug}\` (the source is a clone gbrain pulls from upstream — kept database-only)._`,
+      stdout: `\n_Saved to DB page \`${ctx.slug}\` (${writeThrough.skipped === 'url_clone' ? 'the source is a clone gbrain pulls from upstream' : 'the source is a read-only mirror'} — kept database-only)._`,
       stderr,
       exitCode: 0,
     };
