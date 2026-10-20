@@ -1077,7 +1077,7 @@ scenario(['f'], 'a pooler drop mid-bulk leaves no new hold and converges', () =>
     const how = PGBOUNCER_CONTAINER ? `docker restart -t 0 ${PGBOUNCER_CONTAINER}` : 'drop every pooled connection at the proxy';
     b.plan = [`${how} after 20 committed pages`];
     const probeDir = LOG_DIR ? join(LOG_DIR, 'pooler-drop') : undefined;
-    if (probeDir) { mkdirSync(probeDir, { recursive: true }); process.env.GBRAIN_SQL_TRACE = join(probeDir, 'trace.jsonl'); }
+    if (probeDir) mkdirSync(probeDir, { recursive: true }); if (probeDir && process.env.PROBE_TRACE) { process.env.GBRAIN_SQL_TRACE = join(probeDir, 'trace.jsonl'); }
     const run = b.sync(['--no-pull', '--no-delegate', '--json']);
     delete process.env.GBRAIN_SQL_TRACE;
     const mon = postgres(directTarget!, { max: 1, prepare: false, onnotice: () => {} });

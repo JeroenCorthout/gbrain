@@ -27,7 +27,7 @@ jobs:
       matrix:
         engine: [pglite, postgres]
         bun: ['1.4.0', '1.4.3']
-        rep: [1, 2, 3]
+        rep: [1, 2, 3, 4, 5]
         # Event parity: every event, pull requests and merge-queue runs
         # included, runs both supported Bun versions (docs/TESTING.md#event-parity).
     services:
@@ -74,7 +74,7 @@ jobs:
       fail-fast: false
       matrix:
         bun: ['1.4.0', '1.4.3']
-        rep: [1, 2, 3]
+        rep: [1, 2, 3, 4, 5]
         # Event parity: every event, pull requests and merge-queue runs
         # included, runs both supported Bun versions (docs/TESTING.md#event-parity).
     services:
@@ -211,7 +211,7 @@ jobs:
       matrix:
         shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
         bun: ['1.4.0', '1.4.3']
-        rep: [1, 2, 3]
+        rep: [1, 2, 3, 4, 5]
         # Event parity: every event, pull requests and merge-queue runs
         # included, runs both supported Bun versions (docs/TESTING.md#event-parity).
     services:
@@ -284,7 +284,7 @@ jobs:
       matrix:
         engine: [pglite, postgres]
         bun: ['1.4.0', '1.4.3']
-        rep: [1, 2, 3]
+        rep: [1, 2, 3, 4, 5]
         # Event parity: every event, pull requests and merge-queue runs
         # included, runs both supported Bun versions (docs/TESTING.md#event-parity).
     services:
@@ -341,7 +341,7 @@ jobs:
       matrix:
         engine: [pglite, postgres]
         bun: ['1.4.0', '1.4.3']
-        rep: [1, 2, 3]
+        rep: [1, 2, 3, 4, 5]
         # Event parity: every event, pull requests and merge-queue runs
         # included, runs both supported Bun versions (docs/TESTING.md#event-parity).
     services:
@@ -425,7 +425,7 @@ jobs:
       matrix:
         engine: [pglite, postgres]
         bun: ['1.4.0', '1.4.3']
-        rep: [1, 2, 3]
+        rep: [1, 2, 3, 4, 5]
         # Event parity: every event, pull requests and merge-queue runs
         # included, runs both supported Bun versions (docs/TESTING.md#event-parity).
     services:
@@ -488,7 +488,7 @@ jobs:
       fail-fast: false
       matrix:
         bun: ['1.4.0', '1.4.3']
-        rep: [1, 2, 3]
+        rep: [1, 2, 3, 4, 5]
         # Event parity: every event, pull requests and merge-queue runs
         # included, runs both supported Bun versions (docs/TESTING.md#event-parity).
     services:
