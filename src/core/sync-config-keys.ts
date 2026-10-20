@@ -14,7 +14,8 @@ import { CONFIG_ROLLBACK_WINDOWS, type ConfigRollbackWindow } from './wire-skew.
 import type { BrainEngine } from './engine.ts';
 
 export const SYNC_TUNABLE_KEYS = ['sync.bulk_size', 'sync.lanes', 'sync.exclude', 'sync.include_hidden', 'sync.include_working_tree', 'sync.holds',
-  'sync.write_through', 'sync.cost_gate_min_usd', 'sync.on_commit', 'sync.freshness_target_seconds', 'sync.admission'] as const;
+  'sync.write_through', 'sync.cost_gate_min_usd', 'sync.on_commit', 'sync.freshness_target_seconds', 'sync.admission',
+  'sync.autofix.enabled', 'sync.autofix.preparation_rescreen', 'sync.autofix.worktree_dirty_rescreen', 'sync.autofix.index_lock_reclaim'] as const;
 
 /**
  * #6858 ask 6, option C (Garry's "rec", via GBRA-108): a resident serve starts a managed source's sync when its

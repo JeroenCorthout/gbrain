@@ -400,6 +400,11 @@ async function setConfigWithDecideHooks(engine: BrainEngine, key: string, value:
   }
   if (key.startsWith('loops.')) (await import('./config/loops-values.ts')).refuseInvalidLoopsConfigValue(key, value);
   if (key === 'sync.slug_conflicts.auto_remove') { const err = (await import('../core/repair/slug-autoheal.ts')).slugAutoRemoveValueRefusal(value); if (err) { console.error(`[config] ${err}`); process.exit(1); } }
+  if (key.startsWith('sync.autofix.')) {
+    const { AUTOFIX_CONFIG_KEYS, autofixValueRefusal } = await import('../core/autofix/switches.ts');
+    const err = (AUTOFIX_CONFIG_KEYS as readonly string[]).includes(key) ? autofixValueRefusal(key, value) : null;
+    if (err) { console.error(`[config] ${err}`); process.exit(1); }
+  }
   if (key === 'sync.origin_twins.auto_resolve') { const err = (await import('../core/repair/origin-twins-heal.ts')).originAutoResolveValueRefusal(value); if (err) { console.error(`[config] ${err}`); process.exit(1); } }
   if (key.startsWith('search.')) (await import('./config/keyword-timeout-value.ts')).refuseInvalidKeywordTimeoutValue(key, value);
   if (key === 'persistence.max_claim_ms') {
