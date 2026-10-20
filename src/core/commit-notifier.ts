@@ -227,13 +227,43 @@ function notifierKit(opts: CommitNotifierOptions) {
     decisions.push({ at: now(), source, decision, ...extra });
     if (decisions.length > DECISIONS_CAP) decisions.splice(0, decisions.length - DECISIONS_CAP);
   };
-  return { pollMs, quietMs, heartbeatMs, leaseMs, cap, now, pid, ownerId, forcePoll, setTimer, clearTimer, log, logOnce, guard, decisions, decide };
+  /** One read per poll: which sources have unconsumed re-screen requests; a source that gains one is recorded as `hold_retry_due`. */
+  const readHoldRetries = async (list: Rt[]) => {
+    if (!opts.store.holdRetries || !list.length) return;
+    const found = await guard('reading scheduled re-screens', () => opts.store.holdRetries!(list.map(rt => rt.sourceId)), null);
+    if (!found) return;
+    for (const rt of list) {
+      const has = found.has(rt.sourceId);
+      if (has && !rt.retryPaths) decide(rt.sourceId, 'hold_retry_due', { detail: 'sync-hold-retry paths' });
+      rt.retryPaths = has;
+    }
+  };
+  /** Reads every source's due wanted markers; a marker whose queued sync job is still waiting or running is left to that job. */
+  const scanMarkers = async (sources: Map<string, Rt>) => {
+    const ids = [...sources.keys()];
+    const markers = ids.length ? await guard('reading wanted markers', () => opts.store.dueMarkers(ids), null) : [];
+    if (markers) {
+      const jobIds = markers.flatMap(m => m.job_id === null ? [] : [m.job_id]);
+      const live = jobIds.length ? await guard('reading queued sync jobs', () => opts.store.liveJobs(jobIds), new Set<number>()) : new Set<number>();
+      // A managed source never pulls: its pull markers (a push webhook) wait for gbrain sources refresh, not for this loop.
+      for (const rt of sources.values()) rt.markers = markers.filter(m => m.source_id === rt.sourceId && (m.job_id === null || !live.has(m.job_id))
+        && !(m.intent === 'pull' && rt.kind === 'managed'));
+    }
+  };
+  return { pollMs, quietMs, heartbeatMs, leaseMs, cap, now, pid, ownerId, forcePoll, setTimer, clearTimer, log, logOnce, guard, decisions, decide, readHoldRetries, scanMarkers };
 }
 
 const closeWatch = (rt: Rt) => { if (rt.watchClose) { try { rt.watchClose(); } catch { /* best effort */ } rt.watchClose = null; } };
 const mode = (rt: Rt): DetectionMode => rt.watchClose ? 'watch' : 'poll';
 const markerKey = (rt: Rt) => `${rt.head ?? ''}|${rt.markers.map(m => `${m.intent}:${m.generation}`).join(',')}|${rt.retryPaths ? 'r' : ''}`;
 const due = (rt: Rt) => (rt.watched && !!rt.head && rt.head !== rt.lastCommit) || rt.markers.length > 0 || rt.retryPaths;
+
+/** A re-screen request the finished run did not take: retried on the failure backoff, never in a tight loop. */
+const retryUnconsumed = (job: RunningJob, rt: Rt, progressed: boolean, lastCommit: string | null) =>
+  job.retryPaths && rt.retryPaths && !progressed && !rt.markers.length && !(rt.watched && rt.head && rt.head !== lastCommit);
+const startReason = (rt: Rt, intent: MarkerIntent) => intent !== 'freshness' ? `a ${intent} request is pending`
+  : rt.head && rt.head !== rt.lastCommit ? `HEAD moved to ${short(rt.head)} (last synced ${short(rt.lastCommit)})`
+  : rt.retryPaths ? 'held files wait for a scheduled re-screen' : 'a freshness request is pending';
 
 /** Merges a fresh source listing into the runtime map (a moved root starts over); returns the sources new to it. */
 function mergeListed(sources: Map<string, Rt>, rows: NotifierSource[]): Rt[] {
@@ -291,7 +321,7 @@ function snapshotSource(rt: Rt, now: number): NotifierSourceSnapshot {
 }
 
 export function startCommitNotifier(opts: CommitNotifierOptions): CommitNotifier {
-  const { pollMs, quietMs, heartbeatMs, leaseMs, cap, now, pid, ownerId, forcePoll, setTimer, clearTimer, log, logOnce, guard, decisions, decide } = notifierKit(opts);
+  const { pollMs, quietMs, heartbeatMs, leaseMs, cap, now, pid, ownerId, forcePoll, setTimer, clearTimer, log, logOnce, guard, decisions, decide, readHoldRetries, scanMarkers } = notifierKit(opts);
 
   let enabled = false;
   let excluded = new Set<string>();
@@ -378,18 +408,6 @@ export function startCommitNotifier(opts: CommitNotifierOptions): CommitNotifier
     }
   };
 
-  /** One read per poll: which sources have unconsumed re-screen requests; a source that gains one is recorded as `hold_retry_due`. */
-  const readHoldRetries = async (list: Rt[]) => {
-    if (!opts.store.holdRetries || !list.length) return;
-    const found = await guard('reading scheduled re-screens', () => opts.store.holdRetries!(list.map(rt => rt.sourceId)), null);
-    if (!found) return;
-    for (const rt of list) {
-      const has = found.has(rt.sourceId);
-      if (has && !rt.retryPaths) decide(rt.sourceId, 'hold_retry_due', { detail: 'sync-hold-retry paths' });
-      rt.retryPaths = has;
-    }
-  };
-
   const observe = async (rt: Rt, heads: Map<string, string | null>) => {
     if (!heads.has(rt.root)) heads.set(rt.root, await guard(`reading HEAD in ${rt.root}`, () => opts.revParse(rt.root), null));
     const head = heads.get(rt.root) ?? null;
@@ -444,10 +462,7 @@ export function startCommitNotifier(opts: CommitNotifierOptions): CommitNotifier
     rt.markers = await guard(`settling the wanted markers of ${rt.sourceId}`,
       () => opts.store.settleMarkers(rt.sourceId, job.markers, { pulled: job.intent === 'pull', full: job.intent === 'full' }), rt.markers);
     await readHoldRetries([rt]);
-    // A re-screen request the run did not take is retried on the failure backoff, never in a tight loop.
-    if (job.retryPaths && rt.retryPaths && !progressed && !rt.markers.length && !(rt.watched && rt.head && rt.head !== lastCommit)) {
-      return failure(rt, 'hold_retry_unconsumed', 'the sync left the scheduled re-screen of held files unconsumed', false);
-    }
+    if (retryUnconsumed(job, rt, progressed, lastCommit)) return failure(rt, 'hold_retry_unconsumed', 'the sync left the scheduled re-screen of held files unconsumed', false);
     if (!due(rt)) {
       await transition(rt, { state: 'idle', reason: null, firstDue: 'clear', attempts: 0, progress: progressed, error: null });
       decide(rt.sourceId, 'converged', { detail: short(lastCommit) });
@@ -503,9 +518,7 @@ export function startCommitNotifier(opts: CommitNotifierOptions): CommitNotifier
       running.set(rt.sourceId, { id: start.jobId, sourceId: rt.sourceId, head: rt.head, lastCommit: rt.lastCommit, intent, markers, retryPaths: rt.retryPaths });
       await transition(rt, { state: 'running', firstDue: 'keep' });
       decide(rt.sourceId, 'start', { detail: `${intent}${slice ? ` slice ${slice}s` : ''}` });
-      const why = intent !== 'freshness' ? `a ${intent} request is pending` : rt.head && rt.head !== rt.lastCommit ? `HEAD moved to ${short(rt.head)} (last synced ${short(rt.lastCommit)})`
-        : rt.retryPaths ? 'held files wait for a scheduled re-screen' : 'a freshness request is pending';
-      log(`${rt.sourceId}: ${why}; started ${rt.kind === 'classic' ? 'classic' : 'managed'} sync job ${start.jobId}`);
+      log(`${rt.sourceId}: ${startReason(rt, intent)}; started ${rt.kind === 'classic' ? 'classic' : 'managed'} sync job ${start.jobId}`);
     }
   };
 
@@ -556,15 +569,7 @@ export function startCommitNotifier(opts: CommitNotifierOptions): CommitNotifier
     if (wasNudged || firstPass || t - markersAt >= MARKER_SCAN_MS) {
       markersAt = t;
       firstPass = false;
-      const ids = [...sources.keys()];
-      const markers = ids.length ? await guard('reading wanted markers', () => opts.store.dueMarkers(ids), null) : [];
-      if (markers) {
-        const jobIds = markers.flatMap(m => m.job_id === null ? [] : [m.job_id]);
-        const live = jobIds.length ? await guard('reading queued sync jobs', () => opts.store.liveJobs(jobIds), new Set<number>()) : new Set<number>();
-        // A managed source never pulls: its pull markers (a push webhook) wait for gbrain sources refresh, not for this loop.
-        for (const rt of sources.values()) rt.markers = markers.filter(m => m.source_id === rt.sourceId && (m.job_id === null || !live.has(m.job_id))
-          && !(m.intent === 'pull' && rt.kind === 'managed'));
-      }
+      await scanMarkers(sources);
     }
     for (const job of [...running.values()]) {
       const st = opts.jobStatus(job.id);

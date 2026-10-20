@@ -149,11 +149,12 @@ export async function runSyncStatus(engine: BrainEngine, args: string[]): Promis
   const { readNotifierBlock, formatNotifierBlock } = await import('../../core/notifier/status.ts');
   const notifierBlock = await readNotifierBlock(engine, sourceId).catch(() => null);
   const notifier = notifierBlock && { ...notifierBlock, fix: notifierBlock.fix ? renderAction(notifierBlock.fix, ctx) : null };
+  const autofix = await (await import('../../core/autofix/state.ts')).readAutofixState(engine, sourceId, { remote: false });
   const read = (r: typeof status.cursors_read) => r.status === 'read' ? r : { ...r, fix: renderAction(r.fix, ctx) };
   const rendered = { ...status, holds: status.holds.map(hold => ({ ...hold, fix: renderAction(hold.fix, ctx) })),
     git_push_holds: status.git_push_holds.map(hold => ({ ...hold, fix: renderAction(hold.fix, ctx) })), next: status.next ? renderAction(status.next, ctx) : null,
     checkpoint_blockers_read: read(status.checkpoint_blockers_read), cursors_read: read(status.cursors_read), terminal_failures_read: read(status.terminal_failures_read),
-    capacity: { status: snapshot.status, pause_pct: snapshot.pause_pct, low: snapshot.low, paused: snapshot.paused }, freshness, notifier, ...(notices.length ? { notices } : {}) };
+    capacity: { status: snapshot.status, pause_pct: snapshot.pause_pct, low: snapshot.low, paused: snapshot.paused }, freshness, notifier, autofix, ...(notices.length ? { notices } : {}) };
   if (args.includes('--json')) return writeJsonDocument(JSON.stringify(rendered, null, 2));
   const c = status.cursor;
   console.log(syncStatusHeadline(status));

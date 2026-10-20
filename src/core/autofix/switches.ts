@@ -28,6 +28,12 @@ export function autofixValueRefusal(key: string, value: string): string | null {
   return TRUE.test(value.trim()) || FALSE.test(value.trim()) ? null : `${key} must be true or false (got "${value}"). Nothing was written.`;
 }
 
+/** `gbrain config set` hook: refuses a non-boolean value for one of the switches (a key outside them passes). */
+export function refuseInvalidAutofixValue(key: string, value: string): void {
+  const err = (AUTOFIX_CONFIG_KEYS as readonly string[]).includes(key) ? autofixValueRefusal(key, value) : null;
+  if (err) { console.error(`[config] ${err}`); process.exit(1); }
+}
+
 export interface SwitchState {
   key: string;
   enabled: boolean;

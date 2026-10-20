@@ -19,6 +19,7 @@ import { chmodSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { BrainEngine } from '../../src/core/engine.ts';
 import { performSync } from '../../src/commands/sync/perform.ts';
+import { runSyncStatus } from '../../src/commands/sync/operator.ts';
 import { localHostId } from '../../src/core/persistence/identity.ts';
 import { runPersistenceEffects } from '../../src/core/persistence/effects.ts';
 import { readGitSourceHolds } from '../../src/core/persistence/sync-holds.ts';
@@ -93,6 +94,11 @@ for (const { backend, databaseUrl } of pathologicalArms()) {
         expect(remote.recent[0]!.path).toBeNull();
         expect(JSON.stringify(remote)).not.toContain(root);
         expect(JSON.stringify(remote)).not.toContain(STRAY);
+        const lines: string[] = [];
+        const log = console.log;
+        console.log = (...a: unknown[]) => { lines.push(a.join(' ')); };
+        try { await runSyncStatus(engine, ['--source', 'default', '--json']); } finally { console.log = log; }
+        expect((JSON.parse(lines.join('\n')) as { autofix: typeof local }).autofix.recent[0]!.undo).toEqual(local.recent[0]!.undo);
 
         expect(await codeOf(() => undoAutofixCommit(engine, { sourceId: 'default', sha: 'f'.repeat(40), apply: false }))).toBe('autofix_undo_unavailable');
         const preview = await undoAutofixCommit(engine, { sourceId: 'default', sha: repairCommit, apply: false });

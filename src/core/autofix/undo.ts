@@ -67,7 +67,7 @@ export async function undoAutofixCommit(engine: BrainEngine, opts: { sourceId: s
   }
   if (fileHash(root, path) !== postimage) {
     throw opError('autofix_undo_conflict', `${path} changed after the repair (or is gone), so reverting it would overwrite a later edit; nothing was written.`,
-      'Edit the file by hand if the repair is still unwanted, commit, and run gbrain sync --source <id> --no-pull.');
+      `Edit the file by hand if the repair is still unwanted, commit, and run gbrain sync --source ${sourceId} --no-pull.`);
   }
   const { admissionRow } = await import('./admission.ts');
   const optOut = ['gbrain', 'config', 'set', admissionRow(receipt.kind).switches[0] ?? 'sync.autofix.enabled', 'false'];
@@ -84,7 +84,7 @@ export async function undoAutofixCommit(engine: BrainEngine, opts: { sourceId: s
   try {
     if (fileHash(root, path) !== postimage) {
       throw opError('autofix_undo_conflict', `${path} changed while the undo waited for the writer lock; nothing was written.`,
-        'Edit the file by hand if the repair is still unwanted, commit, and run gbrain sync --source <id> --no-pull.');
+        `Edit the file by hand if the repair is still unwanted, commit, and run gbrain sync --source ${sourceId} --no-pull.`);
     }
     const subject = `gbrain: undo automatic repair ${sha.slice(0, 12)} of ${path}`;
     const outcomes = await withFilesystemPublication([root], async () => {
