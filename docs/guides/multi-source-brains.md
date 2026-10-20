@@ -257,6 +257,11 @@ back into that checkout, so `git status` stays clean and the next fast-forward
 pull succeeds. A page write into the source (`put_page`, a timeline entry, a
 maintenance write) is stored database-only too; its receipt says
 `storage: "database_only"` with `write_through.skipped: "mirror_read_only"`.
+On any brain, managed or not, gbrain's direct file writers (brainstorm
+`--save`, the `sync --full` re-export, dream page files, facts fences, `forget`,
+timeline entries and the file removal of a page delete) leave the checkout
+alone too: each keeps its write database-only with skip reason
+`mirror_read_only`, and `gbrain files upload-raw --page` into a mirror fails.
 `gbrain sources list --json` shows `mirror_read_only` per source. Undo it with
 `gbrain sources mirror-writable <id>`; files are written again from the next
 write on, except for pages created while the source was a mirror: those have
