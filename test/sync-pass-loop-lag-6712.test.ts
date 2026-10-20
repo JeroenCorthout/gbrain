@@ -12,6 +12,7 @@ import { describe, expect, test } from 'bun:test';
 import { execFileSync } from 'node:child_process';
 import { readShadowLevel } from '../src/core/persistence/sync-pass.ts';
 import { resolveManagedSyncContext } from '../src/core/persistence/sync-discovery.ts';
+import { watchLoopLag } from './helpers/cpu-time.ts';
 import { managedBrain } from './helpers/managed-brain.ts';
 
 const PATHS = 60_000;
@@ -34,16 +35,15 @@ describe('#6712 PR 4b ruling 4: a level read yields to the event loop', () => {
   test(`reading and classifying a ${PATHS}-path level never blocks a timer for ${MAX_LAG_MS} ms`, () => managedBrain(async ({ engine }) => {
     // A pass resolves its context once, before its rounds; each round's level read is what this times.
     const context = await resolveManagedSyncContext(engine, { sourceId: 'default', noPull: true, dryRun: true });
-    let last = performance.now(), maxLag = 0, ticks = 0;
-    const timer = setInterval(() => { const now = performance.now(); maxLag = Math.max(maxLag, now - last - 5); last = now; ticks++; }, 5);
+    // Lag as the thread's own CPU between timer runs (the stretch that ends the read counts too): the stretches the read
+    // holds, not what a loaded VM adds while the thread is off the CPU.
     let level: Awaited<ReturnType<typeof readShadowLevel>>;
+    let maxLag = 0, ticks = 0;
+    const lag = watchLoopLag();
     try {
-      last = performance.now();
       level = await readShadowLevel(engine, { sourceId: 'default', context });
     } finally {
-      // The stretch that ends the read counts too: the timer never got to fire after it.
-      maxLag = Math.max(maxLag, performance.now() - last - 5);
-      clearInterval(timer);
+      ({ maxLag, ticks } = lag.stop());
     }
     expect(level!.paths.length).toBe(PATHS);
     expect(ticks).toBeGreaterThan(0);
