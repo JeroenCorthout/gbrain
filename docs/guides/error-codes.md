@@ -213,6 +213,22 @@ Override: reason `rate_limit`: retryable, exit 11, retryable.
 
 Override: reason `transient`: retryable, exit 11, retryable.
 
+### autofix_undo_conflict
+
+<a id="autofix_undo_conflict"></a>
+
+| Meaning | Why | Next step | Who acts · consent | Verify | Exit | Retryable |
+|---|---|---|---|---|---|---|
+| The file an automatic repair changed was edited again after the repair, so undoing the repair would overwrite that edit; nothing was written. | gbrain sync undo restores the exact bytes the repair replaced, bound to the bytes the repair wrote. A file that no longer has those bytes holds a later change the undo must not discard. | Edit the file by hand if the repair is still unwanted, commit, and run gbrain sync --source <id> --no-pull. | agent | `repeat the read that failed` | 1 | no |
+
+### autofix_undo_unavailable
+
+<a id="autofix_undo_unavailable"></a>
+
+| Meaning | Why | Next step | Who acts · consent | Verify | Exit | Retryable |
+|---|---|---|---|---|---|---|
+| No undo exists for this commit: it is not a repair commit an autofix receipt of the source recorded, its receipt keeps no recovery material, or the restored file would be refused. | gbrain only reverts an isolated repair commit it recorded itself, so an arbitrary commit is never rewritten by this command. | Read the source receipts with gbrain sync status --source <id> --json (autofix.recent); each landed repair names its own undo or says why none exists. | agent | `repeat the read that failed` | 1 | no |
+
 ### autopilot_job_owned_by_other_brain
 
 <a id="autopilot_job_owned_by_other_brain"></a>
