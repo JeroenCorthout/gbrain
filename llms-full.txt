@@ -7234,7 +7234,13 @@ vars — incident-time escape hatches, not everyday knobs.
    last good revision and is read-only for `put_page` until the file is
    repaired. A hold clears when the file changes, is deleted, or a newer
    gbrain can read it; `gbrain sync --dry-run` lists would-be holds
-   (`would_hold`) without writing anything. The backlog fix is one previewed,
+   (`would_hold`) without writing anything. On a managed source it also lists
+   the pages a real run would import (`would_import`, each `add`, `modify` or
+   `rename`), delete (`would_delete`), and the files it would rewrite with their
+   canonical frontmatter (`would_rewrite`) or, with `sync.write_through` off or a
+   read-only mirror, leave alone while the database keeps that metadata
+   (`would_keep_database_only`); each list is capped at `sync.hold_cap` with its
+   `_count` (#7087). The backlog fix is one previewed,
    hash-bound command per kind of hold:
 
    ```bash
