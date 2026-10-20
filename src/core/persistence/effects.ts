@@ -299,6 +299,19 @@ async function singleFileGitTarget(engine: BrainEngine, effect: PersistenceEffec
   return relative(binding.local_path, path).split(sep).join('/');
 }
 
+/** GBRA-133 PR 3: the automatic index-lock reclaim's admission; off, the owner reports the stale lock with the switch instead of removing it. */
+async function reclaimSwitch(engine: BrainEngine): Promise<{ reclaimOff?: string }> {
+  const { admitAutofix } = await import('../autofix/admission.ts');
+  const verdict = await admitAutofix(engine, 'index_lock_reclaim', { admission: 'automatic', sourceKind: 'managed' }).catch(() => null);
+  return !verdict || verdict.admitted ? {} : { reclaimOff: verdict.disabling_key ?? 'sync.autofix.enabled' };
+}
+
+/** One `sync-autofix` receipt per reclaimed index lock (the lock is a host path, so the receipt names none). */
+async function recordReclaimReceipt(engine: BrainEngine, sourceId: string): Promise<void> {
+  const { recordAutofixReceipts } = await import('../autofix/receipts.ts');
+  await recordAutofixReceipts(engine, sourceId, [{ kind: 'index_lock_reclaim', admission: 'automatic', outcome: 'applied', code: 'git_index_stale', disabling_key: 'sync.autofix.index_lock_reclaim' }]).catch(() => undefined);
+}
+
 /** The commit metadata a single-file Git effect's preparer recorded, if any. */
 function gitCommitNote(effect: PersistenceEffect): GitCommitNote | undefined {
   const { commit_subject: subject, commit_line: line, commit_trailer: trailer } = effect.data;
@@ -312,9 +325,12 @@ async function gitPage(engine: BrainEngine, effect: PersistenceEffect, binding: 
   if (await sourceMirrorReadOnly(engine, effect.source_id)) { await completeEffect(engine, effect, { git: 'skipped', reason: 'mirror_read_only' }); return; }
   const root = binding.local_path;
   let reclaimed = false;
-  const owner = writerLock ? { writerLock, onReclaim: () => { reclaimed = true; } } : undefined;
+  const owner = writerLock ? { writerLock, onReclaim: () => { reclaimed = true; }, ...await reclaimSwitch(engine) } : undefined;
   try { await publishGitPage(engine, effect, { ...binding, local_path: root }, opts, attempt, hardened, owner); }
-  finally { if (reclaimed && effect.worktree_id) await retryIndexLockParks(engine, effect.worktree_id); }
+  finally {
+    if (reclaimed) await recordReclaimReceipt(engine, effect.source_id);
+    if (reclaimed && effect.worktree_id) await retryIndexLockParks(engine, effect.worktree_id);
+  }
 }
 
 async function publishGitPage(engine: BrainEngine, effect: PersistenceEffect, binding: WorktreeBinding & { local_path: string }, opts: EffectWorkerOptions,
@@ -870,7 +886,8 @@ async function runEffectPass(engine: BrainEngine, config: GBrainConfig, opts: Ef
       }
       const notes = new Map(targets.flatMap(({ effect, path }) => { const note = gitCommitNote(effect); return note ? [[path, note] as const] : []; }));
       const outcomes = targets.length ? await commitGitTargets(binding.local_path, targets.map(t => t.path), opts.signal, notes,
-        { writerLock: lock, onReclaim: () => { reclaimed = true; } }) : new Map();
+        { writerLock: lock, onReclaim: () => { reclaimed = true; }, ...await reclaimSwitch(engine) }) : new Map();
+      if (reclaimed) await recordReclaimReceipt(engine, binding.source_id);
       const pending = unpushed.get(binding.local_path) ?? { binding, items: [] };
       // #7089: an absent target whose removal an earlier attempt committed (its push failed) joins the push like an
       // unchanged one while the root is ahead of its upstream; on a root that is not ahead it completes without a push.

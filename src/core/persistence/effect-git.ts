@@ -58,6 +58,8 @@ const GIT_TERM_GRACE_MS = 10_000;
 export interface GitEffectOwner {
   writerLock: NativeLockHandle;
   onReclaim?: (receipt: IndexLockReclaim) => void;
+  /** GBRA-133 PR 3: the switch that turned the automatic reclaim off (`sync.autofix.index_lock_reclaim` or the umbrella), when one did. */
+  reclaimOff?: string;
 }
 
 interface GitSession { root: string; hooks: string; signal?: AbortSignal; timeoutMs: number; owner?: GitEffectOwner }
@@ -106,7 +108,8 @@ async function indexLockError(session: GitSession, stderr: string, mayReclaim: b
   let age: number;
   try { age = Date.now() - statSync(lock).mtimeMs; } catch { return null; }
   let why = 'this caller does not hold the checkout\'s writer lock';
-  if (session.owner && !session.owner.writerLock.released && mayReclaim) {
+  if (session.owner?.reclaimOff) why = `automatic index-lock reclaim is off (${session.owner.reclaimOff} false)`;
+  else if (session.owner && !session.owner.writerLock.released && mayReclaim) {
     const verdict = proveIndexLockAbandoned(lock, session.root, INDEX_LOCK_GRACE_MS);
     const receipt = verdict.abandoned ? reclaimIndexLock(lock, session.root, verdict) : null;
     if (receipt) { session.owner.onReclaim?.(receipt); return 'reclaimed'; }

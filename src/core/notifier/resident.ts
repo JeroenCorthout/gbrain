@@ -21,7 +21,7 @@ import {
   type CommitNotifier, type CommitNotifierOptions, type NotifierSource, type NotifierStore, type ResidentKind, type SkippedSource,
 } from '../commit-notifier.ts';
 import {
-  claimLease, holdsLease, readDueMarkers, readNotifierSources, releaseLease, settleMarkers, upsertMarker, writeCoverage, writeState, pruneSatisfiedMarkers,
+  claimLease, holdsLease, readDueMarkers, readHoldRetrySources, readNotifierSources, releaseLease, settleMarkers, upsertMarker, writeCoverage, writeState, pruneSatisfiedMarkers,
 } from './store.ts';
 import { gitQuiet, resolveGitDirs, revParseHead, watchGitDirs, watchTargets } from './detect.ts';
 
@@ -45,6 +45,7 @@ export function sqlNotifierStore(engine: BrainEngine): NotifierStore {
     holdsLease: (hostId, ownerId, fence) => holdsLease(engine, hostId, ownerId, fence),
     releaseLease: (hostId, ownerId) => releaseLease(engine, hostId, ownerId),
     dueMarkers: async (ids) => { await pruneSatisfiedMarkers(engine, ids); return readDueMarkers(engine, ids); },
+    holdRetries: (ids) => readHoldRetrySources(engine, ids),
     liveJobs: async (ids) => new Set((await engine.executeRaw<{ id: unknown }>(
       "SELECT id FROM minion_jobs WHERE id = ANY($1::bigint[]) AND status IN ('waiting','active','delayed','waiting-children','paused')", [ids])).map(r => Number(r.id))),
     forward: async (sourceId, head) => { await upsertMarker(engine, { sourceId, intent: 'freshness', wantedHead: head, requestedBy: 'notifier' }); },

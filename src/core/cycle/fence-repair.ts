@@ -26,7 +26,10 @@ import { repairRunner, type RepairKindSpec } from '../repair/registry.ts';
 import type { FenceRepairVerification } from '../repair/fences.ts';
 import { FENCE_REASONS } from '../fence-repair/reasons.ts';
 import type { FenceReason } from '../fence-repair/types.ts';
-import { FENCE_REPAIR_ENABLED_KEY, FENCE_REPAIR_LLM_KEY, fenceRepairEnabled, fenceRepairLlmEnabled } from '../fence-repair/config.ts';
+import { FENCE_REPAIR_ENABLED_KEY, FENCE_REPAIR_LLM_KEY, fenceRepairLlmEnabled } from '../fence-repair/config.ts';
+import { admitAutofix } from '../autofix/admission.ts';
+import { recordRepairRunReceipts } from '../autofix/receipts.ts';
+import { undoneRepairPaths } from '../autofix/undo.ts';
 import { isUncontainedPhaseError } from './phase-containment.ts';
 
 /** The longest one phase run spends repairing fences; inside a maintenance job it is also at most a third of the job's remaining time. */
@@ -49,10 +52,12 @@ const previewFix = (why: string): Action => ({ argv: ['gbrain', 'repair', 'fence
 export async function runFenceRepairPhase(engine: BrainEngine | null, opts: FenceRepairPhaseOpts): Promise<PhaseResult> {
   const base = { phase: 'fence_repair' as const, duration_ms: 0 };
   if (!engine) return { ...base, status: 'skipped', summary: 'no database connected', details: { reason: 'no_database' } };
-  if (!(await fenceRepairEnabled(engine))) {
-    return { ...base, status: 'skipped', details: { reason: 'disabled' },
-      summary: `fence repair is paused (${FENCE_REPAIR_ENABLED_KEY} false), so nothing was repaired. Turn it back on with `
-        + `\`gbrain config set ${FENCE_REPAIR_ENABLED_KEY} true\`, or preview and apply by hand with \`${PREVIEW}\`.` };
+  const admission = await admitAutofix(engine, 'fence_repair', { admission: 'automatic' });
+  if (!admission.admitted) {
+    const key = admission.disabling_key ?? FENCE_REPAIR_ENABLED_KEY;
+    return { ...base, status: 'skipped', details: { reason: key === FENCE_REPAIR_ENABLED_KEY ? 'disabled' : 'autofix_disabled', disabling_key: key },
+      summary: `${key === FENCE_REPAIR_ENABLED_KEY ? 'fence repair is paused' : 'automatic repairs are off'} (${key} false), so nothing was repaired. Turn it back on with `
+        + `\`gbrain config set ${key} true\`, or preview and apply by hand with \`${PREVIEW}\`.` };
   }
   const now = opts.now ?? Date.now;
   const start = now();
@@ -66,7 +71,9 @@ export async function runFenceRepairPhase(engine: BrainEngine | null, opts: Fenc
   try {
     const runner = await repairRunner(engine, { apply: !opts.dryRun, logger: { info() {}, warn: console.warn, error: console.error },
       ...(opts.registry ? { registry: opts.registry } : {}) });
-    result = await runner.run('fences', await resolveRepairScope(engine), { deadline: start + timeBudgetMs });
+    const scope = await resolveRepairScope(engine);
+    const skip = opts.dryRun ? [] : await undoneRepairPaths(engine, scope.source_ids);
+    result = await runner.run('fences', scope, { deadline: start + timeBudgetMs, ...(skip.length ? { skip } : {}) });
   } catch (error) {
     if (isUncontainedPhaseError(error, opts.signal)) throw error;
     const rawCode = (error as { code?: unknown } | null)?.code;
@@ -77,6 +84,7 @@ export async function runFenceRepairPhase(engine: BrainEngine | null, opts: Fenc
         + 'to see the plan and the error; ask the user if it keeps failing.' };
   }
 
+  if (result.mode === 'apply') await recordRepairRunReceipts(engine, 'fence_repair', result.outcome_items).catch(error => console.warn(`[fence_repair] could not record the autofix receipts: ${error instanceof Error ? error.message : String(error)}`));
   const v = result.verification as Partial<FenceRepairVerification> | undefined;
   const repairedByTier = v?.repaired_by_tier ?? { deterministic: 0, resolver: 0, llm: 0 };
   const heldByReason: Record<string, number> = v?.held_by_reason ?? result.remaining ?? {};

@@ -88,6 +88,7 @@ export const UNRESOLVED_CONFIG_READS: readonly UnresolvedConfigRead[] = [
   { file: 'src/commands/search.ts', expr: 'parts[3]', why: 'search tune --apply re-reads the key its recommendation just wrote, to reconcile a thrown write (search.* knobs from tune-recommendations.ts apply_command)' },
   { file: 'src/commands/skillpack/harness.ts', expr: 'key', why: P },
   { file: 'src/core/advisor/collect-setup-smells.ts', expr: 'key', why: P },
+  { file: 'src/core/autofix/switches.ts', expr: 'key', why: P },
   { file: 'src/core/config-db-merge.ts', expr: 'key', why: 'listConfigKeys walk filtered to the cycle. and provider_chat_options. prefixes' },
   { file: 'src/core/config.ts', expr: 'key', why: P },
   { file: 'src/core/connectors/sync.ts', expr: 'key', why: P },

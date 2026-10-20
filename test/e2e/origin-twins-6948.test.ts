@@ -35,6 +35,8 @@ import { isolatedPersistencePostgres } from '../helpers/persistence-postgres.ts'
 import { testBackends } from '../helpers/test-backends.ts';
 import { dropOriginIndex } from '../helpers/origin-index.ts';
 import { withEnv } from '../helpers/with-env.ts';
+import { readAutofixReceipts } from '../../src/core/autofix/receipts.ts';
+import { readAutofixState } from '../../src/core/autofix/state.ts';
 
 const op = (name: string) => operations.find(o => o.name === name)!;
 const git = (root: string, ...args: string[]) => execFileSync('git', ['-C', root, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
@@ -177,6 +179,36 @@ for (const backend of testBackends()) describe(`[${backend}] #6948 duplicate-ori
       expect(held.map(h => [h.path, h.meta.reason ?? null, h.meta.canonical_slug])).toEqual([['alpha.md', null, 'alpha']]);
       expect(holdVerdict(held[0]!, undefined).needs_human).toBe(false);
     } finally { await engine.setConfig('sync.origin_twins.auto_resolve', 'true'); }
+  }, 180_000);
+
+  test('GBRA-133 PR 3: the umbrella sync.autofix.enabled false stops the heal (autofix_disabled), keeps the twin and writes no receipt', async () => {
+    const f = await source([{ slug: 'alpha-copy' }]);
+    await engine.setConfig('sync.autofix.enabled', 'false');
+    try {
+      const result = await sync({ ...f.opts, full: true });
+      expect(result.status).toBe('synced');
+      expect(result.origin_twins_resolved).toMatchObject({ skipped: 'autofix_disabled', resolved: 0 });
+      expect((await row(f.id, 'alpha-copy'))!.deleted_at).toBeNull();
+      expect((await holds(f.id)).filter(h => h.code === 'origin_conflict').map(h => h.path)).toEqual(['alpha.md']);
+      expect(await readAutofixReceipts(engine, f.id)).toEqual([]);
+    } finally { await engine.setConfig('sync.autofix.enabled', 'true'); }
+  }, 180_000);
+
+  test('GBRA-133 PR 3: a merged twin leaves a sync-autofix receipt naming the restorable page; a remote reader sees no slug', async () => {
+    const f = await source([{ slug: 'alpha-copy' }]);
+    expect((await sync({ ...f.opts, full: true })).origin_twins_resolved).toMatchObject({ resolved: 1 });
+    const [receipt, ...more] = await readAutofixReceipts(engine, f.id);
+    expect(more).toEqual([]);
+    expect(receipt).toMatchObject({ kind: 'origin_twin_merge', admission: 'automatic', outcome: 'applied', code: 'origin_conflict', path: 'alpha.md',
+      disabling_key: 'sync.origin_twins.auto_resolve', restore: { slug: 'alpha-copy' } });
+    const until = Date.parse(receipt!.restore!.until) - Date.parse(receipt!.at);
+    expect(Math.abs(until - 72 * 3_600_000)).toBeLessThan(60_000);
+    const local = await readAutofixState(engine, f.id, { remote: false });
+    expect(local.recent[0]!.undo).toMatchObject({ available: true, how: 'restore', slug: 'alpha-copy', argv: ['gbrain', 'restore', 'alpha-copy', '--source-id', f.id] });
+    const remote = await readAutofixState(engine, f.id, { remote: true });
+    expect(JSON.stringify(remote.recent)).not.toContain('alpha-copy');
+    expect(JSON.stringify(remote.recent)).not.toContain('alpha.md');
+    expect(remote.recent[0]!.undo).toMatchObject({ available: false });
   }, 180_000);
 
   test('twins whose bodies differ are a decision: held with the reason, never merged; --slug only detaches, then the file imports', async () => {

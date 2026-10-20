@@ -8,7 +8,9 @@
  * applies (`resolveOriginTwin`). Each resolved file is scheduled for re-screen, so the next sync imports it.
  *
  * Guards, as #6865's slug heal (slug-autoheal.ts): skipped on dry runs and non-ok results, under remote submission
- * authority, while the source has an unfinished sync cursor, and when `sync.origin_twins.auto_resolve` is false;
+ * authority, while the source has an unfinished sync cursor, and when `sync.origin_twins.auto_resolve` or the umbrella
+ * `sync.autofix.enabled` is false (GBRA-133 PR 3, autofix/admission.ts; the merge itself is unchanged); each merged twin
+ * leaves a `sync-autofix` receipt naming the restorable page;
  * bounded (`ORIGIN_HEAL_MAX_FILES`, `ORIGIN_HEAL_BUDGET_MS` or the caller's deadline). Mass valve: when the planned
  * twin deletions are over half of the source's file-backed pages, nothing is merged and the repair preview is named.
  * The heal never builds the index. Nothing here runs at upgrade; a failure never fails the sync.
@@ -21,8 +23,11 @@ import { currentSubmissionAuthority } from '../minions/submission-authority.ts';
 import { readGitSourceHolds } from '../persistence/sync-holds.ts';
 import { ORIGIN_TWINS_AUTO_RESOLVE_KEY, originTwinsPreviewArgv, readOriginClaimants } from '../persistence/origin-twins.ts';
 import { syncOriginPath } from '../persistence/sync-origin.ts';
-import { groupPairs, massTwins, originGroupVerdict, originOwnerContext, resolveOriginTwin, type OriginTwinGroup } from './origin-twins.ts';
+import { groupPairs, massTwins, originGroupVerdict, originOwnerContext, resolveOriginTwin, ORIGIN_TWINS_PURGE_FUSE_HOURS, type OriginTwinGroup } from './origin-twins.ts';
 import { repairRequestId } from './core.ts';
+import { admitAutofix } from '../autofix/admission.ts';
+import { recordAutofixReceipts, type AutofixReceiptInput } from '../autofix/receipts.ts';
+import { AUTOFIX_ENABLED_KEY } from '../autofix/switches.ts';
 
 export const ORIGIN_HEAL_BUDGET_MS = 60_000;
 export const ORIGIN_HEAL_MAX_FILES = 200;
@@ -49,7 +54,7 @@ export interface OriginHealReport {
   resolved_paths: string[];
   /** One receipt per merged twin (slugs, moved counts, dropped frontmatter, restore argv), up to 20. */
   receipts: Array<Record<string, unknown>>;
-  skipped?: 'disabled' | 'remote_authority' | 'sync_unfinished' | 'not_owner_host' | 'mass_valve' | 'daily_cap';
+  skipped?: 'disabled' | 'autofix_disabled' | 'remote_authority' | 'sync_unfinished' | 'not_owner_host' | 'mass_valve' | 'daily_cap';
   notice: string;
   preview_argv: string[];
   opt_out_argv: string[];
@@ -63,6 +68,7 @@ async function unfinishedCursor(engine: BrainEngine, sourceId: string): Promise<
 
 function skipReason(skipped: NonNullable<OriginHealReport['skipped']>): string {
   if (skipped === 'disabled') return `${ORIGIN_TWINS_AUTO_RESOLVE_KEY} is false`;
+  if (skipped === 'autofix_disabled') return `automatic repairs are off (${AUTOFIX_ENABLED_KEY} false)`;
   if (skipped === 'remote_authority') return 'this sync runs under a remote job or agent';
   if (skipped === 'sync_unfinished') return 'the source still has an unfinished sync cursor';
   if (skipped === 'mass_valve') return "the twins are over half of the source's file-backed pages";
@@ -90,7 +96,8 @@ export async function healOriginTwinsAfterManagedSync(engine: BrainEngine, outer
     if (!holds.length) return result;
     const base = { resolved: 0, twins_merged: 0, pending: holds.length, failed: 0, left_by_reason: {} as Record<string, number>, resolved_paths: [] as string[], receipts: [] as Array<Record<string, unknown>> };
     const authority = currentSubmissionAuthority();
-    const skip: OriginHealReport['skipped'] = FALSE.test(String(await engine.getConfig(ORIGIN_TWINS_AUTO_RESOLVE_KEY) ?? '').trim()) ? 'disabled'
+    const admission = await admitAutofix(engine, 'origin_twin_merge', { admission: 'automatic', sourceKind: 'managed' });
+    const skip: OriginHealReport['skipped'] = !admission.admitted ? admission.disabling_key === ORIGIN_TWINS_AUTO_RESOLVE_KEY ? 'disabled' : 'autofix_disabled'
       : authority && authority.kind !== 'application' ? 'remote_authority' : await unfinishedCursor(engine, sourceId) ? 'sync_unfinished' : undefined;
     const context = skip ? null : await originOwnerContext(engine, sourceId);
     if (skip || !context?.ok) return withReport(result, sourceId, { ...base, skipped: skip ?? 'not_owner_host' });
@@ -122,6 +129,7 @@ export async function healOriginTwinsAfterManagedSync(engine: BrainEngine, outer
       remote: false, dryRun: false, sourceId } as unknown as OperationContext;
     const deadline = Math.min(now() + ORIGIN_HEAL_BUDGET_MS, outer.deadlineAtMs ?? Infinity);
     const healed: string[] = [];
+    const receipts: AutofixReceiptInput[] = [];
     for (const { path, group } of groups) {
       if (now() >= deadline || outer.signal?.aborted || budget < group.claimants.length - 1) break;
       base.pending--;
@@ -134,6 +142,8 @@ export async function healOriginTwinsAfterManagedSync(engine: BrainEngine, outer
           if (!outcome.applied) { all = false; base.left_by_reason[outcome.outcome] = (base.left_by_reason[outcome.outcome] ?? 0) + 1; break; }
           base.twins_merged++;
           if (base.receipts.length < 20 && outcome.detail) base.receipts.push(outcome.detail);
+          receipts.push({ kind: 'origin_twin_merge', admission: 'automatic', outcome: 'applied', code: 'origin_conflict', path, disabling_key: ORIGIN_TWINS_AUTO_RESOLVE_KEY,
+            restore: { slug: pair.twin.slug, until: new Date(now() + ORIGIN_TWINS_PURGE_FUSE_HOURS * 3_600_000).toISOString() } });
         } catch (error) {
           all = false; base.failed++;
           serr(`[sync] could not resolve the duplicate pages of ${path}: ${error instanceof Error ? error.message : String(error)}`);
@@ -142,6 +152,7 @@ export async function healOriginTwinsAfterManagedSync(engine: BrainEngine, outer
       }
       if (all) { healed.push(path); base.resolved++; }
     }
+    await recordAutofixReceipts(engine, sourceId, receipts).catch(error => serr(`[sync] could not record the autofix receipts of source ${sourceId}: ${error instanceof Error ? error.message : String(error)}`));
     return withReport(result, sourceId, { ...base, resolved_paths: healed.slice(0, 20) });
   } catch (error) {
     serr(`[sync] the duplicate-origin heal of source ${sourceId} did not run (${error instanceof Error ? error.message : String(error)}); gbrain repair origin-twins --source ${sourceId} resolves them.`);

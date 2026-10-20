@@ -112,12 +112,17 @@ for (const arm of pathologicalArms()) {
       expect(holdPaths(status.body)).toEqual(['notes/frontmatter.md', 'people/holder.md']);
       expect(status.body.holds_withheld).toBe(1);
       expectNoSentinel(status.text);
-      // autofix: recent and pending read empty until the admission lane lands; each switch names its key and where its value came from.
-      expect(status.body.autofix).toMatchObject({ recent: [], pending: [] });
-      expect(status.body.autofix.switches.map((s: { kind: string; enabled: boolean; source: string }) => [s.kind, s.enabled, s.source])).toEqual([
-        ['fences', true, 'default'], ['fences-normalize', true, 'default'], ['slug-conflicts', true, 'default'], ['origin-twins', true, 'default']]);
+      // autofix (src/core/autofix/state.ts, the agent projection): no receipts yet, pending repairs as counts with no path,
+      // and each kind's switches with the key that turns it off and where its value came from.
+      expect(status.body.autofix.recent).toEqual([]);
+      expect(status.body.autofix.pending.every((item: { paths?: unknown }) => item.paths === undefined)).toBe(true);
+      type Kind = { kind: string; effective: boolean; disabling_key: string | null; switches: Array<{ key: string; enabled: boolean; source: string }> };
+      const fence = (body: { autofix: { switches: Kind[] } }) => body.autofix.switches.find(item => item.kind === 'fence_repair')!;
+      expect(fence(status.body)).toMatchObject({ effective: true });
       await engine.setConfig('fences.repair.enabled', 'false');
-      expect((await call(engine, 'sync_status', {})).body.autofix.switches[0]).toEqual({ kind: 'fences', key: 'fences.repair.enabled', enabled: false, source: 'config' });
+      const off = fence((await call(engine, 'sync_status', {})).body);
+      expect(off).toMatchObject({ effective: false, disabling_key: 'fences.repair.enabled' });
+      expect(off.switches).toContainEqual({ key: 'fences.repair.enabled', enabled: false, source: 'config' });
       await engine.executeRaw("DELETE FROM config WHERE key='fences.repair.enabled'");
       // Identical field names: the CLI's sync status --json document carries exactly the MCP document's keys.
       const { runSyncStatus } = await import('../../src/commands/sync/operator.ts');

@@ -1750,6 +1750,7 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = [
   // stop are tuned by GBRAIN_SYNC_* env since #6712 PR 2 (RETIRED_SYNC_KEYS).
   'sync.holds', 'sync.slug_conflicts.auto_remove', // #6865: sync-time removal of a stray slug: line naming no page (repair/slug-autoheal.ts); default on
   'sync.origin_twins.auto_resolve', // #6948: sync-time merge of verified duplicate-origin twins (repair/origin-twins-heal.ts); default on
+  'sync.autofix.enabled', 'sync.autofix.preparation_rescreen', 'sync.autofix.worktree_dirty_rescreen', 'sync.autofix.index_lock_reclaim', // GBRA-133 PR 3: automatic-repair kill switches (autofix/switches.ts); booleans, default on
   'fences.normalize', // #6188: inline Tier 1 fence normalization (fence-repair/config.ts); default on
   'fences.repair.enabled', 'fences.repair.llm', // #6188: the fence_repair cycle phase and its Tier 3 model step (fence-repair/config.ts); default on
   'fences.repair.max_usd_per_page', 'fences.repair.max_usd_per_day', // #6188: Tier 3 fence repair caps; 0 = no model spend

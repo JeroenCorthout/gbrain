@@ -103,8 +103,8 @@ Runbook: docs/guides/sync-unblock-runbook.md
  * flag). `--preview` and `--check` are read by no sync path, so a sync that
  * would silently run past them is refused.
  */
-export function syncOperatorVerb(args: readonly string[]): 'status' | 'unblock' | null {
-  if (args[0] === 'status' || args[0] === 'unblock') return args[0];
+export function syncOperatorVerb(args: readonly string[]): 'status' | 'unblock' | 'undo' | null {
+  if (args[0] === 'status' || args[0] === 'unblock' || args[0] === 'undo') return args[0];
   if (args[0] === 'trigger') return null;
   const unread = args.find(a => a === '--preview' || a === '--check' || a.startsWith('--preview=') || a.startsWith('--check='));
   if (unread) {
@@ -118,8 +118,8 @@ export function syncOperatorVerb(args: readonly string[]): 'status' | 'unblock' 
 }
 
 /** `runSyncInner`'s operator route: `sync --status` prints one hint, then runs exactly `sync status`. */
-export async function runSyncOperator(engine: BrainEngine, verb: 'status' | 'unblock', args: string[]): Promise<void> {
-  if (args[0] === verb) return verb === 'status' ? runSyncStatus(engine, args.slice(1)) : runSyncUnblock(engine, args.slice(1));
+export async function runSyncOperator(engine: BrainEngine, verb: 'status' | 'unblock' | 'undo', args: string[]): Promise<void> {
+  if (args[0] === verb) return verb === 'status' ? runSyncStatus(engine, args.slice(1)) : verb === 'undo' ? runSyncUndo(engine, args.slice(1)) : runSyncUnblock(engine, args.slice(1));
   process.stderr.write('[gbrain] sync --status is the status read, the same as gbrain sync status (it never syncs).\n');
   return runSyncStatus(engine, args.filter(a => a !== '--status'));
 }
@@ -220,4 +220,28 @@ export async function runSyncUnblock(engine: BrainEngine, args: string[]): Promi
   for (const entry of outcome.refused) console.log(`  ${entry.path}: ${entry.code} refused (${entry.reason})${entry.needs_human ? ' NEEDS HUMAN' : ''}`);
   if (rendered.next) console.log(`  Next: ${rendered.next.command ?? rendered.next.argv?.join(' ')}\n  Why: ${rendered.next.why}`);
   else console.log('  Next: nothing held.');
+}
+
+/** GBRA-133 PR 3: `gbrain sync undo --source <id> --commit <sha> [--apply] [--json]`, the undo of an automatic file repair (autofix/undo.ts). */
+export async function runSyncUndo(engine: BrainEngine, args: string[]): Promise<void> {
+  if (args.includes('--help') || args.includes('-h')) {
+    console.log(`Usage: gbrain sync undo --source <id> --commit <sha> [--apply] [--json]
+
+Reverts one automatic repair commit that an autofix receipt of the source
+recorded: under the source's writer lock it writes the file back to the bytes
+the repair replaced and commits that one path as a new commit (no force push,
+no history rewrite). Refused when the file changed after the repair. No
+automatic repair reapplies itself to the restored bytes. Without --apply it
+previews and writes nothing.`);
+    return;
+  }
+  const sourceId = sourceOf(args);
+  const sha = args.find((a, i) => args[i - 1] === '--commit');
+  if (!sha) throw opError('invalid_params', 'sync undo needs --commit <sha>.', `The source's autofix receipts name each landed repair commit: gbrain sync status --source ${sourceId} --json.`);
+  const { undoAutofixCommit } = await import('../../core/autofix/undo.ts');
+  const outcome = await undoAutofixCommit(engine, { sourceId, sha, apply: args.includes('--apply') });
+  if (args.includes('--json')) return writeJsonDocument(JSON.stringify(outcome, null, 2));
+  console.log(outcome.status === 'reverted'
+    ? `Reverted ${outcome.commit.slice(0, 12)}: ${outcome.path} is back to the bytes the repair replaced (undo commit ${outcome.undo_commit?.slice(0, 12) ?? '-'}); the next sync screens it as it was, and no automatic repair reapplies itself to those bytes. To stop that kind entirely: ${outcome.opt_out.join(' ')}`
+    : `Would revert ${outcome.commit.slice(0, 12)}: ${outcome.path} goes back to the bytes the repair replaced. Run: gbrain sync undo --source ${sourceId} --commit ${outcome.commit} --apply`);
 }

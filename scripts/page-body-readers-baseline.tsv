@@ -426,6 +426,7 @@ src/core/persistence/prepared-maintenance.ts	verifyMaintenanceOutputs	call:seria
 src/core/persistence/purged-intent.ts	intentCarriesPurgedContent	call:contentHash	META	
 src/core/persistence/purged-intent.ts	intentCarriesPurgedContent	field	STREAM	
 src/core/persistence/reconcile-audit.ts	auditCanonicalSource	sql	META	
+src/core/persistence/reconcile-keep-bytes.ts	editBody	field	INLINE	compares the canonical file parsed as strings with the reconciled result; readReconcileState reads a segmented page whole through wholeBodySnapshot (refused over 24 MiB)
 src/core/persistence/reconcile-merge.ts	reconcileCanonical	field	INLINE	
 src/core/persistence/reconcile-prepare.ts	prepareReconcileMutation	call:serializePageToMarkdown	INLINE	
 src/core/persistence/reconcile-prepare.ts	prepareReconcileResult	call:serializePageToMarkdown	INLINE	

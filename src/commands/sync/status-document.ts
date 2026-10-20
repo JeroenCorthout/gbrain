@@ -20,7 +20,7 @@ import { readSyncStatus, type SyncStatus, type SyncStatusHold } from '../../core
 import { withMcpTwins } from '../../core/ops/mcp-twin.ts';
 import type { OperationContext } from '../../core/ops/contract.ts';
 import { opTransport, readFix } from '../../core/ops/op-fix.ts';
-import { readAutofixState, type AutofixState } from '../../core/repair/autofix-state.ts';
+import { readAutofixState, type AutofixState } from '../../core/autofix/state.ts';
 import { readSyncFile } from '../../core/persistence/sync-discovery.ts';
 import { isPrivatePage, privatePagesFilterFragment } from '../../core/search/private-visibility.ts';
 import { repairKindFlags } from '../repair.ts';
@@ -176,7 +176,7 @@ export async function buildSyncStatusDocument(engine: BrainEngine, sourceId: str
   const [freshness = null] = await readSyncFreshness(engine, { sourceIds: [sourceId] }).catch(() => []);
   const { readNotifierBlock } = await import('../../core/notifier/status.ts');
   const notifierBlock = await readNotifierBlock(engine, sourceId, viewer.transport === 'http' ? { remote: true } : {}).catch(() => null);
-  const autofix = await readAutofixState(engine, sourceId);
+  const autofix = await readAutofixState(engine, sourceId, { remote: viewer.transport !== 'cli', withhold: withheld });
   const read = (r: SyncStatus['cursors_read']) => r.status === 'read' ? r : { ...r, fix: renderFor(r.fix, viewer) };
   const holds = visible.map((hold): SyncStatusDocumentHold => {
     const actions = holdItemActions(hold, sourceId);
@@ -187,7 +187,7 @@ export async function buildSyncStatusDocument(engine: BrainEngine, sourceId: str
     checkpoint_blockers_read: read(status.checkpoint_blockers_read), cursors_read: read(status.cursors_read), terminal_failures_read: read(status.terminal_failures_read),
     capacity: { status: snapshot.status, pause_pct: snapshot.pause_pct, low: snapshot.low, paused: snapshot.paused }, freshness,
     notifier: notifierBlock && { ...notifierBlock, fix: notifierBlock.fix ? renderFor(notifierBlock.fix, viewer) : null },
-    autofix: { ...autofix, recent: autofix.recent.filter(entry => !withheld.has(entry.path)), pending: autofix.pending.filter(entry => !withheld.has(entry.path)) },
+    autofix,
     ...(notices.length ? { notices } : {}) };
   return scrub(doc, needles);
 }

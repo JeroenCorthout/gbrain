@@ -569,15 +569,23 @@ export async function holdBasisMoved(engine: Pick<BrainEngine, 'executeRaw'>, so
  * the file changes. GBRA-133: a `git_object_missing` hold rests on the repository's objects (a fetch restores them
  * under the same blob id), so it re-screens on every sync; a `page_write_failed` hold of a freeze fault (origin `freeze`,
  * S-63) is re-tested by every sync until it has been held `HOLD_ATTEMPTS_NEEDS_HUMAN` times, so a transient fault clears.
+ * GBRA-133 PR 3: the two automatic preparation clauses run only while `policy.preparation` is on (its kill switch).
  */
-export function holdRescreenDue(record: Pick<GitHoldRecord, 'code' | 'meta'>, retried: boolean): boolean {
+export interface RescreenPolicy {
+  /** `sync.autofix.preparation_rescreen` under `sync.autofix.enabled` (autofix/rescreen.ts `readRescreenPolicy`). */
+  preparation: boolean;
+}
+/** Every automatic re-screen on: the defaults, for a caller that read no switch. */
+export const RESCREEN_ALL: RescreenPolicy = { preparation: true };
+
+export function holdRescreenDue(record: Pick<GitHoldRecord, 'code' | 'meta'>, retried: boolean, policy: RescreenPolicy = RESCREEN_ALL): boolean {
   return retried || ['frontmatter_slug_conflict', 'file_too_large', 'rename_held', 'parser_regression', 'content_rejected', 'write_gate_rejected', 'purged_content', 'legacy_slug_conflict', 'origin_conflict', 'page_identity_changed', 'git_object_missing'].includes(record.code)
     // #6712: a transient hold (the write owner stalled, not the file) is retried by every sync until it has been held HOLD_ATTEMPTS_NEEDS_HUMAN times.
-    || (outOfAttemptsHold(record.code) && (record.meta.attempts ?? 1) < HOLD_ATTEMPTS_NEEDS_HUMAN)
+    || (policy.preparation && outOfAttemptsHold(record.code) && (record.meta.attempts ?? 1) < HOLD_ATTEMPTS_NEEDS_HUMAN)
     || (record.code === 'managed_image_sync_unsupported' && isMultimodalEnabled())
     || record.meta.recovery_version < RECOVERY_VERSION
     || (record.code === 'invalid_fence' && (record.meta.fence_version ?? 0) < FENCE_VERSION)
-    || (outOfAttemptsHold(record.code) && record.meta.stall?.gbrain_version !== VERSION)
+    || (policy.preparation && outOfAttemptsHold(record.code) && record.meta.stall?.gbrain_version !== VERSION)
     // GBRA-130 A-6: an owner fault is the writer's, not the file's: an upgrade re-tests the path.
     || (record.code === 'page_write_failed' && record.meta.write_failure?.gbrain_version !== VERSION)
     || (record.code === 'page_write_failed' && record.meta.write_failure?.origin === 'freeze' && (record.meta.attempts ?? 1) < HOLD_ATTEMPTS_NEEDS_HUMAN);

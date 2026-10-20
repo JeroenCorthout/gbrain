@@ -31,6 +31,7 @@ import { sourceMirrorReadOnly } from './mirror-read-only.ts';
 import { colonFileRefusal, COLON_REFUSAL_MESSAGES, readSyncFile, resolveManagedSyncContext, syncExcludePatterns, syncGitAsync, type ManagedSyncContext, type SyncFileRefusal } from './sync-discovery.ts';
 import { isWindowsColonTarget } from './native-file-target.ts';
 import { confirmedSyncDelta } from '../sync-rename-identity.ts';
+import { readRescreenPolicy } from '../autofix/rescreen.ts';
 import { holdBasisMoved, holdRescreenDue, readGitHoldRetryPaths, readGitSourceHolds, SYNC_IMPORT_PROVENANCE_OP, syncImportParser, syncImportParsers,
   type GitHoldRecord, type SyncImportParser, type SyncImportProvenance } from './sync-holds.ts';
 import { movedDriftHolds, sameParser } from './sync-prescreen.ts';
@@ -664,7 +665,7 @@ export async function readShadowLevel(engine: BrainEngine, input: { sourceId: st
   const inLevel = (path: string) => tree.has(path) || eligible(path);
   const untracked = new Set(untrackedPaths);
   const { open, markers, passRow, statements, confirm } = snapshot;
-  const { holds, retry } = held;
+  const { holds, retry, policy: rescreenPolicy } = held;
   const toGit = (holdPath: string) => (scope ? `${scope}/${holdPath}` : holdPath);
   const holdByGitPath = new Map<string, GitHoldRecord>(holds.map(hold => [toGit(hold.path), hold]));
   const moved = new Set(held.moved.map(toGit));
@@ -750,7 +751,7 @@ export async function readShadowLevel(engine: BrainEngine, input: { sourceId: st
       record: record ? { blobOids: recordBlobOids, revision: recordRevision != null ? String(recordRevision) : null, parserSame: sameParser(pages.parserOf(at!), fp(path)) } : null,
       attested, levelSha256: probe?.rawSha256 ?? null,
       published: !!attested?.hash && probe?.rawSha256 === attested.hash,
-      hold: hold ? { atLevel: holdAtLevel(hold, level, probe?.rawSha256 ?? null) && !moved.has(path), rescreenDue: holdRescreenDue(hold, retry.has(hold.path)), retried: retry.has(hold.path) } : null,
+      hold: hold ? { atLevel: holdAtLevel(hold, level, probe?.rawSha256 ?? null) && !moved.has(path), rescreenDue: holdRescreenDue(hold, retry.has(hold.path), rescreenPolicy), retried: retry.has(hold.path) } : null,
       marker: marker ?? virtualMarker, baseline: needsBaseline ? baselineOf(path) : null,
       spelling: legacySpelling.has(path) ? 'legacy' : twins.has(path),
       episodeUnsatisfied: input.pass ? !!input.pass.episodeFullId && live && (record ? pages.fullEpisode[at!] : undefined) !== input.pass.episodeFullId
@@ -851,7 +852,7 @@ export async function readShadowLevel(engine: BrainEngine, input: { sourceId: st
 
   const kind = syncPassKind({ converged: null, head, parserFp: '', pack: pack?.identity ?? null, selectionFp: '', now: Date.now(), openEpisode: input.full === true, owedTail: false,
     retryRow: retry.size > 0, notConvergedStreak: 0, mismatchStreak: 0, requestNewer: false, openAtStampFinished: false, workingChange: false,
-    rescreenDueHold: holds.some(hold => holdRescreenDue(hold, retry.has(hold.path))), full: input.full === true });
+    rescreenDueHold: holds.some(hold => holdRescreenDue(hold, retry.has(hold.path), rescreenPolicy)), full: input.full === true });
   timings.total = total();
   if (cache && mode === 'committed') {
     cache.classified = { key: classifiedKey, treeKey, paths };
@@ -863,7 +864,7 @@ export async function readShadowLevel(engine: BrainEngine, input: { sourceId: st
     paths, reconcilable, ...(colon.refusals.size ? { fileRefusals: [...colon.refusals.values()] } : {}), timings_ms: timings, statements: statements + attestationStatements + 3,
     ...(confirm ? { confirm: narrow ? { ...confirm, narrow: narrow === 'taken' && !reuse ? 'classified' : narrow } : confirm } : {}), ...(reuse ? { reused } : {}), pack: pack?.identity ?? null,
     selection: { exclude: [...exclude].sort(), includeHidden: [...includeHidden].sort(), strategy, srcSubpath: scope || null, mode },
-    rescreenDue: holds.filter(hold => holdRescreenDue(hold, retry.has(hold.path))).map(hold => toGit(hold.path)), workingCache: hashed?.cache ?? null };
+    rescreenDue: holds.filter(hold => holdRescreenDue(hold, retry.has(hold.path), rescreenPolicy)).map(hold => toGit(hold.path)), workingCache: hashed?.cache ?? null };
 }
 
 /** The level's settings, one round trip each and all in flight together; null for a company-brain source. */
@@ -1010,7 +1011,7 @@ async function readLevelHolds(engine: BrainEngine, sourceId: string, incarnation
   const holds = (sourceHolds[0]?.holds ?? []).filter(hold => hold.incarnation === incarnation);
   const holdByPath = new Map(holds.map(hold => [hold.path, hold]));
   const [basisMoved, driftMoved] = await Promise.all([holdBasisMoved(engine, sourceId, holdByPath, [...holdByPath.keys()]), movedDriftHolds(engine, sourceId, holds)]);
-  return { holds, retry: new Set(retryPaths.filter(path => !retryConsumed?.has(path))), moved: [...basisMoved, ...driftMoved] };
+  return { holds, retry: new Set(retryPaths.filter(path => !retryConsumed?.has(path))), moved: [...basisMoved, ...driftMoved], policy: await readRescreenPolicy(engine) };
 }
 
 /**

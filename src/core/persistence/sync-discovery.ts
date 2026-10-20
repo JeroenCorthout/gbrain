@@ -28,6 +28,7 @@ import { assertDistinctSyncOrigins, legacySyncOrigin, sameSyncOrigin, selectOrig
 import { assertManagedSyncActive } from './sync-authority.ts';
 import { decideOriginTwins, readOriginClaimants, slugPathOccupied, type OriginConflict } from './origin-twins.ts';
 import { isReservedSkillBundlePath } from '../skill-reserved-paths.ts';
+import { readRescreenPolicy } from '../autofix/rescreen.ts';
 import { holdBasisMoved, holdRescreenDue, readGitHoldRetryPaths, readGitSourceHolds, readSyncImportProvenances } from './sync-holds.ts';
 import { readBlobContents, readTreeBlobs, SYNC_READ_BOUND } from './sync-blobs.ts';
 import { gitChildEnv } from '../git-env.ts';
@@ -352,6 +353,7 @@ export async function discoverManagedSync(engine: BrainEngine, opts: SyncOpts, c
   // #5988: active holds are re-screened when their file changed, left, or a newer reader may import it.
   const holds = company ? [] : (await readGitSourceHolds(engine, { sourceIds: [sourceId] }))[0]?.holds.filter(hold => hold.incarnation === incarnation) ?? [];
   const retry = new Set(company ? [] : await readGitHoldRetryPaths(engine, sourceId, incarnation));
+  const rescreenPolicy = await readRescreenPolicy(engine);
   const toGitPath = (path: string) => scope ? `${scope}/${path}` : path;
   const holdByPath = new Map(holds.map(hold => [hold.path, hold]));
   const holdRenameOrigins = new Set(holds.flatMap(hold => hold.meta.rename_from ? [syncOriginPath(hold.meta.rename_from.sourcePath)] : []));
@@ -438,7 +440,7 @@ export async function discoverManagedSync(engine: BrainEngine, opts: SyncOpts, c
     for (const path of checked) {
       const hold = holdByPath.get(path), gitPath = toGitPath(path), blob = blobs.get(gitPath);
       const workingHold = working && (hold?.meta.working === true || !blob);
-      let changed = !hold || holdRescreenDue(hold, retry.has(path)) || moved.has(path) || movedDrift.has(path);
+      let changed = !hold || holdRescreenDue(hold, retry.has(path), rescreenPolicy) || moved.has(path) || movedDrift.has(path);
       let present = !!blob;
       if (workingHold) {
         let bytes: Buffer | null = null;

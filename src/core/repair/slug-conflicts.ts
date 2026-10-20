@@ -651,11 +651,13 @@ async function write(ctx: OperationContext, src: FenceSource, cand: Candidate, a
     if (publication.status === 'overlay') return held('canonical_overlay', `Importing ${what} would keep page data the file does not carry (tags added outside the file, a withdrawal or sanitized text), so nothing was written. `
       + `Edit the file by hand to carry them (gbrain get --source ${src.id} -- ${cand.slug} shows the page), remove the slug: line, and commit.`, { action: 'remove_slug', reason: 'canonical_overlay', next_attempt_after: null }, spend);
     try {
-      const outcome = await submitManagedFileRepair(local, { sourceId: src.id, requestId: await repairRequestId(local, 'slug-conflicts', { source_id: src.id, slug: cand.slug }, `${receipt.before_sha256}:${receipt.after_sha256}${observedAt ? `:${observedAt}` : ''}`),
+      const requestId = await repairRequestId(local, 'slug-conflicts', { source_id: src.id, slug: cand.slug }, `${receipt.before_sha256}:${receipt.after_sha256}${observedAt ? `:${observedAt}` : ''}`);
+      const outcome = await submitManagedFileRepair(local, { sourceId: src.id, requestId,
         slug: cand.slug, path: cand.path, sourcePath: cand.sourcePath, content: after, beforeHash: cand.before, resultDigest: publication.digest,
         ...(cand.snapshot ? { expected_revision: cand.snapshot.revision } : {}), noEmbed: !opts.embed, contentRepair: receipt, ...(observedAt ? { holdObservedAt: observedAt } : {}) });
       const persistence = outcome.persistence as { git_state?: string } | undefined;
-      return { applied: true, outcome: 'repaired', detail: { ...detail, mode: 'managed', imported: outcome.status, hold_cleared: await kept(outcome.hold_cleared === true), committed: persistence?.git_state ?? 'not_requested' }, ...spend };
+      return { applied: true, outcome: 'repaired', detail: { ...detail, mode: 'managed', imported: outcome.status, hold_cleared: await kept(outcome.hold_cleared === true), committed: persistence?.git_state ?? 'not_requested',
+        request_id: requestId, before_sha256: receipt.before_sha256, after_sha256: receipt.after_sha256 }, ...spend };
     } catch (error) {
       if (error instanceof OperationError && ['changed_since_preview', 'revision_conflict', 'page_identity_changed', 'source_changed'].includes(error.code)) {
         await kept(false);

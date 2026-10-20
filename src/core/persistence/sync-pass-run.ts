@@ -41,6 +41,7 @@ import { PASS_BATCH_KEY_PREFIX, readConvergedWatermark, SyncAdmissionPaused, typ
 import { assertDrainLease, currentDrainLease } from './sync-lease.ts';
 import { digest } from './digest.ts';
 import { readSyncTail } from './sync-tail-record.ts';
+import { readRescreenPolicy } from '../autofix/rescreen.ts';
 import { clearGitHold, holdRescreenDue, readGitHoldRetryPaths, readSyncHoldPolicy, readGitSourceHolds, readSyncImportProvenances, syncImportParserFor } from './sync-holds.ts';
 import { loadActivePackForEngine } from '../schema-pack/engine-resolution.ts';
 import { loadConfig } from '../config.ts';
@@ -393,12 +394,13 @@ async function pinPass(engine: BrainEngine, input: SyncPassInput, lease: NonNull
   // A configured stamp writes last_commit = converged.target: a source whose last_commit moved since (a topology re-clone
   // clears it, as an upgrade's catch-up does) has no converged state to be idle against.
   const stamped = converged && (!configured || context.source.last_commit === converged.target) ? converged : null;
+  const rescreenPolicy = await readRescreenPolicy(engine);
   const kindOf = syncPassKind({ converged: stamped ? { target: stamped.target, parserFp: stamped.parser_fp, pack: stamped.pack, selectionFp: stamped.selection_fp,
       passesSinceFull: stamped.passes_since_full, lastFullAt: Date.parse(stamped.last_full_at) } : null,
     head, parserFp, pack, selectionFp, now: started, openEpisode: !!episode, owedTail: tail !== null, retryRow: retry.length > 0,
     notConvergedStreak: obligations.not_converged_streak, mismatchStreak: Object.keys(obligations.mismatch).length,
     requestNewer: probe?.newer === true, openAtStampFinished: !!converged && (converged.open_at_stamp === null || (probe?.stillOpen ?? 0) < converged.open_at_stamp.length),
-    writebackOpen: probe?.writebackOpen === true, workingChange: working.changed, rescreenDueHold: holds.some(hold => holdRescreenDue(hold, retry.includes(hold.path))), full: opts.full === true });
+    writebackOpen: probe?.writebackOpen === true, workingChange: working.changed, rescreenDueHold: holds.some(hold => holdRescreenDue(hold, retry.includes(hold.path), rescreenPolicy)), full: opts.full === true });
   // Design §2.6: a withheld mass delete is applied by a full round once the owner host's env valve allows it.
   const valveOpen = !remote && !!obligations.deletes_withheld && massReconcileAllowed();
   // Design §4: keep_db writes the previous pass deferred (`keep_db_pending`: its cap, or write capacity) are owed to this pass, so it is

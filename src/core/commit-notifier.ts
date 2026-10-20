@@ -72,6 +72,9 @@ export interface NotifierStore {
   holdsLease(hostId: string, ownerId: string, fence: number): Promise<boolean>;
   releaseLease(hostId: string, ownerId: string): Promise<void>;
   dueMarkers(sourceIds: string[]): Promise<WantedMarker[]>;
+  /** GBRA-133 PR 3: of these sources, the ones with unconsumed `sync-hold-retry` paths for their current incarnation (a re-screen
+   *  `sources retry-held`, `sync unblock` or a post-sync heal scheduled). Optional: a store without it never resumes on them. */
+  holdRetries?(sourceIds: string[]): Promise<Set<string>>;
   /** Of these minion job ids, the ones still waiting or running (their worker drains the marker). */
   liveJobs(jobIds: number[]): Promise<Set<number>>;
   forward(sourceId: string, head: string): Promise<void>;
@@ -153,9 +156,11 @@ interface Rt extends NotifierSource {
   blockedKey: string | null;
   markers: WantedMarker[];
   started: boolean;
+  /** Unconsumed `sync-hold-retry` paths wait for this source's next sync (store.holdRetries). */
+  retryPaths: boolean;
 }
 
-interface RunningJob { id: string; sourceId: string; head: string | null; lastCommit: string | null; intent: MarkerIntent; markers: WantedMarker[] }
+interface RunningJob { id: string; sourceId: string; head: string | null; lastCommit: string | null; intent: MarkerIntent; markers: WantedMarker[]; retryPaths: boolean }
 
 const truthy = (value: string | null | undefined) => typeof value === 'string' && /^(1|true|on|yes)$/i.test(value.trim());
 const falsy = (value: string | null | undefined) => typeof value === 'string' && /^(0|false|off|no)$/i.test(value.trim());
@@ -222,13 +227,43 @@ function notifierKit(opts: CommitNotifierOptions) {
     decisions.push({ at: now(), source, decision, ...extra });
     if (decisions.length > DECISIONS_CAP) decisions.splice(0, decisions.length - DECISIONS_CAP);
   };
-  return { pollMs, quietMs, heartbeatMs, leaseMs, cap, now, pid, ownerId, forcePoll, setTimer, clearTimer, log, logOnce, guard, decisions, decide };
+  /** One read per poll: which sources have unconsumed re-screen requests; a source that gains one is recorded as `hold_retry_due`. */
+  const readHoldRetries = async (list: Rt[]) => {
+    if (!opts.store.holdRetries || !list.length) return;
+    const found = await guard('reading scheduled re-screens', () => opts.store.holdRetries!(list.map(rt => rt.sourceId)), null);
+    if (!found) return;
+    for (const rt of list) {
+      const has = found.has(rt.sourceId);
+      if (has && !rt.retryPaths) decide(rt.sourceId, 'hold_retry_due', { detail: 'sync-hold-retry paths' });
+      rt.retryPaths = has;
+    }
+  };
+  /** Reads every source's due wanted markers; a marker whose queued sync job is still waiting or running is left to that job. */
+  const scanMarkers = async (sources: Map<string, Rt>) => {
+    const ids = [...sources.keys()];
+    const markers = ids.length ? await guard('reading wanted markers', () => opts.store.dueMarkers(ids), null) : [];
+    if (markers) {
+      const jobIds = markers.flatMap(m => m.job_id === null ? [] : [m.job_id]);
+      const live = jobIds.length ? await guard('reading queued sync jobs', () => opts.store.liveJobs(jobIds), new Set<number>()) : new Set<number>();
+      // A managed source never pulls: its pull markers (a push webhook) wait for gbrain sources refresh, not for this loop.
+      for (const rt of sources.values()) rt.markers = markers.filter(m => m.source_id === rt.sourceId && (m.job_id === null || !live.has(m.job_id))
+        && !(m.intent === 'pull' && rt.kind === 'managed'));
+    }
+  };
+  return { pollMs, quietMs, heartbeatMs, leaseMs, cap, now, pid, ownerId, forcePoll, setTimer, clearTimer, log, logOnce, guard, decisions, decide, readHoldRetries, scanMarkers };
 }
 
 const closeWatch = (rt: Rt) => { if (rt.watchClose) { try { rt.watchClose(); } catch { /* best effort */ } rt.watchClose = null; } };
 const mode = (rt: Rt): DetectionMode => rt.watchClose ? 'watch' : 'poll';
-const markerKey = (rt: Rt) => `${rt.head ?? ''}|${rt.markers.map(m => `${m.intent}:${m.generation}`).join(',')}`;
-const due = (rt: Rt) => (rt.watched && !!rt.head && rt.head !== rt.lastCommit) || rt.markers.length > 0;
+const markerKey = (rt: Rt) => `${rt.head ?? ''}|${rt.markers.map(m => `${m.intent}:${m.generation}`).join(',')}|${rt.retryPaths ? 'r' : ''}`;
+const due = (rt: Rt) => (rt.watched && !!rt.head && rt.head !== rt.lastCommit) || rt.markers.length > 0 || rt.retryPaths;
+
+/** A re-screen request the finished run did not take: retried on the failure backoff, never in a tight loop. */
+const retryUnconsumed = (job: RunningJob, rt: Rt, progressed: boolean, lastCommit: string | null) =>
+  job.retryPaths && rt.retryPaths && !progressed && !rt.markers.length && !(rt.watched && rt.head && rt.head !== lastCommit);
+const startReason = (rt: Rt, intent: MarkerIntent) => intent !== 'freshness' ? `a ${intent} request is pending`
+  : rt.head && rt.head !== rt.lastCommit ? `HEAD moved to ${short(rt.head)} (last synced ${short(rt.lastCommit)})`
+  : rt.retryPaths ? 'held files wait for a scheduled re-screen' : 'a freshness request is pending';
 
 /** Merges a fresh source listing into the runtime map (a moved root starts over); returns the sources new to it. */
 function mergeListed(sources: Map<string, Rt>, rows: NotifierSource[]): Rt[] {
@@ -240,7 +275,7 @@ function mergeListed(sources: Map<string, Rt>, rows: NotifierSource[]): Rt[] {
     if (prior && prior.root === s.root) { prior.gitDir = s.gitDir; prior.commonDir = s.commonDir ?? null; prior.lastCommit = s.lastCommit; prior.kind = s.kind; continue; }
     if (prior) closeWatch(prior);
     const rt: Rt = { ...s, head: null, watched: false, watchClose: null, coverageKey: null, lastStartAt: -Infinity, forwarded: null,
-      state: 'idle', attempts: 0, nextRetryAt: 0, blockedKey: null, markers: [], started: false };
+      state: 'idle', attempts: 0, nextRetryAt: 0, blockedKey: null, markers: [], started: false, retryPaths: false };
     sources.set(s.sourceId, rt);
     fresh.push(rt);
   }
@@ -286,7 +321,7 @@ function snapshotSource(rt: Rt, now: number): NotifierSourceSnapshot {
 }
 
 export function startCommitNotifier(opts: CommitNotifierOptions): CommitNotifier {
-  const { pollMs, quietMs, heartbeatMs, leaseMs, cap, now, pid, ownerId, forcePoll, setTimer, clearTimer, log, logOnce, guard, decisions, decide } = notifierKit(opts);
+  const { pollMs, quietMs, heartbeatMs, leaseMs, cap, now, pid, ownerId, forcePoll, setTimer, clearTimer, log, logOnce, guard, decisions, decide, readHoldRetries, scanMarkers } = notifierKit(opts);
 
   let enabled = false;
   let excluded = new Set<string>();
@@ -426,6 +461,8 @@ export function startCommitNotifier(opts: CommitNotifierOptions): CommitNotifier
     }
     rt.markers = await guard(`settling the wanted markers of ${rt.sourceId}`,
       () => opts.store.settleMarkers(rt.sourceId, job.markers, { pulled: job.intent === 'pull', full: job.intent === 'full' }), rt.markers);
+    await readHoldRetries([rt]);
+    if (retryUnconsumed(job, rt, progressed, lastCommit)) return failure(rt, 'hold_retry_unconsumed', 'the sync left the scheduled re-screen of held files unconsumed', false);
     if (!due(rt)) {
       await transition(rt, { state: 'idle', reason: null, firstDue: 'clear', attempts: 0, progress: progressed, error: null });
       decide(rt.sourceId, 'converged', { detail: short(lastCommit) });
@@ -478,10 +515,10 @@ export function startCommitNotifier(opts: CommitNotifierOptions): CommitNotifier
       catch (error) { start = null; await failure(rt, 'start_failed', error instanceof Error ? error.message : String(error), false); continue; }
       if ('busy' in start) { decide(rt.sourceId, 'defer_busy'); rt.lastStartAt = -Infinity; return; }
       if ('refused' in start) { await failure(rt, 'start_refused', start.refused, false); continue; }
-      running.set(rt.sourceId, { id: start.jobId, sourceId: rt.sourceId, head: rt.head, lastCommit: rt.lastCommit, intent, markers });
+      running.set(rt.sourceId, { id: start.jobId, sourceId: rt.sourceId, head: rt.head, lastCommit: rt.lastCommit, intent, markers, retryPaths: rt.retryPaths });
       await transition(rt, { state: 'running', firstDue: 'keep' });
       decide(rt.sourceId, 'start', { detail: `${intent}${slice ? ` slice ${slice}s` : ''}` });
-      log(`${rt.sourceId}: ${intent === 'freshness' ? `HEAD moved to ${short(rt.head)} (last synced ${short(rt.lastCommit)})` : `a ${intent} request is pending`}; started ${rt.kind === 'classic' ? 'classic' : 'managed'} sync job ${start.jobId}`);
+      log(`${rt.sourceId}: ${startReason(rt, intent)}; started ${rt.kind === 'classic' ? 'classic' : 'managed'} sync job ${start.jobId}`);
     }
   };
 
@@ -528,18 +565,11 @@ export function startCommitNotifier(opts: CommitNotifierOptions): CommitNotifier
       if (stopped) return;
       if (rt.watched) await observe(rt, heads);
     }
+    await readHoldRetries([...sources.values()].filter(rt => !running.has(rt.sourceId)));
     if (wasNudged || firstPass || t - markersAt >= MARKER_SCAN_MS) {
       markersAt = t;
       firstPass = false;
-      const ids = [...sources.keys()];
-      const markers = ids.length ? await guard('reading wanted markers', () => opts.store.dueMarkers(ids), null) : [];
-      if (markers) {
-        const jobIds = markers.flatMap(m => m.job_id === null ? [] : [m.job_id]);
-        const live = jobIds.length ? await guard('reading queued sync jobs', () => opts.store.liveJobs(jobIds), new Set<number>()) : new Set<number>();
-        // A managed source never pulls: its pull markers (a push webhook) wait for gbrain sources refresh, not for this loop.
-        for (const rt of sources.values()) rt.markers = markers.filter(m => m.source_id === rt.sourceId && (m.job_id === null || !live.has(m.job_id))
-          && !(m.intent === 'pull' && rt.kind === 'managed'));
-      }
+      await scanMarkers(sources);
     }
     for (const job of [...running.values()]) {
       const st = opts.jobStatus(job.id);
