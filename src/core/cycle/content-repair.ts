@@ -24,7 +24,9 @@ import type { Action } from '../agent-output.ts';
 import { resolveRepairScope, type RepairKind, type RepairResult } from '../repair/core.ts';
 import type { RepairKindSpec } from '../repair/registry.ts';
 import { CONTENT_REPAIR_KINDS, contentLaneArgv, runContentLane, type ContentLaneResult } from '../repair/content-lane.ts';
-import { FENCE_REPAIR_ENABLED_KEY, fenceRepairEnabled } from '../fence-repair/config.ts';
+import { FENCE_REPAIR_ENABLED_KEY } from '../fence-repair/config.ts';
+import { admitAutofix } from '../autofix/admission.ts';
+import { recordRepairRunReceipts } from '../autofix/receipts.ts';
 import { isUncontainedPhaseError } from './phase-containment.ts';
 
 /** The longest one phase run spends on the lane; inside a maintenance job it is also at most a third of the job's remaining time. */
@@ -66,10 +68,12 @@ export async function runContentRepairPhase(engine: BrainEngine | null, opts: Co
     return { ...base, status: 'skipped', details: { reason: 'no_kinds', kinds },
       summary: 'no content-repair kind beyond fence_repair is registered in this release, so the phase ran nothing; fence holds were handled by fence_repair.' };
   }
-  if (!(await fenceRepairEnabled(engine))) {
-    return { ...base, status: 'skipped', details: { reason: 'disabled', kinds },
-      summary: `content repair is paused (${FENCE_REPAIR_ENABLED_KEY} false), so nothing was repaired. Turn it back on with `
-        + `\`gbrain config set ${FENCE_REPAIR_ENABLED_KEY} true\`, or preview and apply by hand with \`${preview}\`.` };
+  const admission = await admitAutofix(engine, 'content_repair', { admission: 'automatic' });
+  if (!admission.admitted) {
+    const key = admission.disabling_key ?? FENCE_REPAIR_ENABLED_KEY;
+    return { ...base, status: 'skipped', details: { reason: key === FENCE_REPAIR_ENABLED_KEY ? 'disabled' : 'autofix_disabled', disabling_key: key, kinds },
+      summary: `${key === FENCE_REPAIR_ENABLED_KEY ? 'content repair is paused' : 'automatic repairs are off'} (${key} false), so nothing was repaired. Turn it back on with `
+        + `\`gbrain config set ${key} true\`, or preview and apply by hand with \`${preview}\`.` };
   }
   const now = opts.now ?? Date.now;
   const start = now();
@@ -92,6 +96,12 @@ export async function runContentRepairPhase(engine: BrainEngine | null, opts: Co
         + 'to see the plan and the error; ask the user if it keeps failing.' };
   }
 
+  if (lane.mode === 'apply') {
+    for (const result of lane.results) {
+      await recordRepairRunReceipts(engine, result.kind === 'fences' ? 'fence_repair' : 'content_repair', result.outcome_items)
+        .catch(error => console.warn(`[content_repair] could not record the autofix receipts: ${error instanceof Error ? error.message : String(error)}`));
+    }
+  }
   const byKind = Object.fromEntries(lane.results.map(result => {
     const held = heldByReason(result);
     const v = result.verification as { oldest_hold_at?: string | null } | undefined;

@@ -25,12 +25,13 @@ import { readSourceFileSync } from '../../core/minions/source-filesystem.ts';
 import { maintenanceBeliefTransaction } from '../../core/belief/writers.ts';
 import type { SyncRename } from '../../core/persistence/sync-discovery.ts';
 import {
-  addRecovered, buildHoldReport, clearGitHold, clearGitHoldRetryPaths, gitHoldItem, holdRescreenDue, readGitHoldRetryPaths, readGitSourceHolds,
+  addRecovered, buildHoldReport, clearGitHold, clearGitHoldRetryPaths, gitHoldItem, holdRescreenDue, readGitHoldRetryPaths, readGitSourceHolds, type RescreenPolicy,
   readSyncHoldPolicy, recoveredReport, writeGitHold, type GitHoldCode, type GitHoldItem, type GitHoldRecord, type GitHoldReason, type SyncHoldPolicy,
 } from '../../core/persistence/sync-holds.ts';
 import { DEFAULT_SOURCE_ID, hasMalformedPathSegment, isCodeFilePath, resolveSlugForPath, sanitizePathForDisplay, slugifyPath } from '../../core/sync.ts';
 import type { SyncActivePack } from './sync-run.ts';
 import { isPathContained } from '../../core/path-confine.ts';
+import { readRescreenPolicy } from '../../core/autofix/rescreen.ts';
 import { bytePathHoldGone } from '../../core/sync-byte-paths.ts';
 import { bindOrigin } from '../../core/persistence/origin-guard.ts';
 import { CLASSIC_FILE_HOLD_CODES, classifyClassicFile, type ClassicFileHold } from '../../core/classic-file-holds.ts';
@@ -54,6 +55,8 @@ export interface LegacyHolds {
   /** Holds outstanding when the run started, by path. */
   readonly existing: ReadonlyMap<string, GitHoldRecord>;
   readonly retryPaths: ReadonlySet<string>;
+  /** GBRA-133 PR 3: which automatic re-screens are on (autofix/rescreen.ts). */
+  readonly rescreenPolicy: RescreenPolicy;
   /** Held paths this run re-screens though Git did not touch them. */
   readonly rescreen: string[];
   /** Held paths whose file is gone or no longer synced: cleared when the run settles. */
@@ -79,9 +82,10 @@ export async function openLegacyHolds(engine: BrainEngine, sourceId: string | un
   const policy = await readSyncHoldPolicy(engine);
   const listed = await readGitSourceHolds(engine, { sourceIds: [id] });
   const retry = await readGitHoldRetryPaths(engine, id, row.incarnation);
+  const rescreenPolicy = await readRescreenPolicy(engine);
   return {
     sourceId: id, incarnation: row.incarnation, runId: `legacy-${randomUUID()}`, observedAt: new Date().toISOString(), policy,
-    active: policy.mode === 'hold', existing: new Map((listed[0]?.holds ?? []).map(record => [record.path, record])), retryPaths: new Set(retry),
+    active: policy.mode === 'hold', existing: new Map((listed[0]?.holds ?? []).map(record => [record.path, record])), retryPaths: new Set(retry), rescreenPolicy,
     rescreen: [], gone: [], retryTaken: [], heldPaths: [], recoveredPaths: [], counts: { screened: 0, commentValues: 0 }, fences: importFenceTally(id),
   };
 }
@@ -146,7 +150,7 @@ export function planHoldRescreen(holds: LegacyHolds, input: { root: string; gitR
       continue;
     }
     if (!holds.active) continue;
-    const due = holdRescreenDue(record, holds.retryPaths.has(path)) || currentVersion(filePath) !== record.upstream_version;
+    const due = holdRescreenDue(record, holds.retryPaths.has(path), holds.rescreenPolicy) || currentVersion(filePath) !== record.upstream_version;
     if (!due) continue;
     holds.rescreen.push(path);
     if (holds.retryPaths.has(path)) holds.retryTaken.push(path);

@@ -244,14 +244,14 @@ export async function writeFenceRepair(ctx: OperationContext, src: FenceSource, 
     if (publication.status === 'overlay') return { ok: false, reason: 'canonical_overlay',
       message: `Importing the repaired ${target.path} would keep page data the file does not carry (tags added outside the file, a withdrawal or sanitized text), so nothing was written. Edit the fence in the file by hand.` };
     try {
-      const outcome = await submitManagedFileRepair(local, { sourceId: src.id,
-        requestId: await repairRequestId(local, 'fences', { source_id: src.id, slug: target.slug }, `${receipt.before_sha256}:${receipt.after_sha256}`),
+      const requestId = await repairRequestId(local, 'fences', { source_id: src.id, slug: target.slug }, `${receipt.before_sha256}:${receipt.after_sha256}`);
+      const outcome = await submitManagedFileRepair(local, { sourceId: src.id, requestId,
         slug: target.slug, path: target.path!, sourcePath: target.sourcePath!, content: fileContent!, beforeHash: target.before, resultDigest: publication.digest,
         ...(target.snapshot && !target.snapshot.page.deleted_at ? { expected_revision: target.snapshot.revision } : {}), noEmbed: !opts.embed, fenceRepair: receipt });
       await clearCensus();
       const persistence = outcome.persistence as { git_state?: string } | undefined;
       return { ok: true, after_sha256: receipt.after_sha256, detail: { mode: 'managed', path: target.path, imported: outcome.status, hold_cleared: outcome.hold_cleared === true,
-        committed: persistence?.git_state ?? 'not_requested' } };
+        committed: persistence?.git_state ?? 'not_requested', request_id: requestId, before_sha256: receipt.before_sha256, after_sha256: receipt.after_sha256 } };
     } catch (error) {
       if (error instanceof OperationError && ['changed_since_preview', 'revision_conflict', 'page_identity_changed', 'source_changed'].includes(error.code)) {
         return { ok: false, reason: 'changed_since_read', message: `${target.path} changed while it was being repaired; the next run reads it again.` };

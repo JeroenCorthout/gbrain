@@ -7,8 +7,9 @@
  * never file content, a frontmatter value or a command line. The commit is found after the fact
  * (`settleAutofixCommits`): a commit on the path whose bytes hash to the receipt's postimage, whose parent's bytes hash
  * to its preimage, and which touches that path alone. The undo is rendered when the receipt is read
- * (`renderAutofixUndo`), from that validated sha, as `gbrain git commit-push --revert <sha>`; a receipt with no
- * landed commit says plainly that no Git undo exists (yet).
+ * (`renderAutofixUndo`), from that validated sha, as `gbrain sync undo --source <id> --commit <sha>` (autofix/undo.ts: the
+ * inverse write through the source's persistence owner, whose Git effect lands a new commit under the writer lock; a
+ * managed worktree refuses `gbrain git commit-push`); a receipt with no landed commit says plainly that no Git undo exists (yet).
  */
 import { randomUUID } from 'node:crypto';
 import type { BrainEngine } from '../engine.ts';
@@ -95,6 +96,28 @@ export async function recordAutofixReceipts(engine: Exec, sourceId: string, rece
   return full;
 }
 
+/**
+ * Records one receipt per managed file rewrite a maintenance repair run applied (the run's sampled outcome items: the
+ * path, the preimage and postimage hashes and the write's request id; the commit is pending until the Git effect lands it).
+ */
+export async function recordRepairRunReceipts(engine: Exec, kind: AutofixKind, items: ReadonlyArray<{ item: string; outcome: string; detail?: Record<string, unknown> }> | undefined): Promise<number> {
+  const bySource = new Map<string, AutofixReceiptInput[]>();
+  const disabling = admissionRow(kind).switches[0] ?? 'sync.autofix.enabled';
+  for (const { item, outcome, detail } of items ?? []) {
+    if (outcome !== 'repaired' || detail?.mode !== 'managed' || typeof detail.slug !== 'string' || !item.endsWith(`:${detail.slug}`)) continue;
+    const sourceId = item.slice(0, item.length - detail.slug.length - 1);
+    const list = bySource.get(sourceId) ?? [];
+    list.push({ kind, admission: 'automatic', outcome: 'applied', code: admissionRow(kind).codes[0] ?? null, path: typeof detail.path === 'string' ? detail.path : null, disabling_key: disabling,
+      preimage: typeof detail.before_sha256 === 'string' ? { sha256: detail.before_sha256, blob_oid: null } : null,
+      postimage_sha256: typeof detail.after_sha256 === 'string' ? detail.after_sha256 : null, request_id: typeof detail.request_id === 'string' ? detail.request_id : null,
+      commit: { state: 'pending', sha: null } });
+    bySource.set(sourceId, list);
+  }
+  let recorded = 0;
+  for (const [sourceId, receipts] of bySource) recorded += (await recordAutofixReceipts(engine, sourceId, receipts)).length;
+  return recorded;
+}
+
 /** The current incarnation's receipts of a source, newest first. */
 export async function readAutofixReceipts(engine: Exec, sourceId: string, limit = AUTOFIX_RECEIPTS_KEPT): Promise<AutofixReceipt[]> {
   const [row] = await engine.executeRaw<{ receipts: unknown }>(`SELECT c.completed_keys->0->'receipts' AS receipts
@@ -107,7 +130,7 @@ const git = (root: string, args: string[]): string => execFileSync('git', ['-C',
   { env: gitChildEnv({ GIT_OPTIONAL_LOCKS: '0', LC_ALL: 'C' }), stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 64 * 1024 * 1024 }).toString();
 
 function blobHash(root: string, rev: string, path: string): string | null {
-  try { return sha256(execFileSync('git', ['-C', root, 'cat-file', 'blob', `${rev}:${path}`], { env: gitChildEnv({ GIT_OPTIONAL_LOCKS: '0' }), stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 64 * 1024 * 1024 })); }
+  try { return sha256(execFileSync('git', ['-C', root, 'cat-file', 'blob', `${rev}:./${path}`], { env: gitChildEnv({ GIT_OPTIONAL_LOCKS: '0' }), stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 64 * 1024 * 1024 })); }
   catch { return null; }
 }
 
@@ -119,7 +142,7 @@ export function findRepairCommit(root: string, receipt: Pick<AutofixReceipt, 'pa
   for (const sha of shas) {
     if (blobHash(root, sha, receipt.path) !== receipt.postimage_sha256 || blobHash(root, `${sha}^`, receipt.path) !== receipt.preimage.sha256) continue;
     try {
-      const touched = git(root, ['diff-tree', '--no-commit-id', '--name-only', '-r', '-z', '--no-renames', sha]).split('\0').filter(Boolean);
+      const touched = git(root, ['diff-tree', '--no-commit-id', '--name-only', '--relative', '-r', '-z', '--no-renames', sha]).split('\0').filter(Boolean);
       if (touched.length === 1 && touched[0] === receipt.path) return sha;
     } catch { /* not readable: not this one */ }
   }
@@ -146,15 +169,15 @@ export async function settleAutofixCommits(engine: Exec, sourceId: string, root:
 }
 
 export type AutofixUndoRendering =
-  | { available: true; how: 'git_revert'; sha: string; argv: string[]; then: string[] }
+  | { available: true; how: 'git_revert'; sha: string; preview: string[]; argv: string[]; then: string[] }
   | { available: true; how: 'restore'; slug: string; until: string; argv: string[] }
   | { available: false; reason: string };
 
 /**
  * The undo of one receipt, rendered when it is read. A landed repair commit (sha validated: a full hex object id, and a
- * commit in the checkout when `root` is given) reverts through `gbrain git commit-push --revert` (commit lock, only that
- * commit's path, never a force push), then a sync re-imports the file. Remote callers get the command without the host
- * checkout path. Anything else says why no Git undo exists.
+ * commit in the checkout when `root` is given) reverts through `gbrain sync undo` (preview, then `--apply`: the owner
+ * writes the preimage back and lands a new commit; never a force push), then a sync confirms the file. The command names
+ * no host path, so a remote caller gets it as is. Anything else says why no Git undo exists.
  */
 export function renderAutofixUndo(receipt: AutofixReceipt, opts: { sourceId: string; root?: string | null; remote: boolean }): AutofixUndoRendering {
   const row = admissionRow(receipt.kind);
@@ -162,6 +185,7 @@ export function renderAutofixUndo(receipt: AutofixReceipt, opts: { sourceId: str
   if (row.undo === 'restore_72h') {
     if (!receipt.restore) return { available: false, reason: 'no_restore_target: the receipt names no soft-deleted page' };
     if (Date.parse(receipt.restore.until) <= Date.now()) return { available: false, reason: `restore_expired: the page could be restored until ${receipt.restore.until}` };
+    if (opts.remote) return { available: false, reason: `host_only: the restore names a page, so it is shown on the brain host only (gbrain sync status --source ${opts.sourceId} --json there; restorable until ${receipt.restore.until})` };
     return { available: true, how: 'restore', slug: receipt.restore.slug, until: receipt.restore.until, argv: ['gbrain', 'restore', receipt.restore.slug, '--source-id', opts.sourceId] };
   }
   if (row.undo === 'not_needed') return { available: false, reason: 'nothing_to_undo: this repair changes no file and no page' };
@@ -173,6 +197,6 @@ export function renderAutofixUndo(receipt: AutofixReceipt, opts: { sourceId: str
     try { if (git(opts.root, ['cat-file', '-t', sha]).trim() !== 'commit') return { available: false, reason: 'commit_missing: the recorded repair commit is not a commit in this checkout' }; }
     catch { return { available: false, reason: 'commit_missing: the recorded repair commit is not in this checkout (history rewritten or another clone)' }; }
   }
-  const argv = ['gbrain', 'git', 'commit-push', '--revert', sha, ...(opts.remote || !opts.root ? [] : ['--path', opts.root]), '--json'];
-  return { available: true, how: 'git_revert', sha, argv, then: sync };
+  const preview = ['gbrain', 'sync', 'undo', '--source', opts.sourceId, '--commit', sha];
+  return { available: true, how: 'git_revert', sha, preview, argv: [...preview, '--apply', '--json'], then: sync };
 }
