@@ -75,6 +75,27 @@ state says a person decides (a manual fence reason, a gate rejection, a paid
 wait on a setting only the user changes, a recommended page merge) is listed
 `needs_human` and never retried until the file changes.
 
+### The same loop over MCP
+
+An agent connected to the brain host's local stdio server runs the loop with
+tools instead of commands. `sync_status` returns the same document as
+`gbrain sync status --json`, and each hold carries an `item_id` and three
+steps: `preview` (`next: run`, a `repair_preview` call that writes nothing and
+returns `preview_hash`), `apply` (`next: ask_user`, a `repair_apply` call bound
+to that hash) and `verify` (`sync_status` again). Show the user what the preview
+listed; with their agreement call the apply the preview's `next` names (it
+carries `expect` and `yes: true`), then the `sync_brain` call its `next` names.
+`sync_unblock` is the twin of `gbrain sync unblock`: without `apply` it
+previews and returns its hash, with `apply`, `expect` and `yes` it runs. An
+apply without `yes` refuses `confirmation_required`, a stale hash refuses
+`preview_changed`, and every apply records a receipt naming the local agent.
+
+Over a remote (http) connection `repair_apply` and `sync_unblock` are not
+offered: each step says `ask_user` and names the exact command for whoever
+runs the brain host. Held files whose page the connection cannot read are left
+out and counted in `holds_withheld`. `stale-atoms` and `extractor-facts` run
+only from the CLI.
+
 ## The triple
 
 Every hold and error has three fields, from one table

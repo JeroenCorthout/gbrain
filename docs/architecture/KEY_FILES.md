@@ -51,7 +51,7 @@ link it here rather than raising the cap.
 | [Core Persistence (seams)](key-files/core-persistence-request-indexes.md) | `checkpoint-validation`, `fault-points`, `native-file-target`, `admission-retry`, `unbound-source` |
 | [Core Persistence (managed facts)](key-files/core-persistence-facts.md) | `facts-maintenance.ts`, `facts-prepare.ts`, `derived-facts.ts`, `same-page-shadow.ts` |
 | [Core Persistence (engine graduation)](key-files/core-persistence-graduation.md) | `engine-graduation*.ts`, `graduation-*.ts`, `commands/migrate-graduation.ts` |
-| [Managed sync and persistence stalls](key-files/persistence-stalls.md) | preparation budgets, `claim-phase.ts`, `consumer.ts`, `group-publish.ts`, `diagnostics.ts`, `worktree-manifest.ts` |
+| [Managed sync and persistence stalls](key-files/persistence-stalls.md) | `claim-phase.ts`, `consumer.ts`, `group-publish.ts`, `worktree-manifest.ts`; [MCP](key-files/sync-status-mcp.md) |
 | [Managed sync bookkeeping](key-files/managed-sync-bookkeeping.md) | `sync-failures.ts`, `managed-sync-orphans.ts`, `sync-checkpoint-replaced.ts` |
 | [Core Search (1/2)](key-files/core-search-1.md) | `src/core/search/` through `src/core/search/read-policy-sql.ts` |
 | [Core Search (2/2)](key-files/core-search-2.md) | `search/rerank.ts` through `search/vector-pool.ts`, relational and multi-hop modules, `hub-dampening.ts`, `crag.ts`; [CJK keyword](key-files/core-search-cjk.md) |
