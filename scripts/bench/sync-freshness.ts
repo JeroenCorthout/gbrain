@@ -23,6 +23,12 @@
  *   --detection watch|poll                  GBRAIN_NOTIFIER_DETECTION for residents (poll forces the 3 s rev-parse poll); the
  *                                           observed sync_notifier_sources.detection_mode is recorded with every cell
  *   --jitter-ms MS                          adds U(0, MS) to the gap between serve commits, so commits land at random poll offsets
+ *   --mode managed --activation [--max-activation-passes N] [--brain-rev REV]
+ *                                           activation cost (#6712): clones the classic brain, activates managed persistence,
+ *                                           times the first managed sync to convergence (passes, wall time, and on Postgres the
+ *                                           pg_stat_statements calls) and writes results/activation-<cell>.json; every pass's
+ *                                           output goes to logs/<cell>-activation-passes/. Exits 1 when the cap stops it first.
+ *                                           --brain-rev reuses a classic brain built at another revision as the input.
  *
  * Builds (once, then reuses) a synthetic git brain of N pages for the engine,
  * mode and gbrain checkout: classic import first, then for managed the real
@@ -46,7 +52,7 @@ import { join, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { readdirSync } from 'node:fs';
 import postgres from '#postgres';
-import { startHarness, measureRtt, startEmbeddingStub, readTrace, groupStatements, classify, type Harness } from './managed-sync-catchup-lib.ts';
+import { readPgStatStatements, startHarness, measureRtt, startEmbeddingStub, readTrace, groupStatements, classify, type Harness } from './managed-sync-catchup-lib.ts';
 import {
   copyDir, engineProber, existsSync, git, machineInfo, makeChange, mcpProber, McpClient, mkdirSync, now, pollVisible, readFileSync, rmSync, round1,
   sleep, spawnChild, stats, treeCpuSeconds, waitLine, writeCorpus, writeFileSync, writeState, getTargets, slugOf, expectedHits,
@@ -73,7 +79,7 @@ const GROOT = resolve(flag('gbrain-root', REPO));
 const WORK = resolve(flag('work-dir', join(REPO, '.context/bench/sync-freshness')));
 const CLI = join(GROOT, 'src/cli.ts');
 /** The product revision (last commit touching src/), so bench-only commits keep reusing the same brains. */
-const REV = git(GROOT, 'log', '-1', '--format=%h', '--abbrev=8', '--', 'src', 'package.json');
+const REV = flag('brain-rev', git(GROOT, 'log', '-1', '--format=%h', '--abbrev=8', '--', 'src', 'package.json'));
 const LABEL = flag('label', git(GROOT, 'rev-parse', '--abbrev-ref', 'HEAD') + '@' + REV);
 const INTERVAL = Number(flag('interval', TRIGGER === 'autopilot' ? '300' : '60'));
 const TIMEOUT_S = Number(flag('timeout', String(TRIGGER === 'autopilot' ? INTERVAL * 2 + 600 : TRIGGER === 'watch' ? INTERVAL + 300 : COMMIT === 'backlog' ? 3600 : 300)));
@@ -94,6 +100,9 @@ const WINDOW_S = Number(flag('window-s', '30'));
 const WARMUP_S = Number(flag('warmup-s', '60'));
 const SETTLE_S = Number(flag('settle-s', '20'));
 const MULTI = SCENARIO === 'idle' || SCENARIO === 'fairness';
+const ACTIVATION = has('activation');
+const MAX_ACTIVATION_PASSES = Number(flag('max-activation-passes', '0'));
+if (ACTIVATION && (MODE !== 'managed' || SOURCES !== 1 || EMBED !== 'off')) { console.error('--activation measures one source in --mode managed without --embed'); process.exit(2); }
 if (COMMIT === 'noop' && TRIGGER !== 'manual') { console.error('--commit noop measures a manual sync with nothing to do; use --trigger manual'); process.exit(2); }
 if (!['pglite', 'postgres'].includes(ENGINE) || !['classic', 'managed'].includes(MODE) || !['single', 'batch', 'backlog', 'noop'].includes(COMMIT)
   || !['serve', 'serve-boot', 'autopilot', 'jobs', 'watch', 'manual'].includes(TRIGGER) || !(PAGES > 0) || !(REPS > 0) || !['watch', 'poll'].includes(DETECTION)
@@ -162,13 +171,17 @@ async function brainBuilt(mode: 'classic' | 'managed', sources = SOURCES): Promi
   return false;
 }
 
-async function syncUntilDone(home: string, label: string, source = 'bench'): Promise<{ ms: number; runs: number }> {
+async function syncUntilDone(home: string, label: string, source = 'bench', maxPasses = 0, passDir?: string): Promise<{ ms: number; runs: number; capped?: boolean; statuses?: string[] }> {
   const t = now();
+  const statuses: string[] = [];
   for (let i = 0; ; i++) {
     const r = await gb(['sync', '--source', source, '--no-pull', ...(EMBED === 'stub' ? [] : ['--no-embed']), '--json'], { home, allowFail: true });
     const status = r.json?.sync_status ?? r.json?.outcome;
+    statuses.push(String(status));
     log(label + ' sync pass ' + (i + 1) + ': ' + status + ' (' + round1((now() - t) / 1000) + ' s)');
-    if (['synced', 'first_sync', 'up_to_date'].includes(status)) return { ms: now() - t, runs: i + 1 };
+    if (passDir) { mkdirSync(passDir, { recursive: true }); writeFileSync(join(passDir, 'pass-' + (i + 1) + '.out'), r.stdout + '\n----STDERR----\n' + r.stderr); }
+    if (['synced', 'first_sync', 'up_to_date'].includes(status)) return { ms: now() - t, runs: i + 1, ...(passDir ? { statuses } : {}) };
+    if (maxPasses && i + 1 >= maxPasses) return { ms: now() - t, runs: i + 1, capped: true, statuses };
     if (i > 200 || (r.code !== 0 && status !== 'partial')) throw new Error(label + ' sync did not converge: ' + r.stdout.slice(-1500) + r.stderr.slice(-1500));
   }
 }
@@ -230,7 +243,7 @@ async function ensureBrain(mode: 'classic' | 'managed', sources = SOURCES): Prom
   const dir = brainDir(mode, sources), home = join(dir, 'home'), root = join(dir, 'repo');
   const ids = ['bench', ...EXTRA_IDS.slice(0, sources - 1)];
   const ready = join(dir, 'ready.json');
-  if (!has('rebuild') && await brainBuilt(mode, sources)) {
+  if (!has('rebuild') && !(ACTIVATION && mode === 'managed') && await brainBuilt(mode, sources)) {
     const prior = JSON.parse(readFileSync(ready, 'utf8'));
     if (prior.links_settled) return prior;
     writeConfig(home, mode, ENGINE === 'postgres' ? harness!.directUrl(dbName(mode, sources)) : undefined);
@@ -295,6 +308,15 @@ async function ensureBrain(mode: 'classic' | 'managed', sources = SOURCES): Prom
   if (mode === 'classic' && sources > 1) for (const id of ids.slice(1)) build['links_settled_' + id] = await settleLinks(home, id);
   if (mode === 'managed') {
     build.activate_ms = round1(await activate(home, ids));
+    if (ACTIVATION) {
+      if (ENGINE === 'postgres') await admin(async sql => { await sql.unsafe('CREATE EXTENSION IF NOT EXISTS pg_stat_statements'); await sql.unsafe('SELECT pg_stat_statements_reset()'); });
+      build.first_managed_sync = await syncUntilDone(home, 'post-activation bench', 'bench', MAX_ACTIVATION_PASSES, join(outDir, 'logs', cellId + '-activation-passes'));
+      if (ENGINE === 'postgres') {
+        const pg = await admin(sql => readPgStatStatements(sql, dbName(mode, sources)));
+        build.first_managed_sync_statements = { calls: pg.calls, calls_ex_txn: pg.calls_ex_txn, total_ms: pg.total_ms, top: pg.top };
+      }
+      return build;
+    }
     for (const id of ids) build[id === 'bench' ? 'first_managed_sync' : 'first_managed_sync_' + id] = await syncUntilDone(home, 'post-activation ' + id, id);
     build.links_settled = await settleLinks(home);
     for (const id of ids.slice(1)) build['links_settled_' + id] = await settleLinks(home, id);
@@ -392,6 +414,22 @@ async function main(): Promise<void> {
   if (SOURCES > 1 && !(await brainBuilt('classic', 1))) await ensureBrain('classic', 1);
   if (MODE === 'managed' && !(await brainBuilt('classic')) && (PAGES >= 10000 || SOURCES > 1)) await ensureBrain('classic');
   const build = await ensureBrain(MODE);
+  if (ACTIVATION) {
+    if (harness) harness.stop();
+    const first = build.first_managed_sync as { ms: number; runs: number; capped?: boolean; statuses: string[] };
+    const stmts = build.first_managed_sync_statements as { calls: number; calls_ex_txn: number } | undefined;
+    const result = { schema: 'gbrain-sync-activation/1', cell: cellId, label: LABEL, gbrain_rev: git(GROOT, 'log', '-1', '--format=%h', '--abbrev=8', '--', 'src', 'package.json'), brain_rev: REV,
+      gbrain_root: GROOT, at: new Date().toISOString(), params: { engine: ENGINE, pages: PAGES, max_passes: MAX_ACTIVATION_PASSES || null }, machine: machineInfo(), build,
+      converged: !first.capped, passes: first.runs, wall_ms: round1(first.ms), statements: stmts ? { calls: stmts.calls, calls_ex_txn: stmts.calls_ex_txn } : null };
+    mkdirSync(outDir, { recursive: true });
+    const file = join(outDir, 'activation-' + cellId + '.json');
+    writeFileSync(file, JSON.stringify(result, null, 2) + '\n');
+    if (JSON_OUT) console.log(JSON.stringify(result));
+    log('wrote ' + file + ': ' + (first.capped ? 'NOT converged' : 'converged') + ' in ' + first.runs + ' pass(es), ' + round1(first.ms / 1000) + ' s'
+      + (stmts ? ', ' + stmts.calls + ' statements (' + stmts.calls_ex_txn + ' without transaction control)' : '') + ' [' + first.statuses.join(', ') + ']');
+    if (first.capped) process.exit(1);
+    return;
+  }
   stubOpts.latencyMs = EMBED_LATENCY_MS;
   const brainUrl = ENGINE === 'postgres' ? (RTT ? harness!.proxyUrl(dbName(MODE)) : directUrl()) : undefined;
   writeConfig(HOME, MODE, brainUrl);
