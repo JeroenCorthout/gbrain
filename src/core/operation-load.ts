@@ -73,7 +73,7 @@ const OP_AREAS: Record<string, string> = {
   sources_add: 'sources', sources_list: 'sources', sources_remove: 'sources',
   sources_status: 'sources',
   // sync (localOnly)
-  sync_brain: 'sync',
+  sync_brain: 'sync', sync_status: 'sync', sync_unblock: 'sync', repair_preview: 'sync', repair_apply: 'sync',
   // ingest log
   log_ingest: 'ingest', get_ingest_log: 'ingest',
   get_usage: 'admin',

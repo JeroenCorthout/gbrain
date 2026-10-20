@@ -197,6 +197,8 @@ const SWEEP: Record<string, Row> = {
   whoami: { args: {} },
   sources_list: { args: {} },
   sources_status: { args: { id: SRC } },
+  sync_status: { args: { source_id: SRC } },
+  repair_preview: { args: { kind: 'frontmatter', source_id: SRC } },
   sources_inspect: { skip: 'local-only inspection of a committed Git repository directory; returns repo metadata, owned by the sources suites' },
   request_tools: { args: { tools: ['get_page'] } },
   connectors_status: { args: {}, remote: false },

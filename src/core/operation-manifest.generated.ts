@@ -2968,7 +2968,8 @@ export const OPERATION_MANIFEST: OperationMeta[] = [
         "description": "Also run the heavy reads (terminal-failure summary, checkpoint blockers, live cursors), as --detail does."
       }
     },
-    "scope": "read"
+    "scope": "read",
+    "area": "sync"
   },
   {
     "name": "sync_unblock",
@@ -3003,7 +3004,8 @@ export const OPERATION_MANIFEST: OperationMeta[] = [
       }
     },
     "scope": "admin",
-    "localOnly": true
+    "localOnly": true,
+    "area": "sync"
   },
   {
     "name": "repair_preview",
@@ -3126,7 +3128,8 @@ export const OPERATION_MANIFEST: OperationMeta[] = [
         "description": "--no-embed, for the kinds that take it."
       }
     },
-    "scope": "read"
+    "scope": "read",
+    "area": "sync"
   },
   {
     "name": "repair_apply",
@@ -3259,7 +3262,8 @@ export const OPERATION_MANIFEST: OperationMeta[] = [
       }
     },
     "scope": "admin",
-    "localOnly": true
+    "localOnly": true,
+    "area": "sync"
   },
   {
     "name": "put_raw_data",

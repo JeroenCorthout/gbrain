@@ -164,13 +164,6 @@ Every non-localOnly operation on the MCP surface: 153 tools across 26 areas. **S
 | `ontology_get` | Life Chronicle: the current resolved per-entity ontology (dimension → value) at `asof` (default now), with provenance + confidence + validity. | read |  |  |
 | `ontology_propose` | Life Chronicle: record one ontology observation (entity has dimension=value), sourced + confidence-weighted + bi-temporal. | write |  |  |
 
-## other
-
-| Tool | Description | Scope | Starter | Gate |
-|---|---|---|---|---|
-| `repair_preview` | Preview one gbrain repair kind (or the content lane) on one source, read-only, with the CLI's own params (kind, source_id, only, skip, slug, include_ambiguous, ...). | read |  |  |
-| `sync_status` | Where one source's sync stands and what to do next: the MCP twin of `gbrain sync status --json` (identical field names). | read |  |  |
-
 ## pages
 
 | Tool | Description | Scope | Starter | Gate |
@@ -259,6 +252,13 @@ Every non-localOnly operation on the MCP surface: 153 tools across 26 areas. **S
 | `sources_list` | List registered sources with page counts and remote_url. | read |  |  |
 | `sources_remove` | Hard-remove a source (cascades pages/chunks/embeddings). | sources_admin |  |  |
 | `sources_status` | Per-source diagnostic. | read |  |  |
+
+## sync
+
+| Tool | Description | Scope | Starter | Gate |
+|---|---|---|---|---|
+| `repair_preview` | Preview one gbrain repair kind (or the content lane) on one source, read-only, with the CLI's own params (kind, source_id, only, skip, slug, include_ambiguous, ...). | read |  |  |
+| `sync_status` | Where one source's sync stands and what to do next: the MCP twin of `gbrain sync status --json` (identical field names). | read |  |  |
 
 ## tags
 

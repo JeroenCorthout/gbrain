@@ -29,6 +29,8 @@ op	join_brain	no_canonical_write	Mount registration in local configuration.
 op	sync_brain_skills	no_canonical_write	Refreshes mounted skill copies outside the brain database.
 op	leave_brain	no_canonical_write	Mount removal in local configuration.
 op	sync_brain	coordinator	Managed sync admits each changed file through the coordinator.
+op	sync_unblock	coordinator	Schedules re-screens and runs content-lane repairs whose writes publish through the coordinator.
+op	repair_apply	coordinator	Runs the named repair kind as gbrain repair <kind> --apply does; managed writes publish through the coordinator.
 op	put_raw_data	no_canonical_write	raw_data side table; not guarded canonical content.
 op	log_ingest	no_canonical_write	ingest_log audit rows only.
 op	file_upload	no_canonical_write	File storage objects and their index rows, confined to the upload root.
