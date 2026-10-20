@@ -4393,6 +4393,16 @@ Reasons: `lifetime_ids`, `terminal_bytes`.
 
 More: [docs/guides/write-refusals.md#write_quota_insufficient](../../docs/guides/write-refusals.md#write_quota_insufficient)
 
+### write_through_disabled
+
+<a id="write_through_disabled"></a>
+
+| Meaning | Why | Next step | Who acts · consent | Verify | Exit | Retryable |
+|---|---|---|---|---|---|---|
+| A managed import was asked to copy a file into a source checkout while `sync.write_through` is off, so nothing was imported and no write was admitted. | With `sync.write_through` off gbrain creates no files in a checkout; a file already in its place there imports database-only, but one from elsewhere would need a file write. The refusal comes before admission, so it spends no write capacity. | Copy the file into the source checkout and import it from there, or ask the user whether to turn sync.write_through on. | user | `repeat the read that failed` | 1 | no |
+
+More: [docs/guides/write-refusals.md#write_through_disabled](../../docs/guides/write-refusals.md#write_through_disabled)
+
 ### writer_admin_intent_required
 
 <a id="writer_admin_intent_required"></a>

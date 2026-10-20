@@ -263,6 +263,35 @@ write on, except for pages created while the source was a mirror: those have
 no file in the checkout and stay database-only. Git effects of a mirror's
 writes (for example a `forget`) complete as skipped. The flag is off by default.
 
+### Database-only brains (`sync.write_through` off)
+
+`gbrain config set sync.write_through false` makes the whole brain database-only:
+gbrain writes no Markdown file into any source checkout. Sync and import still
+read files; only writes back to the checkout stop. On a managed brain this
+covers:
+
+- **Page writes** (`put_page`, `capture`, a timeline entry, a tag, a
+  maintenance write): stored in the database only, receipt
+  `write_through.skipped: "disabled_by_config"`.
+- **Managed sync's canonical writeback** (#7084): when the stored page keeps
+  metadata its committed file does not state (a `type:` the file dropped, which
+  the page keeps; a tag the brain holds), sync imports the file and keeps that
+  metadata in the database instead of rewriting the file, so `git status` stays
+  clean. The import's receipt says `write_through.skipped: "disabled_by_config"`.
+- **`gbrain import`** (#7085): a file already in its place inside the source's
+  checkout imports database-only (the file is not rewritten). A file from
+  outside the checkout would have to be copied in, so the import stops once,
+  before any write is admitted, with
+  [`write_through_disabled`](write-refusals.md#write_through_disabled).
+
+The difference between such a page and its file is accepted drift: no later
+sync writes it back, and a sync of the unchanged file changes nothing. It shows
+in each import's receipt and in `gbrain sync --source <id> --dry-run`, which
+lists those files under `would_keep_database_only` (with write-through on, the
+same files are listed under `would_rewrite`). To put the metadata into the file,
+add it to the file yourself and commit, or turn write-through back on: the
+next sync that imports the file rewrites it.
+
 A managed brain never pulls inside a cycle. Advance a managed checkout with
 one command on its owner host:
 
