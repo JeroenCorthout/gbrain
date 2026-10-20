@@ -186,6 +186,8 @@ const PARAM_FACTORY: Record<string, Record<string, unknown>> = {
   find_contradictions: {},
   search_by_image: {},
   sources_status: { id: 'default' },
+  sync_status: { source_id: 'default' },
+  repair_preview: { kind: 'frontmatter', source_id: 'default' },
   ontology_get: { entity: WORLD_PAGE_SLUG },
   get_skill: { name: 'query' },
   // Mutating ops target FRESH slugs only — never the seeded corpus. The
@@ -263,6 +265,8 @@ const EXPECTED_OUTCOME: Record<string, Outcome> = {
   whoami: 'ok', // base unused — per-shape override in EXPECTED_BY_SHAPE (above)
   sources_list: 'ok',
   sources_status: 'ok',
+  sync_status: 'ok',
+  repair_preview: 'ok',
   find_orphans: 'ok',
   wanted_pages: 'ok',
   find_contradictions: 'ok',

@@ -38,9 +38,15 @@ async function refusal(run: () => Promise<unknown>): Promise<OperationError> {
   throw new Error('expected a refusal');
 }
 
-test('stale-atoms is CLI-only: no operation exposes it over MCP (ENG-O13)', () => {
-  expect(operations.map(op => op.name).filter(name => /stale|repair/.test(name))).toEqual([]);
-});
+test('stale-atoms is CLI-only: no operation exposes it over MCP (ENG-O13)', async () => {
+  // GBRA-133 PR 3: the generic repair_preview / repair_apply tools are the only repair ops, and both refuse this kind by name.
+  expect(operations.map(op => op.name).filter(name => /stale|repair/.test(name))).toEqual(['repair_preview', 'repair_apply']);
+  for (const name of ['repair_preview', 'repair_apply']) {
+    const ctx = { engine: {}, config: {}, logger: { info() {}, warn() {}, error() {} }, dryRun: false, remote: false, sourceId: 'default' } as never;
+    const err = await operations.find(op => op.name === name)!.handler(ctx, { kind: 'stale-atoms', expect: 'x', yes: true }).then(() => null, e => e);
+    expect([err?.canonical, err?.fix?.argv]).toEqual(['trusted_local_only', ['gbrain', 'repair', 'stale-atoms', '--source', 'default']]);
+  }
+}, 60_000);
 
 for (const kind of testBackends()) {
   describe(`gbrain repair stale-atoms (${kind})`, () => {

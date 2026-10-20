@@ -205,6 +205,18 @@ const MATRIX: Row[] = [
     expectScoped: () => {
       throw new Error('sources_status must fail closed (not_found) for out-of-scope ids under any untrusted ctx');
     } },
+  // GBRA-133 PR 3: sync_status and repair_preview take one source and confine it exactly as sources_status does: an
+  // out-of-scope source_id answers not_found under either untrusted ctx; trusted local reads it (the control).
+  { name: 'sync_status', mode: 'isolated', args: { source_id: 'srcbeta' },
+    controlSees: r => JSON.stringify(r).includes('srcbeta'),
+    expectScoped: () => {
+      throw new Error('sync_status must fail closed (not_found) for out-of-scope source ids under any untrusted ctx');
+    } },
+  { name: 'repair_preview', mode: 'isolated', args: { kind: 'frontmatter', source_id: 'srcbeta' },
+    controlSees: r => JSON.stringify(r).includes('srcbeta'),
+    expectScoped: () => {
+      throw new Error('repair_preview must fail closed (not_found) for out-of-scope source ids under any untrusted ctx');
+    } },
   { name: 'schema_stats', mode: 'isolated', args: {} },
   { name: 'schema_review_orphans', mode: 'isolated', args: { limit: 50 } },
 

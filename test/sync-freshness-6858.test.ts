@@ -253,7 +253,8 @@ describe('sync freshness (#6858 ask 6)', () => {
       const json = JSON.parse((await capture(['--json'])).join('\n')) as Record<string, unknown>;
       const core = await readSyncStatus(engine, f.id, {});
       const added = Object.keys(json).filter(k => !(k in core)).sort();
-      expect(added).toEqual(['capacity', 'freshness', 'notifier', ...(json.notices ? ['notices'] : [])].sort());
+      // GBRA-133 PR 3 adds the autofix block and the withheld-hold count (one document shared with the MCP sync_status op).
+      expect(added).toEqual(['autofix', 'capacity', 'freshness', 'holds_withheld', 'notifier', ...(json.notices ? ['notices'] : [])].sort());
       expect(json.freshness).toMatchObject({ source_id: f.id, commit_to_searchable: { samples: 1, p50_seconds: 12, p95_seconds: 12 } });
       const human = await capture([]);
       expect(human.filter(l => l.startsWith('  freshness: '))).toEqual(['  freshness: commit→searchable p50 12s, p95 12s (1 page(s), last 24 h); commit→embedded no samples (0 page(s), 0 pending)']);
