@@ -5,9 +5,13 @@
  * ../operations.ts. Never import from '../operations.ts' here (cycle).
  */
 
-import type { Operation, OperationContext } from './contract.ts';
+import type { Operation, OperationContext, ParamDef } from './contract.ts';
 import { opError } from './contract.ts';
 import { opTransport, readFix } from './op-fix.ts';
+import { assertSourceInCallerScope } from './context.ts';
+import { ALL_SOURCES } from '../source-id.ts';
+import { REPAIR_BOOLEAN_PARAMS, REPAIR_VALUE_PARAMS } from './mcp-twin.ts';
+import type { AgentRepairCaller } from '../../commands/repair-agent.ts';
 
 /** `gbrain sync --source <id>` on the CLI, `source_id: "<id>"` over MCP. */
 function sourceRef(ctx: OperationContext, id: string): string {
@@ -108,5 +112,131 @@ const sync_brain: Operation = {
 };
 
 
+// --- GBRA-133 PR 3: sync status, unblock and repair over MCP ---
+
+/** The one source a sync-status or repair op acts on: the named one, else the caller's; confined to the caller's read scope (out of scope reads as unknown). */
+async function targetSource(ctx: OperationContext, p: Record<string, unknown>, op: string): Promise<string> {
+  const id = typeof p.source_id === 'string' && p.source_id ? p.source_id : ctx.sourceId;
+  if (!id || id === ALL_SOURCES) {
+    throw opError('invalid_params', `${op} targets exactly one source.`, `Pass one source id (for example ${sourceRef(ctx, 'default')}); sources_list lists them.`, { fix: LIST_SOURCES });
+  }
+  assertSourceInCallerScope(ctx, id);
+  const [row] = await ctx.engine.executeRaw<{ id: string }>('SELECT id FROM sources WHERE id=$1 AND archived IS NOT TRUE', [id]);
+  if (!row) throw opError('not_found', `Unknown source: ${id}`, 'Pass a source id from sources_list, which lists the sources this connection can read.', { fix: LIST_SOURCES });
+  return id;
+}
+
+/** The caller as the repair flows see it: surface, render context, privacy predicates and, on the local pipe or CLI, the explicit actor an apply records. */
+async function agentCaller(ctx: OperationContext): Promise<AgentRepairCaller> {
+  const { opViewer } = await import('../../commands/sync/status-document.ts');
+  const viewer = await opViewer(ctx);
+  return {
+    ...viewer,
+    excludePrivate: viewer.excludePrivate === true,
+    actor: viewer.transport === 'cli' ? { kind: 'local_cli', transport: 'cli', client: null }
+      : viewer.transport === 'stdio' ? { kind: 'local_agent', transport: 'stdio', client: ctx.auth?.clientName ?? ctx.sessionId ?? null } : null,
+    reconcileMs: ctx.writeWaitMs ?? 5_000,
+  };
+}
+
+const SOURCE_PARAM: ParamDef = { type: 'string', description: "The source to act on, as sources_list names it (default: this connection's source)." };
+
+const sync_status: Operation = {
+  name: 'sync_status',
+  mutating: false,
+  idempotent: true,
+  outputRedaction: 'no_stored_text',
+  description: "Where one source's sync stands and what to do next: the MCP twin of `gbrain sync status --json` (identical field names). State and reason, every held "
+    + 'file with item_id and preview/apply/verify steps, freshness, the notifier block, autofix (recent, pending, switches) and one next step. Over the local '
+    + 'stdio server each step names the tool to call (repair_preview, repair_apply, sync_unblock, sync_brain); a remote connection gets read-only items whose '
+    + 'steps name the exact command for the brain host. Held pages this connection cannot read are withheld and counted (holds_withheld).',
+  params: {
+    source_id: SOURCE_PARAM,
+    detail: { type: 'boolean', description: 'Also run the heavy reads (terminal-failure summary, checkpoint blockers, live cursors), as --detail does.' },
+  },
+  scope: 'read',
+  handler: async (ctx, p) => {
+    const sourceId = await targetSource(ctx, p, 'sync_status');
+    const { buildSyncStatusDocument, opViewer } = await import('../../commands/sync/status-document.ts');
+    return buildSyncStatusDocument(ctx.engine, sourceId, { detail: p.detail === true, viewer: await opViewer(ctx) });
+  },
+};
+
+const sync_unblock: Operation = {
+  name: 'sync_unblock',
+  mutating: true,
+  idempotent: false,
+  outputRedaction: 'no_stored_text',
+  description: 'The MCP twin of `gbrain sync unblock`: without apply, previews the safe action for every held file of one source (re-screens, content-lane repairs, '
+    + 'refusals by name) and returns its preview_hash; with apply, expect (that hash) and yes (the user agreed), performs it and records a receipt naming this '
+    + 'agent. A changed preview refuses preview_changed; no yes refuses confirmation_required. Local stdio server only.',
+  params: {
+    source_id: SOURCE_PARAM,
+    apply: { type: 'boolean', description: 'Perform the previewed actions (needs expect and yes).' },
+    expect: { type: 'string', description: 'The preview_hash of the unblock preview being applied.' },
+    yes: { type: 'boolean', description: 'The user agreed to the previewed actions.' },
+    no_llm: { type: 'boolean', description: 'Repairs keep to their free tiers, as --no-llm.' },
+    no_repair: { type: 'boolean', description: 'Refuse every repair-class hold instead of repairing it, as --no-repair.' },
+  },
+  scope: 'admin',
+  localOnly: true,
+  handler: async (ctx, p) => {
+    const sourceId = await targetSource(ctx, p, 'sync_unblock');
+    const { agentSyncUnblock } = await import('../../commands/repair-agent.ts');
+    return agentSyncUnblock(ctx.engine, await agentCaller(ctx), p, sourceId);
+  },
+};
+
+/** `repair_preview` / `repair_apply` params: the CLI's flags under their own names (`--only` is `only`, `--source` is `source_id`). */
+const REPAIR_PARAMS: Record<string, ParamDef> = {
+  kind: { type: 'string', required: true, description: 'The repair kind, as gbrain repair names it (frontmatter, fences, slug-conflicts, file-drift, ...), or content for the content-repair lane.' },
+  source_id: SOURCE_PARAM,
+  ...Object.fromEntries(Object.values(REPAIR_VALUE_PARAMS).filter(({ param }) => param !== 'source_id').map(({ param, many, numeric }): [string, ParamDef] => [param, many
+    ? { type: 'array', items: { type: 'string' }, description: `Repeatable --${param.replace(/_/g, '-')} values.` }
+    : { type: numeric ? 'number' : 'string', description: `--${param.replace(/_/g, '-')}, for the kinds that take it.` }])),
+  ...Object.fromEntries(Object.values(REPAIR_BOOLEAN_PARAMS).map((param): [string, ParamDef] => [param, { type: 'boolean', description: `--${param.replace(/_/g, '-')}, for the kinds that take it.` }])),
+};
+
+const repair_preview: Operation = {
+  name: 'repair_preview',
+  mutating: false,
+  idempotent: true,
+  outputRedaction: 'no_stored_text',
+  description: "Preview one gbrain repair kind (or the content lane) on one source, read-only, with the CLI's own params (kind, source_id, only, skip, slug, "
+    + 'include_ambiguous, ...). Returns counts, items, residuals and the preview_hash repair_apply binds to (the content lane: one hash per kind, comma-joined), '
+    + 'plus the apply step. Reconciles an earlier agent apply first. No file diffs (run the kind with --diff on the brain host for those).',
+  params: REPAIR_PARAMS,
+  scope: 'read',
+  handler: async (ctx, p) => {
+    const { agentRepairPreview, validateKind } = await import('../../commands/repair-agent.ts');
+    validateKind(p, typeof p.source_id === 'string' && p.source_id ? p.source_id : ctx.sourceId);
+    const sourceId = await targetSource(ctx, p, 'repair_preview');
+    return agentRepairPreview(ctx.engine, await agentCaller(ctx), p, sourceId);
+  },
+};
+
+const repair_apply: Operation = {
+  name: 'repair_apply',
+  mutating: true,
+  idempotent: false,
+  outputRedaction: 'no_stored_text',
+  description: 'Apply exactly the set a repair_preview returned: same params plus expect (its preview_hash) and yes (the user agreed). A changed preview refuses '
+    + 'preview_changed; no yes refuses confirmation_required; a pending earlier apply refuses write_pending. Runs the kind as gbrain repair <kind> --apply '
+    + '--expect does and records a receipt naming this agent; next is the sync that imports the repaired files. Local stdio server only.',
+  params: {
+    ...REPAIR_PARAMS,
+    expect: { type: 'string', required: true, description: 'The preview_hash repair_preview returned for this selection.' },
+    yes: { type: 'boolean', description: 'The user agreed to the previewed changes.' },
+  },
+  scope: 'admin',
+  localOnly: true,
+  handler: async (ctx, p) => {
+    const { agentRepairApply, validateKind } = await import('../../commands/repair-agent.ts');
+    validateKind(p, typeof p.source_id === 'string' && p.source_id ? p.source_id : ctx.sourceId);
+    const sourceId = await targetSource(ctx, p, 'repair_apply');
+    return agentRepairApply(ctx.engine, await agentCaller(ctx), p, sourceId);
+  },
+};
+
 // Ops in EXACTLY the canonical `operations` array order.
-export const syncStatusOperations: Operation[] = [sync_brain];
+export const syncStatusOperations: Operation[] = [sync_brain, sync_status, sync_unblock, repair_preview, repair_apply];

@@ -405,7 +405,11 @@ const get_status_snapshot: Operation = {
     // #1984: report the brain server's version so a thin-client `gbrain status`
     // can surface remote_version alongside its own local CLI version.
     const { VERSION } = await import('../../version.ts');
-    return { schema_version: 2 as const, version: VERSION, sync, cycle, queue, workers };
+    // GBRA-133 PR 3: per source, the step that reads its sync status (held files, their repair steps, the next step).
+    const { opViewer, syncStatusPointer } = await import('../../commands/sync/status-document.ts');
+    const viewer = await opViewer(ctx);
+    const sync_status = sources.map(source => ({ source_id: source.id, status: syncStatusPointer(source.id, viewer) }));
+    return { schema_version: 2 as const, version: VERSION, sync, cycle, queue, workers, sync_status };
   },
   scope: 'admin',
   localOnly: false,

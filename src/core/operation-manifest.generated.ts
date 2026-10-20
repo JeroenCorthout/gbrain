@@ -2953,6 +2953,315 @@ export const OPERATION_MANIFEST: OperationMeta[] = [
     "area": "sync"
   },
   {
+    "name": "sync_status",
+    "mutating": false,
+    "idempotent": true,
+    "outputRedaction": "no_stored_text",
+    "description": "Where one source's sync stands and what to do next: the MCP twin of `gbrain sync status --json` (identical field names). State and reason, every held file with item_id and preview/apply/verify steps, freshness, the notifier block, autofix (recent, pending, switches) and one next step. Over the local stdio server each step names the tool to call (repair_preview, repair_apply, sync_unblock, sync_brain); a remote connection gets read-only items whose steps name the exact command for the brain host. Held pages this connection cannot read are withheld and counted (holds_withheld).",
+    "params": {
+      "source_id": {
+        "type": "string",
+        "description": "The source to act on, as sources_list names it (default: this connection's source)."
+      },
+      "detail": {
+        "type": "boolean",
+        "description": "Also run the heavy reads (terminal-failure summary, checkpoint blockers, live cursors), as --detail does."
+      }
+    },
+    "scope": "read"
+  },
+  {
+    "name": "sync_unblock",
+    "mutating": true,
+    "idempotent": false,
+    "outputRedaction": "no_stored_text",
+    "description": "The MCP twin of `gbrain sync unblock`: without apply, previews the safe action for every held file of one source (re-screens, content-lane repairs, refusals by name) and returns its preview_hash; with apply, expect (that hash) and yes (the user agreed), performs it and records a receipt naming this agent. A changed preview refuses preview_changed; no yes refuses confirmation_required. Local stdio server only.",
+    "params": {
+      "source_id": {
+        "type": "string",
+        "description": "The source to act on, as sources_list names it (default: this connection's source)."
+      },
+      "apply": {
+        "type": "boolean",
+        "description": "Perform the previewed actions (needs expect and yes)."
+      },
+      "expect": {
+        "type": "string",
+        "description": "The preview_hash of the unblock preview being applied."
+      },
+      "yes": {
+        "type": "boolean",
+        "description": "The user agreed to the previewed actions."
+      },
+      "no_llm": {
+        "type": "boolean",
+        "description": "Repairs keep to their free tiers, as --no-llm."
+      },
+      "no_repair": {
+        "type": "boolean",
+        "description": "Refuse every repair-class hold instead of repairing it, as --no-repair."
+      }
+    },
+    "scope": "admin",
+    "localOnly": true
+  },
+  {
+    "name": "repair_preview",
+    "mutating": false,
+    "idempotent": true,
+    "outputRedaction": "no_stored_text",
+    "description": "Preview one gbrain repair kind (or the content lane) on one source, read-only, with the CLI's own params (kind, source_id, only, skip, slug, include_ambiguous, ...). Returns counts, items, residuals and the preview_hash repair_apply binds to (the content lane: one hash per kind, comma-joined), plus the apply step. Reconciles an earlier agent apply first. No file diffs (run the kind with --diff on the brain host for those).",
+    "params": {
+      "kind": {
+        "type": "string",
+        "required": true,
+        "description": "The repair kind, as gbrain repair names it (frontmatter, fences, slug-conflicts, file-drift, ...), or content for the content-repair lane."
+      },
+      "source_id": {
+        "type": "string",
+        "description": "The source to act on, as sources_list names it (default: this connection's source)."
+      },
+      "only": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "Repeatable --only values."
+      },
+      "skip": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "Repeatable --skip values."
+      },
+      "slug": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "Repeatable --slug values."
+      },
+      "max_usd": {
+        "type": "number",
+        "description": "--max-usd, for the kinds that take it."
+      },
+      "prefer": {
+        "type": "string",
+        "description": "--prefer, for the kinds that take it."
+      },
+      "request": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "Repeatable --request values."
+      },
+      "class": {
+        "type": "string",
+        "description": "--class, for the kinds that take it."
+      },
+      "since": {
+        "type": "string",
+        "description": "--since, for the kinds that take it."
+      },
+      "side": {
+        "type": "string",
+        "description": "--side, for the kinds that take it."
+      },
+      "state": {
+        "type": "string",
+        "description": "--state, for the kinds that take it."
+      },
+      "keep": {
+        "type": "string",
+        "description": "--keep, for the kinds that take it."
+      },
+      "request_id": {
+        "type": "string",
+        "description": "--request-id, for the kinds that take it."
+      },
+      "older_than": {
+        "type": "string",
+        "description": "--older-than, for the kinds that take it."
+      },
+      "from": {
+        "type": "string",
+        "description": "--from, for the kinds that take it."
+      },
+      "limit": {
+        "type": "number",
+        "description": "--limit, for the kinds that take it."
+      },
+      "include_ambiguous": {
+        "type": "boolean",
+        "description": "--include-ambiguous, for the kinds that take it."
+      },
+      "no_llm": {
+        "type": "boolean",
+        "description": "--no-llm, for the kinds that take it."
+      },
+      "all_drifted": {
+        "type": "boolean",
+        "description": "--all-drifted, for the kinds that take it."
+      },
+      "held": {
+        "type": "boolean",
+        "description": "--held, for the kinds that take it."
+      },
+      "include_failures": {
+        "type": "boolean",
+        "description": "--include-failures, for the kinds that take it."
+      },
+      "force": {
+        "type": "boolean",
+        "description": "--force, for the kinds that take it."
+      },
+      "close": {
+        "type": "boolean",
+        "description": "--close, for the kinds that take it."
+      },
+      "no_embed": {
+        "type": "boolean",
+        "description": "--no-embed, for the kinds that take it."
+      }
+    },
+    "scope": "read"
+  },
+  {
+    "name": "repair_apply",
+    "mutating": true,
+    "idempotent": false,
+    "outputRedaction": "no_stored_text",
+    "description": "Apply exactly the set a repair_preview returned: same params plus expect (its preview_hash) and yes (the user agreed). A changed preview refuses preview_changed; no yes refuses confirmation_required; a pending earlier apply refuses write_pending. Runs the kind as gbrain repair <kind> --apply --expect does and records a receipt naming this agent; next is the sync that imports the repaired files. Local stdio server only.",
+    "params": {
+      "kind": {
+        "type": "string",
+        "required": true,
+        "description": "The repair kind, as gbrain repair names it (frontmatter, fences, slug-conflicts, file-drift, ...), or content for the content-repair lane."
+      },
+      "source_id": {
+        "type": "string",
+        "description": "The source to act on, as sources_list names it (default: this connection's source)."
+      },
+      "only": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "Repeatable --only values."
+      },
+      "skip": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "Repeatable --skip values."
+      },
+      "slug": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "Repeatable --slug values."
+      },
+      "max_usd": {
+        "type": "number",
+        "description": "--max-usd, for the kinds that take it."
+      },
+      "prefer": {
+        "type": "string",
+        "description": "--prefer, for the kinds that take it."
+      },
+      "request": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "Repeatable --request values."
+      },
+      "class": {
+        "type": "string",
+        "description": "--class, for the kinds that take it."
+      },
+      "since": {
+        "type": "string",
+        "description": "--since, for the kinds that take it."
+      },
+      "side": {
+        "type": "string",
+        "description": "--side, for the kinds that take it."
+      },
+      "state": {
+        "type": "string",
+        "description": "--state, for the kinds that take it."
+      },
+      "keep": {
+        "type": "string",
+        "description": "--keep, for the kinds that take it."
+      },
+      "request_id": {
+        "type": "string",
+        "description": "--request-id, for the kinds that take it."
+      },
+      "older_than": {
+        "type": "string",
+        "description": "--older-than, for the kinds that take it."
+      },
+      "from": {
+        "type": "string",
+        "description": "--from, for the kinds that take it."
+      },
+      "limit": {
+        "type": "number",
+        "description": "--limit, for the kinds that take it."
+      },
+      "include_ambiguous": {
+        "type": "boolean",
+        "description": "--include-ambiguous, for the kinds that take it."
+      },
+      "no_llm": {
+        "type": "boolean",
+        "description": "--no-llm, for the kinds that take it."
+      },
+      "all_drifted": {
+        "type": "boolean",
+        "description": "--all-drifted, for the kinds that take it."
+      },
+      "held": {
+        "type": "boolean",
+        "description": "--held, for the kinds that take it."
+      },
+      "include_failures": {
+        "type": "boolean",
+        "description": "--include-failures, for the kinds that take it."
+      },
+      "force": {
+        "type": "boolean",
+        "description": "--force, for the kinds that take it."
+      },
+      "close": {
+        "type": "boolean",
+        "description": "--close, for the kinds that take it."
+      },
+      "no_embed": {
+        "type": "boolean",
+        "description": "--no-embed, for the kinds that take it."
+      },
+      "expect": {
+        "type": "string",
+        "required": true,
+        "description": "The preview_hash repair_preview returned for this selection."
+      },
+      "yes": {
+        "type": "boolean",
+        "description": "The user agreed to the previewed changes."
+      }
+    },
+    "scope": "admin",
+    "localOnly": true
+  },
+  {
     "name": "put_raw_data",
     "idempotent": false,
     "outputRedaction": "no_stored_text",

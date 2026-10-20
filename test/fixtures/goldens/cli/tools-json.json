@@ -2,8 +2,8 @@
   "golden": {
     "exitCode": 0,
     "stderr": "",
-    "stdoutBytes": 243872,
-    "stdoutSha256": "6ee4209e4e99064f148052de48a83f11e600ff47fc3bb720a6a9394bb59e2737",
+    "stdoutBytes": 257175,
+    "stdoutSha256": "2e3233d284ef96995bfe97bf447c3fc146fe07dc89a1db6b9d333b2063ba2816",
     "toolNames": [
       "remember",
       "entity",
@@ -72,6 +72,10 @@
       "sync_brain_skills",
       "leave_brain",
       "sync_brain",
+      "sync_status",
+      "sync_unblock",
+      "repair_preview",
+      "repair_apply",
       "put_raw_data",
       "get_raw_data",
       "resolve_slugs",
@@ -3478,6 +3482,403 @@
             }
           },
           "required": [],
+          "type": "object"
+        },
+        "scope": "admin"
+      },
+      {
+        "description": "Where one source's sync stands and what to do next: the MCP twin of `gbrain sync status --json` (identical field names). State and reason, every held file with item_id and preview/apply/verify steps, freshness, the notifier block, autofix (recent, pending, switches) and one next step. Over the local stdio server each step names the tool to call (repair_preview, repair_apply, sync_unblock, sync_brain); a remote connection gets read-only items whose steps name the exact command for the brain host. Held pages this connection cannot read are withheld and counted (holds_withheld).",
+        "idempotent": true,
+        "local_only": false,
+        "mutating": false,
+        "name": "sync_status",
+        "parameters": {
+          "detail": "boolean?",
+          "source_id": "string?"
+        },
+        "required_scopes": [],
+        "schema": {
+          "properties": {
+            "detail": {
+              "description": "Also run the heavy reads (terminal-failure summary, checkpoint blockers, live cursors), as --detail does.",
+              "type": "boolean"
+            },
+            "source_id": {
+              "description": "The source to act on, as sources_list names it (default: this connection's source).",
+              "type": "string"
+            }
+          },
+          "required": [],
+          "type": "object"
+        },
+        "scope": "read"
+      },
+      {
+        "description": "The MCP twin of `gbrain sync unblock`: without apply, previews the safe action for every held file of one source (re-screens, content-lane repairs, refusals by name) and returns its preview_hash; with apply, expect (that hash) and yes (the user agreed), performs it and records a receipt naming this agent. A changed preview refuses preview_changed; no yes refuses confirmation_required. Local stdio server only.",
+        "idempotent": false,
+        "local_only": true,
+        "mutating": true,
+        "name": "sync_unblock",
+        "parameters": {
+          "apply": "boolean?",
+          "expect": "string?",
+          "no_llm": "boolean?",
+          "no_repair": "boolean?",
+          "source_id": "string?",
+          "yes": "boolean?"
+        },
+        "required_scopes": [],
+        "schema": {
+          "properties": {
+            "apply": {
+              "description": "Perform the previewed actions (needs expect and yes).",
+              "type": "boolean"
+            },
+            "expect": {
+              "description": "The preview_hash of the unblock preview being applied.",
+              "type": "string"
+            },
+            "no_llm": {
+              "description": "Repairs keep to their free tiers, as --no-llm.",
+              "type": "boolean"
+            },
+            "no_repair": {
+              "description": "Refuse every repair-class hold instead of repairing it, as --no-repair.",
+              "type": "boolean"
+            },
+            "source_id": {
+              "description": "The source to act on, as sources_list names it (default: this connection's source).",
+              "type": "string"
+            },
+            "yes": {
+              "description": "The user agreed to the previewed actions.",
+              "type": "boolean"
+            }
+          },
+          "required": [],
+          "type": "object"
+        },
+        "scope": "admin"
+      },
+      {
+        "description": "Preview one gbrain repair kind (or the content lane) on one source, read-only, with the CLI's own params (kind, source_id, only, skip, slug, include_ambiguous, ...). Returns counts, items, residuals and the preview_hash repair_apply binds to (the content lane: one hash per kind, comma-joined), plus the apply step. Reconciles an earlier agent apply first. No file diffs (run the kind with --diff on the brain host for those).",
+        "idempotent": true,
+        "local_only": false,
+        "mutating": false,
+        "name": "repair_preview",
+        "parameters": {
+          "all_drifted": "boolean?",
+          "class": "string?",
+          "close": "boolean?",
+          "force": "boolean?",
+          "from": "string?",
+          "held": "boolean?",
+          "include_ambiguous": "boolean?",
+          "include_failures": "boolean?",
+          "keep": "string?",
+          "kind": "string",
+          "limit": "number?",
+          "max_usd": "number?",
+          "no_embed": "boolean?",
+          "no_llm": "boolean?",
+          "older_than": "string?",
+          "only": "array?",
+          "prefer": "string?",
+          "request": "array?",
+          "request_id": "string?",
+          "side": "string?",
+          "since": "string?",
+          "skip": "array?",
+          "slug": "array?",
+          "source_id": "string?",
+          "state": "string?"
+        },
+        "required_scopes": [],
+        "schema": {
+          "properties": {
+            "all_drifted": {
+              "description": "--all-drifted, for the kinds that take it.",
+              "type": "boolean"
+            },
+            "class": {
+              "description": "--class, for the kinds that take it.",
+              "type": "string"
+            },
+            "close": {
+              "description": "--close, for the kinds that take it.",
+              "type": "boolean"
+            },
+            "force": {
+              "description": "--force, for the kinds that take it.",
+              "type": "boolean"
+            },
+            "from": {
+              "description": "--from, for the kinds that take it.",
+              "type": "string"
+            },
+            "held": {
+              "description": "--held, for the kinds that take it.",
+              "type": "boolean"
+            },
+            "include_ambiguous": {
+              "description": "--include-ambiguous, for the kinds that take it.",
+              "type": "boolean"
+            },
+            "include_failures": {
+              "description": "--include-failures, for the kinds that take it.",
+              "type": "boolean"
+            },
+            "keep": {
+              "description": "--keep, for the kinds that take it.",
+              "type": "string"
+            },
+            "kind": {
+              "description": "The repair kind, as gbrain repair names it (frontmatter, fences, slug-conflicts, file-drift, ...), or content for the content-repair lane.",
+              "type": "string"
+            },
+            "limit": {
+              "description": "--limit, for the kinds that take it.",
+              "type": "number"
+            },
+            "max_usd": {
+              "description": "--max-usd, for the kinds that take it.",
+              "type": "number"
+            },
+            "no_embed": {
+              "description": "--no-embed, for the kinds that take it.",
+              "type": "boolean"
+            },
+            "no_llm": {
+              "description": "--no-llm, for the kinds that take it.",
+              "type": "boolean"
+            },
+            "older_than": {
+              "description": "--older-than, for the kinds that take it.",
+              "type": "string"
+            },
+            "only": {
+              "description": "Repeatable --only values.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "prefer": {
+              "description": "--prefer, for the kinds that take it.",
+              "type": "string"
+            },
+            "request": {
+              "description": "Repeatable --request values.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "request_id": {
+              "description": "--request-id, for the kinds that take it.",
+              "type": "string"
+            },
+            "side": {
+              "description": "--side, for the kinds that take it.",
+              "type": "string"
+            },
+            "since": {
+              "description": "--since, for the kinds that take it.",
+              "type": "string"
+            },
+            "skip": {
+              "description": "Repeatable --skip values.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "slug": {
+              "description": "Repeatable --slug values.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "source_id": {
+              "description": "The source to act on, as sources_list names it (default: this connection's source).",
+              "type": "string"
+            },
+            "state": {
+              "description": "--state, for the kinds that take it.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        "scope": "read"
+      },
+      {
+        "description": "Apply exactly the set a repair_preview returned: same params plus expect (its preview_hash) and yes (the user agreed). A changed preview refuses preview_changed; no yes refuses confirmation_required; a pending earlier apply refuses write_pending. Runs the kind as gbrain repair <kind> --apply --expect does and records a receipt naming this agent; next is the sync that imports the repaired files. Local stdio server only.",
+        "idempotent": false,
+        "local_only": true,
+        "mutating": true,
+        "name": "repair_apply",
+        "parameters": {
+          "all_drifted": "boolean?",
+          "class": "string?",
+          "close": "boolean?",
+          "expect": "string",
+          "force": "boolean?",
+          "from": "string?",
+          "held": "boolean?",
+          "include_ambiguous": "boolean?",
+          "include_failures": "boolean?",
+          "keep": "string?",
+          "kind": "string",
+          "limit": "number?",
+          "max_usd": "number?",
+          "no_embed": "boolean?",
+          "no_llm": "boolean?",
+          "older_than": "string?",
+          "only": "array?",
+          "prefer": "string?",
+          "request": "array?",
+          "request_id": "string?",
+          "side": "string?",
+          "since": "string?",
+          "skip": "array?",
+          "slug": "array?",
+          "source_id": "string?",
+          "state": "string?",
+          "yes": "boolean?"
+        },
+        "required_scopes": [],
+        "schema": {
+          "properties": {
+            "all_drifted": {
+              "description": "--all-drifted, for the kinds that take it.",
+              "type": "boolean"
+            },
+            "class": {
+              "description": "--class, for the kinds that take it.",
+              "type": "string"
+            },
+            "close": {
+              "description": "--close, for the kinds that take it.",
+              "type": "boolean"
+            },
+            "expect": {
+              "description": "The preview_hash repair_preview returned for this selection.",
+              "type": "string"
+            },
+            "force": {
+              "description": "--force, for the kinds that take it.",
+              "type": "boolean"
+            },
+            "from": {
+              "description": "--from, for the kinds that take it.",
+              "type": "string"
+            },
+            "held": {
+              "description": "--held, for the kinds that take it.",
+              "type": "boolean"
+            },
+            "include_ambiguous": {
+              "description": "--include-ambiguous, for the kinds that take it.",
+              "type": "boolean"
+            },
+            "include_failures": {
+              "description": "--include-failures, for the kinds that take it.",
+              "type": "boolean"
+            },
+            "keep": {
+              "description": "--keep, for the kinds that take it.",
+              "type": "string"
+            },
+            "kind": {
+              "description": "The repair kind, as gbrain repair names it (frontmatter, fences, slug-conflicts, file-drift, ...), or content for the content-repair lane.",
+              "type": "string"
+            },
+            "limit": {
+              "description": "--limit, for the kinds that take it.",
+              "type": "number"
+            },
+            "max_usd": {
+              "description": "--max-usd, for the kinds that take it.",
+              "type": "number"
+            },
+            "no_embed": {
+              "description": "--no-embed, for the kinds that take it.",
+              "type": "boolean"
+            },
+            "no_llm": {
+              "description": "--no-llm, for the kinds that take it.",
+              "type": "boolean"
+            },
+            "older_than": {
+              "description": "--older-than, for the kinds that take it.",
+              "type": "string"
+            },
+            "only": {
+              "description": "Repeatable --only values.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "prefer": {
+              "description": "--prefer, for the kinds that take it.",
+              "type": "string"
+            },
+            "request": {
+              "description": "Repeatable --request values.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "request_id": {
+              "description": "--request-id, for the kinds that take it.",
+              "type": "string"
+            },
+            "side": {
+              "description": "--side, for the kinds that take it.",
+              "type": "string"
+            },
+            "since": {
+              "description": "--since, for the kinds that take it.",
+              "type": "string"
+            },
+            "skip": {
+              "description": "Repeatable --skip values.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "slug": {
+              "description": "Repeatable --slug values.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "source_id": {
+              "description": "The source to act on, as sources_list names it (default: this connection's source).",
+              "type": "string"
+            },
+            "state": {
+              "description": "--state, for the kinds that take it.",
+              "type": "string"
+            },
+            "yes": {
+              "description": "The user agreed to the previewed changes.",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "kind",
+            "expect"
+          ],
           "type": "object"
         },
         "scope": "admin"

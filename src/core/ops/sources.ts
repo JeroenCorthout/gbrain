@@ -300,7 +300,10 @@ const sources_status: Operation = {
     const status = await getSourceStatus(ctx.engine, p.id as string);
     const { readCompanyBrainSourceStatus } = await import('../company-brain/status.ts');
     const ingestion = await readCompanyBrainSourceStatus(ctx.engine, p.id as string);
-    return ingestion ? { ...status, ingestion } : status;
+    // GBRA-133 PR 3: held files, their repair steps and the next step live in sync_status; point at it.
+    const { opViewer, syncStatusPointer } = await import('../../commands/sync/status-document.ts');
+    const sync_status = syncStatusPointer(p.id as string, await opViewer(ctx));
+    return ingestion ? { ...status, ingestion, sync_status } : { ...status, sync_status };
   },
   cliHints: { name: 'sources_status', hidden: true },
 };
