@@ -122,6 +122,8 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
     , recovering = null
     , final = null
     , inTransactionAfterSent = false
+    , probeRing = []
+  const probeEv = (e) => { probeRing.push(Math.round(performance.now()) + ' ' + e); probeRing.length > 60 && probeRing.shift() }
 
   const connection = {
     queue: queues.closed,
@@ -174,6 +176,7 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
   }
 
   function execute(q) {
+    probeEv('exec q=' + !!query + ' sent=' + sent.length + ' sock=' + (socket ? socket.readyState : 'null') + ' init=' + !!initial + ' ' + String(q.strings && q.strings[0] || '').replace(/\s+/g,' ').slice(0, 40))
     if (terminated)
       return queryError(q, Errors.connection('CONNECTION_DESTROYED', options))
 
@@ -341,7 +344,7 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
     ageTimer.cancel()
     const reason = kind === 'age' && received > 0 ? 'age' : 'idle'
     const stuck = { age_ms: Math.round(performance.now() - queryStart), queued: sent.length, statement: statementText(query), reason, budget_ms: query.inflightCaps ? query.inflightCaps[kind] : 0 }
-    try { process.stderr.write('[probe-stuck] ' + JSON.stringify({ chunk: chunk ? chunk.length : null, timer: nextWriteTimer !== null, ready: socket && socket.readyState, written: socket && socket.bytesWritten, read: socket && socket.bytesRead, destroyed: socket && socket.destroyed, sent: sent.length, reserved: !!connection.reserved, status: connection.status, inTx: inTransactionAfterSent, initial: !!initial, terminated, ending: !!ending, stmt: statementText(query), lastWritten: lastWritten === query, queue: connection.queue && connection.queue === queues.busy ? 'busy' : connection.queue === queues.reserved ? 'reserved' : connection.queue === queues.full ? 'full' : connection.queue === queues.open ? 'open' : 'other' }) + '\n') } catch (e) { process.stderr.write('[probe-stuck] err ' + e + '\n') }
+    try { process.stderr.write('[probe-stuck] ' + JSON.stringify({ ring: probeRing, lport: socket && socket.localPort, wl: socket && socket.writableLength, chunk: chunk ? chunk.length : null, timer: nextWriteTimer !== null, ready: socket && socket.readyState, written: socket && socket.bytesWritten, read: socket && socket.bytesRead, destroyed: socket && socket.destroyed, sent: sent.length, reserved: !!connection.reserved, status: connection.status, inTx: inTransactionAfterSent, initial: !!initial, terminated, ending: !!ending, stmt: statementText(query), lastWritten: lastWritten === query, queue: connection.queue && connection.queue === queues.busy ? 'busy' : connection.queue === queues.reserved ? 'reserved' : connection.queue === queues.full ? 'full' : connection.queue === queues.open ? 'open' : 'other' }) + '\n') } catch (e) { process.stderr.write('[probe-stuck] err ' + e + '\n') }
     const s = socket
     recovering = recovering || 'stuck'
     error(Errors.connection('CONNECTION_STUCK', options, socket))
@@ -422,6 +425,7 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
   }
 
   function write(x, fn) {
+    probeEv('write ' + x.length + ' chunk=' + (chunk ? chunk.length : 0) + ' timer=' + (nextWriteTimer !== null) + ' fn=' + !!fn)
     chunk = chunk ? Buffer.concat([chunk, x]) : Buffer.from(x)
     if (fn || chunk.length >= 1024)
       return nextWrite(fn)
@@ -430,6 +434,7 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
   }
 
   function nextWrite(fn) {
+    probeEv('nextWrite ' + (chunk ? chunk.length : 'null') + ' sock=' + (socket ? socket.readyState + '/' + socket.bytesWritten : 'null'))
     const x = socket.write(chunk, fn)
     nextWriteTimer !== null && clearImmediate(nextWriteTimer)
     chunk = nextWriteTimer = null
@@ -515,6 +520,7 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
   }
 
   async function connect() {
+    probeEv('connect sock=' + !!socket)
     terminated = false
     backendParameters = {}
     socket || (socket = await createSocket())
@@ -545,6 +551,7 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
   }
 
   function connected() {
+    probeEv('connected')
     try {
       statements = {}
       needsTypes = options.fetch_types
@@ -562,6 +569,7 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
   }
 
   function error(err) {
+    probeEv('error ' + (err && err.code))
     if (cancelMessage)
       cancelError = err
     if (connection.queue === queues.connecting && options.host[retries + 1])
@@ -618,6 +626,7 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
   }
 
   function terminate() {
+    probeEv('terminate')
     terminated = true
     if (stream || query || initial || sent.length)
       error(Errors.connection('CONNECTION_DESTROYED', options))
@@ -632,6 +641,7 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
   }
 
   async function closed(hadError) {
+    probeEv('closed ' + hadError + ' q=' + !!query + ' sent=' + sent.length + ' chunk=' + (chunk ? chunk.length : 0) + ' timer=' + (nextWriteTimer !== null))
     incoming = Buffer.alloc(0)
     remaining = 0
     incomings = null
@@ -671,7 +681,7 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
 
     // GBrain (#6543 A6): a socket that closed under statements is a recovery the next completed startup reports.
     ;(query || sent.length) && (recovering = recovering || 'closed')
-    !hadError && (query || sent.length) && error(Errors.connection('CONNECTION_CLOSED', options, socket))
+    ;(query || sent.length || deferredRetries.length) && error(Errors.connection('CONNECTION_CLOSED', options, socket))
     // GBrain (#6543): the dead socket's ErrorResponse (a FATAL 57P01, a pooler's XX000) and its partial result belonged
     // to statements that just failed. Left in place, the replacement connection's startup ReadyForQuery handed that
     // error to its first statement, and a stale row count left holes at the start of the next result.
@@ -797,6 +807,7 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
   }
 
   function ReadyForQuery(x) {
+    probeEv('RFQ ' + String.fromCharCode(x[5]) + ' q=' + !!query + ' sent=' + sent.length + ' init=' + !!initial + ' res=' + !!connection.reserved)
     connection.status = x[5]
     query && query === lastWritten && (lastWritten = null)
     connection.inflightSince = connection.inflightCap = 0
