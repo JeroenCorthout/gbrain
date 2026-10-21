@@ -156,6 +156,7 @@ import * as sourcesImpl from './engine-sql/sources.ts';
 import * as filesImpl from './engine-sql/files.ts';
 import type { ChunkWindowRequest, ChunkWindowOpts, ChunkWindowPage } from './search/chunk-windows.ts';
 import type { KeywordPageWindow } from './search/keyword-statement.ts';
+import { frontmatterWhereSql } from './search/frontmatter-where.ts';
 import type { EmbeddingState, EmbeddingStateCounts, EmbeddingStateRow } from './embedding-state.ts';
 import * as chunksImpl from './engine-sql/chunks.ts';
 import * as pageBodyImpl from './engine-sql/page-body.ts';
@@ -1458,6 +1459,7 @@ export class PGLiteEngine implements BrainEngine {
       params.push(opts.types);
       extraFilter += ` AND p.type = ANY($${params.length}::text[])`;
     }
+    extraFilter += frontmatterWhereSql('p', opts?.where, json => `$${params.push(json)}`);
     // Postgres parity: single-type filter and exact-slug excludes.
     if (opts?.type) {
       params.push(opts.type);

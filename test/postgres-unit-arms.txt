@@ -201,6 +201,7 @@ test/managed-facts-withdrawal-recovery-6506.test.ts
 test/managed-facts-withdrawn-skip-6506.test.ts
 test/managed-lint.test.ts
 test/managed-maintenance-links.test.ts
+test/managed-root-aliases-7203.test.ts
 test/managed-sweep-corpus-windows.test.ts
 test/managed-sweep-refused-window-retry.test.ts
 test/managed-sweep-timeline.test.ts
@@ -446,5 +447,6 @@ test/vector-manifest-probe-bound.test.ts
 test/withdrawal-overlay-concurrency.test.ts
 test/withdrawal-publication-file.test.ts
 test/worktree-refresh-recovery-row-gbra130.test.ts
+test/write-through-leak-guard-alias-7203.test.ts
 test/writer-status-movement-not-read-gbra130.test.ts
 test/writer-status-owner-backends.test.ts

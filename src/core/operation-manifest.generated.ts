@@ -512,7 +512,7 @@ export const OPERATION_MANIFEST: OperationMeta[] = [
     "name": "list_pages",
     "idempotent": true,
     "outputRedaction": "retrieval",
-    "description": "List pages with filters. For 'what's recent / what did I touch this week' use sort=updated_desc. Default 50 rows; truncated: continue with updated_after + updated_after_slug from the last row.",
+    "description": "List pages by type, slug_prefix, frontmatter where; what did I touch this week: sort=updated_desc. Default 50; truncated: continue with updated_after + updated_after_slug from the last row.",
     "params": {
       "type": {
         "type": "string",
@@ -551,6 +551,17 @@ export const OPERATION_MANIFEST: OperationMeta[] = [
       "include_deleted": {
         "type": "boolean",
         "description": "Include soft-deleted pages."
+      },
+      "slug_prefix": {
+        "type": "string",
+        "description": "Literal slug prefix, e.g. 'deals/'.",
+        "fullSurfaceOnly": true
+      },
+      "where": {
+        "type": "object",
+        "cliKeyValue": true,
+        "fullSurfaceOnly": true,
+        "description": "Frontmatter equality, e.g. {status: \"active\"}; a list matches any."
       },
       "source_id": {
         "type": "string",
@@ -1308,6 +1319,12 @@ export const OPERATION_MANIFEST: OperationMeta[] = [
         },
         "description": "Page types, e.g. ['person']."
       },
+      "where": {
+        "type": "object",
+        "cliKeyValue": true,
+        "fullSurfaceOnly": true,
+        "description": "Frontmatter equality, e.g. {status: \"active\"}; a list matches any."
+      },
       "snippet_chars": {
         "type": "number",
         "description": "Chars per row (0 = full)."
@@ -1414,6 +1431,12 @@ export const OPERATION_MANIFEST: OperationMeta[] = [
           "type": "string"
         },
         "description": "Page types, e.g. ['person']."
+      },
+      "where": {
+        "type": "object",
+        "cliKeyValue": true,
+        "fullSurfaceOnly": true,
+        "description": "Frontmatter equality, e.g. {status: \"active\"}; a list matches any."
       },
       "snippet_chars": {
         "type": "number",

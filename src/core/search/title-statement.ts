@@ -11,6 +11,7 @@ import { searchLimitCap } from './eval-pool-depth.ts';
 import { getFtsLanguage } from '../fts-language.ts';
 import { chunkGenerationFilter, requiresSafeChunks } from './safe-chunks.ts';
 import { normalizeAlias } from './alias-normalize.ts';
+import { frontmatterWhereSql } from './frontmatter-where.ts';
 import { resolveBoostMap, resolveHardExcludes } from './source-boost.ts';
 import {
   boundWebsearchQuery,
@@ -73,6 +74,7 @@ export function buildSearchTitlesStatement(query: string, opts: SearchOpts | und
     params.push(opts.types);
     filters += ` AND p.type = ANY($${params.length}::text[])`;
   }
+  filters += frontmatterWhereSql('p', opts?.where, json => `$${params.push(json)}`);
   if (opts?.exclude_slugs?.length) {
     params.push(opts.exclude_slugs);
     filters += ` AND p.slug != ALL($${params.length}::text[])`;

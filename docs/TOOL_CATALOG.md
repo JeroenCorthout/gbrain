@@ -185,7 +185,7 @@ Every non-localOnly operation on the MCP surface: 158 tools across 25 areas. **S
 | `get_versions` | Page version history, newest snapshot first: metadata only (id, snapshot_at, title, type, tags, frontmatter) for the newest 20 versions by default. | read |  |  |
 | `get_write_request` | Your write's receipt by request_id (after write_pending or a lost reply). | write | yes |  |
 | `list_page_purges` | Owner-only (`gbrain pages purges list`). | admin |  |  |
-| `list_pages` | List pages with filters. | read | yes |  |
+| `list_pages` | List pages by type, slug_prefix, frontmatter where; what did I touch this week: sort=updated_desc. | read | yes |  |
 | `list_write_conflicts` | Pages whose writes keep ending in a source_changed conflict, grouped by slug. | read |  |  |
 | `list_write_requests` | Your write receipts in one source, newest first (for a lost request_id). | write | yes |  |
 | `put_page` | Complete content REPLACES the whole page: read get_page include_content:true; its revision is expected_revision. | write | yes |  |

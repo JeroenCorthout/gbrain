@@ -10,6 +10,49 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.335.0] - 2026-10-21
+
+**A page of a source with no checkout of its own can no longer be written into another source's checkout through a second spelling of its path, and managed-root records keep their bound owner whichever spelling sorts first.** Both compared stored path strings where they needed filesystem identity. A symlink, a trailing slash, the macOS `/var` → `/private/var` alias or a case variant on a case-insensitive disk all name the same directory under a different spelling.
+
+### What changed
+
+| Situation | Before | Now |
+|---|---|---|
+| `sync.repo_path` is another source's checkout under another spelling, and a source with no `local_path` writes through | the page file landed in the other source's tree, and that source's next sync imported it as its own page | refused as `source_repo_belongs_to_other_source`, the same as the exact spelling |
+| `sync.repo_path` lies inside another source's checkout, or another source's checkout lies inside `sync.repo_path` | the page file landed in that checkout | a file inside any other source's checkout is refused; files elsewhere still write |
+| Another source's path can't be resolved (a symlink loop, an unreadable parent) | compared as a string | the leak guard fails closed |
+| doctor `default_source_local_path` with an aliased or nested collision | ok | warns, names the source, and counts default-source pages that share a file path with that source's pages: pages an earlier misrouted write may have duplicated (read-only, nothing changes) |
+| A bound worktree and an unbound source path alias one managed root | the spelling that sorted last won the root's record, so the record could lose its worktree identity or name the unbound source in refusal messages and fix commands | one record per root; the bound row wins regardless of spelling or order |
+| Idle refresh of an aliased managed root | rewrote the record twice on every refresh | rewrites nothing (#5297 holds) |
+| A record an alias already overwrote | stayed wrong | rewritten with the bound identity on the next refresh; no migration and no data removed |
+
+The filesystem fence itself was never bypassed: writes through either spelling of a managed root were refused before and still are.
+
+Reported by @dyana1lyons-ai (#7203).
+
+## [0.60.334.0] - 2026-10-21
+
+**Agents can now filter search and page listings by frontmatter, pass `--types` as plain words, and see what each search cost in time and money.** Without these, agents fell back to grep and raw SQL to answer "which company pages mention this" or "what did I touch this week". Retrieval now answers those questions directly and says where the time went.
+
+### What changed
+
+| Situation | Before | Now |
+|---|---|---|
+| `gbrain search q --types company` or `--types person,company` | failed with "--types requires a JSON array" | a bare value or a comma list works; a JSON array still works (#7173) |
+| Filter by a frontmatter field | not possible from search, query or `list_pages` | `--where key=value` (repeat to AND keys; `key=a,b` matches any value), MCP `where: { key: value \| [values] }`. The existing GIN index serves it; no migration (#7159) |
+| List pages under a slug prefix | not possible | `list_pages --slug-prefix <prefix>` (#7159) |
+| A search names a page type or a time period without filtering on it | no hint | one `search_filter_hint` info notice with the filtered command; results are unchanged |
+| What a search or query cost | not reported | `_meta.retrieval.cost` lists the embedding, rerank, chat, expansion and decide calls with tokens and USD (#7158) |
+| Where a CLI search spent its time | not reported | `--json --timings` prints `{results, timings_ms, cost}` with startup, connect, context and stage timings. Plain `--json` still prints the bare array |
+| A query-expansion call | wrote no usage row | writes a `chat_usage_log` row (phase `expansion`); `think` synthesis records phase `think` (#7176) |
+
+Nothing changes on upgrade. Every new parameter is optional, and existing `--json` output keeps its shape.
+
+### For contributors
+
+- A per-request `AsyncLocalStorage` meter (`withAIInvocationMeter`) keeps cost from concurrent MCP requests separate.
+- Frontmatter `where` keys must be plain identifiers, and values travel only as bound JSON (8 keys, 32 values, 256 characters).
+
 ## [0.60.333.0] - 2026-10-21
 
 **`gbrain doctor` has a quick tier for agents on large brains, grades checks that ran out of budget honestly, and stops counting sync-failure ledger rows nothing can retry. One-shot CLI reads also start faster behind a pooler.** On a large brain a full doctor run used to blow its budget and report a wall of unknowns. Agents read those as failures and repeated the run. `gbrain doctor --tier quick` answers the questions an agent gates on within 10 seconds. Every other check comes from its last known result, with the result's age.
