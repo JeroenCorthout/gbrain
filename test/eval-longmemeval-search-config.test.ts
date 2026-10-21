@@ -86,4 +86,32 @@ describe('runEvalLongMemEval — injected search config snapshot', () => {
       rmSync(tmp, { recursive: true, force: true });
     }
   }, 60_000);
+
+  test('--reranker-fuse / --reranker-document land in the benchmark brain, the receipt and a distinct retrieval_config_hash', async () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'lme-search-config-fuse-'));
+    const run = async (name: string, extra: string[], snapshot: Record<string, string> = {}) => {
+      const engine = await createBenchmarkBrain();
+      try {
+        await runEvalLongMemEval([FIXTURE_PATH, '--keyword-only', '--retrieval-only', '--no-trajectory', '--by-type', '--limit', '1', '--output', join(tmp, name), ...extra],
+          { engine, searchConfigSnapshot: snapshot });
+        const lines = readFileSync(join(tmp, name), 'utf8').split('\n').filter(l => l.trim());
+        return { fuse: await engine.getConfig('search.reranker.fuse'), document: await engine.getConfig('search.reranker.document'), summary: JSON.parse(lines[lines.length - 1]) };
+      } finally {
+        await engine.disconnect();
+      }
+    };
+    try {
+      const base = await run('base.jsonl', []);
+      const both = await run('both.jsonl', ['--reranker-fuse', 'rrf', '--reranker-document', 'titled'], { 'search.reranker.fuse': 'replace' });
+      const fuse = await run('fuse.jsonl', ['--reranker-fuse', 'rrf']);
+      expect([both.fuse, both.document]).toEqual(['rrf', 'titled']);
+      expect(base.fuse).toBeNull();
+      expect(base.summary.run_config.reranker_stage).toBeUndefined();
+      expect(both.summary.run_config.reranker_stage).toEqual({ fuse: 'rrf', document: 'titled' });
+      expect(new Set([base, both, fuse].map(r => r.summary.run_config.retrieval_config_hash)).size).toBe(3);
+      await expect(runEvalLongMemEval([FIXTURE_PATH, '--reranker-fuse', 'borda'], { exitOnError: false })).rejects.toThrow();
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  }, 120_000);
 });

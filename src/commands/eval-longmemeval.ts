@@ -120,6 +120,7 @@ import { importFromContent } from '../core/import-file.ts';
 import { hybridSearch, type HybridSearchOpts } from '../core/search/hybrid.ts';
 import { expandQuery } from '../core/search/expansion.ts';
 import { normalizeExpansionVariantBudget } from '../core/search/fusion-lists.ts';
+import { normalizeRerankDocument, normalizeRerankFuse, RERANK_DOCUMENT_MODES, RERANK_FUSE_MODES, type RerankDocumentMode, type RerankFuseMode } from '../core/search/rerank-fuse.ts';
 import {
   KNOBS_HASH_VERSION,
   SEARCH_MODES,
@@ -192,6 +193,8 @@ interface ParsedArgs {
   reranker?: boolean;
   /** `--autocut on|off` → `search.autocut` pin. undefined = not pinned. */
   autocut?: boolean;
+  /** `--reranker-fuse` / `--reranker-document` → `search.reranker.fuse` / `search.reranker.document` pins (rerank-fuse.ts). undefined = not pinned. */
+  rerankerFuse?: RerankFuseMode; rerankerDocument?: RerankDocumentMode;
   resumeFromPath?: string;
   allowMixedRunConfig: boolean;
   questionIdsPath?: string;
@@ -308,6 +311,10 @@ const LME_FLAGS: LmeFlag[] = [
     apply: (o, v) => { o.reranker = parseOnOff('--reranker', v); } },
   { name: '--autocut', arg: 'on|off', help: ['Pin `search.autocut` for the run (beats any injected snapshot).'],
     apply: (o, v) => { o.autocut = parseOnOff('--autocut', v); } },
+  { name: '--reranker-fuse', arg: RERANK_FUSE_MODES.join('|'), help: ['Pin `search.reranker.fuse`: replace (reranker order) or rrf (fused with the first-pass order, k=60). Beats a --search-pin.'],
+    apply: (o, v) => { o.rerankerFuse = normalizeRerankFuse(v); if (!o.rerankerFuse) throw new Error(`--reranker-fuse must be ${RERANK_FUSE_MODES.join('|')} (got: ${v})`); } },
+  { name: '--reranker-document', arg: RERANK_DOCUMENT_MODES.join('|'), help: ['Pin `search.reranker.document`: chunk (chunk text) or titled (page title and date before the chunk). Beats a --search-pin.'],
+    apply: (o, v) => { o.rerankerDocument = normalizeRerankDocument(v); if (!o.rerankerDocument) throw new Error(`--reranker-document must be ${RERANK_DOCUMENT_MODES.join('|')} (got: ${v})`); } },
   { name: '--output', arg: 'FILE', help: ['Write JSONL to FILE instead of stdout.'],
     apply: (o, v) => { o.outputPath = v; } },
   { name: '--resume-from', arg: 'FILE', help: [
@@ -588,6 +595,7 @@ function resolvePins(opts: ParsedArgs, runOpts: RunOpts, trajectoryEnabled: bool
       ...(opts.expansionVariantBudget !== undefined ? { expansion_variant_budget: opts.expansionVariantBudget } : {}),
       ...(opts.reranker !== undefined ? { reranker_enabled: opts.reranker } : {}),
       ...(opts.autocut !== undefined ? { autocut: opts.autocut } : {}),
+      ...(opts.rerankerFuse ? { reranker_fuse: opts.rerankerFuse } : {}), ...(opts.rerankerDocument ? { reranker_document: opts.rerankerDocument } : {}),
     },
   });
   let embedder = 'unconfigured';
@@ -608,6 +616,7 @@ function resolvePins(opts: ParsedArgs, runOpts: RunOpts, trajectoryEnabled: bool
     top_k: opts.topK,
     trajectory: trajectoryEnabled,
     ...(searchPins ? { search_pins: searchPins } : {}),
+    ...(knobs.reranker_fuse !== 'replace' || knobs.reranker_document !== 'chunk' ? { reranker_stage: { fuse: knobs.reranker_fuse, document: knobs.reranker_document } } : {}),
     ...(opts.evalPoolDepth ? { eval_pool_depth: opts.evalPoolDepth } : {}), ...(decide ? { decide: decide.runConfig } : {}),
     ...retrievalArms.armPins(opts.arms), ...viaOperation.viaOperationPins(opts.viaOp),
   };
@@ -1160,6 +1169,8 @@ export async function runEvalLongMemEval(args: string[], runOpts: RunOpts = {}):
     if (opts.mode) await engine.setConfig('search.mode', opts.mode);
     if (opts.reranker !== undefined) await engine.setConfig('search.reranker.enabled', opts.reranker ? 'true' : 'false');
     if (opts.autocut !== undefined) await engine.setConfig('search.autocut', opts.autocut ? 'true' : 'false');
+    if (opts.rerankerFuse) await engine.setConfig('search.reranker.fuse', opts.rerankerFuse);
+    if (opts.rerankerDocument) await engine.setConfig('search.reranker.document', opts.rerankerDocument);
     if (opts.expansionVariantBudget !== undefined) {
       await engine.setConfig('search.expansion_variant_budget', opts.expansionVariantBudget === null ? 'legacy' : String(opts.expansionVariantBudget));
     }

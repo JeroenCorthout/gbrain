@@ -48,6 +48,8 @@ export interface RetrievalPins {
    * receipt's hash is unchanged.
    */
   search_pins?: Record<string, string>;
+  /** Resolved `search.reranker.fuse` / `.document` (`--reranker-fuse`, `--reranker-document` or a pin). Present only when not replace/chunk, so every other receipt's hash is unchanged. */
+  reranker_stage?: { fuse: string; document: string };
   /** `--eval-pool-depth N` (recall experiment): present only when set, so every other receipt's hash is unchanged. */
   eval_pool_depth?: number;
   /** System One arm (`--decide`): slots, provider, calibrations, thresholds, force_on, split. Present only when a slot is on or shadow. */
@@ -192,6 +194,7 @@ export function buildRunConfig(input: RunConfigInput): Record<string, unknown> {
     trajectory: p.trajectory,
     ...(p.search_pins && Object.keys(p.search_pins).length > 0 ? { search_pins: p.search_pins } : {}),
     ...(p.eval_pool_depth ? { eval_pool_depth: p.eval_pool_depth } : {}),
+    ...(p.reranker_stage ? { reranker_stage: p.reranker_stage } : {}),
     ...(p.decide ? { decide: p.decide } : {}),
     ...(p.contextual_synopsis ? { contextual_synopsis: p.contextual_synopsis } : {}),
     ...(p.via_operation ? { via_operation: p.via_operation } : {}),
