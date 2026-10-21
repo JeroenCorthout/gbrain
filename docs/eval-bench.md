@@ -514,9 +514,17 @@ MemCog, Zep, Hindsight, ByteRover and Supermemory are LLM-judged answer
 accuracy, a different quantity that moves with the reader and judge model.
 gbrain's own judged answer-accuracy lane (`--judge`, "Judged answer accuracy"
 below) uses the official prompts and judge model with full protocol
-disclosure; its first number is 86.6% (433/500, v0.48.4.0, default Sonnet
-reader, gpt-4o judge — see "Judged answer accuracy" below), and it carries no
-SOTA claim because those competitor numbers are protocol-unmatched. Full report,
+disclosure. Its current number is **468/500 (93.6%)** with a Sonnet 5.5
+benchmark notes reader on the release retrieval at gbrain `c5fb0201`
+(v0.60.95.0, official gpt-4o judge), and Opus 5.5 answers 474/500 on the
+frozen 2026-09-29 retrieval (`a7cb37b`). Both use gbrain's benchmark reader,
+not production `think`. The lane's first number, 86.6% (433/500, v0.48.4.0),
+is invalid: its reader saw `answer_` session ids that mark the evidence (432/500
+with the leak removed). No SOTA claim either way, because other systems'
+numbers are protocol-unmatched. Reports:
+[current pin](https://github.com/garrytan/gbrain-evals/blob/main/docs/benchmarks/2026-10-07-longmemeval-w10a-current-pin.md),
+[frontier readers](https://github.com/garrytan/gbrain-evals/blob/main/docs/benchmarks/2026-10-07-longmemeval-w10b-reader-replay.md),
+[correction](https://github.com/garrytan/gbrain-evals/blob/main/docs/benchmarks/2026-09-29-longmemeval-opaque-qa.md). Full report,
 comparison table, and receipts:
 [gbrain-evals `docs/benchmarks/2026-05-07-longmemeval-s.md`](https://github.com/garrytan/gbrain-evals/blob/main/docs/benchmarks/2026-05-07-longmemeval-s.md).
 
@@ -652,11 +660,24 @@ verdict is unaffected. Gold and hypothesis sit inside a data-boundary wrapper
 (disclosed deviation). Every row carries the provider-reported reader and
 judge snapshot ids and the reader prompt sha.
 
-**Result (2026-09-06, v0.48.4.0, 500/500 judged, 0 judge errors, `complete: true`):**
+**Current result (2026-10-06, gbrain `c5fb0201` / v0.60.95.0, measured in gbrain-evals):**
+468/500 (93.6%, exact 95% interval 91.1–95.6%) under the official judge with a
+`claude-sonnet-5-5` benchmark notes reader (3,500 output tokens, low effort),
+opaque session ids, release retrieval. Opus 5.5 on the frozen 2026-09-29
+retrieval: 474/500; GPT-6.1 Sol: 464/500. Benchmark reader, not production
+`think`. Details and per-question receipts:
+[W10a](https://github.com/garrytan/gbrain-evals/blob/main/docs/benchmarks/2026-10-07-longmemeval-w10a-current-pin.md),
+[W10b](https://github.com/garrytan/gbrain-evals/blob/main/docs/benchmarks/2026-10-07-longmemeval-w10b-reader-replay.md).
+
+**Invalid first result, kept for the record (2026-09-06, v0.48.4.0, 500/500 judged, 0 judge errors, `complete: true`).**
+The reader saw `answer_` session ids that mark the evidence; with opaque ids
+the same configuration scores 432/500
+([correction](https://github.com/garrytan/gbrain-evals/blob/main/docs/benchmarks/2026-09-29-longmemeval-opaque-qa.md)).
+Do not cite this table as gbrain's answer accuracy:
 
 | Slice | Correct | Accuracy |
 |---|---|---|
-| **All 500 (headline)** | **433/500** | **86.6%** (95% CI 83.6–89.6, question-sampling only) |
+| All 500 (invalid) | 433/500 | 86.6% (95% CI 83.6–89.6, question-sampling only) |
 | Non-abstention 470 | 404/470 | 86.0% |
 | Abstention 30 | 29/30 | 96.7% |
 | single-session-assistant | 56/56 | 100.0% |
