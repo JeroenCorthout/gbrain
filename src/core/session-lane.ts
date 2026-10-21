@@ -32,7 +32,7 @@ export interface SessionLaneCensus {
   processes: SessionLaneProcess[];
   limit: number | null;
   limit_source: 'env' | 'max_connections' | null;
-  /** The backends the limit is compared with: this role's on a pooler (its per-role pool), every client backend without one. */
+  /** The backends the limit is compared with: this role's against a per-role limit (a pooler's, or the env limit), every client backend against max_connections. */
   used: number;
   behind_pooler: boolean;
 }
@@ -71,7 +71,7 @@ export function summarizeSessionLane(input: { rows: Array<{ application_name: st
   return { total, gbrain, pooler, other, by_kind: byKind,
     by_host: [...hosts].map(([host_id, connections]) => ({ host_id, connections })).sort((a, b) => b.connections - a.connections),
     processes, limit, limit_source: input.envLimit !== null ? 'env' : limit !== null ? 'max_connections' : null,
-    used: behindPooler ? total : input.serverClients, behind_pooler: behindPooler };
+    used: behindPooler || input.envLimit !== null ? total : input.serverClients, behind_pooler: behindPooler };
 }
 
 /** Reads the census on a Postgres engine (read-only; no query text leaves the server). `urls`: the configured database URLs (a Supabase pooler among them means the limit is the pooler's). */
