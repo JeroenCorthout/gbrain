@@ -173,9 +173,49 @@ header never presents when a fact was written as when it became true. An open
 validity end reads `unknown`. The setting
 applies to `search`, `query`, `recall`, `think` and `assemble_evidence`.
 
+### Relative dates (experimental)
+
+`search.evidence_resolve_dates` is off by default and is under evaluation in
+gbrain-evals. When it's on, relative date phrases in the user turns of
+delivered conversation blocks get an absolute date in brackets. The date is
+resolved against the block's observation date (see Date headers), never
+against today. The original phrase is kept:
+
+```text
+**user:** I started about a month ago [≈2023-04-28] and ran yesterday [2023-05-27].
+```
+
+A day, a month (`[2023-04]`), a year (`[2022]`) or a day range is shown. `≈`
+marks an approximate date: the midpoint of an "N weeks/months ago" window, a
+calendar week, or a phrase like "about".
+
+Only positively identified user turns are annotated (`**user:**`, `user:`,
+`## User`, `human`, `me`). Assistant, system and named-speaker turns are
+not. The speaker becomes unknown after an omission marker or the timeline
+separator.
+
+These phrases are left alone, because their date is a guess:
+- a bare month or weekday whose year or week depends on direction ("in June",
+  "on Friday")
+- "today" and other session-day words
+- "the next month" spans
+- midweek "next weekend" / "next Thursday"
+- phrases followed by "of" ("the last week of April") or a possessive
+- fenced code
+- transcripts whose lines carry their own timestamps
+
+Brackets count in `delivered.tokens` and the budget, and `match_spans` move
+past them. `delivery.relative_dates.insertions` reports how many brackets
+were added. If the brackets push an explicit budget over its cap, the
+delivery is assembled once more with a smaller budget. If it still doesn't
+fit, the unannotated delivery is returned with the fallback
+`relative_dates_over_budget`. A failed observation-date read returns the
+unannotated delivery with `relative_dates_unavailable`. `gbrain config set`
+accepts only boolean values for the key.
+
 Config keys: `search.return_unit`, `search.return_window`,
 `search.return_budget_default`, `search.return_budget_conversation`,
-`search.return_budget_max_remote`, `search.evidence_date_header`, `search.auto_packing`,
+`search.return_budget_max_remote`, `search.evidence_date_header`, `search.evidence_resolve_dates`, `search.auto_packing`,
 `search.page_rank_cut`, `search.page_rank_cut_factor`, `think.return_unit`. Kill switch:
 `gbrain config set search.return_unit chunk` and
 `gbrain config set think.return_unit chunk` (or pass `return_unit: "chunk"`
