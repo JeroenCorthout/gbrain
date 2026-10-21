@@ -66,6 +66,13 @@ describe('KNOWN_CONFIG_KEYS search.* rows mirror what the code reads (#4605)', (
     }
   });
 
+  test('the reranker fuse and document knobs are registered and read by mode.ts', () => {
+    for (const k of ['search.reranker.fuse', 'search.reranker.document']) {
+      expect(KNOWN_CONFIG_KEYS).toContain(k);
+      expect(SEARCH_MODE_CONFIG_KEYS).toContain(k);
+    }
+  });
+
   test('every key mode.ts reads is registered', () => {
     const missing = SEARCH_MODE_CONFIG_KEYS.filter((k) => !KNOWN_CONFIG_KEYS.includes(k));
     expect(missing).toEqual([]);

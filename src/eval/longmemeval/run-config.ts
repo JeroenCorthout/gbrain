@@ -94,6 +94,11 @@ export function retrievalConfigHash(pins: RetrievalPins, knobs: KnobsFingerprint
     .digest('hex');
 }
 
+/** `--reranker-fuse` / `--reranker-document` as benchmark-brain config writes; the harness applies them after --search-pin so the flags win. */
+export function rerankStageConfig(o: { rerankerFuse?: string; rerankerDocument?: string }): Record<string, string> {
+  return { ...(o.rerankerFuse ? { 'search.reranker.fuse': o.rerankerFuse } : {}), ...(o.rerankerDocument ? { 'search.reranker.document': o.rerankerDocument } : {}) };
+}
+
 export function sha256Hex(data: string | Uint8Array): string {
   return createHash('sha256').update(data).digest('hex');
 }

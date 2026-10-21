@@ -66,6 +66,8 @@ The reranker is on for the `balanced` and `tokenmax` mode bundles, off for `cons
 
 The mechanical reason: hybrid ranking is locally optimal per strategy but globally suboptimal. A cross-encoder reranker reads the query + each candidate document jointly, with full attention. It catches the cases where the vector + keyword + graph signals all agreed on a document that's semantically related but topically wrong.
 
+Two default-off knobs shape the stage: `search.reranker.fuse rrf` orders the reranked head by reciprocal-rank fusion (k = 60) of the reranker's order and the first-pass order instead of the reranker's order alone, returning the fused value (not the provider score) as `score`; `search.reranker.document titled` sends `<title>\n<chunk>` (with the document date when the row has one) instead of the chunk text. Both are described in [`docs/guides/search-modes.md`](../guides/search-modes.md) and implemented in `src/core/search/rerank-fuse.ts`.
+
 The cost: +150ms p50 latency, ~$0.025–0.05/M tokens depending on the reranker. Disabled with `gbrain config set search.reranker.enabled false`. For agent loops that do downstream LLM work after retrieval, the latency is invisible.
 
 ## Source-aware ranking

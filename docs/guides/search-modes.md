@@ -162,6 +162,29 @@ Several of the knobs deserve a sentence:
   `gbrain config set search.reranker.gate shadow`, later
   `gbrain search stats`, and `gbrain config set search.reranker.gate off`
   restores the default).
+- **`reranker_fuse`** (config key `search.reranker.fuse`; `replace` in every
+  bundle) decides how the reranked rows are ordered. `replace` uses the
+  reranker's order. `rrf` fuses it with the order the reranker received (the
+  hybrid fusion's order) by reciprocal rank, k = 60 and equal weights:
+  `1/(60 + reranker rank) + 1/(60 + first-pass rank)`, ties keeping the
+  first-pass order. In `rrf` mode a row's returned `score` is that fused
+  value times any rank prior. It is a rank-fusion number at most 2/61 (about
+  0.033), not a relevance probability, so a threshold tuned on reranker
+  scores ("ignore below 0.8") does not carry over. The provider's score stays
+  in `rerank_score`, the fusion's inputs in `rerank_fuse`, and
+  `explain: true` adds a `fuse` entry to `score_details.rerank`. Autocut
+  keeps cutting on `rerank_score`, so it keeps the same rows it keeps under
+  `replace`, in fused order; a row the fusion lifted whose provider score is
+  below the cliff is still cut. A reranker failure, timeout or skip falls
+  back to the first-pass order exactly as under `replace`. Off by default
+  pending eval evidence; `rrf` is part of the cache key.
+- **`reranker_document`** (config key `search.reranker.document`; `chunk` in
+  every bundle) is the text sent to the reranker for each row. `chunk` sends
+  the chunk text. `titled` sends `<page title>\n<chunk>`, with the page's
+  document or event date as `<title> (<YYYY-MM-DD>)` when the row carries one
+  (import and creation dates are not shown). Both are capped at the same
+  per-document size. Off by default pending eval evidence; `titled` is part of
+  the cache key.
 - **`keyword_arm_confidence_floor`** (config key
   `search.keyword_arm_confidence_floor`; off in every bundle) down-weights the
   keyword and title arms in the fusion when the keyword arm's top-vs-second

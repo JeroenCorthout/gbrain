@@ -12,12 +12,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { installFixtureChunks } from '../helpers/page-projection.ts';
 import { PGLiteEngine } from '../../src/core/pglite-engine.ts';
-import { hybridSearch } from '../../src/core/search/hybrid.ts';
+import { hybridSearch, type HybridSearchOpts } from '../../src/core/search/hybrid.ts';
 import { configureGateway, resetGateway, __setEmbedTransportForTests, RerankError, type RerankInput, type RerankResult } from '../../src/core/ai/gateway.ts';
 import { scoresFollowRank } from '../../src/core/search/score-contract.ts';
 import { buildScoreDetails } from '../../src/core/search/explain-formatter.ts';
 import { RERANK_FUSE_K } from '../../src/core/search/rerank-fuse.ts';
-import type { HybridSearchMeta, SearchOpts, SearchResult } from '../../src/core/types.ts';
+import type { HybridSearchMeta, SearchResult } from '../../src/core/types.ts';
 
 let engine: PGLiteEngine;
 let prevHome: string | undefined;
@@ -65,7 +65,7 @@ afterAll(async () => {
 /** Reverse the incoming order; scores by reranker rank. */
 const reverse = (scores: number[]) => async (input: RerankInput): Promise<RerankResult[]> =>
   input.documents.map((_, i) => ({ index: input.documents.length - 1 - i, relevanceScore: scores[i] ?? 0.05 }));
-const search = (rerankerFn: (i: RerankInput) => Promise<RerankResult[]>, extra: SearchOpts = {}) =>
+const search = (rerankerFn: (i: RerankInput) => Promise<RerankResult[]>, extra: HybridSearchOpts = {}) =>
   hybridSearch(engine, 'alpha keyword', { limit: 10, autocut: false, reranker: { enabled: true, topNIn: 30, topNOut: null, rerankerFn }, ...extra });
 const firstPass = async () => (await hybridSearch(engine, 'alpha keyword', { limit: 10, autocut: false })).map(r => r.slug);
 const strip = (rows: SearchResult[]) => JSON.stringify(rows);

@@ -98,6 +98,7 @@ import {
   loadDataset,
   loadQuestionIds,
   redactSecrets,
+  rerankStageConfig,
   retrievalConfigHash,
   type CacheReceipt,
   type DatasetQuestion,
@@ -1165,12 +1166,10 @@ export async function runEvalLongMemEval(args: string[], runOpts: RunOpts = {}):
     // retrieval_config_hash / run_config / the gates. resetTables preserves
     // `config` between questions, so these fire once for the run; hybridSearch
     // resolves them through the standard chain.
-    for (const [k, v] of Object.entries(opts.searchPins ?? {})) await engine.setConfig(k, v);
+    for (const [k, v] of Object.entries({ ...opts.searchPins, ...rerankStageConfig(opts) })) await engine.setConfig(k, v);
     if (opts.mode) await engine.setConfig('search.mode', opts.mode);
     if (opts.reranker !== undefined) await engine.setConfig('search.reranker.enabled', opts.reranker ? 'true' : 'false');
     if (opts.autocut !== undefined) await engine.setConfig('search.autocut', opts.autocut ? 'true' : 'false');
-    if (opts.rerankerFuse) await engine.setConfig('search.reranker.fuse', opts.rerankerFuse);
-    if (opts.rerankerDocument) await engine.setConfig('search.reranker.document', opts.rerankerDocument);
     if (opts.expansionVariantBudget !== undefined) {
       await engine.setConfig('search.expansion_variant_budget', opts.expansionVariantBudget === null ? 'legacy' : String(opts.expansionVariantBudget));
     }
