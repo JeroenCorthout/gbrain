@@ -65,6 +65,7 @@
       "  [INFO] embedding_state: Embedding state (exact, column 'embedding'): 0 embedded, 7 pending, 0 keyword-only, 0 quarantined, 0 empty, 0 on deleted pages, 0 chunkless (healable); 0 unsearchable. Embeddings are disabled by choice: keyword search reads the pending chunks.",
       "  [OK] links_extraction_lag: Extraction lag not applicable (5 pages — too few to assess)",
       "  [OK] partial_embedding: No large page has chunks waiting for embedding approval (held or capped by embed.max_usd_per_page).",
+      "  [OK] sync_landing_gaps: Every page managed sync committed past its freshness target in the last 24 h is searchable.",
       "  [OK] pgvector: Extension installed",
       "  [OK] pages_upsert_arbiter: pages has the UNIQUE(source_id, slug) upsert arbiter",
       "  [OK] text_projection_readiness: Visible text projections match their canonical revisions.",

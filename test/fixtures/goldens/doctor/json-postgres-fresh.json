@@ -839,6 +839,29 @@
           "status": "ok"
         },
         {
+          "category": "brain",
+          "details": {
+            "docs": "docs/guides/resolve-paths.md#synced-but-not-searchable",
+            "sources": [
+              {
+                "after_seconds": 300,
+                "by_state": {},
+                "checked": 0,
+                "complete": true,
+                "gaps": 0,
+                "pages": [],
+                "source_id": "default",
+                "status": "ok",
+                "window_hours": 24
+              }
+            ]
+          },
+          "elapsed_ms": "<volatile>",
+          "message": "Every page managed sync committed past its freshness target in the last 24 h is searchable.",
+          "name": "sync_landing_gaps",
+          "status": "ok"
+        },
+        {
           "category": "ops",
           "elapsed_ms": "<volatile>",
           "message": "Extension installed",
@@ -2259,6 +2282,7 @@
             "on_commit": false,
             "sources": [
               {
+                "behind": null,
                 "commit_to_embedded": {
                   "p50_seconds": null,
                   "p95_seconds": null,

@@ -50,7 +50,7 @@ import { managedCursorKey, passFailureKeys, resolveManagedCursor, retireManagedC
 import { withCoordinatedWrite } from './context.ts';
 import { pipelined } from '../page-state/transactions.ts';
 import { principalAttribution } from './attribution.ts';
-import { isCodeFilePath, resolveSlugForPath } from '../sync.ts';
+import { isCodeFilePath, readMetafilePagesMode, resolveSlugForPath } from '../sync.ts';
 import { syncOriginPath } from './sync-origin.ts';
 import { databaseOnlyPageSql } from './unbound-pages.ts';
 import { originMarkerFingerprint } from './sync-markers.ts';
@@ -374,7 +374,10 @@ async function pinPass(engine: BrainEngine, input: SyncPassInput, lease: NonNull
   const configured = !remote && !opts.exclude?.length && !opts.includeHidden?.length && opts.srcSubpath === undefined
     && (opts.strategy === undefined || opts.strategy === ((context.source.config?.strategy as string | undefined) ?? 'markdown'))
     && (detached || opts.workingTree === undefined || opts.workingTree === (configuredWorking === 'true'));
-  const selectionFp = digest(selection), parserFp = parserFingerprint();
+  // GBRA-150: `sync.metafile_pages typed` widens the level's universe, so it joins the selection fingerprint (`off` keeps
+  // the fingerprint an older pass stamped): the first pass after the upgrade or a flip reads the whole level once.
+  const metafilePages = await readMetafilePagesMode(engine);
+  const selectionFp = digest(metafilePages === 'off' ? selection : { ...selection, metafile_pages: metafilePages }), parserFp = parserFingerprint();
   const obligations: ManagedSyncPassValue['obligations'] = prior ? structuredClone(prior.value.obligations)
     : { baseline_commit: context.source.last_commit, mismatch: {}, not_converged_streak: 0, faults: {} };
   obligations.mismatch ??= {}; obligations.faults ??= {}; obligations.not_converged_streak ??= 0;
@@ -561,6 +564,7 @@ async function passStampFor(engine: BrainEngine, input: { context: ManagedSyncCo
   const { context, episode, configured, counts } = input;
   // Design §6: an open episode closes by inclusion (a) or at the configured selection (b); chunker_version only by (b) over U_config.
   const closure = episode ? await input.closures({ gitRoot: context.gitRoot, root: context.root, head: input.head, slugMode: input.slugMode, episode, pass: input.selection, configured,
+    metafilePages: await readMetafilePagesMode(engine),
     configuredSelection: passSelection(await selectionPatterns(engine, { sourceId: context.sourceId } as SyncOpts), { sourceId: context.sourceId } as SyncOpts, context, input.mode) }) : null;
   const closesEpisode = closure?.closes === true;
   if (closure?.released) counts.episodeReleased = closure.released;
