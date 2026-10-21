@@ -213,7 +213,9 @@ export interface GroupHooks {
 /**
  * Publishes the whole group or nothing. `done` null means the transaction did
  * not commit; `requeued` lists members whose claims the file restoration
- * released, which the caller may claim again while it holds the worktree.
+ * released, which the caller may claim again while it holds the worktree. A
+ * member charged a transient interruption is never listed: its next claim
+ * waits for its backoff and prepares again, however long the restoration took.
  */
 /** Runs one transaction: `engine.transaction`, or a reserved connection's (Phase 4.4). */
 export type TransactionRunner = <T>(fn: (tx: BrainEngine) => Promise<T>) => Promise<T>;
@@ -420,7 +422,7 @@ export async function publishGroup(engine: BrainEngine, rows: WriteRequest[], pr
         const failure = charged?.failure ? withAttempt(charged.failure, 'publication') : undefined;
         await markRecovering(engine, row, failure ? 'publication_failed' : 'publication_not_started', failure);
         const recovered = await recoverPublication(engine, row.id, hostId, true, failure, true);
-        if (recovered.state === 'queued' && !recovered.recovery) requeued.push(row.id);
+        if (!charged && recovered.state === 'queued' && !recovered.recovery) requeued.push(row.id);
       } catch { /* the recovery record stays; the worktree waits for the recovery scan */ }
     }
     await hooks.rolledBack?.(rows);

@@ -10,6 +10,33 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.356.0] - 2026-10-21
+
+**Two rare races in managed writes are closed: a retried page in a grouped import always prepares again, and a sync that normalizes a fence ends at the commit it was asked to sync.** Both showed up only under load.
+
+The first was in grouped imports. When a group of pages took too long to publish, gbrain cancelled the group and scheduled each page to retry after a short pause. If putting the files back took longer than that pause, the same pass could pick a page up again and publish the version it had prepared before the cancellation, without preparing it again. The page's content was still right, but the retry skipped the fresh preparation it was meant to get. Now a page that was cancelled this way always waits for its next turn and prepares again.
+
+The second was in syncs that rewrite a fixable fence and commit the rewritten file. If gbrain's own commit landed in the gap before it was recorded, the sync could record that commit as the one it had synced, instead of the commit it was asked to sync. The next sync then had nothing to do. Now the sync recognizes its own commit in that gap too and records the commit it was asked to sync.
+
+### What changed
+
+| Situation | Before | Now |
+|---|---|---|
+| A grouped import cancelled at the publication ceiling, when restoring the files outlasts the 1 s retry pause | a page could be republished from its old preparation in the same pass | the page waits for its retry and prepares again |
+| A sync whose fence rewrite is committed by gbrain right before the sync records it | `last_commit` could be gbrain's own commit | `last_commit` is the commit the sync targeted, and the next sync reads gbrain's commit as a no-op |
+
+Nothing changes on upgrade, and nothing is rewritten.
+
+### Itemized changes
+
+- `src/core/persistence/group-publish.ts`: a group member charged a transient interruption is no longer listed as reclaimable after the group's files are restored.
+- `src/core/persistence/sync-pass-fold.ts`: `ownWritebackCommit` accepts a writeback effect that is still running when Git already shows its commit byte for byte. Every changed path and blob is still checked.
+
+### For contributors
+
+- `scripts/ci-bounded-run.ts`: a stalled CI setup attempt ends only once its whole process group is gone (bounded by the grace period), so nothing it started overlaps the retry.
+- New forced-probe cases in `test/pathological/lp-c-publication-ceiling-retry.test.ts` and `test/persistence-sync-fence-holds.test.ts` cover both races deterministically.
+
 ## [0.60.355.0] - 2026-10-21
 
 **`remember` with a folder-less entity now saves only when the name points to exactly one entity page, a pending write receipt names the page the fact is going to, and `remember --replaces` works on a private fact without passing `--visibility` (#7248).** Before, a short name such as "Alice" could be saved under a bare slug that no page has, so the fact never showed up on the person's card. A slow write also gave the caller no way to tell which page it would land on, and replacing a private fenced fact answered `not_found`.
