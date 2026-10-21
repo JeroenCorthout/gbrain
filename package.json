@@ -177,6 +177,7 @@
     "check:behavior-since": "bun scripts/check-behavior-since.ts",
     "check:changelog-headings": "bun scripts/check-changelog-headings.ts",
     "check:compile-autoload": "bash scripts/check-compile-autoload.sh",
+    "check:vendor-postgres": "bash scripts/check-vendor-postgres.sh",
     "check:structural-manifest": "bash scripts/check-structural-manifest.sh",
     "regen:all": "bun scripts/regen-all.ts",
     "release:restamp": "bun scripts/release-restamp.ts",
@@ -243,7 +244,7 @@
     "bun": ">=1.4.0"
   },
   "license": "MIT",
-  "version": "0.60.341.0",
+  "version": "0.60.343.0",
   "overrides": {
     "@ai-sdk/provider-utils": "4.0.56",
     "@hono/node-server": "^2.0.5",

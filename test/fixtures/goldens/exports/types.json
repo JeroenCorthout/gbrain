@@ -1067,6 +1067,7 @@
           "allocateBodyOccurrenceIds: (count: number) => Promise<number[]>",
           "batchLoadEmotionalInputs: (slugs?: string[]) => Promise<EmotionalWeightInputRow[]>",
           "connect: (config: EngineConfig & { poolSize?: number; parentConnectionManager?: ConnectionManager; }) => Promise<void>",
+          "connectedDatabaseUrl: string | undefined",
           "connectionManager: ConnectionManager | null",
           "consolidateFact: (id: number, takeId: number) => Promise<void>",
           "countChunklessPagesWithContent: (opts?: { sourceId?: string; }) => Promise<number>",
@@ -2797,6 +2798,7 @@
           "search?: { adaptive_return?: boolean; adaptive_return_entity_max?: number; adaptive_return_other_max?: number; adaptive_return_min_keep?: number; vector_legacy_guard?: boolean; hnsw_iterative_scan?: string; cjk_keyword_deadline_ms?: number; keyword_statement_timeout_ms?: number; } | undefined",
           "search_embedding_column?: string | undefined",
           "self_upgrade?: { mode?: \"auto\" | \"notify\" | \"off\"; mode_prompted?: boolean; quiet_hours?: { start?: number; end?: number; tz?: string; }; failed_versions?: string[]; attempting_version?: string; last_check_ts?: number; last_applied_version?: string; } | undefined",
+          "serve_cli_socket?: boolean | undefined",
           "storage?: unknown",
           "together_api_key?: string | undefined",
           "voyage_api_key?: string | undefined"
@@ -2815,6 +2817,13 @@
         "name": "KNOWN_CONFIG_KEY_PREFIXES",
         "signature": [
           "readonly string[]"
+        ]
+      },
+      {
+        "kind": "variable",
+        "name": "MERGED_CONFIG_BY_ENGINE",
+        "signature": [
+          "WeakMap<object, GBrainConfig>"
         ]
       },
       {
