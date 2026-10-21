@@ -4584,6 +4584,34 @@ export const OPERATION_MANIFEST: OperationMeta[] = [
     }
   },
   {
+    "name": "sources_resolve_path",
+    "mutating": false,
+    "idempotent": true,
+    "outputRedaction": "no_stored_text",
+    "description": "Read-only: what gbrain did with each file path of a source, by its own rules. Per path: the slug sync gives it, whether sync skips it (metafile, excluded, pruned) and why, its sync hold, its page with chunk and embedding counts, whether search finds it now, and the command that moves it on. A deleted path is checked by the page that records it as its origin, never by slug. Use it in landing checks instead of re-implementing slugging. Confined to the caller's source scope.",
+    "params": {
+      "id": {
+        "type": "string",
+        "required": true,
+        "description": "Source id, as listed by sources_list (e.g. 'default')."
+      },
+      "paths": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "required": true,
+        "description": "File paths relative to the source root (or to the Git top level), at most 200, e.g. the paths a commit changed."
+      }
+    },
+    "scope": "read",
+    "cliHints": {
+      "name": "sources_resolve_path",
+      "hidden": true
+    },
+    "area": "sources"
+  },
+  {
     "name": "request_tools",
     "idempotent": false,
     "outputRedaction": "no_stored_text",

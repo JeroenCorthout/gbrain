@@ -1887,7 +1887,7 @@ export class PGLiteEngine implements BrainEngine {
     return chunksImpl.readEmbeddingStateCounts(scopedRead(this.engineSql), column, opts);
   }
 
-  async listEmbeddingStateRows(opts: { sourceIds?: string[]; states: readonly EmbeddingState[]; limit: number; purgeWindowHours: number }): Promise<EmbeddingStateRow[]> {
+  async listEmbeddingStateRows(opts: { sourceIds?: string[]; slugs?: string[]; states: readonly EmbeddingState[]; limit: number; purgeWindowHours: number }): Promise<EmbeddingStateRow[]> {
     const column = (await resolveActiveEmbeddingColumnFromEngine(this, { fallbackToLegacy: true })).name;
     return chunksImpl.listEmbeddingStateRows(scopedRead(this.engineSql), column, opts);
   }

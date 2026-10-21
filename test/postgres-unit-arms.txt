@@ -116,6 +116,7 @@ test/large-pages/page-purge-segments.test.ts
 test/large-pages/pinned-segmented-reads.test.ts
 test/large-pages/projection-claim-ownership.test.ts
 test/large-pages/projection-demotion-race.test.ts
+test/large-pages/projection-lock-hold.test.ts
 test/large-pages/projection-parity.test.ts
 test/large-pages/publication-seal-bounded.test.ts
 test/large-pages/purge-fact-inflight-staging.test.ts
@@ -357,6 +358,7 @@ test/persistence-sync-cursor-strategy-6696.test.ts
 test/persistence-sync-fence-holds.test.ts
 test/persistence-sync-holds.test.ts
 test/persistence-sync-lease.test.ts
+test/persistence-sync-metafile-pages.test.ts
 test/persistence-write-interrupted.test.ts
 test/persistence-write-stall.test.ts
 test/persistence-writer-fences.test.ts
@@ -395,6 +397,7 @@ test/shared-skills-writer-boundary.test.ts
 test/source-lifecycle-dry-run-physical-root-6849.test.ts
 test/source-retire-missing-checkout.test.ts
 test/source-row-diagnostics.test.ts
+test/sources-resolve-path.test.ts
 test/stats-health-source-scope.test.ts
 test/sync-absent-from-worktree-s27.test.ts
 test/sync-admission-6712.test.ts
@@ -416,6 +419,7 @@ test/sync-group-member-order.test.ts
 test/sync-handler-drain-6706.test.ts
 test/sync-import-provenance-disk.test.ts
 test/sync-inexact-rename-6729.test.ts
+test/sync-landing-gaps.test.ts
 test/sync-legacy-holds.test.ts
 test/sync-legacy-retry-actions-6696.test.ts
 test/sync-legacy-slug-adoption-6727.test.ts

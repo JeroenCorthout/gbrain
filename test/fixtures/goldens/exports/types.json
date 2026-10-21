@@ -150,7 +150,7 @@
           "listChunklessPagesWithContent: (opts?: { batchSize?: number; afterPageId?: number; sourceId?: string; }) => Promise<ChunklessPageRow[]>",
           "listConfigKeys: (prefix: string) => Promise<string[]>",
           "listCorpusSample: (opts: CorpusSampleOpts) => Promise<DomainBankRow[]>",
-          "listEmbeddingStateRows: (opts: { sourceIds?: string[]; states: readonly EmbeddingState[]; limit: number; purgeWindowHours: number; }) => Promise<EmbeddingStateRow[]>",
+          "listEmbeddingStateRows: (opts: { sourceIds?: string[]; slugs?: string[]; states: readonly EmbeddingState[]; limit: number; purgeWindowHours: number; }) => Promise<EmbeddingStateRow[]>",
           "listEnrichCandidates: (opts: EnrichCandidatesOpts) => Promise<EnrichCandidate[]>",
           "listEvalCandidates: (filter?: { since?: Date; limit?: number; tool?: \"query\" | \"search\"; }) => Promise<EvalCandidate[]>",
           "listEvalCaptureFailures: (filter?: { since?: Date; }) => Promise<EvalCaptureFailure[]>",
@@ -1156,7 +1156,7 @@
           "listChunklessPagesWithContent: (opts?: { batchSize?: number; afterPageId?: number; sourceId?: string; }) => Promise<ChunklessPageRow[]>",
           "listConfigKeys: (prefix: string) => Promise<string[]>",
           "listCorpusSample: (opts: CorpusSampleOpts) => Promise<DomainBankRow[]>",
-          "listEmbeddingStateRows: (opts: { sourceIds?: string[]; states: readonly EmbeddingState[]; limit: number; purgeWindowHours: number; }) => Promise<EmbeddingStateRow[]>",
+          "listEmbeddingStateRows: (opts: { sourceIds?: string[]; slugs?: string[]; states: readonly EmbeddingState[]; limit: number; purgeWindowHours: number; }) => Promise<EmbeddingStateRow[]>",
           "listEnrichCandidates: (opts: EnrichCandidatesOpts) => Promise<EnrichCandidate[]>",
           "listEvalCandidates: (filter?: { since?: Date; limit?: number; tool?: \"query\" | \"search\"; }) => Promise<EvalCandidate[]>",
           "listEvalCaptureFailures: (filter?: { since?: Date; }) => Promise<EvalCaptureFailure[]>",
@@ -3469,7 +3469,7 @@
           "listChunklessPagesWithContent: (opts?: { batchSize?: number; afterPageId?: number; sourceId?: string; }) => Promise<ChunklessPageRow[]>",
           "listConfigKeys: (prefix: string) => Promise<string[]>",
           "listCorpusSample: (opts: CorpusSampleOpts) => Promise<DomainBankRow[]>",
-          "listEmbeddingStateRows: (opts: { sourceIds?: string[]; states: readonly EmbeddingState[]; limit: number; purgeWindowHours: number; }) => Promise<EmbeddingStateRow[]>",
+          "listEmbeddingStateRows: (opts: { sourceIds?: string[]; slugs?: string[]; states: readonly EmbeddingState[]; limit: number; purgeWindowHours: number; }) => Promise<EmbeddingStateRow[]>",
           "listEnrichCandidates: (opts: EnrichCandidatesOpts) => Promise<EnrichCandidate[]>",
           "listEvalCandidates: (filter?: { since?: Date; limit?: number; tool?: \"query\" | \"search\"; }) => Promise<EvalCandidate[]>",
           "listEvalCaptureFailures: (filter?: { since?: Date; }) => Promise<EvalCaptureFailure[]>",
@@ -4587,7 +4587,7 @@
         "kind": "function",
         "name": "walkMarkdownFiles",
         "signature": [
-          "(dir: string) => { path: string; relPath: string; }[]"
+          "(dir: string, metafilePages?: MetafilePagesMode) => { path: string; relPath: string; }[]"
         ]
       },
       {
@@ -6756,7 +6756,7 @@
           "listChunklessPagesWithContent: (opts?: { batchSize?: number; afterPageId?: number; sourceId?: string; }) => Promise<ChunklessPageRow[]>",
           "listConfigKeys: (prefix: string) => Promise<string[]>",
           "listCorpusSample: (opts: CorpusSampleOpts) => Promise<DomainBankRow[]>",
-          "listEmbeddingStateRows: (opts: { sourceIds?: string[]; states: readonly EmbeddingState[]; limit: number; purgeWindowHours: number; }) => Promise<EmbeddingStateRow[]>",
+          "listEmbeddingStateRows: (opts: { sourceIds?: string[]; slugs?: string[]; states: readonly EmbeddingState[]; limit: number; purgeWindowHours: number; }) => Promise<EmbeddingStateRow[]>",
           "listEnrichCandidates: (opts: EnrichCandidatesOpts) => Promise<EnrichCandidate[]>",
           "listEvalCandidates: (filter?: { since?: Date; limit?: number; tool?: \"query\" | \"search\"; }) => Promise<EvalCandidate[]>",
           "listEvalCaptureFailures: (filter?: { since?: Date; }) => Promise<EvalCaptureFailure[]>",

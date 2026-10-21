@@ -157,6 +157,7 @@ const PARAM_FACTORY: Record<string, Record<string, unknown>> = {
   get_page: { slug: WORLD_FENCE_SLUG, include_content: true },
   fetch: { id: WORLD_FENCE_SLUG },
   list_pages: {},
+  find_pages: { pattern: '*' },
   search: { query: 'WORLDSWEEP' },
   query: { query: 'WORLDSWEEP' },
   assemble_evidence: { hits: [{ source_id: 'default', slug: WORLD_FENCE_SLUG, chunk_id: 0 }], return_unit: 'page' },
@@ -186,6 +187,7 @@ const PARAM_FACTORY: Record<string, Record<string, unknown>> = {
   find_contradictions: {},
   search_by_image: {},
   sources_status: { id: 'default' },
+  sources_resolve_path: { id: 'default', paths: ['notes/sweep-example.md'] },
   ontology_get: { entity: WORLD_PAGE_SLUG },
   get_skill: { name: 'query' },
   // Mutating ops target FRESH slugs only — never the seeded corpus. The
@@ -249,6 +251,7 @@ const EXPECTED_OUTCOME: Record<string, Outcome> = {
   get_page: 'data',
   fetch: 'data',
   list_pages: 'data',
+  find_pages: 'data',
   search: 'data',
   query: 'data',
   assemble_evidence: 'data',
@@ -273,6 +276,7 @@ const EXPECTED_OUTCOME: Record<string, Outcome> = {
   whoami: 'ok', // base unused — per-shape override in EXPECTED_BY_SHAPE (above)
   sources_list: 'ok',
   sources_status: 'ok',
+  sources_resolve_path: 'error',
   find_orphans: 'ok',
   wanted_pages: 'ok',
   find_contradictions: 'ok',
@@ -818,11 +822,12 @@ describe('known-leak discrimination anchors (#4546 / #4549)', () => {
   // (sentinels never live in slugs — legit "Page not found: <slug>" echoes
   // would false-positive). Ops that return slug LISTS derived from data
   // (not echoes of a requested slug) get targeted anchors instead.
-  it('slug-list arms never name the private page slug (find_anomalies / find_orphans / list_pages / delta / salience)', async () => {
+  it('slug-list arms never name the private page slug (find_anomalies / find_orphans / list_pages / find_pages / delta / salience)', async () => {
     for (const [op, params] of [
       ['find_anomalies', {}],
       ['find_orphans', {}],
       ['list_pages', {}],
+      ['find_pages', { pattern: '*' }],
       ['delta', { since: SINCE_EPOCH }],
       ['get_recent_salience', {}],
     ] as const) {

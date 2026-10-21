@@ -122,6 +122,7 @@ import { ghostPagesEntry } from './checks/ghost-pages.ts';
 import { originTwinsEntry } from './checks/origin-twins.ts';
 import { renameIdentityDowngradesEntry } from './checks/rename-identity-downgrades.ts';
 import { unindexedFilesEntry } from './checks/unindexed-files.ts';
+import { syncLandingGapsEntry } from './checks/landing-gaps.ts';
 import { purgeParkedPagesEntry } from './checks/purge-parks.ts';
 import { missingRecordedFilesEntry } from './checks/missing-recorded-files.ts';
 import { uncommittedSyncDeletionsEntry } from './checks/uncommitted-sync-deletions.ts';
@@ -191,6 +192,7 @@ export const DOCTOR_CHECK_REGISTRY: readonly DoctorEntry[] = [
   // #6803 C2: then the cheap incident checks, before any full scan (CHEAP_INCIDENT_CHECKS, pinned by name in test/doctor-entry-deadline-6803.test.ts).
   linksExtractionLagEntry,
   partialEmbeddingEntry,
+  syncLandingGapsEntry,
   pgvectorEntry,
   rlsEntry,
   schemaVersionEntry,
@@ -280,6 +282,8 @@ export const DOCTOR_CHECK_REGISTRY: readonly DoctorEntry[] = [
  */
 export const CHEAP_INCIDENT_CHECKS: ReadonlySet<string> = new Set([
   'persistence_capacity', 'managed_sync_not_moving', 'managed_sync_blocked', 'text_projection_readiness', 'partial_embedding', 'links_extraction_lag',
+  // GBRA-150: bounded receipt and page reads, so a brain whose default run cannot finish still names its landing gaps.
+  'sync_landing_gaps',
 ]);
 
 const CONNECTION_LANE: ReadonlySet<DoctorEntry> = new Set([offlineConnectionEntry, dbChecksGateEntry, connectionEntry, connectionGateEntry]);

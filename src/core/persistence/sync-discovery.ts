@@ -11,7 +11,8 @@ import type { Action } from '../agent-output.ts';
 import type { RegistryCode } from '../error-registry.ts';
 import { buildDetachedWorkingTreeManifest, computeSyncDelta } from '../sync-delta.ts';
 import { confirmedSyncDelta, confirmRenameIdentities, explicitIdVeto, frontmatterIdentity, identityHeadDigest } from '../sync-rename-identity.ts';
-import { isSyncable, isCodeFilePath, isImageFilePath, matchesAnyGlob, resolveSlugForPath, slugifyPath, type DowngradedRename, type SyncManifest } from '../sync.ts';
+import { isSyncable, isSyncMetafile, isCodeFilePath, isImageFilePath, matchesAnyGlob, readMetafilePagesMode, resolveSlugForPath, slugifyPath, type DowngradedRename, type SyncManifest } from '../sync.ts';
+import { diskMetafileHeads, firstMetafileHead, gitMetafileHeads, listMetafileNamedBlobs, metafilePagePredicate, type GitMetafileHeads } from '../sync-metafile-pages.ts';
 import { databaseOnlyPageSql } from './unbound-pages.ts';
 import { validateSlug } from '../utils.ts';
 import { resolveSlugRootMode } from '../sync-anchor.ts';
@@ -258,14 +259,18 @@ export async function resolveManagedSyncContext(engine: BrainEngine, opts: SyncO
 }
 /** #6865: which Git paths of one managed source sync admits, and the page origin each maps to under the source's slug mode. */
 export interface SyncEligibility { scope: string; slugMode: 'git-root' | 'source-root'; nativeRoot: string; nativeGitRoot: string;
-  eligible: (gitPath: string) => boolean; sourcePath: (gitPath: string) => string; }
+  eligible: (gitPath: string) => boolean; sourcePath: (gitPath: string) => string;
+  /** GBRA-150: the blob heads `eligible` judges a metafile-named path by; a caller streaming a tree primes them in batches. */
+  metafileHeads: GitMetafileHeads; }
 /**
  * #6865: the eligibility rules managed discovery applies to a Git path (the source's scope, `sync.exclude`, `sync.include_hidden`,
  * the strategy and reserved skillpack paths) and the origin a path maps to under the slug mode. Discovery and the unindexed-file
  * detector share this one definition, so a file the detector reports is a file a sync would screen.
  */
 export async function loadSyncEligibility(engine: BrainEngine, context: Pick<ManagedSyncContext, 'root' | 'gitRoot' | 'sourceId' | 'source'>,
-  opts: Pick<SyncOpts, 'strategy' | 'exclude' | 'includeHidden' | 'srcSubpath'> = {}, company = !!currentCompanyBrainSync(context.sourceId)): Promise<SyncEligibility> {
+  opts: Pick<SyncOpts, 'strategy' | 'exclude' | 'includeHidden' | 'srcSubpath'> = {}, company = !!currentCompanyBrainSync(context.sourceId),
+  /** GBRA-150: the bytes a metafile-named path is judged by: the commits it is read at (default the source's last synced commit), the checkout first in working mode. */
+  metafileRead: { commits?: Array<string | null | undefined>; working?: boolean } = {}): Promise<SyncEligibility> {
   const strategy = opts.strategy ?? context.source.config?.strategy ?? 'markdown';
   const nativeRoot = realpathSync.native(context.root), nativeGitRoot = realpathSync.native(context.gitRoot);
   const scope = relative(nativeGitRoot, nativeRoot).split(sep).join('/');
@@ -276,11 +281,16 @@ export async function loadSyncEligibility(engine: BrainEngine, context: Pick<Man
   const exclude = await syncExcludePatterns(engine, opts.exclude);
   const includeHidden = [...new Set([...(opts.includeHidden ?? []), ...(await engine.getConfig('sync.include_hidden') ?? '')
     .split(/[\n,]/).map(v => v.trim()).filter(Boolean)].map(v => v.endsWith('/') ? `${v}**` : v))];
+  // GBRA-150: a typed nested metafile is a page, judged at its depth below the source root by the bytes the import reads.
+  const metafileHeads = gitMetafileHeads(context.gitRoot, metafileRead.commits ?? [context.source.last_commit]);
+  const metafilePage = metafilePagePredicate(await readMetafilePagesMode(engine),
+    metafileRead.working ? firstMetafileHead(diskMetafileHeads(nativeGitRoot), metafileHeads.read) : metafileHeads.read,
+    path => scope && path.startsWith(`${scope}/`) ? path.slice(scope.length + 1) : path);
   // Reserved skillpack paths belong to the shared skill publisher; the managed importer always refuses them.
   const eligible = (path: string) => (!scope || path.startsWith(`${scope}/`)) &&
     !matchesAnyGlob(scope ? path.slice(scope.length + 1) : path, exclude) && !isReservedSkillBundlePath(sourcePath(path)) &&
-    isSyncable(path, { strategy: strategy as 'markdown', includeHidden });
-  return { scope, slugMode, nativeRoot, nativeGitRoot, eligible, sourcePath };
+    isSyncable(path, { strategy: strategy as 'markdown', includeHidden, metafilePage });
+  return { scope, slugMode, nativeRoot, nativeGitRoot, eligible, sourcePath, metafileHeads };
 }
 /** The cursor bound: entries and serialized bytes one frozen manifest may hold. */
 let cursorBound = { entries: 100_000, bytes: 16 * 1024 ** 2 };
@@ -349,14 +359,17 @@ export async function discoverManagedSync(engine: BrainEngine, opts: SyncOpts, c
   stage?: { target: string; head: string; slice?: Pick<SyncSliceCursor, 'phase' | 'after'> }, walk = false): Promise<SyncDiscovery> {
   const { binding, root, gitRoot, sourceId, incarnation, source } = context ?? await resolveManagedSyncContext(engine, opts);
   const company = currentCompanyBrainSync(sourceId);
-  const { scope, slugMode, nativeRoot, nativeGitRoot, eligible, sourcePath } = await loadSyncEligibility(engine, { root, gitRoot, sourceId, source }, opts, !!company);
-  const originScope: SyncOriginScope = { sourceId, root, scope, slugMode };
   const target = stage?.target ?? company?.plan.revision?.commit ?? syncGit(gitRoot, ['rev-parse', 'HEAD']).trim();
   const head = stage?.head ?? target;
   const slicing = stage?.slice ?? null;
   const detached = !company && syncGit(gitRoot, ['rev-parse', '--abbrev-ref', 'HEAD']).trim() === 'HEAD';
   // #6349: a staged run stops at a commit, so uncommitted working-tree changes wait for the stage that reaches HEAD.
   const working = !company && !stage && (detached || (opts.workingTree ?? (await engine.getConfig('sync.include_working_tree') === 'true')));
+  // GBRA-150: a metafile is judged by the bytes this run imports (the target's blob, the checkout in working mode) or,
+  // deleted, by the blob it was last synced from.
+  const { scope, slugMode, nativeRoot, nativeGitRoot, eligible, sourcePath, metafileHeads } = await loadSyncEligibility(engine, { root, gitRoot, sourceId, source }, opts, !!company,
+    { commits: [target, source.last_commit], working });
+  const originScope: SyncOriginScope = { sourceId, root, scope, slugMode };
   // #6729: inexact renames keep their page identity only when confirmed (an imported dirty tree reads its target side from the working tree).
   const confirm = { sourceId, sourcePathOf: sourcePath }, built: SyncManifest = company ? { added: [], modified: [], deleted: [], renamed: [] } : buildDetachedWorkingTreeManifest(gitRoot);
   const dirty = working ? await confirmRenameIdentities(engine, gitRoot, 'HEAD', null, built, confirm) : built;
@@ -413,6 +426,7 @@ export async function discoverManagedSync(engine: BrainEngine, opts: SyncOpts, c
     const paths = listed.filter(path => !refuse(path));
     assertDistinctSyncOrigins(paths);
     const present = new Set(paths.map(path => syncOriginPath(sourcePath(path))));
+    if (paths.some(isSyncMetafile)) metafileHeads.prime(listMetafileNamedBlobs(gitRoot, target, scope));
     for (const path of paths) put(path, 'import');
     const livePages = await engine.executeRaw<{ id: number; slug: string; source_path: string }>('SELECT slug,source_path,id FROM pages WHERE source_id=$1 AND deleted_at IS NULL AND source_path IS NOT NULL', [sourceId]);
     const gitPathOf = (origin: string) => slugMode === 'source-root' && scope ? `${scope}/${origin}` : origin;

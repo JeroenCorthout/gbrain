@@ -77,6 +77,9 @@ export type FaultPoint = `publication:${PublicationBoundary}` | `effect:${Effect
   // texts, then its claim renewal and insert), and after a projection staged its chunks (before its seal).
   | 'segmented:texts_staged' | 'segmented:manifest_staged' | 'segmented:chunks_staged' | 'segmented:flipped' | 'segmented:projection_batch'
   | 'segmented:projection_staged'
+  // Inside each projection insert transaction, once it holds the page's key lock and before it checks the generation and
+  // claim (ingest.ts `stageOccurrenceChunks`): a write to the page that arrives now waits for that transaction.
+  | 'segmented:projection_insert'
   // A prior file over the single-string ceiling copied to its before stage (large-file.ts `stageBeforeCopy`): after the copy is
   // written under its temporary name (unverified, unflushed: a crash during the copy) and once it is flushed, before its rename.
   | 'large_file:stage_copying' | 'large_file:stage_flushed'

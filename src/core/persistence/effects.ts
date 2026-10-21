@@ -47,7 +47,10 @@ import { dispatchFactsBackstopEffect } from './effect-facts.ts';
 import { runLinksEffect } from './effect-links.ts';
 import { PARK_AFTER_FAILURES, WITHHELD_BY_MIRROR, type EffectRecovery, type GitCommitNote, type PersistenceEffect, type SkippedTarget } from './effect-model.ts';
 import { fileContentHash } from './large-file.ts';
-import { isSyncMetafile } from '../sync.ts';
+import { isSyncMetafile, metafileIsPage, readMetafilePagesMode } from '../sync.ts';
+import { diskMetafileHeads } from '../sync-metafile-pages.ts';
+import { resolveSourceLocalFilePath } from '../markdown.ts';
+import { scannerSlugRootMode } from '../write-through.ts';
 import { recoveryStagingFile } from './staging.ts';
 import { selectEffectRecoveries } from './effect-recovery-scan.ts';
 import { nativeFileTarget } from './native-file-target.ts';
@@ -164,11 +167,19 @@ async function skipTarget(engine: BrainEngine, effect: PersistenceEffect, snapsh
 }
 
 /**
- * #5396: sync never imports a metafile (RESOLVER.md carries the managed durability block by design),
- * so its legacy page and file diverge; a scan never publishes either one to the other.
+ * #5396: sync never imports a scaffolding metafile (RESOLVER.md carries the managed durability block by design),
+ * so its legacy page and file diverge; a scan never publishes either one to the other. GBRA-150: a nested one whose
+ * file on disk is typed (`sync.metafile_pages typed`) is an ordinary synced page, published like any other.
  */
-function isMetafilePage(snapshot: PageSnapshot): boolean {
-  return !!snapshot.page.source_path && isSyncMetafile(snapshot.page.source_path);
+async function isMetafilePage(engine: BrainEngine, sourceId: string, snapshot: PageSnapshot, binding: WorktreeBinding | null | undefined): Promise<boolean> {
+  const sourcePath = snapshot.page.source_path;
+  if (!sourcePath || !isSyncMetafile(sourcePath)) return false;
+  if (!binding?.local_path) return true;
+  const root = join(binding.local_path, binding.relative_path);
+  const file = resolveSourceLocalFilePath(root, sourcePath, snapshot.page.slug, await scannerSlugRootMode(engine, sourceId, root));
+  if (!file) return true;
+  const path = relative(root, file).split(sep).join('/');
+  return !metafileIsPage(path, diskMetafileHeads(root)(path), await readMetafilePagesMode(engine));
 }
 
 function isFileDatabaseDrift(error: unknown): boolean {
@@ -220,7 +231,7 @@ async function mirrorPage(engine: BrainEngine, effect: PersistenceEffect, bindin
   if (snapshot.sourceIncarnation !== effect.source_incarnation) throw opError('source_changed', 'The mirror source was replaced.',
     `Source ${effect.source_id} was replaced after this withdrawal mirror was queued, so the effect ends without writing; the new source has its own effects. Check the owner if files still look stale.`,
     { fix: effectStatusFix(effect) });
-  if (isMetafilePage(snapshot)) { await materializeAndAdvance(engine, effect, snapshot, opts.hostId, 'metafile'); return; }
+  if (await isMetafilePage(engine, effect.source_id, snapshot, binding)) { await materializeAndAdvance(engine, effect, snapshot, opts.hostId, 'metafile'); return; }
   // A segmented page's file is streamed from its segments (unreadPageFile), never rendered as one string, and only once
   // the page has a file to rewrite: its comparison reads the stored body, never the rendered file.
   const segmented = isSegmentedPage(snapshot.page);
@@ -337,7 +348,7 @@ async function publishGitPage(engine: BrainEngine, effect: PersistenceEffect, bi
   attempt.target = snapshot.page.slug;
   const verdict = await mirrorVerdict(engine, effect, attempt, snapshot.page.slug);
   if (verdict === 'handled') return;
-  if (isMetafilePage(snapshot)) { await skipTarget(engine, effect, snapshot, 'metafile'); return; }
+  if (await isMetafilePage(engine, effect.source_id, snapshot, binding)) { await skipTarget(engine, effect, snapshot, 'metafile'); return; }
   const keep = effectClaimKeeper(engine, effect, effectRenewalIntervalMs);
   const content = snapshot.page.deleted_at || isSegmentedPage(snapshot.page) ? null : serializePageToMarkdown(snapshot.page, snapshot.tags);
   let file: Awaited<ReturnType<typeof prepareFileTarget>>;

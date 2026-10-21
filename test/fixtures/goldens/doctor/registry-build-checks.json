@@ -302,6 +302,10 @@
         "name": "partial_embedding"
       },
       {
+        "category": "brain",
+        "name": "sync_landing_gaps"
+      },
+      {
         "category": "ops",
         "name": "pgvector"
       },

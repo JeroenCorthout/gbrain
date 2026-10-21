@@ -2,8 +2,8 @@
   "golden": {
     "exitCode": 0,
     "stderr": "",
-    "stdoutBytes": 255737,
-    "stdoutSha256": "818f9e47c23b565e0a117e66314c3b8c011859943a310b1704e843844c43979a",
+    "stdoutBytes": 257003,
+    "stdoutSha256": "bbfe3ed6976d5755c63e1dd514e96ef7ef93a6d0b6fc40bfa6e8e205aa4bde30",
     "toolNames": [
       "remember",
       "entity",
@@ -121,6 +121,7 @@
       "sources_remove",
       "sources_status",
       "sources_inspect",
+      "sources_resolve_path",
       "request_tools",
       "get_recent_salience",
       "find_anomalies",
@@ -5505,6 +5506,39 @@
           },
           "required": [
             "path"
+          ],
+          "type": "object"
+        },
+        "scope": "read"
+      },
+      {
+        "description": "Read-only: what gbrain did with each file path of a source, by its own rules. Per path: the slug sync gives it, whether sync skips it (metafile, excluded, pruned) and why, its sync hold, its page with chunk and embedding counts, whether search finds it now, and the command that moves it on. A deleted path is checked by the page that records it as its origin, never by slug. Use it in landing checks instead of re-implementing slugging. Confined to the caller's source scope.",
+        "idempotent": true,
+        "local_only": false,
+        "mutating": false,
+        "name": "sources_resolve_path",
+        "parameters": {
+          "id": "string",
+          "paths": "array"
+        },
+        "required_scopes": [],
+        "schema": {
+          "properties": {
+            "id": {
+              "description": "Source id, as listed by sources_list (e.g. 'default').",
+              "type": "string"
+            },
+            "paths": {
+              "description": "File paths relative to the source root (or to the Git top level), at most 200, e.g. the paths a commit changed.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "id",
+            "paths"
           ],
           "type": "object"
         },
