@@ -17,7 +17,7 @@ import { anchorOpResults } from '../search/entity-anchor.ts';
 import { applyQueryArms } from '../search/query-arms.ts';
 import { factRowOutput } from '../search/facts-arm.ts';
 import { resolveSearchDateBounds } from '../search/date-bounds.ts';
-import { loadSearchModeConfig, resolveSearchMode, SOURCE_BOOSTS_KEY } from '../search/mode.ts';
+import { loadSearchModeConfig, parseBoolKnob, resolveSearchMode, SOURCE_BOOSTS_KEY } from '../search/mode.ts';
 import { looksConceptShaped, classifyQueryShape } from '../search/query-intent.ts';
 import {
   gradeRetrievalConfidence,
@@ -735,7 +735,8 @@ const search: Operation = {
         if (types?.length === 0) return [];
       }
       const sourceBoosts = resolveBoostMap(undefined, await setup(() => ctx.engine.getConfig(SOURCE_BOOSTS_KEY)));
-      const keywordOpts = { ...readOpts, source_boosts: sourceBoosts, ...(types ? { types } : {}) };
+      const keywordPhrase = parseBoolKnob((await setup(() => ctx.engine.getConfig('search.keyword_phrase'))) ?? undefined) !== false;
+      const keywordOpts = { ...readOpts, source_boosts: sourceBoosts, keywordPhrase, ...(types ? { types } : {}) };
       // F2 `match: "keyword"`: page-grain enumeration, no diversity pruning, every page keeps a row.
       // A query that is one entity's name lists records filed under any of its names (the agent no longer walks each alias).
       const names = paging.match === 'keyword' && !paging.cursor ? await setup(() => wholeQueryEntityNames(ctx.engine, queryText, { ...scope, excludePrivate })) : null;
