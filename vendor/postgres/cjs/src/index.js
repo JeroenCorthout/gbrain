@@ -680,7 +680,7 @@ function parseOptions(a, b) {
   'timeout' in o && (console.log('The timeout option is deprecated, use idle_timeout instead'), o.idle_timeout = o.timeout) // eslint-disable-line
   query.sslrootcert === 'system' && (query.ssl = 'verify-full')
 
-  const ints = ['idle_timeout', 'connect_timeout', 'max_lifetime', 'max_pipeline', 'backoff', 'keep_alive', 'inflight_timeout', 'inflight_max', 'inflight_grace']
+  const ints = ['idle_timeout', 'connect_timeout', 'max_lifetime', 'max_pipeline', 'transaction_pipeline', 'backoff', 'keep_alive', 'inflight_timeout', 'inflight_max', 'inflight_grace']
   const defaults = {
     max             : globalThis.Cloudflare ? 3 : 10,
     ssl             : false,
@@ -689,6 +689,7 @@ function parseOptions(a, b) {
     connect_timeout : 30,
     max_lifetime    : max_lifetime,
     max_pipeline    : 100,
+    transaction_pipeline: 0,
     inflight_timeout: null,
     inflight_max    : null,
     inflight_grace  : null,
@@ -737,6 +738,7 @@ function parseOptions(a, b) {
     onrecovered     : o.onrecovered,
     onrecoveryfailed: o.onrecoveryfailed,
     shared_types    : o.shared_types === false ? null : o.shared_types instanceof Map ? o.shared_types : new Map(),
+    array_types     : o.array_types || null,
     onparameter     : o.onparameter,
     socket          : o.socket,
     transform       : parseTransform(o.transform || { undefined: undefined }),

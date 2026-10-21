@@ -663,7 +663,7 @@ async function segmentedContentHash(engine: BrainEngine, snapshot: PageSnapshot,
  */
 export async function preparePageMutation(unbounded: BrainEngine, row: WriteRequest, _config: GBrainConfig,
   preparedIntent?: { content: string; expectedRevision: string; tags?: string[] }, signal?: AbortSignal,
-  options: { allowMissingFile?: boolean; coordinated?: boolean; clock?: ClaimPhaseClock } = {}): Promise<PreparedMutation> {
+  options: { allowMissingFile?: boolean; coordinated?: boolean; clock?: ClaimPhaseClock; boundedChunkWrites?: true } = {}): Promise<PreparedMutation> {
   // Wave B (spec 6.2): a committed upload session prepares the put_page its staged parts hold.
   if (row.operation === 'put_page' && isStagingBodyRef(row.intent?.body_ref)) {
     signal?.throwIfAborted();
@@ -803,7 +803,7 @@ async function prepareInlineOrSegmentedMutation(unbounded: BrainEngine, row: Wri
   const lean = options.coordinated === true && !targetDeleted && row.operation !== 'restore_page' && !versionTags;
   enterClaimStep(clock, 'import_content', undefined, 'db');
   const result = await importFromContent(engine, row.slug, content, {
-    ...source, noEmbed: true, remote: row.authority.remote, activePack, fences: projected ? 'coordinated' : 'lenient', coordinated: lean,
+    ...source, noEmbed: true, remote: row.authority.remote, activePack, fences: projected ? 'coordinated' : 'lenient', coordinated: lean, boundedChunkWrites: options.boundedChunkWrites,
     segmentedOwner: { kind: row.operation === 'edit_page' ? 'edit' : 'put', principalKind: row.principal_kind, principalId: row.principal_id, baseRevision: observedRevision },
     ...(lean ? { existingSnapshot: snapshot } : {}),
     // #6259: only owner-tier intents keep gate-owned markers; an ordinary put_page, local or remote, has them stripped.
@@ -907,7 +907,7 @@ async function prepareInlineOrSegmentedMutation(unbounded: BrainEngine, row: Wri
       const prior = snapshot ? await storedPageTier(tx, row.source_id, row.slug) : null;
       // ENG-1: a managed fence edit keeps the page's tier; CEO-12: an agent rewrite that lowers a page files a queue item.
       const applied = await (isFenceEditWrite(row) ? withTrustKeep(tx, ['pages'], () => ready.apply(tx, lean ? preimage : undefined)) : ready.apply(tx, lean ? preimage : undefined));
-      projectionPending = applied?.segmented?.complete === false;
+      projectionPending = applied?.segmented?.complete === false || applied?.projectionPending === true;
       segmentedWrite = applied?.segmented !== undefined;
       lowered = prior ? await recordAgentPageLowering(tx, row, { tier: prior, revision: snapshot!.revision }) : null;
       // Mandatory metadata shares publication rollback; exact no-ops never heal it. These, and the
@@ -937,7 +937,7 @@ async function prepareInlineOrSegmentedMutation(unbounded: BrainEngine, row: Wri
         await verifyPageReadable(tx, row.slug, ready.contentHash!, row.source_id, 'importFromContent', live?.page ?? null);
         if (applied?.segmented) { if (applied.segmented.complete && live) await sealSegmentedPage(tx, Number(live.page.id)); }
         else if (applied?.chunkerSeal !== undefined) await sealImportedPage(tx, row.slug, row.source_id, live, applied.chunkerSeal, applied.pageId);
-        else if (live) await sealPageTextProjection(tx, row.slug, row.source_id, live);
+        else if (live && !applied?.projectionPending) await sealPageTextProjection(tx, row.slug, row.source_id, live);
         if (core) await core.record(tx, final?.revision ?? null);
         publication.postimage = final;
       } else {
@@ -945,7 +945,7 @@ async function prepareInlineOrSegmentedMutation(unbounded: BrainEngine, row: Wri
         // Index installation and terminal receipt share this transaction. The import sealed the projection
         // as its last revision-changing step; only a later revision change (restore, tags, links, delete) reseals.
         if (applied?.segmented) { if (applied.segmented.complete && applied.pageId !== undefined) await sealSegmentedPage(tx, applied.pageId); }
-        else if (!(applied?.sealed && row.operation !== 'restore_page' && !versionTags && !links && !targetDeleted)) await sealPageTextProjection(tx, row.slug, row.source_id);
+        else if (!applied?.projectionPending && !(applied?.sealed && row.operation !== 'restore_page' && !versionTags && !links && !targetDeleted)) await sealPageTextProjection(tx, row.slug, row.source_id);
         if (core) await core.record(tx, (await tx.readPageSnapshot(row.slug, source))?.revision ?? null);
       }
     }
@@ -958,7 +958,7 @@ async function prepareInlineOrSegmentedMutation(unbounded: BrainEngine, row: Wri
       status: noop ? 'skipped' : row.operation === 'restore_page' ? 'restored' : row.operation === 'revert_version' ? 'reverted' : 'created_or_updated',
       slug: row.slug, source_id: row.source_id, chunks: ready.result.chunks, noop, ...(projectionPending ? { projection: 'pending' } : {}),
       // Wave B: whether search sees a segmented write at commit; a pending one is re-read whenever its receipt is served (searchable.ts).
-      ...(segmentedWrite ? { searchable: isQuarantined(ready.parsedPage.frontmatter) ? false : projectionPending ? 'pending' : true } : {}),
+      ...(segmentedWrite ? { searchable: isQuarantined(ready.parsedPage.frontmatter) ? false : projectionPending ? 'pending' : true } : projectionPending ? { searchable: 'pending' } : {}),
       ...sizeState,
       ...(ready.result.chunks === 0 && !projectionPending ? {chunk_skip_reason: noop ? 'write_skipped'
         : isEmbedSkipped(ready.parsedPage.frontmatter) || isQuarantined(ready.parsedPage.frontmatter) ? 'embed_skip' : 'empty_body'} : {}),

@@ -21,7 +21,7 @@ import {
   resolveSelfUpgradeMode,
   justUpgradedPath,
 } from '../core/self-upgrade.ts';
-import { loadConfig, loadConfigFileOnly, loadConfigWithEngine, isThinClient, getDbUrlSource, envShadowDetected } from '../core/config.ts';
+import { loadConfig, loadConfigFileOnly, loadConfigWithEngine, isThinClient, getDbUrlSource, envShadowDetected, MERGED_CONFIG_BY_ENGINE } from '../core/config.ts';
 import {
   classifyPgAccessError as classifyDbAccessError,
   diagnoseDbConfig as diagnoseDbConfigForMarker,
@@ -77,6 +77,7 @@ import {
   type CliDispatchContext,
 } from './command-table.ts';
 import { formatRememberResult } from './remember-format.ts';
+import { formatEntityResult, markEntityMiss } from './entity-format.ts';
 import { applyCliOpNotices, captureCapacityNotices, captureOpNotice, captureRetrievalNotices, withExplainTargetJson } from './op-notices.ts';
 import { searchTimingsDocument, searchTimingsLine, timeCliPhase } from './search-timings.ts';
 
@@ -508,6 +509,7 @@ async function main() {
     return;
   }
 
+  if (['search', 'query', 'get', 'recall'].includes(command) && await (await import('./cli-socket-client.ts')).maybeServeFromCliSocket(command, subArgs)) return; // warm serve socket (opt-in)
   // CLI-only commands
   if (CLI_ONLY.has(command)) {
     await handleCliOnly(command, subArgs);
@@ -642,7 +644,7 @@ async function runSharedOperation(command: string, subArgs: string[], cliOpts: C
   // timeout the abandoned handler may hold ref'd sockets — harmless here,
   // because the import.meta.main seam exits explicitly on every one-shot path.
   const READ_OP_TIMEOUT_MS = 180_000;
-  const configSnapshot = op.scope === 'read' ? openRequestConfigSnapshot(engine) : null;
+  const configSnapshot = op.scope === 'read' ? takeStartupConfigSnapshot(engine) ?? openRequestConfigSnapshot(engine) : null;
 
   try {
     const { withTimeout, OperationTimeoutError } = await import('../core/timeout.ts');
@@ -727,6 +729,7 @@ async function runSharedOperation(command: string, subArgs: string[], cliOpts: C
       );
       setCliExitVerdict(1);
     }
+    markEntityMiss(op.name, result);
     maybePrintConceptNudge(op.name, params);
   } catch (e: unknown) {
     // v0.42.20.0 (codex D4): on error, set exitCode + return so the `finally`
@@ -823,6 +826,7 @@ async function runThinClientRouted(
     const output = formatResult(op.name, result, params);
     // Awaited delivery (#3423) — same contract as the local-engine path.
     if (output) await writeStdoutFinal(output);
+    markEntityMiss(op.name, result);
     maybePrintConceptNudge(op.name, params);
   } catch (e: unknown) {
     if (e instanceof RemoteMcpError) {
@@ -1381,16 +1385,6 @@ export function findUnknownOpFlag(op: OperationMeta, args: string[]): string | n
   return null;
 }
 
-/**
- * #1475 — the DB-plane merge `connectEngine` performs after connect, published
- * for `makeContext` so the operation context carries it too.
- *
- * Why a map rather than a module-level variable: a process can hold more than
- * one engine (`--brain <mount>` connects a second one), and the host brain's
- * merged config must never be served for a mounted brain's context. Weak so a
- * disconnected engine does not pin its config for the life of the process.
- */
-const MERGED_CONFIG_BY_ENGINE = new WeakMap<BrainEngine, GBrainConfig>();
 const SELECTED_CONFIG_BY_ENGINE = new WeakMap<BrainEngine, GBrainConfig>();
 
 /**
@@ -1782,38 +1776,7 @@ export function formatResult(
     }
     case 'entity': {
       if (process.argv.includes('--json')) break;
-      const r = result as any;
-      if (!r.found) {
-        const lines = [`No entity found. (${r.latency_ms}ms)${r.coverage && r.coverage.state !== 'complete' ? ` Mention coverage: ${r.coverage.state}, ${r.coverage.pending_pages} page(s) pending.` : ''}`];
-        if (Array.isArray(r.suggestions) && r.suggestions.length) {
-          lines.push('Did you mean:');
-          for (const s of r.suggestions) lines.push(`  ${s.slug} — ${s.title} [${s.create_safety}]`);
-        }
-        return lines.join('\n') + '\n';
-      }
-      const c = r.card;
-      const lines = [`${c.entity.title} (${c.entity.slug})${c.entity.type ? ` [${c.entity.type}]` : ''}  (${r.latency_ms}ms)`];
-      if (c.summary) lines.push(`  ${c.summary}`);
-      if (c.aka?.length) lines.push(`  aka: ${c.aka.join(', ')}`);
-      const lt = c.last_touched || {};
-      const touched = lt.updated_at || lt.last_retrieved_at || lt.last_timeline_date;
-      if (touched) lines.push(`  last touched: ${String(touched).slice(0, 10)}`);
-      if (c.open_threads?.length) {
-        lines.push('  open threads:');
-        for (const t of c.open_threads) lines.push(`    [${t.kind}] ${t.text}${t.date ? ` (${String(t.date).slice(0, 10)})` : ''}`);
-      }
-      if (c.edges?.length) {
-        lines.push('  edges:');
-        for (const e of c.edges) lines.push(`    ${e.direction === 'out' ? '→' : '←'} ${e.type} ${e.slug}`);
-      }
-      lines.push(`  backlinks: ${c.backlink_count} | active facts: ${c.active_fact_count}`);
-      if (c.referenced_by_count) lines.push(`  referenced by ${c.referenced_by_count} page(s):`, ...c.referenced_by.map((g: any) => `    ${g.canonical_type} (${g.total}): ${g.rows.map((x: any) => x.slug).join(', ')}${g.next ? ', ...' : ''}`));
-      if (c.coverage && c.coverage.state !== 'complete') lines.push(`  mention coverage: ${c.coverage.state}, ${c.coverage.pending_pages} page(s) pending`);
-      if (Array.isArray(r.suggestions) && r.suggestions.length) {
-        lines.push('  other matches:');
-        for (const s of r.suggestions) lines.push(`    ${s.slug} — ${s.title}`);
-      }
-      return lines.join('\n') + '\n';
+      return formatEntityResult(result);
     }
     case 'synthesize': {
       if (process.argv.includes('--json')) break;
@@ -1992,9 +1955,11 @@ async function handleCliOnly(command: string, args: string[]) {
   if (!prepared) return;
   const engine = await connectCliOnlyEngine(command, prepared.args);
   if (!engine) return;
+  const configSnapshot = takeStartupConfigSnapshot(engine);
   try {
-    await dispatchConnectedCommand(command, engine, prepared.args);
+    await (configSnapshot ? configSnapshot.run(() => dispatchConnectedCommand(command, engine, prepared.args)) : dispatchConnectedCommand(command, engine, prepared.args));
   } finally {
+    configSnapshot?.close();
     prepared.syncWatchdog?.dispose(); // #1633: tear down the hard-deadline watchdog on clean exit
     // #2084 — the CLI_ONLY fall-through teardown (drain every background-work
     // sink, THEN disconnect, under a computed-deadline backstop) lives in
@@ -2402,8 +2367,9 @@ async function runReadOnlyTimeoutDispatch(command: string, args: string[]): Prom
       }
       throw e;
     }
+    const configSnapshot = takeStartupConfigSnapshot(engine);
     try {
-      await withTimeout(dispatchReadOnlyCommand(engine, command, args), readOnlyTimeoutMs, label);
+      await withTimeout(configSnapshot ? configSnapshot.run(() => dispatchReadOnlyCommand(engine, command, args)) : dispatchReadOnlyCommand(engine, command, args), readOnlyTimeoutMs, label);
     } catch (e) {
       if (e instanceof OperationTimeoutError) {
         const hint = userTimeoutMs ? '' : ` (default ${e.ms}ms; pass --timeout=Ns to override)`;
@@ -2412,6 +2378,7 @@ async function runReadOnlyTimeoutDispatch(command: string, args: string[]): Prom
       }
       throw e;
     } finally {
+      configSnapshot?.close();
       await finishCliTeardown({ engine });
     }
     return true;
@@ -2513,7 +2480,7 @@ async function prepareConnectedDispatch(command: string, args: string[]): Promis
     const cfgJobs = loadConfig();
     if (isThinClient(cfgJobs)) {
       const jobsSub = args[0];
-      if (jobsSub === 'list' || jobsSub === 'get') {
+      if (jobsSub === 'list' || jobsSub === 'get' || jobsSub === 'wait') {
         const { runJobs } = await import('../commands/jobs.ts');
         await runJobs(null, args);
         return null;
@@ -2617,7 +2584,10 @@ async function connectCliOnlyEngine(command: string, args: string[]): Promise<Br
   }
   try {
     // A4: an observational command connects probe-only and completes startup only after consent.
-    engine = await connectEngine({ probeOnly: findCliCommand(command)?.startup === 'observational' || (command === 'jobs' && args[0] === 'supervisor' && args[1] === 'status') });
+    // A one-shot `recall` only reads the brain (its --since-last-run cursor is a file); --watch polls for minutes.
+    let oneShotRead = false;
+    if (command === 'recall') oneShotRead = !args.includes('--watch');
+    engine = await connectEngine({ probeOnly: findCliCommand(command)?.startup === 'observational' || (command === 'jobs' && args[0] === 'supervisor' && args[1] === 'status'), oneShotRead });
   } catch (serveConnectError) {
     if (command === 'jobs' && args[0] === 'child-readiness') {
       const { writeChildReadinessFailure } = await import('../core/minions/child-readiness.ts');
@@ -2750,7 +2720,7 @@ async function dispatchReadOnlyCommand(engine: BrainEngine, command: string, arg
 // re-exported) so cli.ts's own connectEngine() call sites bind it locally.
 import { buildGatewayConfig } from '../core/ai/build-gateway-config.ts';
 export { buildGatewayConfig };
-import { connectEngineForServe, noBrainError, type EngineConnectHooks, type EngineConnectOptions } from '../core/engine-connect.ts';
+import { connectEngineForServe, noBrainError, takeStartupConfigSnapshot, type EngineConnectHooks, type EngineConnectOptions } from '../core/engine-connect.ts';
 
 /**
  * Which brain this process's engine targets. Set by connectEngine after brain
@@ -2873,50 +2843,7 @@ async function completeEngineStartup(engine: BrainEngine, opts: EngineConnectOpt
   // #5628: drop this host's markers of a retired managed epoch before any filesystem guard check. A one-shot read runs no guard check.
   if (!opts.oneShotRead) try { await (await import('../core/persistence/deactivation.ts')).cleanupRetiredManagedMarkers(engine); } catch { /* status reports pending markers */ }
 
-  // v0.27.1 (F3 fix): re-merge DB-plane config now that the engine is up.
-  // Flags like `embedding_multimodal` are user-mutable via `gbrain config set`
-  // (DB plane) and need to flow into the gateway after connect. Schema-sizing
-  // fields (embedding_dimensions etc.) keep their pre-connect file/env values
-  // — those drove initSchema and the merged config respects file/env first.
-  try {
-    const merged = await loadConfigWithEngine(engine, config);
-    if (merged) {
-      // #1475 — hand the merged config to makeContext instead of letting it
-      // re-derive one. See MERGED_CONFIG_BY_ENGINE: the op-side gates read
-      // ctx.config, and re-running the merge there would double this
-      // function's per-key config reads on every command (the cost #3980 is
-      // about). Keyed on the engine so a mounted brain cannot be served the
-      // host brain's merge.
-      MERGED_CONFIG_BY_ENGINE.set(engine, merged);
-      // Stash gate flags on process.env for downstream readers (import-file.ts
-      // dispatches on GBRAIN_EMBEDDING_MULTIMODAL, gates OCR on GBRAIN_EMBEDDING_IMAGE_OCR).
-      // The OCR *model* reaches the gateway via the re-configure below (#4107); its
-      // env stash stays so subprocesses re-fold it through loadConfig's env merge.
-      if (merged.embedding_multimodal !== undefined) {
-        process.env.GBRAIN_EMBEDDING_MULTIMODAL = String(merged.embedding_multimodal);
-      }
-      if (merged.embedding_image_ocr !== undefined) {
-        process.env.GBRAIN_EMBEDDING_IMAGE_OCR = String(merged.embedding_image_ocr);
-      }
-      if (merged.embedding_image_ocr_model !== undefined) {
-        process.env.GBRAIN_EMBEDDING_IMAGE_OCR_MODEL = merged.embedding_image_ocr_model;
-      }
-      // Always re-configure with merged values when DB merge succeeded. The
-      // trigger used to be field-name-gated (only when embedding_multimodal_model
-      // was set); that coupled the gate to the field set and would silently
-      // miss future DB-mutable gateway fields. One extra cache+shrinkState
-      // clear per startup is microseconds, no hot path.
-      (await import('../core/ai/gateway.ts')).configureGateway(buildGatewayConfig(merged));
-    }
-    // v0.31.12: re-resolve gateway defaults through resolveModel so
-    // `models.tier.*` and `models.default` overrides apply to expansion +
-    // chat. Per Codex F3 — configureGateway is sync; this is the async
-    // re-stamp seam after engine.connect() makes config reads possible.
-    const { reconfigureGatewayWithEngine } = await import('../core/ai/gateway.ts');
-    await reconfigureGatewayWithEngine(engine);
-  } catch {
-    // Non-fatal. Pre-v39 brains may not have a usable config table yet.
-  }
+  await (await import('./db-plane-config.ts')).mergeDbPlaneConfig(engine, config, MERGED_CONFIG_BY_ENGINE);
 
   // The one-time behavior-change disclosure on the CLI channel (stderr). `serve`
   // delivers it per MCP channel; `doctor` reads it without marking it shown.

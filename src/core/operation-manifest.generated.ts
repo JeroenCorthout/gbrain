@@ -140,6 +140,11 @@ export const OPERATION_MANIFEST: OperationMeta[] = [
         "type": "string",
         "description": "Source to try first (thin clients send .gbrain-source here); never narrows.",
         "fullSurfaceOnly": true
+      },
+      "variants": {
+        "type": "boolean",
+        "description": "false: exact names only. Default true: with no exact match, one unambiguous name variant (card.match says which).",
+        "fullSurfaceOnly": true
       }
     },
     "scope": "read",
@@ -3496,6 +3501,29 @@ export const OPERATION_MANIFEST: OperationMeta[] = [
     "area": "jobs"
   },
   {
+    "name": "wait_job",
+    "mutating": false,
+    "idempotent": true,
+    "outputRedaction": {
+      "exempt": "admin-scoped job introspection: job params and results are operator data, not retrieved brain text"
+    },
+    "description": "Wait until a job is completed, failed, dead or cancelled (at most 55 s per call), then return it like get_job plus terminal. terminal: false means it is still running: call again. Agent-scoped tokens (no admin) wait only on jobs they own.",
+    "params": {
+      "id": {
+        "type": "number",
+        "required": true,
+        "description": "Job ID"
+      },
+      "timeout_s": {
+        "type": "number",
+        "description": "Seconds to wait (default 30, at most 55)."
+      }
+    },
+    "scope": "admin",
+    "agentCallable": true,
+    "area": "jobs"
+  },
+  {
     "name": "list_jobs",
     "mutating": false,
     "idempotent": true,
@@ -3526,6 +3554,10 @@ export const OPERATION_MANIFEST: OperationMeta[] = [
           "type": "string"
         },
         "description": "Return only these job fields (e.g. [\"id\",\"name\",\"status\"]) to save tokens; omit for every field."
+      },
+      "finished_since": {
+        "type": "string",
+        "description": "Terminal-event cursor: an ISO time or the next_cursor of the previous call. Returns {jobs, next_cursor}: jobs that finished after it, oldest first."
       }
     },
     "scope": "admin",
@@ -3740,7 +3772,7 @@ export const OPERATION_MANIFEST: OperationMeta[] = [
     "mutating": false,
     "idempotent": true,
     "outputRedaction": "no_stored_text",
-    "description": "Job queue statistics. PER-BLOCK scoping: by_status and queue_health are GLOBAL (unfiltered); by_type is windowed by since_hours; only the wedge block is scoped to the queue param. wedged: true is the silent-halt signal (a worker is alive but claiming nothing while work waits) — suggest restarting the jobs supervisor on the brain host. no_worker: true means work is waiting and NO worker is running for the queue (always on PGLite unless a gbrain jobs work drain is live); wedged is then false and the no_worker notice names the fix. private_queue: true means the queue is a parent-owned dream-inline queue: wedged is NEVER true for it and a worker restart cannot help — recovery runs automatically at worker spawn / dream-cycle start; suggest gbrain doctor for the per-queue verdict. Host-process diagnostics (renice, backpressure hints) stay on the gbrain jobs stats CLI.",
+    "description": "Job queue statistics. PER-BLOCK scoping: by_status and queue_health are GLOBAL (unfiltered); by_type is windowed by since_hours; only the wedge block is scoped to the queue param. wedged: true is the silent-halt signal (a worker is alive but claiming nothing while work waits) — suggest restarting the jobs supervisor on the brain host. no_worker: true means work is waiting and NO worker is running for the queue (always on PGLite unless a gbrain jobs work drain is live); wedged is then false and the no_worker notice names the fix. private_queue: true means the queue is a parent-owned dream-inline queue: wedged is NEVER true for it and a worker restart cannot help — recovery runs automatically at worker spawn / dream-cycle start; suggest gbrain doctor for the per-queue verdict. by_queue has one row per queue (every dream-inline-* queue folded into one dream-inline row). Host-process diagnostics (renice, backpressure hints) stay on the gbrain jobs stats CLI.",
     "params": {
       "queue": {
         "type": "string",
@@ -3792,6 +3824,52 @@ export const OPERATION_MANIFEST: OperationMeta[] = [
     "cliHints": {
       "name": "orphans",
       "hidden": true
+    },
+    "area": "links"
+  },
+  {
+    "name": "rank_entities",
+    "mutating": false,
+    "idempotent": true,
+    "outputRedaction": "retrieval",
+    "scope": "read",
+    "description": "Rank pages by graph connections: the most-linked people, companies or other entities. Use instead of counting link rows yourself. An edge is a distinct (from page, to page, link_type) between live pages in scope: self-links, links to deleted pages, non-ranking types (amends) and, unless include_mentions, mention rows do not count; several provenance rows for one edge count once. inbound/outbound count edges, neighbors counts distinct linked pages. A redirect stub (canonical: false, superseded_by, merged_into) is folded into its live target in the same source (listed under folded) and its edges count once; title-prefixed person duplicates are listed under possible_duplicates, never merged. Ties order by slug, then source_id. coverage.state is behind when link extraction lags, so counts cover only extracted pages.",
+    "params": {
+      "direction": {
+        "type": "string",
+        "enum": [
+          "in",
+          "out",
+          "both"
+        ],
+        "description": "Rank by 'in' (inbound edges, default), 'out' (outbound edges) or 'both' (inbound + outbound)."
+      },
+      "types": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "Page types to rank, e.g. ['person']. Default: the schema pack's entity types."
+      },
+      "source_id": {
+        "type": "string",
+        "description": "Only this source (it must be inside your source grant); '__all__' spans every source you can read. Both ends of a counted edge stay in scope."
+      },
+      "link_type": {
+        "type": "string",
+        "description": "Count only edges of this link type, e.g. works_at."
+      },
+      "include_mentions": {
+        "type": "boolean",
+        "description": "Also count mention links (link_source mentions); default false."
+      },
+      "limit": {
+        "type": "number",
+        "description": "Rows to return (default 20, max 100)."
+      }
+    },
+    "cliHints": {
+      "name": "rank-entities"
     },
     "area": "links"
   },
@@ -4528,6 +4606,34 @@ export const OPERATION_MANIFEST: OperationMeta[] = [
       "name": "sources_inspect",
       "hidden": true
     }
+  },
+  {
+    "name": "sources_resolve_path",
+    "mutating": false,
+    "idempotent": true,
+    "outputRedaction": "no_stored_text",
+    "description": "Read-only: what gbrain did with each file path of a source, by its own rules. Per path: the slug sync gives it, whether sync skips it (metafile, excluded, pruned) and why, its sync hold, its page with chunk and embedding counts, whether search finds it now, and the command that moves it on. A deleted path is checked by the page that records it as its origin, never by slug. Use it in landing checks instead of re-implementing slugging. Confined to the caller's source scope.",
+    "params": {
+      "id": {
+        "type": "string",
+        "required": true,
+        "description": "Source id, as listed by sources_list (e.g. 'default')."
+      },
+      "paths": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "required": true,
+        "description": "File paths relative to the source root (or to the Git top level), at most 200, e.g. the paths a commit changed."
+      }
+    },
+    "scope": "read",
+    "cliHints": {
+      "name": "sources_resolve_path",
+      "hidden": true
+    },
+    "area": "sources"
   },
   {
     "name": "request_tools",

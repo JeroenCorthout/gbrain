@@ -44,7 +44,7 @@ const OP_AREAS: Record<string, string> = {
   // links + graph
   add_link: 'links', remove_link: 'links', get_links: 'links',
   get_backlinks: 'links', list_link_sources: 'links', traverse_graph: 'links',
-  find_orphans: 'links',
+  find_orphans: 'links', rank_entities: 'links',
   wanted_pages: 'links',
   // timeline
   add_timeline_entry: 'timeline', get_timeline: 'timeline',
@@ -71,7 +71,7 @@ const OP_AREAS: Record<string, string> = {
   advisor: 'advisor',
   // sources
   sources_add: 'sources', sources_list: 'sources', sources_remove: 'sources',
-  sources_status: 'sources',
+  sources_status: 'sources', sources_resolve_path: 'sources',
   // sync (localOnly)
   sync_brain: 'sync',
   // ingest log
@@ -80,7 +80,7 @@ const OP_AREAS: Record<string, string> = {
   // files (localOnly)
   file_list: 'files', file_upload: 'files', file_url: 'files',
   // jobs (Minions + agent lane)
-  submit_job: 'jobs', get_job: 'jobs', list_jobs: 'jobs', cancel_job: 'jobs',
+  submit_job: 'jobs', get_job: 'jobs', wait_job: 'jobs', list_jobs: 'jobs', cancel_job: 'jobs',
   retry_job: 'jobs', get_job_progress: 'jobs', pause_job: 'jobs',
   resume_job: 'jobs', replay_job: 'jobs', send_job_message: 'jobs',
   submit_agent: 'jobs', get_agent_job: 'jobs',

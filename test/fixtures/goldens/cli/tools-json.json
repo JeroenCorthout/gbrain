@@ -2,8 +2,8 @@
   "golden": {
     "exitCode": 0,
     "stderr": "",
-    "stdoutBytes": 253497,
-    "stdoutSha256": "20f59ef5300b32f55ca0d2378f7cc7eabd91200d64212dcdcddeef7fd27c4e15",
+    "stdoutBytes": 258655,
+    "stdoutSha256": "ad14c32a587d230a1eb8b6d47bab0cf1da4193be6cc1c7e645bc459dbbc6db6d",
     "toolNames": [
       "remember",
       "entity",
@@ -90,6 +90,7 @@
       "file_url",
       "submit_job",
       "get_job",
+      "wait_job",
       "list_jobs",
       "cancel_job",
       "retry_job",
@@ -102,6 +103,7 @@
       "get_agent_job",
       "get_job_stats",
       "find_orphans",
+      "rank_entities",
       "get_calibration_profile",
       "takes_list",
       "takes_search",
@@ -120,6 +122,7 @@
       "sources_remove",
       "sources_status",
       "sources_inspect",
+      "sources_resolve_path",
       "request_tools",
       "get_recent_salience",
       "find_anomalies",
@@ -306,7 +309,8 @@
           "name": "string?",
           "names": "array?",
           "prefer_source_id": "string?",
-          "source_id": "string?"
+          "source_id": "string?",
+          "variants": "boolean?"
         },
         "required_scopes": [],
         "schema": {
@@ -329,6 +333,10 @@
             "source_id": {
               "description": "Read only this source. Default: your source first, then every source you can read.",
               "type": "string"
+            },
+            "variants": {
+              "description": "false: exact names only. Default true: with no exact match, one unambiguous name variant (card.match says which).",
+              "type": "boolean"
             }
           },
           "required": [],
@@ -4198,6 +4206,35 @@
         "scope": "admin"
       },
       {
+        "description": "Wait until a job is completed, failed, dead or cancelled (at most 55 s per call), then return it like get_job plus terminal. terminal: false means it is still running: call again. Agent-scoped tokens (no admin) wait only on jobs they own.",
+        "idempotent": true,
+        "local_only": false,
+        "mutating": false,
+        "name": "wait_job",
+        "parameters": {
+          "id": "number",
+          "timeout_s": "number?"
+        },
+        "required_scopes": [],
+        "schema": {
+          "properties": {
+            "id": {
+              "description": "Job ID",
+              "type": "number"
+            },
+            "timeout_s": {
+              "description": "Seconds to wait (default 30, at most 55).",
+              "type": "number"
+            }
+          },
+          "required": [
+            "id"
+          ],
+          "type": "object"
+        },
+        "scope": "admin"
+      },
+      {
         "description": "List background jobs with optional status/queue/name filters; pass fields to project each job to the columns you need. Use when checking queued or failed work. Needs admin scope (agent-scoped tokens see only jobs they own).",
         "idempotent": true,
         "local_only": false,
@@ -4205,6 +4242,7 @@
         "name": "list_jobs",
         "parameters": {
           "fields": "array?",
+          "finished_since": "string?",
           "limit": "number?",
           "name": "string?",
           "queue": "string?",
@@ -4219,6 +4257,10 @@
                 "type": "string"
               },
               "type": "array"
+            },
+            "finished_since": {
+              "description": "Terminal-event cursor: an ISO time or the next_cursor of the previous call. Returns {jobs, next_cursor}: jobs that finished after it, oldest first.",
+              "type": "string"
             },
             "limit": {
               "description": "Max results (default: 50)",
@@ -4506,7 +4548,7 @@
         "scope": "agent"
       },
       {
-        "description": "Job queue statistics. PER-BLOCK scoping: by_status and queue_health are GLOBAL (unfiltered); by_type is windowed by since_hours; only the wedge block is scoped to the queue param. wedged: true is the silent-halt signal (a worker is alive but claiming nothing while work waits) — suggest restarting the jobs supervisor on the brain host. no_worker: true means work is waiting and NO worker is running for the queue (always on PGLite unless a gbrain jobs work drain is live); wedged is then false and the no_worker notice names the fix. private_queue: true means the queue is a parent-owned dream-inline queue: wedged is NEVER true for it and a worker restart cannot help — recovery runs automatically at worker spawn / dream-cycle start; suggest gbrain doctor for the per-queue verdict. Host-process diagnostics (renice, backpressure hints) stay on the gbrain jobs stats CLI.",
+        "description": "Job queue statistics. PER-BLOCK scoping: by_status and queue_health are GLOBAL (unfiltered); by_type is windowed by since_hours; only the wedge block is scoped to the queue param. wedged: true is the silent-halt signal (a worker is alive but claiming nothing while work waits) — suggest restarting the jobs supervisor on the brain host. no_worker: true means work is waiting and NO worker is running for the queue (always on PGLite unless a gbrain jobs work drain is live); wedged is then false and the no_worker notice names the fix. private_queue: true means the queue is a parent-owned dream-inline queue: wedged is NEVER true for it and a worker restart cannot help — recovery runs automatically at worker spawn / dream-cycle start; suggest gbrain doctor for the per-queue verdict. by_queue has one row per queue (every dream-inline-* queue folded into one dream-inline row). Host-process diagnostics (renice, backpressure hints) stay on the gbrain jobs stats CLI.",
         "idempotent": true,
         "local_only": false,
         "mutating": false,
@@ -4572,6 +4614,61 @@
             "source_id": {
               "description": "Only orphans from this source (it must be inside your source grant). Each row carries source_id and type.",
               "type": "string"
+            }
+          },
+          "required": [],
+          "type": "object"
+        },
+        "scope": "read"
+      },
+      {
+        "description": "Rank pages by graph connections: the most-linked people, companies or other entities. Use instead of counting link rows yourself. An edge is a distinct (from page, to page, link_type) between live pages in scope: self-links, links to deleted pages, non-ranking types (amends) and, unless include_mentions, mention rows do not count; several provenance rows for one edge count once. inbound/outbound count edges, neighbors counts distinct linked pages. A redirect stub (canonical: false, superseded_by, merged_into) is folded into its live target in the same source (listed under folded) and its edges count once; title-prefixed person duplicates are listed under possible_duplicates, never merged. Ties order by slug, then source_id. coverage.state is behind when link extraction lags, so counts cover only extracted pages.",
+        "idempotent": true,
+        "local_only": false,
+        "mutating": false,
+        "name": "rank_entities",
+        "parameters": {
+          "direction": "string?",
+          "include_mentions": "boolean?",
+          "limit": "number?",
+          "link_type": "string?",
+          "source_id": "string?",
+          "types": "array?"
+        },
+        "required_scopes": [],
+        "schema": {
+          "properties": {
+            "direction": {
+              "description": "Rank by 'in' (inbound edges, default), 'out' (outbound edges) or 'both' (inbound + outbound).",
+              "enum": [
+                "in",
+                "out",
+                "both"
+              ],
+              "type": "string"
+            },
+            "include_mentions": {
+              "description": "Also count mention links (link_source mentions); default false.",
+              "type": "boolean"
+            },
+            "limit": {
+              "description": "Rows to return (default 20, max 100).",
+              "type": "number"
+            },
+            "link_type": {
+              "description": "Count only edges of this link type, e.g. works_at.",
+              "type": "string"
+            },
+            "source_id": {
+              "description": "Only this source (it must be inside your source grant); '__all__' spans every source you can read. Both ends of a counted edge stay in scope.",
+              "type": "string"
+            },
+            "types": {
+              "description": "Page types to rank, e.g. ['person']. Default: the schema pack's entity types.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
             }
           },
           "required": [],
@@ -5440,6 +5537,39 @@
           },
           "required": [
             "path"
+          ],
+          "type": "object"
+        },
+        "scope": "read"
+      },
+      {
+        "description": "Read-only: what gbrain did with each file path of a source, by its own rules. Per path: the slug sync gives it, whether sync skips it (metafile, excluded, pruned) and why, its sync hold, its page with chunk and embedding counts, whether search finds it now, and the command that moves it on. A deleted path is checked by the page that records it as its origin, never by slug. Use it in landing checks instead of re-implementing slugging. Confined to the caller's source scope.",
+        "idempotent": true,
+        "local_only": false,
+        "mutating": false,
+        "name": "sources_resolve_path",
+        "parameters": {
+          "id": "string",
+          "paths": "array"
+        },
+        "required_scopes": [],
+        "schema": {
+          "properties": {
+            "id": {
+              "description": "Source id, as listed by sources_list (e.g. 'default').",
+              "type": "string"
+            },
+            "paths": {
+              "description": "File paths relative to the source root (or to the Git top level), at most 200, e.g. the paths a commit changed.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "id",
+            "paths"
           ],
           "type": "object"
         },

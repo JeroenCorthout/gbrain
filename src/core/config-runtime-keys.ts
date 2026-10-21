@@ -16,4 +16,5 @@ export const RUNTIME_READER_CONFIG_KEYS: readonly string[] = [
   'skillopt.capture_enabled', // skillopt/held-out.ts production rollout capture, default off
   'entity_identity.union', // entity-identity.ts: links/backlinks union across identity co-members, default off
   'writer.lint_on_put_page', // output/post-write.ts lint after put_page, default off
+  'serve.cli_socket', // config.ts loadConfigWithEngine (snapshot only) → serve.ts: a Postgres serve answers CLI reads over a private Unix socket, default off
 ];

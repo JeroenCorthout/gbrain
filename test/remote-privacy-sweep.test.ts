@@ -172,6 +172,7 @@ const PARAM_FACTORY: Record<string, Record<string, unknown>> = {
   get_links: { slug: WORLD_PAGE_SLUG },
   get_backlinks: { slug: WORLD_PAGE_SLUG },
   traverse_graph: { slug: WORLD_PAGE_SLUG },
+  rank_entities: {},
   get_versions: { slug: WORLD_FENCE_SLUG, include_body: true },
   get_write_attribution: { slug: WORLD_FENCE_SLUG, versions: true },
   get_chunks: { slug: WORLD_FENCE_SLUG },
@@ -186,6 +187,7 @@ const PARAM_FACTORY: Record<string, Record<string, unknown>> = {
   find_contradictions: {},
   search_by_image: {},
   sources_status: { id: 'default' },
+  sources_resolve_path: { id: 'default', paths: ['notes/sweep-example.md'] },
   ontology_get: { entity: WORLD_PAGE_SLUG },
   get_skill: { name: 'query' },
   // Mutating ops target FRESH slugs only — never the seeded corpus. The
@@ -264,6 +266,7 @@ const EXPECTED_OUTCOME: Record<string, Outcome> = {
   resolve_slugs: 'data',
   get_backlinks: 'data',
   traverse_graph: 'data',
+  rank_entities: 'data',
   // reads that succeed without corpus-marker requirement
   get_tags: 'ok',
   get_links: 'ok',
@@ -273,6 +276,7 @@ const EXPECTED_OUTCOME: Record<string, Outcome> = {
   whoami: 'ok', // base unused — per-shape override in EXPECTED_BY_SHAPE (above)
   sources_list: 'ok',
   sources_status: 'ok',
+  sources_resolve_path: 'error',
   find_orphans: 'ok',
   wanted_pages: 'ok',
   find_contradictions: 'ok',
@@ -414,6 +418,7 @@ const EXPECTED_OUTCOME: Record<string, Outcome> = {
   sources_remove: 'error',
   submit_job: 'error',
   get_job: 'error',
+  wait_job: 'error',
   cancel_job: 'error',
   retry_job: 'error',
   get_job_progress: 'error',

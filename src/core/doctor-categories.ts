@@ -195,6 +195,8 @@ export const BRAIN_CHECK_NAMES: ReadonlySet<string> = new Set([
   'takes_weight_grid',
   // #5836: active facts with no entity (invisible to entity recall and the conflict sweep).
   'unlinked_facts',
+  // #7160: title-prefixed person pages that likely duplicate an unprefixed page (preview only).
+  'person_title_duplicates',
   'edge_validity',
   'text_projection_readiness',
   'timeline_coverage',
@@ -217,6 +219,8 @@ export const BRAIN_CHECK_NAMES: ReadonlySet<string> = new Set([
   'uncommitted_sync_deletions',
   // #6865: committed files of a managed Git source with no page and no hold, from the stored detector result (doctor/checks/unindexed-files.ts).
   'unindexed_files',
+  // GBRA-150: pages a managed sync committed past the freshness target that search cannot fully see (doctor/checks/landing-gaps.ts).
+  'sync_landing_gaps',
   // #6712: live pages whose database-only edit an incremental sync overwrote without a hold (doctor/checks/overwritten-edits.ts).
   'sync_overwritten_db_edits',
   'unified_multimodal_coverage',
@@ -325,6 +329,8 @@ export const OPS_CHECK_NAMES: ReadonlySet<string> = new Set([
   'host_identity_mismatch',
   // #6696 C6: a live serve or worker on an older build than this checkout (doctor/checks/persistence-consumers.ts).
   'serve_build_drift',
+  // #7245: serve, the jobs supervisor, worker parents and job children on different builds (doctor/checks/runtime-build-skew.ts).
+  'runtime_build_skew',
   'stale_embedding_effects',
   'vector_plan',
   'keyword_plan',

@@ -167,6 +167,7 @@ const MATRIX: Row[] = [
   { name: 'get_chunks', mode: 'isolated', args: { slug: 'notes/beta-note' } },
   { name: 'get_ingest_log', mode: 'isolated', args: { limit: 50 } },
   { name: 'find_orphans', mode: 'isolated', args: {} },
+  { name: 'rank_entities', mode: 'isolated', args: {} },
   { name: 'wanted_pages', mode: 'isolated', args: {} },
   { name: 'takes_list', mode: 'isolated', args: { limit: 50 } },
   { name: 'takes_search', mode: 'isolated', args: { query: 'BETAMARKER', limit: 20 } },
@@ -205,6 +206,7 @@ const MATRIX: Row[] = [
     expectScoped: () => {
       throw new Error('sources_status must fail closed (not_found) for out-of-scope ids under any untrusted ctx');
     } },
+  { name: 'sources_resolve_path', mode: 'skip', reason: 'needs a Git checkout of the source; the not_found confinement of an out-of-scope id (assertSourceInCallerScope, as sources_status) is pinned in test/sources-resolve-path.test.ts' },
   { name: 'schema_stats', mode: 'isolated', args: {} },
   { name: 'schema_review_orphans', mode: 'isolated', args: { limit: 50 } },
 

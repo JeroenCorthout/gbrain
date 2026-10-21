@@ -302,6 +302,10 @@
         "name": "partial_embedding"
       },
       {
+        "category": "brain",
+        "name": "sync_landing_gaps"
+      },
+      {
         "category": "ops",
         "name": "pgvector"
       },
@@ -878,6 +882,10 @@
         "name": "host_identity_mismatch"
       },
       {
+        "category": "ops",
+        "name": "runtime_build_skew"
+      },
+      {
         "category": "brain",
         "name": "extract_atoms_held_failed"
       },
@@ -924,6 +932,10 @@
       {
         "category": "ops",
         "name": "managed_sync_convergence"
+      },
+      {
+        "category": "brain",
+        "name": "person_title_duplicates"
       },
       {
         "category": "brain",

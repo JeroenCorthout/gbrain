@@ -2774,7 +2774,9 @@ clean while incomplete) and schedules a re-screen; doctor
 (the page was deleted while the file stayed committed) are never scheduled:
 rename one of the two files, or delete the file or restore the page.
 `metafile_skipped` (never scheduled) lists titled scaffolding files sync skips
-on purpose (`index.md`, `README.md`, ...): rename one
+on purpose (`index.md`, `README.md`, ...) under `sync.metafile_pages off`; under
+the default `typed` a nested titled one is an ordinary unindexed file. To keep
+`off` and still import one, rename it
 (`investors/fund-a/index.md` to `investors/fund-a.md`), commit and sync.
 
 ## Resume

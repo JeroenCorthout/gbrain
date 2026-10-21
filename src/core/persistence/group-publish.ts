@@ -430,6 +430,8 @@ export async function publishGroup(engine: BrainEngine, rows: WriteRequest[], pr
     releaseCapacity?.();
     publishingBeside.delete(head.id);
     await lock.release();
+    // As publishMutation does: each committed member's post-commit work (#7172: a deferred chunk replacement) runs after the lock.
+    if (committed) for (const member of prepared) await member.afterCommit?.(engine).catch(() => undefined);
   }
 }
 

@@ -213,7 +213,7 @@ export function retiredPageSql(p: string): string {
     OR lower(COALESCE(${p}.frontmatter->>'status', '')) ~ '(^|[^a-z])(alias|redirect|redirected)([^a-z]|$)')`;
 }
 
-const MAX_RETIREMENT_HOPS = 5;
+export const MAX_RETIREMENT_HOPS = 5;
 
 /** A frontmatter redirect value as a slug: `[[people/x|X]]`, `people/x.md` and `/people/x` are `people/x`. */
 function redirectSlug(value: string): string | null {
@@ -357,6 +357,8 @@ function isBareName(raw: string): boolean {
 // analysis/runbook documents (`infra/hive-dependency-audit-…`), and any such
 // doc would trip the ambiguity gate and re-break bare-token resolution.
 const PREFIX_EXPANSION_DIRS = ['people', 'companies', 'hosts', 'projects'] as const;
+/** Directories a bare entity name resolves under (findExactBasenameCandidates); factEntitySlugs reads the same set. */
+export const BASENAME_DIRS = [...PREFIX_EXPANSION_DIRS, 'concepts'] as const;
 
 async function findExactBasenameCandidates(
   engine: BrainEngine,
@@ -371,7 +373,7 @@ async function findExactBasenameCandidates(
       `SELECT slug FROM pages
         WHERE source_id = $1 AND deleted_at IS NULL AND slug = ANY($2::text[])
         LIMIT 2`,
-      [source_id, [...PREFIX_EXPANSION_DIRS, 'concepts'].map(dir => `${dir}/${token}`)],
+      [source_id, BASENAME_DIRS.map(dir => `${dir}/${token}`)],
     );
   } catch {
     return [];
@@ -519,7 +521,7 @@ export async function resolveStrictEntityReference(
   }
   const token = slugify(trimmed);
   if (!trimmed.includes('/') && token.includes('-')) {
-    const basename = await pick(await live([...PREFIX_EXPANSION_DIRS, 'concepts'].map(dir => `${dir}/${token}`)), 'basename');
+    const basename = await pick(await live(BASENAME_DIRS.map(dir => `${dir}/${token}`)), 'basename');
     if (basename) return basename;
   }
   const orgVariant = await pick(await live(orgDirVariants(trimmed)), 'basename');

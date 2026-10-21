@@ -2183,7 +2183,7 @@ More: [docs/guides/troubleshooting.md#ipc-path-too-long](../../docs/guides/troub
 
 | Meaning | Why | Next step | Who acts · consent | Verify | Exit | Retryable |
 |---|---|---|---|---|---|---|
-| Hybrid search's CJK keyword arm hit its deadline or candidate cap on a large corpus, so some keyword matches can be missing. | The CJK fallback is an unindexed LIKE scan; the arm is bounded so a large brain cannot stall every hybrid search. An incomplete keyword search is not evidence of absence. | Narrow the search with --source-id (MCP source_id), or ask the user to raise search.cjk_keyword_deadline_ms. Run: gbrain config get search.cjk_keyword_deadline_ms | agent | `gbrain doctor --json` | 1 | no |
+| Hybrid search's keyword arm returned a bounded result on a large corpus (the CJK arm's deadline or candidate cap, or a common-word match ranked from a sample), so some keyword matches can be missing. | The CJK fallback is an unindexed LIKE scan, and a query whose words match hundreds of thousands of chunks ranks a bounded sample of them (an OR retry also keeps only its rarer words); each bound keeps a large brain from stalling every hybrid search. An incomplete keyword search is not evidence of absence. | Add a rarer word or an exact "phrase", or narrow the search with --source-id (MCP source_id) or --types; for CJK text, ask the user to raise search.cjk_keyword_deadline_ms. Run: gbrain config get search.cjk_keyword_deadline_ms | agent | `gbrain doctor --json` | 1 | no |
 
 More: [docs/guides/multi-language-fts.md#cjk-keyword-budget](../../docs/guides/multi-language-fts.md#cjk-keyword-budget)
 
@@ -3129,6 +3129,16 @@ More: [docs/guides/pinned-questions.md#who-can-see-pinned-questions](../../docs/
 |---|---|---|---|---|---|---|
 | The bounded queue is full; existing requests keep their place. | A temporary condition (a lock, a pending write, a rate limit); the same request can succeed later. | Wait briefly, then retry the same request (writes: reuse the same request_id). | agent | `repeat the read that failed` | 1 | yes |
 
+### rank_entities_timeout
+
+<a id="rank_entities_timeout"></a>
+
+| Meaning | Why | Next step | Who acts · consent | Verify | Exit | Retryable |
+|---|---|---|---|---|---|---|
+| rank_entities did not finish within its statement deadline (Postgres statement_timeout); nothing was ranked. | The ranking aggregates every edge in scope in one statement; a whole-brain ranking on a large graph can exceed the deadline, and a partial ranking would misstate the top rows. | Narrow the ranking with source_id, types or link_type, then call rank_entities again. | agent | `repeat the read that failed` | 1 | no |
+
+More: [docs/guides/graph-ranking.md#rank_entities_timeout](../../docs/guides/graph-ranking.md#rank_entities_timeout)
+
 ### rate_limited
 
 <a id="rate_limited"></a>
@@ -3498,6 +3508,16 @@ More: [docs/guides/windowed-reads.md#revision_changed](../../docs/guides/windowe
 | Meaning | Why | Next step | Who acts · consent | Verify | Exit | Retryable |
 |---|---|---|---|---|---|---|
 | The exact authorized revision is unavailable. | A capability this request needs is not configured or not reachable on this brain. | A required capability is not available on this brain. Run `gbrain doctor --json` to see what is missing. | agent | `gbrain doctor --json` | 1 | no |
+
+### runtime_build_skew
+
+<a id="runtime_build_skew"></a>
+
+| Meaning | Why | Next step | Who acts · consent | Verify | Exit | Retryable |
+|---|---|---|---|---|---|---|
+| Long-running gbrain processes on this host run different builds, or one runs an older build than its install holds on disk: serve, the jobs supervisor, worker parents (in memory) and the job children they spawn from the install (on disk). | A process keeps the code it loaded at start, and `gbrain jobs run-child` spawns a fresh process from the install on disk for every job, so after a checkout reset or an upgrade on disk newer job code runs under an older worker and next to an older serve until each process restarts. | Restart the process the check names (serve with its service command, the supervisor with `gbrain jobs supervisor stop` then `gbrain jobs supervisor start --detach`, a worker by stopping its pid so its supervisor respawns it), then each other listed process on an older build; nothing restarts automatically. Run: gbrain doctor --only runtime_build_skew --json | agent | `gbrain doctor --only runtime_build_skew --json` | 1 | no |
+
+More: [docs/guides/troubleshooting.md#runtime-build-skew](../../docs/guides/troubleshooting.md#runtime-build-skew)
 
 ### schema_lock_blocked
 

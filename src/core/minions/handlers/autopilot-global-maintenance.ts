@@ -8,6 +8,7 @@ import { CODES } from '../../error-registry.ts';
 import { ItemRun } from '../../item-failure.ts';
 import { OperationError } from '../../ops/contract.ts';
 import { VERSION } from '../../../version.ts';
+import { reportJobProgress } from './job-progress.ts';
 
 /**
  * #4578: one pass over the maintenance phases may span several jobs. The
@@ -243,6 +244,7 @@ export function makeAutopilotGlobalMaintenanceHandler(engine: BrainEngine, deps:
       progress.running_phase = phase;
       progress.running_job = runToken;
       await save();
+      await reportJobProgress(job, { phase, phase_index: i, phase_count: phases.length, started_at: new Date().toISOString() });
       let report: CycleReport;
       try {
         report = await runCycle(engine, {

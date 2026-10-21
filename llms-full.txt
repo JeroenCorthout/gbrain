@@ -1807,6 +1807,14 @@ Bun blocks gbrain's postinstall on `bun install -g` (`Blocked 1 postinstall`); a
 
 ## Memory operating protocol
 
+**Retrieval: gbrain first.** For anything in the brain, run `gbrain search` (names,
+codes, phrases) or `gbrain query` (questions), then `gbrain get <slug>` on a hit.
+Don't grep, cat or SQL the brain checkout first. Filters agents miss:
+`--types '["meeting"]'`, `--match keyword` (every matching page), `--since`/`--until`
+on `query`, `--source <id>`, `--limit`, `--json`; `gbrain backlinks <slug>` and
+`gbrain timeline <slug>` for links and dated events. Copyable examples:
+[brain-first](skills/conventions/brain-first.md#retrieval-gbrain-first).
+
 Recall relevant saved context before answering. Save explicit requests to remember with provenance; confirm corrections against the stored record. Automatic capture requires opt-in. Withdrawal (`forget`) removes a fact from active memory; history, source material, and private backups may remain. Never promise physical erasure. Verify changes with actual GBrain calls and distinguish a local test from a new-conversation test in the harness.
 
 Durable preferences and facts belong in shared memory when the user wants them
@@ -2953,6 +2961,11 @@ gbrain search "a phrase from an imported page" --json
 Only after enabling the selected embedding provider, run `gbrain embed --stale`.
 Use `gbrain query` for expanded retrieval only when its provider use is intended;
 `--no-expand` opts out of expansion independently of the mode.
+
+Once imported, retrieve through gbrain rather than the files: search, then
+`gbrain get <slug>`. Filters (`--types`, `--match keyword`, `query --since/--until`,
+`--source`, `--json`) are in
+[Retrieval: gbrain first](skills/conventions/brain-first.md#retrieval-gbrain-first).
 
 ## Step 4.5: Wire the Knowledge Graph
 
@@ -4372,6 +4385,7 @@ that work in this conversation.
 | 3 | `confirmation_required`, nothing ran | stop, relay `user_message`, run `fix.command` only after the user agrees |
 | 10 | write accepted, still pending | poll the receipt (`gbrain write-request -- <id>`) |
 | 11 | partial, resumable budget stop | run `resume_command` |
+| 12 | `no_results`: a recall or entity lookup matched nothing (only with `GBRAIN_FAIL_ON_EMPTY=1`) | treat it as a miss, not a failure |
 | 13 | `pending_verify`: a harness wired, verification waits for the serve | start the serve, then run `fix.command` |
 | 14 | `bootstrap_cleanup_pending`: a harness is wired; old shared-skills enrollments or token ids still await cleanup | follow `fix.next` (re-run, or relay the owner's revoke step), then re-run |
 | 75 | another runner holds the migration lock | wait, then retry |
@@ -4805,7 +4819,7 @@ When multiple skills could match:
 
 These apply to ALL brain-writing skills:
 - `skills/conventions/quality.md` — citations, back-links, notability gate
-- `skills/conventions/brain-first.md` — check brain before external APIs
+- `skills/conventions/brain-first.md` — search gbrain before external APIs, brain files or SQL; copyable retrieval filters
 - `skills/conventions/brain-routing.md` — which brain (DB) and which source (repo) to target; cross-brain federation is latent-space only
 - `skills/conventions/schema-evolution.md` — when to add a type vs alias vs prefix (read before `schema-author`)
 - `skills/conventions/line-grammar.md` — typed relation lines (`- works_at [[companies/x]]`), fact lines and `@effective[...)` ranges in compiled truth
@@ -6912,7 +6926,8 @@ Timing knobs the drain uses:
 
 - **Tunables** you set and keep: `sync.bulk_size`, `sync.lanes`, `sync.exclude`, `sync.include_hidden`,
   `sync.include_working_tree`, `sync.holds`, `sync.write_through`, `sync.cost_gate_min_usd`, `sync.on_commit`,
-  `sync.freshness_target_seconds` ([on-commit sync](on-commit-sync.md)).
+  `sync.freshness_target_seconds` ([on-commit sync](on-commit-sync.md)), `sync.metafile_pages`
+  ([what gets synced](#what-gets-synced)).
 - **Rollback keys**, the way back a notice or migration promised: `sync.job_drain`, `sync.foreground_priority`,
   `sync.federated_v2`, `sync.waive_batch`, `sync.bulk`. Each one set to `false` restores the earlier behavior, and
   stays honored until at least 2027-01-14 (`CONFIG_ROLLBACK_WINDOWS` in `src/core/wire-skew.ts`). They are not
@@ -7101,7 +7116,20 @@ Triggers sync on push events for instant sync (<5s).
 Sync only indexes "syncable" markdown files. These are excluded by design:
 - Hidden paths (`.git/`, `.raw/`, etc.) and vendored/generated trees
   (`node_modules/`, `dist/`, `build/`, `venv/`)
-- Meta files: `README.md`, `index.md`, `schema.md`, `log.md`, `RESOLVER.md`
+- Meta files: `README.md`, `index.md`, `schema.md`, `log.md`, `RESOLVER.md` at any depth
+  (and `AGENTS.md`, `CLAUDE.md` at the source root), unless the file is a typed page (below)
+
+A meta-named file below the source root whose frontmatter has a `type:` or
+`title:` (for example `projects/acme-example/index.md` starting with
+`---\ntype: project\n---`) is an ordinary page: incremental sync, `sync --full`,
+the bulk import and managed sync all import it, edits refresh it and deleting
+the file soft-deletes its page. A bare one (no frontmatter, or neither key) and
+every meta file at the source root stay skipped, and a page an older gbrain
+indexed at such a path is kept (#1433). This is `sync.metafile_pages`:
+`typed` (the default) or `off`, which skips every meta file as before
+(`gbrain config set sync.metafile_pages off`). The first sync after the upgrade,
+or after setting it back to `typed`, imports the typed files already in the
+tree once; it deletes or rewrites nothing else.
 
 A dot-directory you deliberately keep content in (say `.decisions/`) can be
 waived back in with `--include-hidden '<glob>'` on `gbrain sync` — the glob
@@ -9033,7 +9061,10 @@ Save ONE fact with mandatory attribution.
   (local CLI reads only; session hooks push world facts only, so a private
   fact never reaches a new agent session, and a local private save carries the
   `private_fact_not_pushed` notice saying so). The init quickstart carries the
-  consent line.
+  consent line. An omitted `visibility` saves `private` when the target page is
+  private (by `visibility` or a privacy alias such as `access: private`) or the
+  operator set `facts.default_visibility` to private; a save never lands wider
+  than the page it is written into.
 
 Response: `{ id, status, status_text, entity_slug, valid_until,
 protocol_version }` (+ `degraded_dedup: true` when no embedding provider —
@@ -10434,6 +10465,7 @@ Source: https://raw.githubusercontent.com/garrytan/gbrain/master/docs/guides/tro
 | [Doctor warns `two_consumers_on_host`](#two-consumers-on-host) | `gbrain sources writer status --json` lists the consumers alive on this host (`host.consumers`: pid, kind, mode, age); let the shorter-lived one finish (a `gbrain sync` run ends on its own) or restart it so it defers to the resident one | agent; a restart after the user agrees | none to inspect | `gbrain doctor --only two_consumers_on_host --json` |
 | [Doctor warns `consumers_without_heartbeat`](#consumers-without-heartbeat) | upgrade and restart the process whose pid and kind the check names (it predates the heartbeat table and never defers) | brain host, after the user agrees | `persistent_install` when it rewrites services | `gbrain doctor --only consumers_without_heartbeat --json` |
 | [Doctor warns `serve_build_drift`: serve is running an older build than this checkout](#serve-build-drift) | restart serve with the command the check prints (`systemctl --user restart gbrain-serve.service`, `launchctl kickstart -k gui/<uid>/com.gbrain.serve`, or stop the named pid and start it again), then restart each other listed worker | brain host, after the user agrees | none | `gbrain doctor --only serve_build_drift --json` is ok |
+| [Doctor warns `runtime_build_skew`: serve, the jobs supervisor, workers and job children run different builds](#runtime-build-skew) | restart the process the check names with the command it prints (serve with its service command, the supervisor with `gbrain jobs supervisor stop` then `gbrain jobs supervisor start --detach`, a worker by stopping its pid), then each other process listed on an older build | brain host, after the user agrees | none | `gbrain doctor --only runtime_build_skew --json` is ok |
 | [Doctor warns `host_identity_mismatch`, or maintenance jobs report `owner_unavailable` / `host_mismatch` for weeks](#host-identity-mismatch) | set `GBRAIN_HOME` on that process's supervisor to the value the check prints (the owner's home; config appends `.gbrain` itself) and restart it; never edit or delete a `host.json` | brain host, after the user agrees | `persistent_install` when it rewrites a service definition | `gbrain doctor --only host_identity_mismatch --json` |
 | [`fence_repair` or chronicle refused `owner_unavailable`, reason `host_mismatch`](#owner-unavailable) | `gbrain sources writer status --source <id> --json` on the brain host (the owner host id); run the step there, or give the worker and the shell one `GBRAIN_HOME`. Never copy or regenerate `host.json`. Do not retry from the same host | brain host | none | `gbrain sources writer status --source <id> --json` shows this host's id as the owner |
 | [`owner_unavailable`, reason `transfer_in_progress` or `clone_in_progress`](#owner-unavailable) | wait 30 s and retry the same step; the worktree is draining for a writer transfer or recovering from a topology clone | agent | none | `gbrain sources writer status --source <id> --json` shows state `active` |
@@ -10555,6 +10587,8 @@ A `drain_stalled` stop with `cause: owner_wedged_here` is the same situation see
 <a id="consumers-without-heartbeat"></a>**Doctor warns `consumers_without_heartbeat`?** A running claim on this host is stamped by a process (`claim_phase.owner`: kind, pid, gbrain version) that has no `persistence_consumers` row. Every full consumer on this release renews its row every 10 s, so an owner without one runs a gbrain release from before the heartbeat table: it never defers to the resident consumer and the host runs two full consumers until it is upgraded. The check names the pid, kind and version from the stamp; upgrade and restart that process (after the user agrees). A new sync CLI beside an older `serve` says so on its start line (`owner row missing: older serve or no serve; running own consumer`).
 
 <a id="serve-build-drift"></a>**Doctor warns `serve_build_drift` ("serve is running an older build than this checkout; restart serve and workers")?** Upgrading or pulling the checkout does not restart the processes already running from it. Every live consumer on this host writes its gbrain version into its `persistence_consumers` heartbeat row, and the check compares the live `serve`, `sync`, `jobs`, `autopilot` and `mcp` rows with this binary's version in one read. Until they restart, one-shot commands from the checkout (`gbrain sync`, `bun run src/cli.ts …`) run newer code against an older consumer. The check prints the restart for the serve: `systemctl --user restart gbrain-serve.service` or `launchctl kickstart -k gui/<uid>/com.gbrain.serve` when that service is installed, otherwise the pid to stop and start again the way it was launched. Restart each other listed process (the jobs worker, autopilot) the same way, after the user agrees; nothing restarts automatically. A serve older than the heartbeat table writes no row, so this check reads ok beside it and [`consumers_without_heartbeat`](#consumers-without-heartbeat) names it once it holds claims. A serve newer than this checkout is reported, not warned: upgrade the checkout before running one-shot commands from it. Verify with `gbrain doctor --only serve_build_drift --json`; on PGLite there is one process and the check reads ok.
+
+<a id="runtime-build-skew"></a>**Doctor warns `runtime_build_skew` (several gbrain builds are running on this host)?** Each long-running process keeps the build it loaded when it started, but `gbrain jobs run-child` starts a fresh process from the install on disk for every job. After a checkout reset, a pull or an upgrade on disk, one host can run serve on one build, the jobs supervisor and its workers on another (in memory) and their job children on a third (from disk). The check reads each process's own record: serve and the other resident consumers from their heartbeat rows (Postgres), the supervisor from lines 4 and 5 of its PID file, each `gbrain jobs work` (autopilot-spawned ones included) from its worker-registry entry, and the job children from the `job_build_skew:` line a child writes into a job's history (`gbrain jobs get <id>`) when its build differs from its worker's. It warns when the running builds differ, or when a process's install now holds another build than the one it runs, and lists every process with its pid and version (never a path). The fix names one restart, serve first, then the supervisor, then a worker: restart serve with its service command, stop the supervisor with `gbrain jobs supervisor stop` and start it again with `gbrain jobs supervisor start --detach` (it respawns its worker from the install on disk), or stop a worker's pid (SIGTERM drains its jobs, and its supervisor starts a fresh one). Restart each other listed process the same way after the user agrees; nothing restarts automatically. A job child whose worker needs a readiness protocol or feature the child lacks refuses the job: the job is released without counting an attempt and the worker stops on a configuration block until it is restarted on one build. A process started before builds were recorded is named as unrecorded; restarting it makes it report one. `/health` on `gbrain serve --http` carries `build` (`version`, `installed_version`, `restart_pending`) on every 200. Verify with `gbrain doctor --only runtime_build_skew --json`.
 
 <a id="host-identity-mismatch"></a>**Doctor warns `host_identity_mismatch`, or fence repair, chronicle and other maintenance jobs have reported `owner_unavailable` with reason `host_mismatch` for days?** Host identity is a file, `host.json` under the persistence home (`GBRAIN_HOME`, else `$HOME/.gbrain`). A job worker or container launched with a different `HOME` or without `GBRAIN_HOME` mints a new identity after every restart and sees the binding as another host's, so its writes never reach the owner while every health signal stays green. Doctor flags it when this process's identity differs from the binding owner's and the owner's checkout resolves on this filesystem (same machine id or volume), or, for a container without a stable machine id, when the checkout is present at the binding's path and this `host.json` was minted after the binding under a different `HOME`/`GBRAIN_HOME`. The check names both files, the environment each was minted under (`minted_under: {home, gbrain_home, hostname, machine_id}`; `unknown` for a file minted before it was recorded) and the one-line fix: set `GBRAIN_HOME` on that process's supervisor to the owner's home (the printed value; config appends `.gbrain` itself) and restart it. Nothing re-derives or rewrites an existing `host.json`: re-owning the binding would break every other host sharing the brain. Verify with `gbrain doctor --only host_identity_mismatch --json`.
 
@@ -11201,6 +11235,7 @@ the exit code first, then reads the JSON document (`--json`) for the details:
 | 3 | `confirmation_required`: nothing ran | consent payload (`effects`, `user_message`, `fix`) | stop, relay `user_message` to the user, run `fix.command` only after they agree |
 | 10 | the write was accepted and is still pending | write receipt | poll the receipt (`gbrain write-request -- <id>`); `--accept-pending` maps this to 0 |
 | 11 | partial, resumable budget stop | result with `remaining_*` and `resume_command` | run `resume_command` (it is safe to re-run) |
+| 12 | `no_results`: `gbrain recall` (an entity, text, `--grep`, `--question` or `--query` lookup) or `gbrain entity` matched nothing. Opt-in: only with `GBRAIN_FAIL_ON_EMPTY=1`; otherwise a miss exits 0 | recall's list output: `status: "no_results"`; entity: `found: false` | treat it as a miss, not a failure; a script that filters stdout can branch on it |
 | 13 | `pending_verify`: `gbrain bootstrap harness --token` wired a PGLite brain while no serve answered; nothing failed, nothing verified yet | the harness result with `status: "pending_verify"` and `fix` | tell the user to start `gbrain serve --http`, then run `fix.command` with the same token; `bootstrap harness --status` stays partial until it passes ([pending verify](bootstrap.md#pending-verify)) |
 | 14 | `bootstrap_cleanup_pending`: `gbrain bootstrap harness` (or `--status`) wired and verified the harness, but earlier shared-skills enrollments or carried token ids are not cleaned up yet | the harness result with `status: "cleanup_pending"`, a per-id `cleanup` list and `fix` | follow `fix.next`: `run` re-runs the same command; `tell_user_to_run` relays the owner's revoke or restore step, then re-run ([cleanup pending](bootstrap.md#cleanup-pending)) |
 | 69 | `gbrain serve` exited on its own after its persistence consumer reported `restart_required` for `GBRAIN_SERVE_RESTART_REQUIRED_EXIT_SECONDS` (`serve_unhealthy_exit`; opt-in) | `[gbrain serve] error code=serve_unhealthy_exit` line on stderr | nothing: the supervisor (the installed service restarts on failure) starts a fresh serve; if it repeats, follow [the unhealthy exit](../ENGINES.md#serve-unhealthy-exit) |

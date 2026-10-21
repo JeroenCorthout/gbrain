@@ -1001,8 +1001,8 @@ const normalizeStateRow = compileRowNormalizer<EmbeddingStateRow>({ chunks: 'big
  * prints, to report completeness).
  */
 export async function listEmbeddingStateRows(exec: ScopedRead, column: string,
-  opts: { sourceIds?: string[]; states: readonly EmbeddingState[]; limit: number; purgeWindowHours: number }): Promise<EmbeddingStateRow[]> {
-  const scope = embeddingStateScope(opts.sourceIds);
+  opts: { sourceIds?: string[]; slugs?: string[]; states: readonly EmbeddingState[]; limit: number; purgeWindowHours: number }): Promise<EmbeddingStateRow[]> {
+  const scope = opts.slugs ? sqlFragment`${embeddingStateScope(opts.sourceIds)} AND p.slug = ANY(${opts.slugs}::text[])` : embeddingStateScope(opts.sourceIds);
   const { rows } = await exec.run(sqlFragment`
     SELECT r.slug, r.source_id, r.state, r.chunks, r.bytes, r.embed_skip_reason, r.marker_bytes, r.quarantine_reason, r.deleted_at, r.overdue
       FROM (

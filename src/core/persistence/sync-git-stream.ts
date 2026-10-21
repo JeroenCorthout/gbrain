@@ -322,7 +322,8 @@ export async function probeDirtiness(root: string, gitRoot: string, paths: strin
     const decided = new Map<string, Dp | null>();
     const read: ReadFile[] = [];
     for (const path of paths.slice(start, start + batch)) {
-      if (step.due()) await step.pause();
+      // Each entry reads and hashes a file: the clock, not the entry counter, decides its stretch.
+      if (step.over()) await step.pause();
       const committed = tree.get(path);
       const indexed = index.get(path);
       let dp: Dp | null = opts.working ? (committed ? null : 'untracked') : !committed && !indexed ? 'untracked'

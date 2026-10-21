@@ -8,6 +8,8 @@ import { loadGbrainEnvFile } from './gbrain-env-file.ts';
 import { dotenvValuesForKey } from './env-trust.ts';
 import { REMOTE_PRIVATE_PAGES_KEY } from './search/private-visibility.ts';
 import { RUNTIME_READER_CONFIG_KEYS } from './config-runtime-keys.ts';
+import { mergeServeCliSocket } from './published-config.ts';
+export { MERGED_CONFIG_BY_ENGINE } from './published-config.ts';
 
 /**
  * Where is the active DB URL coming from? Pure introspection, no connection
@@ -37,6 +39,8 @@ export interface GBrainConfig {
    * `gbrain config set` routes these two dotted keys here, not to the DB. */
   push?: { allow_unverified_remote?: boolean };
   hooks?: { stop_push_debounce_min?: number | string };
+  /** #7242 terminal hook (minions/terminal-hook.ts): file plane only, read by `gbrain jobs work`. */
+  minions?: { terminal_hook?: string[] | { argv: string[]; timeout_ms?: number } };
   /** Ambient-writeback MIRROR of the DB-plane `memory.*` keys — `gbrain
    * config set memory.*` dual-writes both planes so the engine-free Stop-hook
    * child and the stdio boot resolve see the same truth the serve does. The
@@ -306,6 +310,8 @@ export interface GBrainConfig {
   embedding_multimodal?: boolean;
   /** Model override for multimodal embeddings (e.g. "voyage:voyage-multimodal-3"). */
   embedding_multimodal_model?: string;
+  /** DB-plane `serve.cli_socket`: the serve opens the warm CLI socket without `--cli-socket` (see published-config.ts). */
+  serve_cli_socket?: boolean;
 
   /**
    * v0.42 (#1981) — Retrieval Reflex. The context engine's deterministic
@@ -1220,7 +1226,7 @@ export async function loadConfigWithEngine(
       : engine,
   );
 
-  return merged;
+  return mergeServeCliSocket(merged, snapshot);
 }
 
 /**
@@ -1509,6 +1515,7 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = [
   // didn't specify one: 'private' (default) | 'world'. Resolved by
   // src/core/facts/visibility.ts; explicit caller values always win.
   'facts.default_visibility',
+  'visibility.honor_aliases', // remote page reads honor `access`/`confidentiality` aliases on pages without `visibility`; default off (search/private-visibility.ts)
   'facts.entity_inference', // #5836: write-time subject inference kill switch (subject-infer.ts)
   'facts.candidate_fusion', // C2: 'rrf_free' (default, cosine arm) | 'interleave' (cosine + keyword; facts/single-prepare.ts)
   'facts.supersession_thresholds', // JSON {"provider:model@dims": number | "off"} (facts/supersession-threshold.ts)
@@ -1644,6 +1651,7 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = [
   'mcp.strict_params',
   'mcp.result_rows', // C1 row shape, read dual-plane by src/mcp/result-rows.ts
   'mcp.allow_session_widen', // stdio request_tools session widening (default on), read dual-plane by src/mcp/surface.ts
+  'entity.name_variants', // #7160 entity card name-variant arm and possible_duplicates (default on; verbs/entity-variants.ts)
   'entity.names_references', 'entity.record_types', 'entity.row_page_status', // names-row referenced_by_count + card `next` (default on); canonical page types listed as `records` (default empty); F3 page_status on context_pack/get_backlinks rows (default on); src/core/entity-references-config.ts
   'mcp.instructions_governing_rule', // instruction 7: in_effect (default: the record in effect on the date asked about governs) | newest (the earlier recency sentence); src/mcp/instructions.ts
   // Skill-nag suppression (#2180): brain-resident pack install nag off-switch.
@@ -1731,6 +1739,7 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = [
   'purge.retention_hours', // #7130: hours a soft-deleted page waits before the autopilot purge phase may purge it (default 72)
   'sync.federated_v2',
   'sync.include_working_tree',
+  'sync.metafile_pages', // GBRA-150: typed (default) | off, whether a nested folder-scaffolding file with type:/title: frontmatter is a page (core/sync.ts)
   // #5984: managed Postgres sync publishes pages in bulk groups (on by default; each page keeps its own request).
   'sync.bulk',
   'sync.bulk_size',
@@ -1795,7 +1804,7 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = [
   'shared_skills.inventory.max_files', 'shared_skills.inventory.max_total_bytes', 'shared_skills.inventory.max_file_bytes', 'shared_skills.inventory.max_entries', 'shared_skills.migration.enabled', // #6466: false declines the 0.53.0 migration (commands/migrations/opt-out.ts)
   'persistence.write_wait_ms', // #5232: file plane, persistence/write-wait.ts
   'migrate.graduation', // file plane, src/commands/migrate-graduation.ts (engine graduation opt-out)
-  'doctor.default_budget_ms', 'doctor.entry_budget_ms', 'doctor.orphan_ratio.full_scan_max_pages', // #6803: file plane (commands/doctor/default-budget.ts); DB plane (doctor/budget.ts, checks/orphan-estimate.ts)
+  'doctor.default_budget_ms', 'doctor.entry_budget_ms', 'doctor.orphan_ratio.full_scan_max_pages', 'doctor.background_refresh', // #6803: file plane (commands/doctor/default-budget.ts); DB plane (doctor/budget.ts, checks/orphan-estimate.ts)
   'consent.preapprove.paid.max_usd_per_run', 'consent.preapprove.persistent_install', // A4: file plane, core/consent.ts
   // F4b: PGLite row-delta ANALYZE (src/core/planner-stats.ts); F4a: get_health memo TTL (src/core/health-memo.ts, 0 disables).
   'planner.auto_analyze', 'planner.first_read_budget_ms', 'import.analyze_every_pages', 'health.cache_ttl_ms',

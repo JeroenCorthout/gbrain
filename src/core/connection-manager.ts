@@ -38,7 +38,7 @@
 
 import postgres from '#postgres'
 import { traceSqlOptions } from './sql-trace.ts';
-import { gbrainApplicationName, readPoolPipelineOptions, resolvePrepare, resolveSessionTimeouts, resolvePoolSize, resolveMaxLifetimeSeconds, resolveUrlConnectTimeout, resolveSharedTypes, endPoolBounded, poolHealthOptions, type PoolHealthHooks } from './db.ts';
+import { gbrainApplicationName, readPoolPipelineOptions, transactionPipelineOptions, resolvePrepare, resolveSessionTimeouts, resolvePoolSize, resolveMaxLifetimeSeconds, resolveUrlConnectTimeout, resolveSharedTypes, resolveArrayTypes, endPoolBounded, poolHealthOptions, type PoolHealthHooks } from './db.ts';
 import { redactPgUrl } from './url-redact.ts';
 import { logConnectionEvent } from './connection-audit.ts';
 
@@ -352,7 +352,9 @@ export class ConnectionManager {
       types: { bigint: postgres.BigInt },
       onnotice: process.env.GBRAIN_PG_NOTICES === '1' ? undefined : () => {},
       shared_types: resolveSharedTypes(this.opts.url),
+      array_types: resolveArrayTypes(this.opts.url),
       ...readPoolPipelineOptions(this.opts.url),
+      ...transactionPipelineOptions(this.opts.url),
     };
     const timeouts = resolveSessionTimeouts();
     Object.assign(opts, poolHealthOptions({ ...this.opts.health?.('read'), onpoisoned: (status: string) => this.opts.onpoisoned?.('read', status) }, timeouts.statement_timeout));
@@ -506,6 +508,7 @@ export class ConnectionManager {
       onnotice: process.env.GBRAIN_PG_NOTICES === '1' ? undefined : () => {},
       ...poolHealthOptions({ ...this.opts.health?.('direct'), onpoisoned: (status: string) => this.opts.onpoisoned?.('direct', status) }, String(DDL_STMT_TIMEOUT_MS)),
       shared_types: resolveSharedTypes(this._directUrl),
+      array_types: resolveArrayTypes(this._directUrl),
       // Apply DDL session GUCs as connection startup parameters (durable
       // through any intermediary pooling layer, same trick as
       // resolveSessionTimeouts).

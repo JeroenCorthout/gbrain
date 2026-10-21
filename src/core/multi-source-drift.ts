@@ -45,7 +45,8 @@
 import { readdirSync, lstatSync, statSync } from 'fs';
 import { join, relative } from 'path';
 import type { BrainEngine } from './engine.ts';
-import { pathToSlug, unsyncableReason } from './sync.ts';
+import { pathToSlug, readMetafilePagesMode, unsyncableReason } from './sync.ts';
+import { diskMetafileHeads, metafilePagePredicate } from './sync-metafile-pages.ts';
 import { readSlugRootMode } from './sync-anchor.ts';
 import { git } from './sync-git.ts';
 
@@ -250,6 +251,7 @@ export async function findMisroutedPages(
   const sample: MisroutedSample[] = [];
   const gitRootSkipped: string[] = [];
   const unreadable: MisroutedResult['unreadable_sources'] = [];
+  const metafilePages = await readMetafilePagesMode(engine);
 
   for (const src of sources) {
     if (src.id === 'default') continue;
@@ -276,9 +278,12 @@ export async function findMisroutedPages(
     // Sync refuses metafiles (root AGENTS.md/CLAUDE.md, README.md, ...), pruned
     // dirs and malformed names, so they never become pages in this source and
     // a same-slug page on default is not a misroute (#6681).
+    // A typed nested metafile is a page (GBRA-150), judged on its file below the source root.
+    const heads = diskMetafileHeads(src.local_path);
+    const metafilePage = metafilePagePredicate(metafilePages, path => heads(path.slice(prefix.length)), path => path.slice(prefix.length));
     const slugs = Array.from(new Set(files
       .map(f => prefix + f.relPath)
-      .filter(path => unsyncableReason(path, { strategy: 'markdown' }) === null)
+      .filter(path => unsyncableReason(path, { strategy: 'markdown', metafilePage }) === null)
       .map(path => pathToSlug(path))));
     const existenceMap = await batchProbeExistence(engine, slugs, src.id);
 

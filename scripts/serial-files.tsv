@@ -247,6 +247,7 @@ test/jobs-embed-background-parity.serial.test.ts	R2	R2: mock.module(../src/core/
 test/jobs-embed-stall-wiring.serial.test.ts	R2	R2: mock.module(../src/commands/embed.ts) replaces modules for every file in the process
 test/jobs-gateway-refresh.serial.test.ts	R1	R1: mutates process.env (GBRAIN_HOME, ANTHROPIC_API_KEY, OPENAI_API_KEY)
 test/jobs-list-get-json.serial.test.ts	global-state	global-state: patches process stdout/stderr/console
+test/jobs-wait-cli.serial.test.ts	global-state	global-state: patches process stdout/stderr/console and process.exit
 test/jobs-stats-backpressure.serial.test.ts	global-state	global-state: patches process stdout/stderr/console
 test/jobs-stats-divergence.serial.test.ts	global-state	global-state: patches process stdout/stderr/console
 test/jobs-stats-private-queue.serial.test.ts	global-state	global-state: patches process stdout/stderr/console

@@ -997,6 +997,7 @@ that work in this conversation.
 | 3 | `confirmation_required`, nothing ran | stop, relay `user_message`, run `fix.command` only after the user agrees |
 | 10 | write accepted, still pending | poll the receipt (`gbrain write-request -- <id>`) |
 | 11 | partial, resumable budget stop | run `resume_command` |
+| 12 | `no_results`: a recall or entity lookup matched nothing (only with `GBRAIN_FAIL_ON_EMPTY=1`) | treat it as a miss, not a failure |
 | 13 | `pending_verify`: a harness wired, verification waits for the serve | start the serve, then run `fix.command` |
 | 14 | `bootstrap_cleanup_pending`: a harness is wired; old shared-skills enrollments or token ids still await cleanup | follow `fix.next` (re-run, or relay the owner's revoke step), then re-run |
 | 75 | another runner holds the migration lock | wait, then retry |

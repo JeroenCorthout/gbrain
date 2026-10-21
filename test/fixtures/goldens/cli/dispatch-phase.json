@@ -1102,6 +1102,7 @@
         "thinClientRoutedSubcommands": [
           "list",
           "get",
+          "wait",
           "stats"
         ]
       },
@@ -2193,6 +2194,16 @@
           "sources"
         ],
         "condition": "command === 'sources' && subArgs[0] === 'pull' && subArgs.includes('--path')",
+        "connectsEngine": false,
+        "refusesThinClient": false,
+        "routesThinClient": false,
+        "terminates": true,
+        "thinClientCheck": false,
+        "unconditionalFor": []
+      },
+      {
+        "commands": [],
+        "condition": "['search', 'query', 'get', 'recall'].includes(command) && await (await import('./cli-socket-client.ts')).maybeServeFromCliSocket(command, subArgs)",
         "connectsEngine": false,
         "refusesThinClient": false,
         "routesThinClient": false,
