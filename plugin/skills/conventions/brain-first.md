@@ -45,6 +45,14 @@ synonym- and outcome-phrased matches drop silently otherwise. And `query` is
 still top-K: for literal "list every page that…" enumeration, use `list_pages`
 with pagination.
 
+Find pages by name or path, and count them, through gbrain too, instead of
+`ls`/`find` on the checkout or `grep -c`/`wc`/SQL:
+
+```bash
+gbrain find 'people/*acme*'                       # glob, slug prefix or name (instead of ls/find); MCP find_pages
+gbrain stats --by source,type --since 30d         # page counts per source and type (instead of grep -c/SQL)
+```
+
 Never skip to external APIs without completing steps 1-2. The brain has
 thousands of pages. The answer is almost always there.
 
