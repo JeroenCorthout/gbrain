@@ -6,7 +6,7 @@
  * gets stderr lines on a TTY and an `[AGENT]` block otherwise (stdout is data).
  * One op per CLI process, so module state is safe.
  */
-import { cliRenderContext, renderNotice, type Notice } from '../core/agent-output.ts';
+import { cliRenderContext, renderAction, renderNotice, type Action, type Notice } from '../core/agent-output.ts';
 import { renderCliNotices } from '../core/agent-markers.ts';
 import { isInteractive } from '../core/interaction.ts';
 import { processNoticeLedger, mutedNoticeCodes } from '../core/notice-ledger.ts';
@@ -35,6 +35,18 @@ export function captureRetrievalNotices(
   if (op !== 'search' && op !== 'query') return;
   const { recallInteropNotices } = require('../core/interop-notices.ts') as typeof import('../core/interop-notices.ts');
   pending.push(...recallInteropNotices(op, result, { retrieval: retrieval ?? {} }, params, { config, transport: 'cli' }));
+}
+
+/**
+ * #7192: `search|query --explain-target … --json` prints `{ results, explain_target }` so the diagnosis and its cause
+ * reach stdout (a bare array has nowhere to put them); a local run's fix renders as a command (next + argv).
+ * Without the flag, or when the run recorded no diagnosis, the rows stay a bare array.
+ */
+export function withExplainTargetJson(params: Record<string, unknown>, meta: Record<string, unknown> | null | undefined, rows: unknown[]): unknown {
+  const diag = params.explain_target ? meta?.explain_target as (Record<string, unknown> & { fix?: Action }) | undefined : undefined;
+  if (!diag || typeof diag !== 'object') return rows;
+  const { fix, ...rest } = diag;
+  return { results: rows, explain_target: fix && typeof fix === 'object' && 'why' in fix ? { ...rest, fix: renderAction(fix, cliRenderContext()) } : rest };
 }
 
 /** Drain the captured notices into the result (`--json` objects) and/or a stderr string. */

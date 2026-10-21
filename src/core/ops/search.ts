@@ -591,20 +591,25 @@ function withExplainTarget(meta: Record<string, unknown>, diagnosis: ExplainTarg
 /** explain_target, after the search: diagnose, refine an unretrieved target with the probe, and emit the fix as a notice. */
 function finishExplainTarget(
   ctx: OperationContext, p: Record<string, unknown>, prep: { trace?: TargetTrace; early?: ExplainTargetDiagnosis } | null,
-  results: SearchResult[], tool: 'search' | 'query',
+  results: SearchResult[], tool: 'search' | 'query', degraded?: HybridSearchMeta['degraded'],
 ): ExplainTargetDiagnosis | undefined {
   if (!prep) return undefined;
   let diag = prep.early;
   if (prep.trace) {
-    const traced = diagnoseTrace(prep.trace, results, { tool, arguments: explainRetryArgs(p) });
-    // A probe finding (no chunks / stale projection / unsealed) explains an unretrieved page better than "no arm found it".
-    diag = traced.state === 'not_retrieved' && prep.early ? { ...prep.early, stages: traced.stages } : traced;
+    const traced = diagnoseTrace(prep.trace, results, { tool, arguments: explainRetryArgs(p) }, degraded);
+    // A probe finding (no chunks / no vectors / stale projection / unsealed) explains an unretrieved page better than
+    // "no arm found it", except "no vectors" when the semantic arm did not run on this call at all (keyless, embed failure).
+    const vectorArmOff = (degraded ?? []).some(d => ['embed_unavailable', 'embed_timeout', 'vector_arm_failed'].includes(d.stage));
+    const probeWins = prep.early && !(prep.early.code === 'target_not_embedded' && vectorArmOff);
+    diag = traced.state === 'not_retrieved' && probeWins ? { ...prep.early!, stages: traced.stages } : traced;
   }
   if (diag?.fix) {
     const notice: Notice = { code: diag.code, kind: 'info', why: diag.why, fix: diag.fix };
     ctx.emitNotice?.(notice);
   }
   if (!diag) return undefined;
+  // #7192: the local CLI renders the fix into its --json object; MCP callers read it from the notice.
+  if (ctx.remote === false) return diag;
   const { fix: _fix, ...wire } = diag;
   return wire as ExplainTargetDiagnosis;
 }
@@ -785,7 +790,7 @@ const search: Operation = {
     maybeCaptureSearch(ctx, queryText, results, latency_ms, true, capturedMeta);
     // #3800: cap AFTER capture/meta so eval + cache see the real payload.
     return evidenceOutput(ctx, p, results, plan, { ...scope, excludePrivate }, capturedMeta, snippetCap, timings,
-      async rows => withCountMeta(withExplainTarget({ ...(await buildRetrievalResponseMeta(ctx, scope, queryText, rows, capturedMeta, { conceptHint: true, types, typeFilterNotice: typeFilter.notice, declarations, feedbackOp: 'search', entity: fanned.entity })), ...(fanned.fanout ? { fanout: fanned.fanout } : {}) }, finishExplainTarget(ctx, p, explainPrep, results, 'search')),
+      async rows => withCountMeta(withExplainTarget({ ...(await buildRetrievalResponseMeta(ctx, scope, queryText, rows, capturedMeta, { conceptHint: true, types, typeFilterNotice: typeFilter.notice, declarations, feedbackOp: 'search', entity: fanned.entity })), ...(fanned.fanout ? { fanout: fanned.fanout } : {}) }, finishExplainTarget(ctx, p, explainPrep, results, 'search', capturedMeta?.degraded)),
         keywordCountMeta(await keywordCount, offset + limit)));
   },
   scope: 'read', mutating: false,
@@ -1194,7 +1199,7 @@ const query: Operation = {
     // #3800: cap AFTER capture/meta/CRAG so every internal consumer graded
     // and recorded the real payload; only the returned envelope is snipped.
     return evidenceOutput(ctx, p, results, plan, { ...querySourceScope, excludePrivate, detail }, capturedMeta, snippetCap, timings,
-      async rows => withExplainTarget({ ...(await buildRetrievalResponseMeta(ctx, querySourceScope, queryText, rows, capturedMeta, { types, typeFilterNotice: typeFilter.notice, declarations, feedbackOp: 'query', entity: fanned.entity })), crag, ...(fanned.fanout ? { fanout: fanned.fanout } : {}) }, finishExplainTarget(ctx, p, explainPrep, results, 'query')));
+      async rows => withExplainTarget({ ...(await buildRetrievalResponseMeta(ctx, querySourceScope, queryText, rows, capturedMeta, { types, typeFilterNotice: typeFilter.notice, declarations, feedbackOp: 'query', entity: fanned.entity })), crag, ...(fanned.fanout ? { fanout: fanned.fanout } : {}) }, finishExplainTarget(ctx, p, explainPrep, results, 'query', capturedMeta?.degraded)));
   },
   scope: 'read', mutating: false,
   cliHints: { name: 'query', positional: ['query'] },
