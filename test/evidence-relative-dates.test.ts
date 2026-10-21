@@ -8,8 +8,8 @@
  */
 import { describe, expect, test } from 'bun:test';
 import type { SearchResult } from '../src/core/types.ts';
-import { countEvidenceTokens, DEFAULT_AUTO_PACKING, deliverEvidence, type EvidencePlan } from '../src/core/search/evidence-delivery.ts';
-import { resolveRelativeDatesInTurns, shiftOffset } from '../src/core/search/evidence-relative-dates.ts';
+import { countEvidenceTokens, DEFAULT_AUTO_PACKING, deliverEvidence, resolveEvidencePlan, type EvidencePlan } from '../src/core/search/evidence-delivery.ts';
+import { resolveRelativeDatesInTurns, shiftOffset, withRelativeDates } from '../src/core/search/evidence-relative-dates.ts';
 import { searchConfigValueRefusal } from '../src/core/search/config-values.ts';
 
 const DAY = '2023-05-28'; // a Sunday
@@ -29,12 +29,13 @@ describe('resolveRelativeDatesInTurns', () => {
     expect(r('**user:** I started today and it is still true today.')).toBe('**user:** I started today and it is still true today.');
     expect(r('**user:** Plan my shows for the next month.')).toBe('**user:** Plan my shows for the next month.');
     expect(r('**user:** I fly out next month.')).toBe('**user:** I fly out next month [2023-06].');
-    expect(r('**user:** It was the last week of April.')).toBe('**user:** It was the last week of April.');
+    for (const s of ['**user:** It was the last week of April.', '**user:** That was the last year of college.', '**user:** It was the past month of training.']) expect(r(s)).toBe(s);
     expect(r('**user:** I went hiking last weekend.')).toBe('**user:** I went hiking last weekend [2023-05-20/2023-05-21].');
     expect(r('**user:** Last month I did 3k.')).toBe('**user:** Last month [2023-04] I did 3k.');
     expect(r('**user:** Last year I started.')).toBe('**user:** Last year [2022] I started.');
     expect(r('**user:** I moved last Saturday.')).toBe('**user:** I moved last Saturday [2023-05-27].');
-    expect(r('**user:** I fly out next week.')).toBe('**user:** I fly out next week [2023-05-29/2023-06-04].');
+    expect(r('**user:** I fly out next week.')).toBe('**user:** I fly out next week [≈2023-05-29/2023-06-04].');
+    expect(r('**user:** Last week I was sick.')).toBe('**user:** Last week [≈2023-05-15/2023-05-21] I was sick.');
   });
 
   test('direction guesses are left alone: future plans keep their words', () => {
@@ -69,6 +70,8 @@ describe('resolveRelativeDatesInTurns', () => {
     expect(r('**user:** I started yesterday.', 'garbage')).toBe('**user:** I started yesterday.');
     const stamped = '[2023-05-20 10:00] **user:** I started yesterday.\n[2023-05-27 09:00] **user:** And last week.';
     expect(r(stamped)).toBe(stamped);
+    const rendered = '**User** (2023-05-20 10:00 AM): I started yesterday.\n\n**Assistant** (2023-05-20 10:01 AM): Noted.';
+    expect(r(rendered)).toBe(rendered);
   });
 
   test('absolute dates, quoted text and code fences are untouched', () => {
@@ -148,10 +151,55 @@ describe('deliverEvidence with search.evidence_resolve_dates', () => {
     expect(on.delivery.relative_dates).toEqual({ insertions: 0 });
   });
 
-  test('default off is byte-identical to the stage without the flag', async () => {
-    const a = await deliverEvidence(stub({ date: DAY }), [hit], plan(32000, false), {});
-    const b = await deliverEvidence(stub({ date: DAY }), [hit], plan(32000, false), {});
-    expect(JSON.stringify(a)).toBe(JSON.stringify(b));
-    expect(a.results[0].chunk_text).not.toContain('[2023-');
+  test('flag off delivers the source turns verbatim, with no bracket and no meta', async () => {
+    const off = await deliverEvidence(stub({ date: DAY }), [hit], plan(32000, false), {});
+    expect(body).toContain(off.results[0].chunk_text);
+    expect(off.results[0].chunk_text).toContain('last month and again yesterday.');
+    expect(off.delivery.relative_dates).toBeUndefined();
+  });
+
+  test('resolveEvidencePlan sets resolveDates only when the config key is on', async () => {
+    const engine = (value: string | null) => ({ async getConfig(key: string) { return key === 'search.evidence_resolve_dates' ? value : null; } }) as never;
+    const resolve = (value: string | null) => resolveEvidencePlan(engine(value), { remote: false, returnUnit: 'auto', returnWindow: undefined, budget: undefined, snippetChars: undefined, snippetCap: 0, op: 'search' });
+    expect((await resolve('true'))?.resolveDates).toBe(true);
+    expect((await resolve('off'))?.resolveDates).toBeUndefined();
+    expect((await resolve(null))?.resolveDates).toBeUndefined();
+  });
+});
+
+describe('withRelativeDates budget and fallbacks', () => {
+  type R = { page_id: number; slug: string; chunk_text: string; delivered: { tokens: number; match_spans: Array<{ start: number; end: number }> } };
+  const count = (s: string) => s.length;
+  const block = (text: string): R => ({ page_id: 1, slug: 'chat/s', chunk_text: text, delivered: { tokens: text.length, match_spans: [] } });
+  const delivery = (text: string, budget: number) => ({ results: [block(text)], delivery: { budget_tokens: budget, budget_used: text.length, tokens_delivered: text.length, fallbacks: [] as string[] } as { budget_tokens: number; budget_used: number; tokens_delivered: number; fallbacks: string[]; relative_dates?: { insertions: number } } });
+  const long = '**user:** I renewed it yesterday and that was all.';
+  const short = '**user:** yesterday.';
+  const days = async () => new Map([[1, DAY]]);
+  const all = () => true;
+
+  test('a retry that fits returns the re-packed, annotated delivery inside the budget', async () => {
+    const budgets: number[] = [];
+    const out = await withRelativeDates(delivery(long, long.length), async b => { budgets.push(b); return delivery(short, b); }, days, all, count);
+    expect(budgets).toEqual([long.length - ' [2023-05-27]'.length]);
+    expect(out.results[0].chunk_text).toBe('**user:** yesterday [2023-05-27].');
+    expect(out.delivery.budget_used).toBeLessThanOrEqual(long.length);
+    expect(out.delivery.budget_tokens).toBe(long.length);
+    expect(out.delivery.relative_dates).toEqual({ insertions: 1 });
+    expect(out.delivery.fallbacks).toEqual([]);
+  });
+
+  test('a retry that still overflows returns the unannotated first delivery with relative_dates_over_budget', async () => {
+    const out = await withRelativeDates(delivery(long, long.length), async b => delivery(long, b), days, all, count);
+    expect(out.results[0].chunk_text).toBe(long);
+    expect(out.delivery.fallbacks).toEqual(['relative_dates_over_budget']);
+    expect(out.delivery.relative_dates).toBeUndefined();
+  });
+
+  test('an observation-day read error returns the first delivery with relative_dates_unavailable', async () => {
+    let retried = false;
+    const out = await withRelativeDates(delivery(long, 10_000), async b => { retried = true; return delivery(long, b); }, async () => { throw new Error('db down'); }, all, count);
+    expect(retried).toBe(false);
+    expect(out.results[0].chunk_text).toBe(long);
+    expect(out.delivery.fallbacks).toEqual(['relative_dates_unavailable']);
   });
 });

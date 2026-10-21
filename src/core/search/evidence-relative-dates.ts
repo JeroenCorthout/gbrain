@@ -84,19 +84,22 @@ const wholeMonth = (m: TimeMention) => m.start.slice(8) === '01' && m.start.slic
   && new Date(Date.UTC(+m.end.slice(0, 4), +m.end.slice(5, 7), 0)).toISOString().slice(0, 10) === m.end;
 const wholeYear = (m: TimeMention) => m.start.endsWith('-01-01') && m.end.endsWith('-12-31') && m.start.slice(0, 4) === m.end.slice(0, 4);
 
+/** Days covered by a mention, both ends included. A calendar week is approximate: people count weeks from Sunday or Monday. */
+const spanDays = (m: TimeMention) => Math.round((Date.parse(`${m.end}T00:00:00Z`) - Date.parse(`${m.start}T00:00:00Z`)) / 86_400_000) + 1;
+
 function midpoint(start: string, end: string): string {
   const a = Date.parse(`${start}T00:00:00Z`); const b = Date.parse(`${end}T00:00:00Z`);
   return new Date(a + Math.round((b - a) / 2 / 86_400_000) * 86_400_000).toISOString().slice(0, 10);
 }
 
-/** The bracket for one mention: a day, a month, a year, a day range, or an approximate day for "N units ago". */
+/** The bracket for one mention: a day, a month, a year, a day range (approximate for a week), or an approximate day for "N units ago". */
 export function dateBracket(m: TimeMention, approximate: boolean): string {
   if (/\bago\b/i.test(m.cue)) {
     if (wholeYear(m)) return `[${m.start.slice(0, 4)}]`;
     const fuzzy = approximate || !/\bdays?\s+ago\b/i.test(m.cue) || /few|couple|several/i.test(m.cue);
     return `[${fuzzy ? '≈' : ''}${midpoint(m.start, m.end)}]`;
   }
-  const prefix = approximate ? '≈' : '';
+  const prefix = approximate || spanDays(m) === 7 ? '≈' : '';
   if (m.start === m.end) return `[${prefix}${m.start}]`;
   if (wholeYear(m)) return `[${prefix}${m.start.slice(0, 4)}]`;
   if (wholeMonth(m)) return `[${prefix}${m.start.slice(0, 7)}]`;
