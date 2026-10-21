@@ -26,6 +26,10 @@ export interface DateInsertion {
 
 const APPROXIMATE = /\b(?:about|around|roughly|approximately|almost|nearly|over|a few|a couple of|couple of|several|few)\s+$/i;
 const ALREADY_RESOLVED = /^\s?\[[≈~]?\d{4}/;
+/** "today" and "this morning" name the session day the reader already sees, and are often generic ("still true today"). */
+const SESSION_DAY = /^(?:today|tonight|this morning|this afternoon|this evening)$/i;
+/** "for the next month" is a span from now, not the next calendar month. */
+const SPAN_FROM_NOW = /\bthe\s+$/i;
 /** Labels that name the assistant or the system: their turns are never annotated. */
 const NON_HUMAN = /^(?:assistant|ai|bot|system|model|claude|chatgpt|gpt|gemini|copilot|agent)$/;
 /** A line that starts with its own date stamp: turns carry their own times, so one page date can't anchor them. */
@@ -93,7 +97,7 @@ export function resolveRelativeDatesInTurns(text: string, observedDay: string | 
     const turn = text.slice(from, to);
     for (const m of findTimeMentions(turn, observedDay, 'past')) {
       if (m.kind !== 'relative' || fenced.some(([a, b]) => from + m.index >= a && from + m.index < b)) continue;
-      if (m.qualified) continue;
+      if (m.qualified || SESSION_DAY.test(m.cue) || (/^next\b/i.test(m.cue) && SPAN_FROM_NOW.test(turn.slice(Math.max(0, m.index - 8), m.index)))) continue;
       const end = from + m.index + m.cue.length;
       if (ALREADY_RESOLVED.test(text.slice(end, end + 8))) continue;
       const approximate = APPROXIMATE.test(text.slice(Math.max(from, from + m.index - 24), from + m.index));
