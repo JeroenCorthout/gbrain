@@ -7,11 +7,15 @@
  *
  * Only relative phrases the shared temporal grammar resolves without guessing
  * a direction (src/core/temporal-grammar.ts) are annotated: a bare month or
- * weekday whose year or week was picked by direction is left alone, except
- * after "last" / "this past". Absolute dates are already dates. Assistant and
- * system turns use relative phrases generically and are never touched; text
- * with no recognizable turn label is not a conversation and is returned
- * unchanged. The original phrase is always kept; the bracket sits beside it.
+ * weekday whose year or week was picked by direction is left alone, and so are
+ * "today"-style words (the session day the reader already sees). Absolute
+ * dates are already dates. Only positively identified user/human turns are
+ * annotated: assistant, system and named-speaker turns are not, a delivery
+ * omission marker resets the speaker to unknown, and text with no recognizable
+ * turn label is not a conversation and is returned unchanged. A transcript
+ * whose lines carry their own date stamps is left alone, because one page date
+ * can't anchor every turn. The original phrase is always kept; the bracket
+ * sits beside it.
  */
 import { findTimeMentions, type TimeMention } from '../temporal-grammar.ts';
 import { FENCE_LINE, SPEAKER_LINE, speakerName } from './speaker-line.ts';
@@ -30,19 +34,23 @@ export interface DateInsertion {
 }
 
 const APPROXIMATE = /\b(?:about|around|roughly|approximately|almost|nearly|over|a few|a couple of|couple of|several|few)\s+$/i;
-const ALREADY_RESOLVED = /^\s?\[[≈~]?\d{4}/;
+const ALREADY_RESOLVED = /^\s*\[[≈~]?\d{4}/;
 /** "today" and "this morning" name the session day the reader already sees, and are often generic ("still true today"). */
 const SESSION_DAY = /^(?:today|tonight|this morning|this afternoon|this evening)$/i;
 /** "for the next month" is a span from now, not the next calendar month. */
 const SPAN_FROM_NOW = /\bthe\s+$/i;
-/** Labels that name the assistant or the system: their turns are never annotated. */
-const NON_HUMAN = /^(?:assistant|ai|bot|system|model|claude|chatgpt|gpt|gemini|copilot|agent)$/;
+/** Only positively identified human roles are annotated; named speakers and every other label end a turn. */
+const HUMAN = /^(?:user|human|me)$/;
+/** Markdown heading turns the conversation parser accepts ("## User", "### Assistant"). */
+const HEADING_ROLE = /^#{2,3}[ \t]+(user|assistant|human|system)\b/i;
+/** Delivery's omission marker and the timeline separator: text after them may continue any speaker, so the role is unknown until the next label. */
+const OMISSION_LINE = /^\s*(?:\[…\]|<!-- timeline -->)\s*$/;
 /** A line that starts with its own date stamp: turns carry their own times, so one page date can't anchor them. */
 const DATED_LINE = /^\s{0,3}\[?\d{4}-\d{2}-\d{2}/m;
 
-/** The [start, end) spans of human speaker turns, by the same speaker-line rule evidence delivery uses. */
+/** The [start, end) spans of user/human turns and of code fences, by the speaker-line rule evidence delivery uses. */
 function humanTurnSpans(text: string): { turns: Array<[number, number]>; fenced: Array<[number, number]> } {
-  const labels: Array<{ at: number; bodyAt: number; human: boolean }> = [];
+  const bounds: Array<{ at: number; bodyAt: number; human: boolean }> = [];
   const fenced: Array<[number, number]> = [];
   let inFence = false;
   let at = 0;
@@ -51,17 +59,25 @@ function humanTurnSpans(text: string): { turns: Array<[number, number]>; fenced:
       if (inFence) fenced[fenced.length - 1][1] = at + line.length;
       else fenced.push([at, text.length]);
       inFence = !inFence;
-    } else if (inFence) {
-      // inside a code fence: no labels, no dates
-    } else {
-      const m = SPEAKER_LINE.exec(line);
-      if (m) labels.push({ at, bodyAt: at + m[0].length, human: !NON_HUMAN.test(speakerName(m)) });
+    } else if (!inFence) {
+      const heading = HEADING_ROLE.exec(line);
+      const m = heading ? null : SPEAKER_LINE.exec(line);
+      if (heading) bounds.push({ at, bodyAt: at + line.length, human: HUMAN.test(heading[1].toLowerCase()) });
+      else if (m) bounds.push({ at, bodyAt: at + m[0].length, human: HUMAN.test(speakerName(m)) });
+      else if (OMISSION_LINE.test(line)) bounds.push({ at, bodyAt: at + line.length, human: false });
     }
     at += line.length + 1;
   }
   const turns: Array<[number, number]> = [];
-  labels.forEach((l, i) => { if (l.human) turns.push([l.bodyAt, labels[i + 1]?.at ?? text.length]); });
+  bounds.forEach((b, i) => { if (b.human) turns.push([b.bodyAt, bounds[i + 1]?.at ?? text.length]); });
   return { turns, fenced };
+}
+
+/** A real calendar day in YYYY-MM-DD form. */
+function isCalendarDay(day: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return false;
+  const t = new Date(`${day}T00:00:00Z`);
+  return !Number.isNaN(t.getTime()) && t.toISOString().slice(0, 10) === day;
 }
 
 const wholeMonth = (m: TimeMention) => m.start.slice(8) === '01' && m.start.slice(0, 7) === m.end.slice(0, 7)
@@ -95,7 +111,7 @@ export function dateBracket(m: TimeMention, approximate: boolean): string {
  * skipped.
  */
 export function resolveRelativeDatesInTurns(text: string, observedDay: string | null | undefined): { text: string; insertions: DateInsertion[] } {
-  if (!observedDay || !/^\d{4}-\d{2}-\d{2}$/.test(observedDay) || DATED_LINE.test(text)) return { text, insertions: [] };
+  if (!observedDay || !isCalendarDay(observedDay) || DATED_LINE.test(text)) return { text, insertions: [] };
   const insertions: DateInsertion[] = [];
   const { turns, fenced } = humanTurnSpans(text);
   for (const [from, to] of turns) {
@@ -104,7 +120,7 @@ export function resolveRelativeDatesInTurns(text: string, observedDay: string | 
       if (m.kind !== 'relative' || fenced.some(([a, b]) => from + m.index >= a && from + m.index < b)) continue;
       if (m.qualified || SESSION_DAY.test(m.cue) || (/^next\b/i.test(m.cue) && SPAN_FROM_NOW.test(turn.slice(Math.max(0, m.index - 8), m.index)))) continue;
       const end = from + m.index + m.cue.length;
-      if (ALREADY_RESOLVED.test(text.slice(end, end + 8))) continue;
+      if (ALREADY_RESOLVED.test(text.slice(end, end + 16))) continue;
       const approximate = APPROXIMATE.test(text.slice(Math.max(from, from + m.index - 24), from + m.index));
       insertions.push({ at: end, text: ` ${dateBracket(m, approximate)}` });
     }

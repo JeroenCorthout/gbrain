@@ -40,9 +40,26 @@ describe('resolveRelativeDatesInTurns', () => {
     for (const s of ['**user:** I am visiting in June.', '**user:** I leave on Friday.', '**user:** The June deadline is close.', '**user:** It ships March 15.', '**user:** I will go this Friday.']) expect(r(s)).toBe(s);
   });
 
-  test('assistant, system and named-agent turns are never annotated; named human speakers are', () => {
-    const s = '**user:** I started yesterday.\n\n**assistant:** Starting yesterday is great.\n\n**Claude:** Last week too.\n\n**Alice-example:** I joined last month.';
-    expect(r(s)).toBe('**user:** I started yesterday [2023-05-27].\n\n**assistant:** Starting yesterday is great.\n\n**Claude:** Last week too.\n\n**Alice-example:** I joined last month [2023-04].');
+  test('only user/human turns are annotated; assistant, system, named and heading-role turns are not', () => {
+    const s = '**user:** I started yesterday.\n\n**assistant:** Starting yesterday is great.\n\n**Grok:** Yesterday was good.\n\n**Alice-example:** I joined last month.';
+    expect(r(s)).toBe('**user:** I started yesterday [2023-05-27].\n\n**assistant:** Starting yesterday is great.\n\n**Grok:** Yesterday was good.\n\n**Alice-example:** I joined last month.');
+    expect(r('## User\nI moved yesterday.\n## Assistant\nTry yesterday as an example.')).toBe('## User\nI moved yesterday [2023-05-27].\n## Assistant\nTry yesterday as an example.');
+    expect(r('user: I started yesterday.\n## Assistant\nTry yesterday as an example.')).toBe('user: I started yesterday [2023-05-27].\n## Assistant\nTry yesterday as an example.');
+  });
+
+  test('a delivery omission marker resets the speaker: a continuation of unknown role is left alone', () => {
+    const s = '**user:** I renewed yesterday.\n\n[…]\n\nThis assistant sample mentions yesterday.';
+    expect(r(s)).toBe('**user:** I renewed yesterday [2023-05-27].\n\n[…]\n\nThis assistant sample mentions yesterday.');
+    expect(r('**user:** I renewed yesterday.\n\n<!-- timeline -->\n\n- moved yesterday')).toBe('**user:** I renewed yesterday [2023-05-27].\n\n<!-- timeline -->\n\n- moved yesterday');
+  });
+
+  test('calendar-invalid observation days are refused, leap days accepted', () => {
+    for (const day of ['2023-02-29', '2023-13-01', '2023-04-31']) expect(r('**user:** I started yesterday.', day)).toBe('**user:** I started yesterday.');
+    expect(r('**user:** I started yesterday.', '2024-03-01')).toBe('**user:** I started yesterday [2024-02-29].');
+  });
+
+  test('an existing bracket after extra whitespace is not annotated again', () => {
+    expect(r('**user:** I started yesterday   [2023-05-27] for sure.')).toBe('**user:** I started yesterday   [2023-05-27] for sure.');
   });
 
   test('not a conversation, no observation day, or turn-stamped lines: unchanged', () => {
