@@ -92,6 +92,10 @@ export interface HybridRequest {
   rerankMeta?: { model_resolved: string };
   /** Set by the relational arm when the multi-hop planner ran (meta.relational_plan). */
   relationalPlan?: import('../relational-recall.ts').RelationalPlanMeta;
+  /** Set by the collapse stage when it folded or read in a row (meta.collapse). */
+  collapse?: import('../collapse.ts').CollapseDecision;
+  /** Page facts the collapse stage read, reused by its second pass after the identity tiers. */
+  collapseFacts?: Map<number, import('../collapse.ts').PageFacts>;
   /** The op's stage-timing collector (`opts._timings`), or the no-op timer. */
   timer: StageTimer;
 }
@@ -364,10 +368,11 @@ export function emitHybridMeta(req: HybridRequest, armMeta: HybridSearchMeta): v
   const rawMeta = req.keywordCandidates ? { ...armMeta, keyword_candidates: req.keywordCandidates } : armMeta;
   const decide = decideMetaFor(req.decide);
   const answerability = req.decide?.answerability;
-  const meta: HybridSearchMeta = decide || req.rerankMeta || answerability || req.relationalPlan
+  const meta: HybridSearchMeta = decide || req.rerankMeta || answerability || req.relationalPlan || req.collapse
     ? {
         ...rawMeta, ...(decide ? { decide } : {}), ...(req.rerankMeta ? { rerank: req.rerankMeta } : {}),
         ...(answerability ? { answerability } : {}), ...(req.relationalPlan ? { relational_plan: req.relationalPlan } : {}),
+        ...(req.collapse ? { collapse: req.collapse } : {}),
       }
     : rawMeta;
   try {

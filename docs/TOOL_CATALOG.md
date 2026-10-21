@@ -226,7 +226,7 @@ Every non-localOnly operation on the MCP surface: 157 tools across 25 areas. **S
 |---|---|---|---|---|
 | `assemble_evidence` | Deliver whole evidence for an ordered list of search hits (each {source_id, slug, chunk_id} from a prior search/query result): the same windows, sections or pages `query` returns with return_unit, packed into token_budget. | read |  |  |
 | `cache_stats` | Semantic query-cache introspection: resolved knobs (enabled, similarity threshold, TTL) plus row counts and total hits. | admin |  |  |
-| `query` | Hybrid search for concept/landscape questions and people/companies/projects by topic; expand adds multi-query expansion (expansion recovers synonyms). | read | yes |  |
+| `query` | Hybrid search for concept/landscape questions and people/companies/projects by topic; adds fact rows. | read | yes |  |
 | `rate_answer` | Rate how useful an answer's retrieved evidence was, so this brain ranks better next time (zero LLM calls). | write |  |  |
 | `search` | Cheap hybrid search, no LLM expansion, top 20: exact tokens, names, field values. | read | yes |  |
 | `search_by_image` | Image-as-query retrieval. | read |  |  |

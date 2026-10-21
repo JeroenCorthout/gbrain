@@ -390,6 +390,8 @@ export const OPS_CHECK_NAMES: ReadonlySet<string> = new Set([
 export const META_CHECK_NAMES: ReadonlySet<string> = new Set([
   // The one-time behavior-change disclosure, readable again here (read-only).
   'behavior_changes',
+  // #7142: checks with no result from the last 24 h on a quick-tier or capped run (doctor/last-known.ts).
+  'doctor_last_known',
   // Agent operator wave E11: recent agent dead ends from the agent-contract event log.
   'agent_contract',
   'cycle_phase_scope',

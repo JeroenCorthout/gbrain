@@ -31,7 +31,8 @@ import { markKeywordHits } from '../search/evidence.ts';
 import { captureEvalCandidate, isEvalCaptureEnabled, isEvalScrubEnabled } from '../eval-capture.ts';
 import type { HybridSearchMeta, SearchResult } from '../types.ts';
 import { bumpLastRetrievedAt } from '../last-retrieved.ts';
-import { applySnippetCap, DEFAULT_AGENT_SNIPPET_CHARS } from '../search/snippet-cap.ts';
+import { applySnippetCap, DEFAULT_AGENT_SNIPPET_CHARS, resultChunkCap } from '../search/snippet-cap.ts';
+import { scoresFollowRank } from '../search/score-contract.ts';
 import { redactRetrievalOutput } from '../search/output-redaction.ts';
 import { leanRowsKeepId, projectRows, resultRowsFor } from '../search/lean-rows.ts';
 import { buildScoreDetails } from '../search/explain-formatter.ts';
@@ -116,6 +117,8 @@ function searchOutput(ctx: OperationContext, p: Record<string, unknown>, results
   const lean = { keepId: leanRowsKeepId(ctx) };
   // `explain: true` — every row carries its score breakdown (kept in lean rows).
   if (p.explain === true) for (const r of results) r.score_details = buildScoreDetails(r);
+  // #7156: the returned score follows the returned order.
+  results = scoresFollowRank(results);
   // The shape is reported where it can vary: remote callers, or an explicit `fields`.
   const shown = ctx.remote !== false || p.fields !== undefined ? { rows } : {};
   // Stage timings are read last, after the returned rows are assembled (meta only, never content).
@@ -126,7 +129,7 @@ function searchOutput(ctx: OperationContext, p: Record<string, unknown>, results
   };
   if (!evidence) {
     const output = redactRetrievalOutput(results, { ...meta, ...shown });
-    return emit(output, projectRows(applySnippetCap(output.results, snippetCap).map(factRowOutput), rows, lean));
+    return emit(output, projectRows(applySnippetCap(output.results, resultChunkCap(p.snippet_chars, snippetCap)).map(factRowOutput), rows, lean));
   }
   // Evidence delivery: explicit snippet_chars wins over the delivered blocks;
   // otherwise the blocks are returned whole (their budget already bounds
@@ -424,8 +427,7 @@ async function buildRetrievalResponseMeta(
 ): Promise<Record<string, unknown>> {
   const m = meta as (HybridSearchMeta & { degraded?: unknown[]; retrieved_count?: number }) | null;
   const hint = opts.conceptHint && looksConceptShaped(queryText)
-    ? "concept-shaped question — the 'query' tool with expand: true adds multi-query expansion, " +
-      'which can recover synonym-phrased matches this keyword-leaning search can miss.'
+    ? "concept-shaped question — the 'query' tool ranks the same and adds saved-fact rows and a confidence grade."
     : undefined;
   const excludePrivate = await resolveExcludePrivatePages(ctx.engine, ctx.remote);
   const excludeSlugPrefixes = resolveHardExcludes();
@@ -473,6 +475,7 @@ async function buildRetrievalResponseMeta(
       ...(m.relational_plan ? { relational_plan: m.relational_plan } : {}),
       ...(m.rerank_gate ? { rerank_gate: m.rerank_gate } : {}),
       ...(m.cosine_rescore ? { cosine_rescore: m.cosine_rescore } : {}),
+      ...(m.collapse ? { collapse: m.collapse } : {}),
     } : {}),
     ...((m?.degraded !== undefined || degraded.length > 0) ? { degraded } : {}),
     projection_readiness: readiness,
@@ -831,7 +834,7 @@ const query: Operation = {
     return_unit: RETURN_UNIT_PARAM,
     return_window: RETURN_WINDOW_PARAM,
     token_budget: { type: 'number', description: 'Evidence token cap.' },
-    expand: { type: 'boolean', description: 'Default off; search.expansion overrides.' },
+    expand: { type: 'boolean', description: 'Default off; one LLM call, rarely helps.' },
     detail: { type: 'string', description: 'low (compiled truth), medium (default) or high (all chunks).' },
     fields: FIELDS_PARAM,
     mode: { type: 'string', description: 'Local callers only.' },

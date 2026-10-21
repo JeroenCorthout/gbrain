@@ -436,3 +436,4 @@ test/windows-ipc-long-path-6573.serial.test.ts	R1	R1: mutates process.env (USERP
 test/coordination-lock.serial.test.ts	global-state	global-state: withEnv holds GBRAIN_HOME and GBRAIN_COORDINATION_HOME across awaited PGLite claims and transfers, and real native lock files are held across them
 test/context-assemble-load-warning.serial.test.ts	R2	R2: mock.module(../src/core/engine-factory.ts) replaces modules for every file in the process; R1: mutates process.env (GBRAIN_HOME, DATABASE_URL, GBRAIN_DATABASE_URL)
 test/search-tune-apply-truthful.serial.test.ts	R2	R2: mock.module(../src/core/search/tune-recommendations.ts) replaces modules for every file in the process
+test/doctor-only-sync-failures-7143.serial.test.ts	global-state	global-state: spawns the real gbrain CLI against a tmpdir PGLite brain and home (doctor --only sync_failures connects the brain)

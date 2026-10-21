@@ -593,6 +593,18 @@
             "docs": "docs/guides/troubleshooting.md#terminal-write-failures",
             "historical_rows": 0,
             "new_last_24h": 0,
+            "ranked": {
+              "blocking": [],
+              "historical": {
+                "rows": 0
+              },
+              "unresolved": {
+                "group_by": [],
+                "groups": [],
+                "pages": 0,
+                "rows": 0
+              }
+            },
             "sources": [],
             "spike": {
               "daily_7d": [
@@ -906,6 +918,7 @@
         {
           "category": "ops",
           "details": {
+            "columns": [],
             "extra_columns": [],
             "page_child_source_columns": [],
             "runbook": "docs/guides/write-refusals.md#managed-guard-page-children"

@@ -718,7 +718,7 @@
       "stdout": [
         "Usage: gbrain query <query> [options]",
         "",
-        "Hybrid search for concept/landscape questions and people/companies/projects by topic; expand adds multi-query expansion (expansion recovers synonyms). Still top-K; return_unit: sections or conversations. Lists: list_pages. Exact tokens: `search` is cheaper (no LLM call). Personal: get_recent_salience, find_anomalies; transcripts: `gbrain transcripts recent`. Do NOT assume 'crazy' means impressive (often difficult or emotionally charged). Needs an embedding key (else keyword-only); expansion needs a chat key. Fact rows: use follow_up. fields: \"full\" adds diagnostics.",
+        "Hybrid search for concept/landscape questions and people/companies/projects by topic; adds fact rows. expand: one LLM call (expansion recovers synonyms; rarely helps). Still top-K; return_unit: sections or conversations. Lists: list_pages. Exact tokens: `search` is cheaper. Personal: get_recent_salience, find_anomalies; transcripts: `gbrain transcripts recent`. Do NOT assume 'crazy' means impressive (often difficult or emotionally charged). Needs an embedding key (else keyword-only); expansion needs a chat key. Fact rows: use follow_up. fields: \"full\" adds diagnostics.",
         "",
         "Options:",
         "  <query>                    Question or topic (required unless image).",
@@ -731,7 +731,7 @@
         "  --return-unit              Default auto: whole conversations.",
         "  --return-window            Window radius 1-3.",
         "  --token-budget             Evidence token cap.",
-        "  --expand                   Default off; search.expansion overrides.",
+        "  --expand                   Default off; one LLM call, rarely helps.",
         "  --detail                   low (compiled truth), medium (default) or high (all chunks).",
         "  --fields                   lean (remote default) or full.",
         "  --mode                     Local callers only.",

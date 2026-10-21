@@ -10,6 +10,53 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.333.0] - 2026-10-21
+
+**`gbrain doctor` has a quick tier for agents on large brains, grades checks that ran out of budget honestly, and stops counting sync-failure ledger rows nothing can retry. One-shot CLI reads also start faster behind a pooler.** On a large brain a full doctor run used to blow its budget and report a wall of unknowns. Agents read those as failures and repeated the run. `gbrain doctor --tier quick` answers the questions an agent gates on within 10 seconds. Every other check comes from its last known result, with the result's age.
+
+### What changed
+
+| Situation | Before | Now |
+|---|---|---|
+| An agent health-checks a large brain | a full `gbrain doctor` blew its budget and reported many checks as unknown | `gbrain doctor --tier quick` runs the ops sections, schema version, sync failures, queue health and partial embeddings under a 10 s deadline. Every other check is reported from its last known result with its age (`details.last_known`, `last_known_sections`) |
+| A brain-wide doctor check runs out of its budget | reported unknown | reports its last result while that result is under 24 h old. Checks with no recent result are named in one `doctor_last_known` warning, and a Postgres brain queues one background `doctor-refresh` job per hour to measure them |
+| A check whose count hit its bound, or a managed-guard check on columns it can't read | graded as a failure or a pass it hadn't earned | graded by what it measured: a capped count says it is capped and names the bound, and an unreadable guard says unknown (#7145) |
+| Doctor lists terminal write failures | in arrival order, so old rows hid live blockers | active blockers first, then the unresolved pile, then historical rows (#7146) |
+| `gbrain doctor --only sync_failures` | reported that durable sync state was unavailable | connects the brain and runs the check (#7143) |
+| The sync-failure ledger holds rows for an unregistered source or a deleted file | counted as failures nothing could clear | set aside and counted separately. A process under `bun test` with neither `GBRAIN_SYNC_FAILURES_DIR` nor `GBRAIN_HOME` set writes a scratch ledger (#7144) |
+| A one-shot read (`search`, `query`, `get`) behind a transaction-mode pooler | printed the prepared-statements banner every time and re-read config per key | prints the banner once per database per gbrain home, reads config once for startup and once for the operation, and skips write-only startup cleanup (#7147) |
+
+On a 5,000-page test brain behind PgBouncer in transaction mode, a cold `gbrain search` went from 115 to 69 database round trips (p50 1,271 ms to 576 ms), `query` from 127 to 81 and `get` from 22 to 15. Per-key config reads went from 32 to 0.
+
+Nothing changes on upgrade. `--tier quick` is opt-in, and the default doctor run is unchanged apart from recording last known results.
+
+### For contributors
+
+- The CI Postgres containers (Ubicloud gate VMs, `docker-compose.ci.yml`, the `e2e.yml` services) get a 1 GiB `/dev/shm`. With Docker's 64 MiB default, a parallel HNSW build's 64 MiB dynamic shared memory segment failed with 53100 "No space left on device" whenever another parallel operation held shared memory.
+- The #7145 Postgres arms run from `test/e2e/*-postgres.test.ts` wrappers, not `test/postgres-unit-arms.txt`.
+
+## [0.60.332.0] - 2026-10-21
+
+**`search` and `query` stop spending result slots on copies of one page, and `--explain` shows both retrieval arms again.** The same page in two sources, a merge stub beside its target, and the summary and transcript of one document each used to take their own slot in the top 10. They now fold into the best-ranked row, which lists what it absorbed in `collapsed`.
+
+### What changed
+
+| Situation | Before | Now |
+|---|---|---|
+| The same slug in two sources with copied bodies | two rows | one row; the other copy is listed in `collapsed` (reason `twin`) |
+| A merge or redirect stub and its target | the stub could rank above the target | the target takes the slot; a stub whose target can't be returned stays, stamped `redirect_to` and ranked ×0.5 |
+| Summary, transcript and diarized copies of one document in one directory | one slot each | one row (reason `family`) |
+| An organization question that names no person | the founder's page could outrank the company | person pages ×0.85 |
+| An image page whose text covers half the query or less | ranked like a text page | ×0.6, stamped `image_page` |
+| An undated page on a "when" question | no penalty | ×0.85 |
+| `score` down the result list | could go up | follows rank; the previous value is `fused_score` |
+| A chunk row longer than 8,000 characters | returned whole | cut at 8,000 with a marker naming the read for the rest; `snippet_chars: 0` returns it whole |
+| `gbrain search/query --explain` on a hybrid brain | printed `arms: []` and `rrf: not_run` | shows both arms, with fusion and blend applied |
+| A keyword or vector arm that timed out, on the CLI | nothing said so | a `degraded_recall` notice on stderr, `--json` included |
+| The `query` tool description | implied expansion helps | says `expand` is one LLM call and rarely helps |
+
+Opt-outs: `search.collapse false` and `search.rank_priors false`. Nothing is rewritten on upgrade.
+
 ## [0.60.331.0] - 2026-10-20
 
 **Writing many facts at once no longer costs one guard call per row, new pages over 4 MiB reply as soon as they commit, and a remote `append_page` links what it mentions.** The facts purge refusal and withdrawal stamp ran once per row, so a 6,000-row publish spent most of its publication deadline in triggers (#7105). A managed import of a large new page waited for its whole search index to build before replying, which on a loaded host outlasted the deadline (#7106). A remote append added text with links that never became graph edges (#7122).

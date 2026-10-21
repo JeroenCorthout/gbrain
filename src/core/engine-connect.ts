@@ -14,13 +14,14 @@ import type { BrainEngine } from './engine.ts';
 import { isThinClient, loadConfig, toEngineConfig, type GBrainConfig } from './config.ts';
 import { buildGatewayConfig } from './ai/build-gateway-config.ts';
 import { opError } from './ops/contract.ts';
+import { withRequestConfigSnapshot } from './config-snapshot.ts';
 
 /** The CLI-owned pieces the connect records into (cli.ts passes its dispatch context). */
 export interface EngineConnectHooks {
   /** The config each connected engine was opened with; read by startup completion and makeContext. */
   SELECTED_CONFIG_BY_ENGINE: WeakMap<BrainEngine, GBrainConfig>;
   /** Migrations, retired-marker cleanup and the DB-plane config merge after the connect. */
-  completeStartup(engine: BrainEngine): Promise<void>;
+  completeStartup(engine: BrainEngine, opts?: EngineConnectOptions): Promise<void>;
 }
 
 /**
@@ -35,7 +36,13 @@ export const ONE_SHOT_READ_SHARED_BUFFERS = '32MB';
 export interface EngineConnectOptions {
   /** get_health, `upgrade --status`, doctor's migration_wedge check: never start or wait on migrations. */
   probeOnly?: boolean;
-  /** The process runs one read-scope operation and exits (sizes PGLite's buffer pool, see above). */
+  /**
+   * The process runs one read-scope operation and exits: sizes PGLite's buffer pool (see above), reads the
+   * config table once for the whole startup (each key read is a round trip behind a remote pooler, #7147;
+   * pending migrations run outside the snapshot, reading and writing config live) and skips the
+   * retired-marker cleanup, which only filesystem-guarded writes depend on. The CLI then builds the read's
+   * context and runs it under one more snapshot (`openRequestConfigSnapshot`), as MCP dispatch does.
+   */
   oneShotRead?: boolean;
 }
 
@@ -69,7 +76,9 @@ export async function connectEngineForServe(hooks: EngineConnectHooks, opts: Eng
   try {
     // Engine graduation: a fenced target or a cut-over source refuses every connect but the run's own.
     await (await import('./persistence/graduation-custody.ts')).gateGraduationConnect(engine);
-    if (opts.probeOnly !== true) await hooks.completeStartup(engine);
+    if (opts.probeOnly !== true) {
+      await (opts.oneShotRead ? withRequestConfigSnapshot(engine, () => hooks.completeStartup(engine, opts)) : hooks.completeStartup(engine, opts));
+    }
   } catch (e) {
     await engine.disconnect().catch(() => {});
     throw e;

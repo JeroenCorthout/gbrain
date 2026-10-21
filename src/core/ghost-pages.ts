@@ -94,6 +94,9 @@ export const GHOST_SAMPLE_LIMIT = 5;
 export const GHOST_CHECK_LIMIT = 200;
 /** Live pages the pre-filter reads per source. */
 export const GHOST_SCAN_LIMIT = 250_000;
+let scanLimit = GHOST_SCAN_LIMIT;
+/** Tests only: a smaller per-source pre-filter limit (null restores the default). */
+export function __setGhostScanLimitForTests(limit: number | null): void { scanLimit = limit ?? GHOST_SCAN_LIMIT; }
 const BATCH = 10_000;
 
 interface PageRow { id: number; slug: string; source_path: string | null; source_uri: string | null }
@@ -185,7 +188,7 @@ export async function scanGhostSource(engine: BrainEngine, sourceId: string, opt
     const rows = await engine.executeRaw<PageRow>(`SELECT id, slug, source_path, source_uri FROM pages
       WHERE source_id=$1 AND deleted_at IS NULL AND id > $2 ORDER BY id LIMIT ${BATCH}`, [sourceId, after]);
     for (const row of rows) {
-      if (scan.inspected >= GHOST_SCAN_LIMIT) { scan.truncated = true; break; }
+      if (scan.inspected >= scanLimit) { scan.truncated = true; break; }
       scan.inspected++;
       const verdict = prefilter(context, row);
       if (verdict.kind === 'present') { scan.file_backed++; continue; }
@@ -198,7 +201,7 @@ export async function scanGhostSource(engine: BrainEngine, sourceId: string, opt
       if (result.kind === 'ghost') (await sharedPackMemberGhost(engine, context.owner, result.ghost) ? scan.skill_paths : scan.ghosts).push(result.ghost);
       else if (result.reason === 'agrees' || result.reason === 'file_database_drift') scan.file_backed++;
     }
-    if (rows.length < BATCH || scan.inspected >= GHOST_SCAN_LIMIT) break;
+    if (rows.length < BATCH || scan.inspected >= scanLimit) break;
     after = Number(rows[rows.length - 1]!.id);
   }
   scan.file_backed += scan.ghosts.length + scan.skill_paths.length + unchecked;

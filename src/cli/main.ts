@@ -35,6 +35,7 @@ import type { BrainEngine } from '../core/engine.ts';
 import { OperationError, type OperationMeta } from '../core/ops/contract.ts';
 import { OPERATION_MANIFEST, cliOps } from './op-manifest.ts';
 import { loadOperation } from '../core/operation-load.ts';
+import { openRequestConfigSnapshot, withoutRequestConfigSnapshot } from '../core/config-snapshot.ts';
 import { resolveSourceIdEngineFree } from '../core/source-resolver.ts';
 import { installCliRoutingFor } from './fix-routing-provider.ts';
 import { formatVolunteeredPage } from '../core/context/volunteer.ts';
@@ -76,7 +77,7 @@ import {
   type CliDispatchContext,
 } from './command-table.ts';
 import { formatRememberResult } from './remember-format.ts';
-import { applyCliOpNotices, captureCapacityNotices, captureOpNotice } from './op-notices.ts';
+import { applyCliOpNotices, captureCapacityNotices, captureOpNotice, captureRetrievalNotices } from './op-notices.ts';
 
 // db-availability loop: best-effort brain-id for the GBRAIN_DB_ACCESS marker,
 // so a MOUNT's DB failure reads as `brain=<id>` instead of masquerading as a
@@ -640,6 +641,7 @@ async function runSharedOperation(command: string, subArgs: string[], cliOpts: C
   // timeout the abandoned handler may hold ref'd sockets — harmless here,
   // because the import.meta.main seam exits explicitly on every one-shot path.
   const READ_OP_TIMEOUT_MS = 180_000;
+  const configSnapshot = op.scope === 'read' ? openRequestConfigSnapshot(engine) : null;
 
   try {
     const { withTimeout, OperationTimeoutError } = await import('../core/timeout.ts');
@@ -661,7 +663,7 @@ async function runSharedOperation(command: string, subArgs: string[], cliOpts: C
     let ctx: Awaited<ReturnType<typeof makeContext>>;
     try {
       ctx = await withTimeout(
-        makeContext(engine, params, op),
+        configSnapshot ? configSnapshot.run(() => makeContext(engine, params, op)) : makeContext(engine, params, op),
         wallclockMs,
         `gbrain ${command}: context`,
       );
@@ -677,7 +679,7 @@ async function runSharedOperation(command: string, subArgs: string[], cliOpts: C
     if (op.scope === 'read') {
       try {
         rawResult = await withTimeout(
-          op.handler(ctx, params).catch(async (e: unknown) => { // large pages: a segmented page streams to stdout
+          configSnapshot!.run(() => op.handler(ctx, params)).catch(async (e: unknown) => { // large pages: a segmented page streams to stdout
             if (op.name === 'get_page' && await streamSegmentedGet(engine, params, e, writeStdoutFinal)) return SEGMENTED_STREAMED;
             throw e;
           }),
@@ -696,6 +698,7 @@ async function runSharedOperation(command: string, subArgs: string[], cliOpts: C
       if (op.mutating) await captureCapacityNotices(engine); // #6696 (A4)
     }
     if (rawResult === SEGMENTED_STREAMED) return;
+    captureRetrievalNotices(op.name, rawResult, lastRetrievalMeta, params, ctx.config);
     // ENG-2 (renderer parity by data shape): JSON-round-trip the local-engine
     // path's return value so renderers see the same shape they'd see on the
     // routed path. Date → ISO string; bigint → string (postgres.js shape);
@@ -741,6 +744,7 @@ async function runSharedOperation(command: string, subArgs: string[], cliOpts: C
     // 1s per-sink drain budget: read paths with no pending work pay the ~0ms
     // fast path; capture/import that DO enqueue pay up to 1s (+ facts shutdown
     // grace) while in-flight Haiku finishes (#1762 drain-before-disconnect).
+    configSnapshot?.close();
     await finishCliTeardown({ engine, drainTimeoutMs: 1000 });
   }
 }
@@ -1037,7 +1041,7 @@ export function resolveQueryImage(
 
 export function parseOpArgs(op: Operation, args: string[]): Record<string, unknown> {
   // `gbrain search --explain`: the CLI-local formatter flag also asks the op for score attribution.
-  const params: Record<string, unknown> = op.name === 'search' && args.includes('--explain') ? { explain: true } : {};
+  const params: Record<string, unknown> = (op.name === 'search' || op.name === 'query') && (getCliOptions().explain || args.includes('--explain')) ? { explain: true } : {};
   const positional = op.cliHints?.positional || [];
   let posIdx = 0;
 
@@ -2839,7 +2843,7 @@ function migrationsNotice(why: string): Notice {
 }
 
 /** Startup after the probe-only connect: migrations, retired-marker cleanup, DB-plane config merge. Mounts: none. */
-async function completeEngineStartup(engine: BrainEngine): Promise<void> {
+async function completeEngineStartup(engine: BrainEngine, opts: EngineConnectOptions = {}): Promise<void> {
   const config = SELECTED_CONFIG_BY_ENGINE.get(engine);
   if (!config || MOUNT_ENGINES.has(engine)) return;
 
@@ -2854,7 +2858,7 @@ async function completeEngineStartup(engine: BrainEngine): Promise<void> {
     // migrate.ts loads every migration module; only a brain that is behind needs it.
     const { hasPendingMigrations } = await import('../core/migrate-pending.ts');
     const result = await hasPendingMigrations(engine)
-      ? await (await import('../core/migrate.ts')).tryRunPendingMigrations(engine)
+      ? await withoutRequestConfigSnapshot(async () => (await import('../core/migrate.ts')).tryRunPendingMigrations(engine))
       : { status: 'not_needed' as const };
     if (result.status === 'persistent') {
       writeCliNotice(migrationsNotice('Schema migrations are pending: another process attempted them but they did not complete within the retry window (usually transient). If it persists, check `gbrain doctor` for stale advisory locks and `gbrain jobs supervisor status` for crashed migration workers.'));
@@ -2869,8 +2873,8 @@ async function completeEngineStartup(engine: BrainEngine): Promise<void> {
     writeCliNotice(migrationsNotice(`Schema probe failed (unexpected): ${(err as Error).message}`));
   }
 
-  // #5628: drop this host's markers of a retired managed epoch before any filesystem guard check.
-  try { await (await import('../core/persistence/deactivation.ts')).cleanupRetiredManagedMarkers(engine); } catch { /* status reports pending markers */ }
+  // #5628: drop this host's markers of a retired managed epoch before any filesystem guard check. A one-shot read runs no guard check.
+  if (!opts.oneShotRead) try { await (await import('../core/persistence/deactivation.ts')).cleanupRetiredManagedMarkers(engine); } catch { /* status reports pending markers */ }
 
   // v0.27.1 (F3 fix): re-merge DB-plane config now that the engine is up.
   // Flags like `embedding_multimodal` are user-mutable via `gbrain config set`
