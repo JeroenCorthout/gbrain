@@ -19,8 +19,6 @@
  * in the C collation so both engines and every database locale agree; the
  * distinct-slug counts use it too (a C sort is several times faster than a
  * locale sort, and both collations are deterministic, so counts match).
- * Postgres runs untrusted reads with JIT off (as #6276): the read-policy
- * subplans push their cost estimate past the JIT thresholds.
  */
 import type { FindPagesQuery, FoundPage, FoundPages, UntrustedReadPolicy } from '../page-find.ts';
 import type { PageCountQuery, PageCounts, TypeGrouper } from '../page-counts.ts';

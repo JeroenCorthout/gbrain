@@ -2921,14 +2921,6 @@
       "countPagesBy": {
         "grouped+since+remote": [
           {
-            "paramCount": 1,
-            "unsafeOptions": {
-              "prepare": false,
-              "simple": false
-            },
-            "via": "unsafe"
-          },
-          {
             "paramCount": 2,
             "unsafeOptions": {
               "cancelFence": false,
@@ -3169,14 +3161,6 @@
       },
       "findPages": {
         "glob+types+sourceIds+remote": [
-          {
-            "paramCount": 1,
-            "unsafeOptions": {
-              "prepare": false,
-              "simple": false
-            },
-            "via": "unsafe"
-          },
           {
             "paramCount": 5,
             "unsafeOptions": {

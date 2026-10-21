@@ -938,10 +938,10 @@ export class PostgresEngine implements BrainEngine {
     return this.withScopedReadTransaction(filters?.sourceIds, filters?.sourceId, tx => pagesImpl.listPages(scopedRead(this.engineSqlOn(tx)), filters));
   }
   async findPages(query: FindPagesQuery): Promise<FoundPages> {
-    return this.withScopedReadTransaction(query.sourceIds, query.sourceId, tx => pageLookupImpl.findPages(scopedRead(this.engineSqlOn(tx)), query), query.untrusted ? { alwaysTransaction: true, jitOff: true } : undefined);
+    return this.withScopedReadTransaction(query.sourceIds, query.sourceId, tx => pageLookupImpl.findPages(scopedRead(this.engineSqlOn(tx)), query));
   }
   async countPagesBy(query: PageCountQuery, groupTypes?: TypeGrouper): Promise<PageCounts> {
-    return this.withScopedReadTransaction(query.sourceIds, query.sourceId, tx => pageLookupImpl.countPagesBy(scopedRead(this.engineSqlOn(tx)), query, groupTypes), query.untrusted ? { alwaysTransaction: true, jitOff: true } : undefined);
+    return this.withScopedReadTransaction(query.sourceIds, query.sourceId, tx => pageLookupImpl.countPagesBy(scopedRead(this.engineSqlOn(tx)), query, groupTypes));
   }
 
   async getAllSlugs(opts?: { sourceId?: string }): Promise<Set<string>> {
