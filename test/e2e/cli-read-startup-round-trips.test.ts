@@ -12,7 +12,10 @@
  * once per database. Regressions it catches: a new per-key `getConfig` on the
  * read path outside a snapshot, the cleanup running for reads again, or the
  * banner printing on every call. Existing budget tests cover page writes and
- * imports, not CLI read startup.
+ * imports, not CLI read startup. The second half pins the statements the
+ * follow-up folded: one config snapshot shared by startup and the read, one
+ * sources read, the custody row without a table probe, the search-statistics
+ * guard as one statement, and a two-connection pool for a one-shot read.
  */
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
@@ -74,4 +77,40 @@ describeDatabase('cold read verb startup through a transaction pooler (#7147)', 
       expect(statements.filter(s => s.sql.includes('persistence_topology_changes'))).toEqual([]);
     }, 120_000);
   }
+
+  /**
+   * #7147 follow-up: each statement below was a round trip every cold read paid. A read shares one config snapshot
+   * between startup and the operation (one bulk read, no per-key read), reads the sources table once for tier 4,
+   * tier 5.5 and the federated set, reads the graduation custody row without a to_regclass probe first, and opens at
+   * most two pooled connections. Each assertion fails on the base branch.
+   */
+  const sql = (s: StatementRecord) => s.sql.replace(/\s+/g, ' ').trim();
+  const show = (rows: StatementRecord[]) => rows.map(sql).join('\n');
+  for (const args of [['search', 'Acme'], ['query', 'who works at Acme'], ['get', 'people/alice-example'], ['entity', 'Alice Example'], ['recall', 'Alice Example']]) {
+    test(`gbrain ${args[0]}: one config read, one sources read, one custody read, two connections`, async () => {
+      const { statements } = await tracedRead(args, `folded-${args[0]}`);
+      const config = configStatements(statements);
+      expect(config.map(sql), show(config)).toEqual(['SELECT key, value FROM config']);
+      const sources = statements.filter(s => /\bFROM\s+sources\b/i.test(s.sql) && !/\bJOIN\s+sources\b/i.test(s.sql) && /^\s*SELECT\s+id\b/i.test(s.sql));
+      expect(sources.length, show(sources)).toBe(1);
+      expect(statements.filter(s => s.sql.includes("to_regclass('persistence_graduation')"))).toEqual([]);
+      expect(statements.filter(s => /\bFROM\s+persistence_graduation\b/.test(s.sql)).length).toBe(1);
+      expect(statements.filter(s => s.sql.includes('persistence_topology_changes'))).toEqual([]);
+      const connects = readSqlTrace(join(home, `folded-${args[0]}.ndjson`)).filter(s => s.kind === 'connect');
+      expect(connects.length).toBeLessThanOrEqual(2);
+    }, 120_000);
+  }
+
+  test('gbrain search: the search-statistics guard is one statement', async () => {
+    const { statements } = await tracedRead(['search', 'Acme'], 'folded-statistics');
+    const probes = statements.filter(s => s.sql.includes('pg_stats') || /reltuples::float8 AS reltuples FROM pg_class WHERE oid = 'pages'/.test(s.sql) || s.sql.includes('pg_statistic_ext'));
+    expect(probes.length, show(probes)).toBe(1);
+  }, 120_000);
+
+  test('GBRAIN_POOL_SIZE still sizes a one-shot read pool', async () => {
+    const trace = join(home, 'pool-size-1.ndjson');
+    const r = await runCli(['search', 'Acme'], { home, cwd: home, timeoutMs: 90_000, env: { GBRAIN_SQL_TRACE: trace, GBRAIN_POOL_SIZE: '1' } });
+    expect(r.exitCode, r.stderr).toBe(0);
+    expect(readSqlTrace(trace).filter(s => s.kind === 'connect').length).toBe(1);
+  }, 120_000);
 });

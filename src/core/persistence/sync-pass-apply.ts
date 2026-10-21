@@ -78,7 +78,8 @@ export interface PassApplyState {
   holds: { file_gone: number; tombstone_edited: number; purged_differs: number; settle_mismatch: number; origin_conflict: number; page_identity_changed: number; uncommitted: number };
   settleMismatch: string[];
   adopted: number;
-  swept: { screened: number; recorded: number };
+  /** `paths`: what this pass screened, so a later round of the pass never screens a page again (#7189). */
+  swept: { screened: number; recorded: number; paths: Set<string> };
   /** The first full round of the incarnation swept every legacy page (the pass records it in `obligations.legacy_sweep`). */
   sweptAll: boolean;
   withheld: DeletesWithheld | null;
@@ -102,7 +103,7 @@ export interface PassApplyState {
 
 export function newPassApplyState(): PassApplyState {
   return { markersRetired: 0, holds: { file_gone: 0, tombstone_edited: 0, purged_differs: 0, settle_mismatch: 0, origin_conflict: 0, page_identity_changed: 0, uncommitted: 0 }, settleMismatch: [], adopted: 0,
-    swept: { screened: 0, recorded: 0 }, sweptAll: false, withheld: null, withheldCount: 0, keepDb: { admitted: 0, pending: 0, paused: 0, refused: {} }, keepDbTaken: [], originHeld: new Set(), matchedSlugs: new Set(), classes: {}, summary: null, recorded: new Set() };
+    swept: { screened: 0, recorded: 0, paths: new Set() }, sweptAll: false, withheld: null, withheldCount: 0, keepDb: { admitted: 0, pending: 0, paused: 0, refused: {} }, keepDbTaken: [], originHeld: new Set(), matchedSlugs: new Set(), classes: {}, summary: null, recorded: new Set() };
 }
 
 export interface PassApplyInput {
@@ -418,30 +419,43 @@ async function adoptRecords(engine: BrainEngine, level: ShadowLevel, state: Pass
 }
 
 /**
- * Design §2.7: the bounded read-only legacy sweep; an equal page gets a record and is `matched`. The first full round
- * sweeps every legacy page, LEGACY_SWEEP_SLICE at a time (GBRA-108): each slice's records commit before the next
- * slice is screened and the slice is reported as progress (`onSwept`), so a pass stopped mid-sweep keeps what it
- * recorded (those pages classify `matched` and the next pass sweeps the rest) and a long sweep is never a stalled pass.
+ * Design §2.7: the bounded read-only legacy sweep; an equal page gets a record and is `matched`. A pass screens at most
+ * PASS_LEGACY_SWEEP_MAX legacy pages, LEGACY_SWEEP_SLICE at a time (GBRA-108): each slice's records commit before the next
+ * slice is screened and the slice is reported as progress (`onSwept`). #7189: the sweep goes in path order from
+ * `obligations.legacy_sweep.cursor`, the last path a slice screened, which is saved with the slice. A page that differs
+ * gets no record, so without the cursor a pass stopped mid-sweep kept nothing and the next one screened the same pages
+ * again: a first full round that had to screen every page in one pass never finished, and the round's real changes behind
+ * it were never imported. The incarnation's first full sweep goes once to the end and records `first_full_at`; later
+ * sweeps wrap around to the start.
  */
 async function sweepLegacy(engine: BrainEngine, level: ShadowLevel, input: PassApplyInput, state: PassApplyState): Promise<void> {
-  const legacy = await filterYielding(level.paths, entry => entry.result.cls === 'legacy_unverified' && entry.pageId !== null && entry.revision !== null && entry.state.level !== null && entry.slug);
-  const sweepAll = input.fullRound && !input.obligations.legacy_sweep?.first_full_at;
-  const budget = sweepAll ? legacy.length : Math.max(0, PASS_LEGACY_SWEEP_MAX - state.swept.screened);
-  const batch = legacy.slice(0, budget);
+  const legacy = (await filterYielding(level.paths, entry => entry.result.cls === 'legacy_unverified' && entry.pageId !== null && entry.revision !== null && entry.state.level !== null && entry.slug))
+    .sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
+  const sweep = input.obligations.legacy_sweep;
+  // The pass that finishes the first full sweep does not wrap around in a later round.
+  const firstFull = input.fullRound && (!sweep?.first_full_at || state.sweptAll);
+  const cursor = sweep?.cursor;
+  const from = cursor === undefined ? 0 : legacy.findIndex(entry => entry.path > cursor);
+  const start = from < 0 ? legacy.length : from;
+  const batch = [...legacy.slice(start), ...firstFull ? [] : legacy.slice(0, start)].filter(entry => !state.swept.paths.has(entry.path))
+    .slice(0, Math.max(0, PASS_LEGACY_SWEEP_MAX - state.swept.screened));
   const screen = batch.length ? input.screen ?? readOnlySameContentScreen(engine, input.context, input.processingOptions) : null;
   for (let at = 0; screen && at < batch.length; at += LEGACY_SWEEP_SLICE) {
     await faultPoint('sync:legacy_slice', { sourceId: level.sourceId });
-    await sweepSlice(engine, level, batch.slice(at, at + LEGACY_SWEEP_SLICE), screen, state);
+    const slice = batch.slice(at, at + LEGACY_SWEEP_SLICE);
+    await sweepSlice(engine, level, slice, screen, state);
+    input.obligations.legacy_sweep = { ...input.obligations.legacy_sweep, cursor: slice[slice.length - 1]!.path };
     await input.onSwept?.();
   }
-  // A full round that finds no legacy page left (an earlier pass recorded them before it stopped) has swept them all too.
-  if (sweepAll) state.sweptAll = true;
+  // A full round whose sweep reached the end (or found no legacy page left) has swept them all.
+  if (firstFull && start + batch.length >= legacy.length) state.sweptAll = true;
 }
 
 /** One sweep slice: screen it, then record its equal pages (fenced on the revision the level read). */
 async function sweepSlice(engine: BrainEngine, level: ShadowLevel, slice: ShadowPath[], screen: ConvergenceScreen, state: PassApplyState): Promise<void> {
   const verdicts = await screen(level, slice);
   state.swept.screened += slice.length;
+  for (const entry of slice) state.swept.paths.add(entry.path);
   const same = slice.filter(entry => verdicts.get(entry.path) === 'same');
   if (!same.length) return;
   const blobs = level.mode === 'committed' ? await readBlobs(level.gitRoot, [...new Set(same.map(entry => entry.state.level!))], LEVEL_BLOB_MAX_BYTES) : new Map<string, Buffer>();

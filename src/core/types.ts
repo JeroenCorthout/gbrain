@@ -2329,6 +2329,8 @@ export interface EngineConfig {
   keyword_statement_timeout_ms?: number;
   /** PGLite `shared_buffers` for this open (e.g. '32MB'); unset keeps the data directory's setting. */
   pglite_shared_buffers?: string;
+  /** Postgres: connections the module pool may open (a one-shot read: 2); unset keeps GBRAIN_POOL_SIZE or the default. */
+  pool_max?: number;
 }
 
 // Errors

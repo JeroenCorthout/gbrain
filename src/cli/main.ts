@@ -643,7 +643,7 @@ async function runSharedOperation(command: string, subArgs: string[], cliOpts: C
   // timeout the abandoned handler may hold ref'd sockets — harmless here,
   // because the import.meta.main seam exits explicitly on every one-shot path.
   const READ_OP_TIMEOUT_MS = 180_000;
-  const configSnapshot = op.scope === 'read' ? openRequestConfigSnapshot(engine) : null;
+  const configSnapshot = op.scope === 'read' ? takeStartupConfigSnapshot(engine) ?? openRequestConfigSnapshot(engine) : null;
 
   try {
     const { withTimeout, OperationTimeoutError } = await import('../core/timeout.ts');
@@ -1995,9 +1995,11 @@ async function handleCliOnly(command: string, args: string[]) {
   if (!prepared) return;
   const engine = await connectCliOnlyEngine(command, prepared.args);
   if (!engine) return;
+  const configSnapshot = takeStartupConfigSnapshot(engine);
   try {
-    await dispatchConnectedCommand(command, engine, prepared.args);
+    await (configSnapshot ? configSnapshot.run(() => dispatchConnectedCommand(command, engine, prepared.args)) : dispatchConnectedCommand(command, engine, prepared.args));
   } finally {
+    configSnapshot?.close();
     prepared.syncWatchdog?.dispose(); // #1633: tear down the hard-deadline watchdog on clean exit
     // #2084 — the CLI_ONLY fall-through teardown (drain every background-work
     // sink, THEN disconnect, under a computed-deadline backstop) lives in
@@ -2405,8 +2407,9 @@ async function runReadOnlyTimeoutDispatch(command: string, args: string[]): Prom
       }
       throw e;
     }
+    const configSnapshot = takeStartupConfigSnapshot(engine);
     try {
-      await withTimeout(dispatchReadOnlyCommand(engine, command, args), readOnlyTimeoutMs, label);
+      await withTimeout(configSnapshot ? configSnapshot.run(() => dispatchReadOnlyCommand(engine, command, args)) : dispatchReadOnlyCommand(engine, command, args), readOnlyTimeoutMs, label);
     } catch (e) {
       if (e instanceof OperationTimeoutError) {
         const hint = userTimeoutMs ? '' : ` (default ${e.ms}ms; pass --timeout=Ns to override)`;
@@ -2415,6 +2418,7 @@ async function runReadOnlyTimeoutDispatch(command: string, args: string[]): Prom
       }
       throw e;
     } finally {
+      configSnapshot?.close();
       await finishCliTeardown({ engine });
     }
     return true;
@@ -2620,7 +2624,10 @@ async function connectCliOnlyEngine(command: string, args: string[]): Promise<Br
   }
   try {
     // A4: an observational command connects probe-only and completes startup only after consent.
-    engine = await connectEngine({ probeOnly: findCliCommand(command)?.startup === 'observational' || (command === 'jobs' && args[0] === 'supervisor' && args[1] === 'status') });
+    // A one-shot `recall` only reads the brain (its --since-last-run cursor is a file); --watch polls for minutes.
+    let oneShotRead = false;
+    if (command === 'recall') oneShotRead = !args.includes('--watch');
+    engine = await connectEngine({ probeOnly: findCliCommand(command)?.startup === 'observational' || (command === 'jobs' && args[0] === 'supervisor' && args[1] === 'status'), oneShotRead });
   } catch (serveConnectError) {
     if (command === 'jobs' && args[0] === 'child-readiness') {
       const { writeChildReadinessFailure } = await import('../core/minions/child-readiness.ts');
@@ -2753,7 +2760,7 @@ async function dispatchReadOnlyCommand(engine: BrainEngine, command: string, arg
 // re-exported) so cli.ts's own connectEngine() call sites bind it locally.
 import { buildGatewayConfig } from '../core/ai/build-gateway-config.ts';
 export { buildGatewayConfig };
-import { connectEngineForServe, noBrainError, type EngineConnectHooks, type EngineConnectOptions } from '../core/engine-connect.ts';
+import { connectEngineForServe, noBrainError, takeStartupConfigSnapshot, type EngineConnectHooks, type EngineConnectOptions } from '../core/engine-connect.ts';
 
 /**
  * Which brain this process's engine targets. Set by connectEngine after brain
