@@ -293,6 +293,7 @@ export async function resolveHybridRequest(
     // Direct searchKeyword consumers (countMentions, link-extraction, eval)
     // do NOT set this. Knob: search.keywordOrFallback (rationale: ModeBundle).
     orFallback: resolvedMode.keywordOrFallback,
+    onKeywordIncomplete: (reason) => pushDegraded(degraded, 'keyword_candidates_incomplete', reason),
     // v0.46.15: collect searchVector's bounded-escalation exhaustion signal —
     // engines have no telemetry sink (R2-10); hybrid owns the meta emit.
     // ACCUMULATES across vector calls (adversarial F8): expansion runs N

@@ -10,6 +10,25 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.338.0] - 2026-10-21
+
+**Keyword search on a large Postgres brain no longer stalls on a common word, and agent guidance now says to search gbrain first.** At 300k pages, a keyword query whose words matched hundreds of thousands of chunks ranked every one of them and often hit the 8 s keyword statement timeout, so the keyword arm returned nothing. Ranking is now bounded, the OR retry matches only the words that fit, and the candidate pool keeps one chunk per page. On a 305k-page bench behind a transaction-mode pooler, warm search p95 fell from 8.4 s to 2.4 s, warm query from 8.6 s to 1.2 s and warm recall from 8.4 s to 1.0 s. Retrieval quality on the agent-retrieval shapes and the 70-question ranking-shapes set is unchanged.
+
+### What changed
+
+| Situation | Before | Now |
+|---|---|---|
+| A keyword search whose words match more than 50,000 chunks (Postgres) | ts_rank ran over every match and often timed out | the first 50,000 matches that pass the filters are ranked, and the response is stamped `keyword_candidates_incomplete` |
+| The keyword arm's any-word retry after an all-words miss | an OR over common words matched up to 850k chunks | matches only the words that planner statistics say fit under a 20k-chunk cap, and still ranks with the full OR query |
+| A page with hundreds of matching chunks | it could fill the keyword candidate pool | the pool keeps one chunk per page (Postgres and PGLite) |
+| The title arm's any-word retry for local callers | matched page text | matches titles only, as remote callers already did, and drops repeated words (#7135) |
+| An agent deciding where to look | guidance didn't say | brain-first, query, brain-ops, RESOLVER and the AGENTS/INSTALL templates say to search gbrain first, then read the page, with copyable examples |
+
+### For contributors
+
+- `scripts/bench/retrieval-scale/` builds a synthetic large brain and times cold and warm search, query, get and recall behind PgBouncer and toxiproxy.
+- `test/e2e/retrieval-round-trip-budget.test.ts` pins the cold CLI round trips: search 65, get 19, recall 38.
+
 ## [0.60.337.0] - 2026-10-21
 
 **Agents can ask gbrain what happened to a file instead of copying its path rules, and `gbrain sync status` no longer contradicts itself.** A landing check that rebuilt gbrain's path-to-slug rules in its own code reported pages as synced but unsearchable for days when nothing was wrong. `gbrain sources resolve-path` gives gbrain's own answer for each path, and sync status and doctor now flag the pages that really are committed but not yet searchable.

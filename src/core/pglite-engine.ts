@@ -1497,7 +1497,7 @@ export class PGLiteEngine implements BrainEngine {
 
     const keywordSql =
       `WITH ranked AS (
-         SELECT
+         SELECT * FROM (SELECT *, row_number() OVER (PARTITION BY page_id ORDER BY score DESC, chunk_id ASC) AS page_rank FROM (SELECT
            p.slug, p.id as page_id, p.title, p.type, p.source_id,
            p.effective_date, p.effective_date_source,
            CASE WHEN NULLIF(regexp_replace(p.frontmatter->>'message_id', '^[[:space:]]+|[[:space:]]+$', '', 'g'), '') IS NOT NULL
@@ -1516,7 +1516,7 @@ export class PGLiteEngine implements BrainEngine {
            -- v0.27.1: hide image rows from default text-keyword search so
            -- OCR text doesn't drown text-page hits. Image-similarity queries
            -- run a separate vector path on embedding_image.
-           AND cc.modality = 'text'
+           AND cc.modality = 'text') matched) per_page WHERE page_rank = 1
          ORDER BY score DESC, page_id ASC, chunk_id ASC
          LIMIT $2
        ),
