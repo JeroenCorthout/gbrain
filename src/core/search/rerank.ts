@@ -6,6 +6,7 @@ import { logRerankFailure, type RerankFailureReason } from '../rerank-audit.ts';
 import { estimateTokens } from '../chunkers/token-estimate.ts';
 import { truncateUtf8 } from '../text-safe.ts';
 import { warnOncePerProcess } from '../utils.ts';
+import { type RerankDocumentMode, type RerankFuseMode, fuseRerankedHead, rerankDocument } from './rerank-fuse.ts';
 
 /** #4648: the two audited success-shaped pass-through causes. */
 export type RerankPassThroughReason = 'empty_result_set' | 'malformed_shape';
@@ -20,6 +21,10 @@ export interface RerankerOpts {
   model?: string;
   /** Per-call timeout in ms (default 5000 — propagates to gateway.rerank). */
   timeoutMs?: number;
+  /** `search.reranker.fuse` (rerank-fuse.ts): `replace` (default) or `rrf` with the first-pass order. */
+  fuse?: RerankFuseMode;
+  /** `search.reranker.document` (rerank-fuse.ts): `chunk` (default) or `titled`. */
+  document?: RerankDocumentMode;
   /**
    * #4648: fired when the provider answered SUCCESSFULLY but with an
    * empty/malformed result set for a non-empty document batch, so the
@@ -133,14 +138,15 @@ export async function applyReranker(
   const head = results.slice(0, opts.topNIn);
   const tail = results.slice(opts.topNIn);
 
-  // Document text — chunk_text is the matched span. Fall back to title if
+  // Document text — chunk_text is the matched span (`titled` prefixes the
+  // page title and date, rerank-fuse.ts). Fall back to title if
   // empty (shouldn't happen in practice; defensive). Empty docs would
   // confuse the reranker, but we still send them — the upstream model decides.
   // Cap each document so a self-hosted reranker (llama-server, TEI) with a
   // small physical batch never 500s on an oversized code/hex-heavy chunk.
   // Token-aware, not just char-capped, because hex-dense pages tokenize at
   // ~1 char/token. See capRerankDoc for what this costs hosted providers.
-  const documents = head.map(r => capRerankDoc(r.chunk_text || r.title || ''));
+  const documents = head.map(r => capRerankDoc(rerankDocument(r, opts.document)));
 
   let reranked: RerankResult[];
   let rerankMeta: RerankMeta | undefined;
@@ -257,6 +263,8 @@ export async function applyReranker(
   // If the reranker dropped some head items (rare; usually only happens
   // with explicit top_n), preserve their original positions at the end
   // of the head section so we don't silently lose recall.
+  // `rrf` (rerank-fuse.ts): the scored rows take the fused order; dropped rows stay after them.
+  if (opts.fuse === 'rrf') reorderedHead.splice(0, reorderedHead.length, ...fuseRerankedHead(reorderedHead, new Map(head.map((r, i) => [r, i]))));
   for (let i = 0; i < head.length; i++) {
     if (!seen.has(i)) reorderedHead.push(head[i]!);
   }

@@ -41,6 +41,8 @@ export const KNOB_DESCRIPTIONS: Record<keyof ModeBundle, string> = {
   // W3 confidence-gated reranking
   reranker_gate: 'Confidence-gated reranking: off, or shadow (grade before the reranker, stamp meta.rerank_gate, still rerank)',
   reranker_gate_min_gap: 'Rerank gate δ: cosine margin rank-1 needs over the best other page to count as a strong vector match (0..1, 0.05 default)',
+  reranker_fuse: 'Reranked-head order: replace (the reranker order) or rrf (fused with the first-pass order, k=60; score becomes the fused value)',
+  reranker_document: 'Reranker document: chunk (the chunk text) or titled (page title and document date before the chunk)',
   autocut_min_top: 'Weak-top floor — autocut no-ops when the top score is below this (0 disables)',
   // v0.36 cross-modal knobs (D3 registry)
   cross_modal_both_text_weight: "D6 'both'-mode RRF weight for text branch (0.6 default)",

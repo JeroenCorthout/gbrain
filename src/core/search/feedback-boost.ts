@@ -6,7 +6,8 @@
  *
  * It runs on the score that actually orders the list: the reranker's score on
  * the reranked head when the reranker ran (a boost before the cross-encoder
- * would be erased), the fused score otherwise. Raw `score` and `rerank_score`
+ * would be erased; the fused value under `search.reranker.fuse rrf`), the
+ * fused score otherwise. Raw `score` and `rerank_score`
  * are never modified, so autocut and evidence grading read the same values as
  * without feedback. The same read stamps each page's current content_hash for
  * answer recording. Fail-open: any error leaves the list untouched.
@@ -15,6 +16,7 @@ import type { BrainEngine } from '../engine.ts';
 import type { SearchResult } from '../types.ts';
 import { effectiveInfluence, loadFeedbackSettings } from '../feedback/settings.ts';
 import { NEUTRAL_WEIGHT } from '../feedback/store.ts';
+import { rerankOrderScore } from './rerank-fuse.ts';
 
 export interface FeedbackStageMeta {
   applied: boolean;
@@ -79,7 +81,7 @@ export async function applyFeedbackStage(
     const influence = effectiveInfluence(settings);
     if (influence <= 0) return results;
     const scoreOf = (r: SearchResult): number | undefined =>
-      opts.reranked ? r.rerank_score : r.score;
+      opts.reranked ? rerankOrderScore(r) : r.score;
     let boosted = 0;
     const keyed = results.map((r, index) => {
       const base = scoreOf(r);

@@ -32,6 +32,7 @@ import type { SearchResult, HybridSearchMeta } from '../types.ts';
 import type { DeliveryMeta } from './evidence-delivery.ts';
 import type { AutocutDecision } from './autocut.ts';
 import { formatTimingsSummary, type SearchTimingsMeta } from './stage-timings.ts';
+import { RERANK_FUSE_K } from './rerank-fuse.ts';
 
 /**
  * Format a single result with per-stage attribution. Returns a string
@@ -111,6 +112,10 @@ export function formatResultExplain(
   if (result.rerank_score !== undefined) {
     anyBoost = true;
     lines.push(`   • rerank score=${fmt(result.rerank_score)}`);
+  }
+  if (result.rerank_fuse) {
+    const f = result.rerank_fuse;
+    lines.push(`   • fused (${f.mode}, k=${RERANK_FUSE_K}) score=${fmt(f.score)} from rerank #${f.rerank_rank} + first-pass #${f.first_pass_rank}`);
   }
 
   if (!anyBoost) {
@@ -228,7 +233,8 @@ export interface ScoreDetails {
   base_score: number | null;
   /** Multiplicative factors applied after fusion, by stage (only stages that changed this row). */
   boosts: Record<string, { factor: number } & Record<string, unknown>>;
-  rerank: StageState<{ score: number; delta: number | null; pinned: boolean }>;
+  /** `fuse` is present only under `search.reranker.fuse rrf` (absent = `replace`): the order came from fusing the two 1-based ranks, and `score` stays the provider's. */
+  rerank: StageState<{ score: number; delta: number | null; pinned: boolean; fuse?: { mode: 'rrf'; k: number; score: number; rerank_rank: number; first_pass_rank: number } }>;
 }
 
 /**
@@ -265,7 +271,8 @@ export function buildScoreDetails(result: SearchResult): ScoreDetails {
   add('supersede', result.supersede_penalty, { superseded_by: result.superseded_by });
   add('exact_match', result.exact_match_boost);
   const rerank: ScoreDetails['rerank'] = result.rerank_score !== undefined
-    ? { state: 'applied', score: result.rerank_score, delta: result.reranker_delta ?? null, pinned: result.relational_pinned === true }
+    ? { state: 'applied', score: result.rerank_score, delta: result.reranker_delta ?? null, pinned: result.relational_pinned === true,
+      ...(result.rerank_fuse ? { fuse: { mode: result.rerank_fuse.mode, k: RERANK_FUSE_K, score: result.rerank_fuse.score, rerank_rank: result.rerank_fuse.rerank_rank, first_pass_rank: result.rerank_fuse.first_pass_rank } } : {}) }
     : { state: 'not_run', reason: 'reranker_off_or_outside_head' };
   return { final: result.score, arms, rrf, blend, base_score: result.base_score ?? null, boosts, rerank };
 }

@@ -1052,6 +1052,8 @@ export interface SearchResult {
   rerank_score?: number;
   /** System One: `rubric` rerank scores (autocut/CRAG ignore them); the S3 evidence probability when the gate acted. */
   rerank_score_kind?: 'rubric'; decide_evidence?: { p: number; clears: boolean };
+  /** `search.reranker.fuse rrf` only: the head's order value, 1/(60+rerank_rank) + 1/(60+first_pass_rank), at most 2/61; not on provider-score scale (search/rerank-fuse.ts). */
+  rerank_fuse?: { mode: 'rrf'; score: number; rerank_rank: number; first_pass_rank: number };
   /** System One S5 (on mode only): injection probability, and the flag that demoted it below clean same-class results. */
   injection_p?: number; injection_suspected?: true;
   /**
@@ -1150,7 +1152,7 @@ export interface SearchResult {
   image_page?: true;
   /** Multiplier the rank priors applied to this row's ordering score (search/rank-priors.ts); absent = 1. */
   rank_prior?: number;
-  /** The value a reranked list is ordered by: rerank_score times rank_prior (search/rank-priors.ts). */
+  /** The value a reranked list is ordered by: rerank_score (rerank_fuse.score under fuse rrf) times rank_prior (search/rank-priors.ts). */
   rank_score?: number;
   /** The fused score when the returned `score` was rewritten to follow rank order (search/score-contract.ts). */
   fused_score?: number;

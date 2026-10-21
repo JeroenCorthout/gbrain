@@ -51,6 +51,7 @@ import {
   type RerankGateMode,
 } from './crag.ts';
 import { DEFAULT_HIGH_COSINE_FLOOR } from './evidence.ts';
+import { DEFAULT_RERANK_DOCUMENT, DEFAULT_RERANK_FUSE, normalizeRerankDocument, normalizeRerankFuse, type RerankDocumentMode, type RerankFuseMode } from './rerank-fuse.ts';
 
 /**
  * Look up the `reranker.default_timeout_ms` declared by the resolved
@@ -226,6 +227,14 @@ export interface ModeBundle {
    * Override: `search.reranker.gate_min_gap` → bundle. knobsHash part `rrgg=`.
    */
   reranker_gate_min_gap: number;
+  /**
+   * Reranked-head order (rerank-fuse.ts): `replace` (every bundle) or `rrf`
+   * with the first-pass order. Override: `search.reranker.fuse`. knobsHash
+   * part `rrf=` only when not `replace`.
+   */
+  reranker_fuse: RerankFuseMode;
+  /** Reranker document (rerank-fuse.ts): `chunk` (every bundle) or `titled`. Override: `search.reranker.document`; knobsHash `rrd=` only when not `chunk`. */
+  reranker_document: RerankDocumentMode;
 
   // v0.36 cross-modal wave knobs (D2 + D3 + D6 + D8 + D13 + LLM-intent).
   // All three mode bundles default these to the same values — cross-modal
@@ -503,6 +512,8 @@ export const MODE_BUNDLES: Readonly<Record<SearchMode, Readonly<ModeBundle>>> = 
     evidence_cosine_floor: 0.8,
     reranker_gate: DEFAULT_RERANK_GATE,
     reranker_gate_min_gap: DEFAULT_RERANK_GATE_MIN_GAP,
+    reranker_fuse: DEFAULT_RERANK_FUSE,
+    reranker_document: DEFAULT_RERANK_DOCUMENT,
     // v0.36 cross-modal defaults (same across all modes — opt-in)
     cross_modal_both_text_weight: 0.6,
     cross_modal_both_image_weight: 0.4,
@@ -569,6 +580,8 @@ export const MODE_BUNDLES: Readonly<Record<SearchMode, Readonly<ModeBundle>>> = 
     evidence_cosine_floor: 0.8,
     reranker_gate: DEFAULT_RERANK_GATE,
     reranker_gate_min_gap: DEFAULT_RERANK_GATE_MIN_GAP,
+    reranker_fuse: DEFAULT_RERANK_FUSE,
+    reranker_document: DEFAULT_RERANK_DOCUMENT,
     // v0.36 cross-modal defaults (same across all modes — opt-in)
     cross_modal_both_text_weight: 0.6,
     cross_modal_both_image_weight: 0.4,
@@ -645,6 +658,8 @@ export const MODE_BUNDLES: Readonly<Record<SearchMode, Readonly<ModeBundle>>> = 
     evidence_cosine_floor: 0.8,
     reranker_gate: DEFAULT_RERANK_GATE,
     reranker_gate_min_gap: DEFAULT_RERANK_GATE_MIN_GAP,
+    reranker_fuse: DEFAULT_RERANK_FUSE,
+    reranker_document: DEFAULT_RERANK_DOCUMENT,
     // v0.36 cross-modal defaults (same across all modes — opt-in)
     cross_modal_both_text_weight: 0.6,
     cross_modal_both_image_weight: 0.4,
@@ -725,6 +740,8 @@ export interface SearchKeyOverrides {
   // W3 — confidence-gated reranking overrides.
   reranker_gate?: RerankGateMode;
   reranker_gate_min_gap?: number;
+  reranker_fuse?: RerankFuseMode;
+  reranker_document?: RerankDocumentMode;
   // v0.36 cross-modal overrides
   cross_modal_both_text_weight?: number;
   cross_modal_both_image_weight?: number;
@@ -791,6 +808,8 @@ export interface SearchPerCallOpts {
   // W3 — confidence-gated reranking per-call override (RERANK_GATE_MODES).
   reranker_gate?: RerankGateMode;
   reranker_gate_min_gap?: number;
+  reranker_fuse?: RerankFuseMode;
+  reranker_document?: RerankDocumentMode;
   // v0.36 cross-modal per-call overrides
   cross_modal_both_text_weight?: number;
   cross_modal_both_image_weight?: number;
@@ -908,6 +927,8 @@ export function resolveSearchMode(input: ResolveSearchModeInput): ResolvedSearch
     evidence_cosine_floor: pick('evidence_cosine_floor'),
     reranker_gate: pick('reranker_gate'),
     reranker_gate_min_gap: pick('reranker_gate_min_gap'),
+    reranker_fuse: pick('reranker_fuse'),
+    reranker_document: pick('reranker_document'),
     // v0.36 cross-modal knobs
     cross_modal_both_text_weight: pick('cross_modal_both_text_weight'),
     cross_modal_both_image_weight: pick('cross_modal_both_image_weight'),
@@ -1296,6 +1317,9 @@ export function knobsHash(
     // Collapse and rank priors (append-only, emitted only when turned off).
     ...(knobs.collapse === false ? ['col=0'] : []),
     ...(knobs.rank_priors === false ? ['rpr=0'] : []),
+    // Reranker fuse and document (append-only, emitted only when not the default).
+    ...(knobs.reranker_fuse && knobs.reranker_fuse !== DEFAULT_RERANK_FUSE ? [`rrf=${knobs.reranker_fuse}`] : []),
+    ...(knobs.reranker_document && knobs.reranker_document !== DEFAULT_RERANK_DOCUMENT ? [`rrd=${knobs.reranker_document}`] : []),
   ];
   // #5691 (append-only, no version bump): only a non-empty query prefix adds
   // a part, so every row written without one keeps its key.
@@ -1432,6 +1456,10 @@ export function loadOverridesFromConfig(
   if (rrg !== undefined) out.reranker_gate = rrg;
   const rrgg = normalizeRerankGateMinGap(get('search.reranker.gate_min_gap'));
   if (rrgg !== undefined) out.reranker_gate_min_gap = rrgg;
+  const rrf = normalizeRerankFuse(get('search.reranker.fuse'));
+  if (rrf !== undefined) out.reranker_fuse = rrf;
+  const rrd = normalizeRerankDocument(get('search.reranker.document'));
+  if (rrd !== undefined) out.reranker_document = rrd;
 
   // v0.36 cross-modal overrides (D3 registry)
   const cmbt = get('search.cross_modal.both_mode_text_weight');
@@ -1593,6 +1621,8 @@ export const KNOB_CONFIG_KEY: Readonly<Record<keyof ModeBundle, string>> = Objec
   evidence_cosine_floor: 'search.evidence_cosine_floor',
   reranker_gate: 'search.reranker.gate',
   reranker_gate_min_gap: 'search.reranker.gate_min_gap',
+  reranker_fuse: 'search.reranker.fuse',
+  reranker_document: 'search.reranker.document',
   cross_modal_both_text_weight: 'search.cross_modal.both_mode_text_weight',
   cross_modal_both_image_weight: 'search.cross_modal.both_mode_image_weight',
   image_query_text_refinement_weight: 'search.image_query.text_refinement_weight',

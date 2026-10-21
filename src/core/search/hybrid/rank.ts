@@ -328,6 +328,8 @@ export async function rerankAndPin(
   const reranked = rerankerOpts.enabled && !egressDenied
     ? await applyReranker(query, deduped, {
         ...(rerankerOpts as any),
+        fuse: resolvedMode.reranker_fuse,
+        document: resolvedMode.reranker_document,
         ...(s1?.effective === 'on' ? { timeoutMs: Math.max(1, Math.min(rerankerOpts.timeoutMs ?? resolvedMode.reranker_timeout_ms, req.decide!.budget.remaining())) } : {}),
         onSkip: (reason: RerankSkipReason) => { s1Failure = reason; pushDegraded(degraded, 'reranker_skipped', reason); },
         onFailure: (reason: RerankFailedReason) => { s1Failure = reason; pushDegraded(degraded, 'rerank_failed', reason); },

@@ -2,7 +2,8 @@
  * Rank priors (#7155, #7162, #6058, #7153): small, query-gated multipliers on
  * a row's ordering score, applied after the reranker so they shape the order
  * the caller reads. In a reranked list the ordering score is the rerank score
- * (stamped `rank_score` = rerank_score x prior) and only the rerank-scored
+ * (stamped `rank_score` = rerank_score x prior; under `search.reranker.fuse
+ * rrf` the fused value, rerank_fuse.score x prior) and only the rerank-scored
  * rows reorder among themselves; otherwise `score` itself is multiplied and
  * the list re-sorted. Every prior needs a competitor of the preferred kind
  * in the same list, so a list with nothing to prefer is unchanged.
@@ -19,6 +20,7 @@
  * `search.rank_priors false` turns them off.
  */
 import type { SearchResult } from '../types.ts';
+import { rerankOrderScore } from './rerank-fuse.ts';
 
 export const PERSON_PRIOR = 0.85;
 export const OCR_PRIOR = 0.6;
@@ -97,9 +99,9 @@ export function applyRankPriors(rows: SearchResult[], query: string): SearchResu
   for (let i = 0; i < stamped.length; i++) {
     if (priors[i] === 1) continue;
     if (!reranked) stamped[i] = { ...stamped[i], score: stamped[i].score * priors[i] };
-    else if (Number.isFinite(stamped[i].rerank_score)) stamped[i] = { ...stamped[i], rank_score: stamped[i].rerank_score! * priors[i] };
+    else if (Number.isFinite(stamped[i].rerank_score)) stamped[i] = { ...stamped[i], rank_score: rerankOrderScore(stamped[i])! * priors[i] };
   }
-  const value = (r: SearchResult) => (reranked ? r.rank_score ?? r.rerank_score! : r.score);
+  const value = (r: SearchResult) => (reranked ? r.rank_score ?? rerankOrderScore(r)! : r.score);
   // Pinned rows and (in a reranked list) rows without a rerank score keep their slots.
   const slots = stamped.map((r, i) => i).filter(i => !stamped[i].relational_pinned && (!reranked || Number.isFinite(stamped[i].rerank_score)));
   // Unchanged rows keep their relative order (feedback and any later adjustment included); a demoted row moves

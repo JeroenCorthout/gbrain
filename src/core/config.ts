@@ -1339,6 +1339,7 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = [
   // W3: confidence-gated reranking (mode.ts reads; `off` | `shadow`, and δ in [0, 1]).
   'search.reranker.gate',
   'search.reranker.gate_min_gap',
+  'search.reranker.fuse', 'search.reranker.document', // reranked-head order and reranker document (mode.ts reads; `replace` | `rrf`, `chunk` | `titled`)
   'search.floor_ratio',
   'search.title_boost',
   'search.evidence_cosine_floor',
