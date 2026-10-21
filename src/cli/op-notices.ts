@@ -42,11 +42,12 @@ export function captureRetrievalNotices(
  * reach stdout (a bare array has nowhere to put them); a local run's fix renders as a command (next + argv).
  * Without the flag, or when the run recorded no diagnosis, the rows stay a bare array.
  */
-export function withExplainTargetJson(params: Record<string, unknown>, meta: Record<string, unknown> | null | undefined, rows: unknown[]): unknown {
+export function withExplainTargetJson(params: Record<string, unknown>, meta: Record<string, unknown> | null | undefined, doc: unknown): unknown {
   const diag = params.explain_target ? meta?.explain_target as (Record<string, unknown> & { fix?: Action }) | undefined : undefined;
-  if (!diag || typeof diag !== 'object') return rows;
+  if (!diag || typeof diag !== 'object') return doc;
   const { fix, ...rest } = diag;
-  return { results: rows, explain_target: fix && typeof fix === 'object' && 'why' in fix ? { ...rest, fix: renderAction(fix, cliRenderContext()) } : rest };
+  const explain_target = fix && typeof fix === 'object' && 'why' in fix ? { ...rest, fix: renderAction(fix, cliRenderContext()) } : rest;
+  return Array.isArray(doc) ? { results: doc, explain_target } : { ...(doc as Record<string, unknown>), explain_target };
 }
 
 /** Drain the captured notices into the result (`--json` objects) and/or a stderr string. */

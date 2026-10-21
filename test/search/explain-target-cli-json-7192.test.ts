@@ -7,6 +7,7 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { captureRetrievalMeta, formatResult, resetRetrievalMetaForTests } from '../../src/cli/main.ts';
 import { diagnoseTrace, TargetTrace } from '../../src/core/search/explain-target.ts';
+import { withExplainTargetJson } from '../../src/cli/op-notices.ts';
 import type { SearchResult } from '../../src/core/types.ts';
 
 const row = (slug: string, score: number) => ({ slug, score, page_id: 1, title: slug, type: 'note', chunk_text: 't', chunk_source: 'compiled_truth', stale: false, source_id: 'default' }) as SearchResult;
@@ -42,6 +43,11 @@ describe('#7192 explain_target in CLI --json', () => {
     const out = JSON.parse(formatResult('search', [], { json: true, explain_target: 'notes/x' }));
     expect(out.results).toEqual([]);
     expect(out.explain_target.fix).toMatchObject({ next: 'run', argv: ['gbrain', 'query', 'q', '--expand'] });
+  });
+
+  test('with --timings the diagnosis joins the timings document instead of replacing it', () => {
+    const doc = withExplainTargetJson({ explain_target: 'notes/x' }, { explain_target: { code: 'target_returned', rank: 1 } }, { results: [], timings_ms: { total: 5 } });
+    expect(doc).toEqual({ results: [], timings_ms: { total: 5 }, explain_target: { code: 'target_returned', rank: 1 } });
   });
 
   test('without --explain-target the --json output is still a bare array', () => {

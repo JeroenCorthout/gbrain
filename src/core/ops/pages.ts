@@ -34,6 +34,7 @@ import { LIST_PAGES_DESCRIPTION, CAPTURE_DESCRIPTION } from '../operations-descr
 import { listPagesPagination, listingTruncatedNotice } from './list-pages-pagination.ts';
 import { OperationError, opError, type Operation, type OperationContext } from './contract.ts';
 import { invalidParam, readFix } from './op-fix.ts';
+import { WHERE_PARAM, whereOpParam } from './where-param.ts';
 import { isDatetimeInputError } from '../utils.ts';
 import { rethrowNamingRevisionSource } from './put-page-revision-source.ts';
 import {
@@ -518,6 +519,8 @@ const list_pages: Operation = {
       enum: [...LIST_PAGES_SORT_VALUES],
     },
     include_deleted: { type: 'boolean', description: 'Include soft-deleted pages.' },
+    slug_prefix: { type: 'string', description: "Literal slug prefix, e.g. 'deals/'.", fullSurfaceOnly: true },
+    where: WHERE_PARAM,
     // #4400 — list_pages had no source-scoping param at all: unlike
     // search/query it silently ignored any caller-supplied source and always
     // fell back to whatever federatedSearchScope() resolved from ctx alone,
@@ -611,6 +614,8 @@ const list_pages: Operation = {
       sort,
       excludePrivate,
       listColumnsOnly: true,
+      where: whereOpParam(ctx, 'list_pages', p.where),
+      ...(typeof p.slug_prefix === 'string' && p.slug_prefix ? { slugPrefix: p.slug_prefix } : {}),
       ...scope,
     }).catch((e: unknown) => {
       // #6103: an updated_after the database cannot parse is the caller's input, not a server fault.

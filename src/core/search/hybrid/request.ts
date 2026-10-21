@@ -236,6 +236,8 @@ export async function resolveHybridRequest(
     // type filter to SQL level so the limit budget goes to candidate-typed
     // pages instead of being eaten by note/transcript/article pages.
     types: opts?.types,
+    // #7159: frontmatter equality, pushed into the same legs.
+    where: opts?.where,
     // Exact-slug and prefix exclusions are caller contract too (grade-takes
     // passes exclude_slugs; SDK callers pass prefix excludes); dropping them
     // here silently ignored them on every arm.

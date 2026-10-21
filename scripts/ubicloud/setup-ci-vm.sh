@@ -101,7 +101,7 @@ fi
   install_system
   sudo docker network create gbrain-ci >/dev/null 2>&1 || true
   for i in $(seq 1 "$SLOTS"); do
-    sudo docker run -d --name "pg-$i" --network gbrain-ci \
+    sudo docker run -d --name "pg-$i" --network gbrain-ci --shm-size=1g \
       -p "127.0.0.1:$((15432 + i)):5432" \
       -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD="$PG_PASSWORD" -e POSTGRES_DB=gbrain_test \
       "$PG_IMAGE" -c fsync=off -c synchronous_commit=off -c full_page_writes=off >/dev/null

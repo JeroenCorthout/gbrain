@@ -35,6 +35,7 @@ import type { BrainEngine } from '../core/engine.ts';
 import { OperationError, type OperationMeta } from '../core/ops/contract.ts';
 import { OPERATION_MANIFEST, cliOps } from './op-manifest.ts';
 import { loadOperation } from '../core/operation-load.ts';
+import { openRequestConfigSnapshot, withoutRequestConfigSnapshot } from '../core/config-snapshot.ts';
 import { resolveSourceIdEngineFree } from '../core/source-resolver.ts';
 import { installCliRoutingFor } from './fix-routing-provider.ts';
 import { formatVolunteeredPage } from '../core/context/volunteer.ts';
@@ -49,7 +50,7 @@ import { cliCommandOf, exitCliError, exitOnRepairFailed, unknownFlagError, usage
 import type { Notice } from '../core/agent-output.ts';
 import { opError, opOwnsSource } from '../core/ops/contract.ts';
 import { PAGE_MAX_BYTES } from '../core/page-size-policy.ts';
-import { opParamValue } from './op-param-values.ts';
+import { opFlagValue, opParamValue, opStructuredValue } from './op-param-values.ts';
 import { SEGMENTED_STREAMED, formatGetPage, printPagedPage, remoteErrorCode, streamSegmentedGet, wantsWholePage } from './page-render.ts';
 import { parseGlobalFlags, setCliOptions, getCliOptions } from '../core/cli-options.ts';
 import { runCliPreflight } from '../core/cli-preflight.ts';
@@ -77,6 +78,7 @@ import {
 } from './command-table.ts';
 import { formatRememberResult } from './remember-format.ts';
 import { applyCliOpNotices, captureCapacityNotices, captureOpNotice, captureRetrievalNotices, withExplainTargetJson } from './op-notices.ts';
+import { searchTimingsDocument, searchTimingsLine, timeCliPhase } from './search-timings.ts';
 
 // db-availability loop: best-effort brain-id for the GBRAIN_DB_ACCESS marker,
 // so a MOUNT's DB failure reads as `brain=<id>` instead of masquerading as a
@@ -619,7 +621,7 @@ async function runSharedOperation(command: string, subArgs: string[], cliOpts: C
   }
 
   // No live serve owns the selected brain; connect through the normal lock path.
-  const engine = await connectEngine({ oneShotRead: op.scope === 'read' });
+  const engine = await timeCliPhase('connect', () => connectEngine({ oneShotRead: op.scope === 'read' }));
   // #2084: the teardown contract (bounded drain of every background-work sink,
   // bounded disconnect, computed-deadline backstop) lives in finishCliTeardown
   // — see src/core/cli-force-exit.ts for the full design. The hard-deadline
@@ -640,6 +642,7 @@ async function runSharedOperation(command: string, subArgs: string[], cliOpts: C
   // timeout the abandoned handler may hold ref'd sockets — harmless here,
   // because the import.meta.main seam exits explicitly on every one-shot path.
   const READ_OP_TIMEOUT_MS = 180_000;
+  const configSnapshot = op.scope === 'read' ? openRequestConfigSnapshot(engine) : null;
 
   try {
     const { withTimeout, OperationTimeoutError } = await import('../core/timeout.ts');
@@ -661,7 +664,7 @@ async function runSharedOperation(command: string, subArgs: string[], cliOpts: C
     let ctx: Awaited<ReturnType<typeof makeContext>>;
     try {
       ctx = await withTimeout(
-        makeContext(engine, params, op),
+        timeCliPhase('context', () => (configSnapshot ? configSnapshot.run(() => makeContext(engine, params, op)) : makeContext(engine, params, op))),
         wallclockMs,
         `gbrain ${command}: context`,
       );
@@ -677,7 +680,7 @@ async function runSharedOperation(command: string, subArgs: string[], cliOpts: C
     if (op.scope === 'read') {
       try {
         rawResult = await withTimeout(
-          op.handler(ctx, params).catch(async (e: unknown) => { // large pages: a segmented page streams to stdout
+          configSnapshot!.run(() => op.handler(ctx, params)).catch(async (e: unknown) => { // large pages: a segmented page streams to stdout
             if (op.name === 'get_page' && await streamSegmentedGet(engine, params, e, writeStdoutFinal)) return SEGMENTED_STREAMED;
             throw e;
           }),
@@ -742,6 +745,7 @@ async function runSharedOperation(command: string, subArgs: string[], cliOpts: C
     // 1s per-sink drain budget: read paths with no pending work pay the ~0ms
     // fast path; capture/import that DO enqueue pay up to 1s (+ facts shutdown
     // grace) while in-flight Haiku finishes (#1762 drain-before-disconnect).
+    configSnapshot?.close();
     await finishCliTeardown({ engine, drainTimeoutMs: 1000 });
   }
 }
@@ -797,7 +801,7 @@ async function runThinClientRouted(
 
   try {
     const { callRemoteTool, unpackToolResult } = await import('../core/mcp-client.ts');
-    const raw = await callRemoteTool(cfg, op.name, params, {
+    const raw = await timeCliPhase('remote', () => callRemoteTool(cfg, op.name, params, {
       timeoutMs,
       signal: sigintController.signal,
       ...(op.mutating ? { writeWaitMs: currentCliWriteWait().waitMs } : {}),
@@ -805,7 +809,7 @@ async function runThinClientRouted(
       if (op.name !== 'get_page' || remoteErrorCode(e) !== 'page_too_large_for_inline' || !wantsWholePage(params)) throw e;
       await printPagedPage(async p => unpackToolResult(await callRemoteTool(cfg, 'get_page', p, { timeoutMs, signal: sigintController.signal })), params, writeStdoutFinal);
       return null;
-    });
+    }));
     if (raw === null) return;
     // T15/FOV-1: lift the server's retrieval meta off the envelope before
     // unpacking (old servers lack _meta — capture is simply skipped).
@@ -1064,7 +1068,7 @@ export function parseOpArgs(op: Operation, args: string[]): Record<string, unkno
         const def = op.params[key];
         if (def) {
           const raw = arg.slice(eq + 1);
-          params[key] = def.type === 'boolean' ? raw !== 'false' : opParamValue(op, key, def, raw);
+          params[key] = def.type === 'boolean' ? raw !== 'false' : opFlagValue(op, key, def, raw, params[key]);
           continue;
         }
       }
@@ -1111,8 +1115,8 @@ export function parseOpArgs(op: Operation, args: string[]): Record<string, unkno
         // positionally, then --content clobbered it). Warn to stderr; when
         // the discarded value names an existing file, point at capture --file.
         const prevValue = params[key];
-        params[key] = opParamValue(op, key, paramDef, args[++i]);
-        if (prevValue !== undefined && prevValue !== params[key]) {
+        params[key] = opFlagValue(op, key, paramDef, args[++i], prevValue);
+        if (prevValue !== undefined && prevValue !== params[key] && !paramDef?.cliKeyValue) {
           let fileHint = '';
           try {
             if (typeof prevValue === 'string' && prevValue && existsSync(prevValue)) {
@@ -1132,12 +1136,7 @@ export function parseOpArgs(op: Operation, args: string[]): Record<string, unkno
   }
 
   for (const [key, def] of Object.entries(op.params)) {
-    if ((def.type !== 'object' && def.type !== 'array') || typeof params[key] !== 'string') continue;
-    let value: unknown;
-    const jsonError = () => usageError(`--${key.replace(/_/g, '-')} requires a JSON ${def.type}.`, `Pass JSON, e.g. --${key.replace(/_/g, '-')} '${def.type === 'array' ? '["a","b"]' : '{"key":"value"}'}'.`);
-    try { value = JSON.parse(params[key] as string); } catch { throw jsonError(); }
-    if (def.type === 'array' ? !Array.isArray(value) : value === null || typeof value !== 'object' || Array.isArray(value)) throw jsonError();
-    params[key] = value;
+    if (params[key] !== undefined) params[key] = opStructuredValue(key, def, params[key]);
   }
   return params;
 }
@@ -1667,12 +1666,13 @@ export function formatResult(
         if (incompleteNotice) process.stderr.write(incompleteNotice);
         // --explain --json: the same per-row score_details object MCP `explain: true` returns.
         if (getCliOptions().explain) for (const r of results) r.score_details ??= require('../core/search/explain-formatter.ts').buildScoreDetails(r);
-        return JSON.stringify(withExplainTargetJson(params, meta, answerId ? results.map(r => ({ ...r, answer_id: answerId })) : results), null, 2) + '\n';
+        return JSON.stringify(withExplainTargetJson(params, meta, searchTimingsDocument(answerId ? results.map(r => ({ ...r, answer_id: answerId })) : results, meta)), null, 2) + '\n';
       }
       // T15/FOV-1: an empty result names its cause when the pipeline told us
       // (degradation stages from _meta.retrieval / the local meta capture) —
       // a bare "No results." was indistinguishable from a degraded pipeline.
       const cliOpts = getCliOptions();
+      process.stderr.write(searchTimingsLine(meta));
       const timingsLine = cliOpts.explain && meta?.timings ? require('../core/search/stage-timings.ts').formatTimingsSummary(meta.timings) + '\n' : '';
       if (results.length === 0) return `No results.${describeEmptyRetrieval()}\n` + timingsLine;
       // v0.40.4 — --explain switches to per-stage attribution formatter.
@@ -2840,7 +2840,7 @@ function migrationsNotice(why: string): Notice {
 }
 
 /** Startup after the probe-only connect: migrations, retired-marker cleanup, DB-plane config merge. Mounts: none. */
-async function completeEngineStartup(engine: BrainEngine): Promise<void> {
+async function completeEngineStartup(engine: BrainEngine, opts: EngineConnectOptions = {}): Promise<void> {
   const config = SELECTED_CONFIG_BY_ENGINE.get(engine);
   if (!config || MOUNT_ENGINES.has(engine)) return;
 
@@ -2855,7 +2855,7 @@ async function completeEngineStartup(engine: BrainEngine): Promise<void> {
     // migrate.ts loads every migration module; only a brain that is behind needs it.
     const { hasPendingMigrations } = await import('../core/migrate-pending.ts');
     const result = await hasPendingMigrations(engine)
-      ? await (await import('../core/migrate.ts')).tryRunPendingMigrations(engine)
+      ? await withoutRequestConfigSnapshot(async () => (await import('../core/migrate.ts')).tryRunPendingMigrations(engine))
       : { status: 'not_needed' as const };
     if (result.status === 'persistent') {
       writeCliNotice(migrationsNotice('Schema migrations are pending: another process attempted them but they did not complete within the retry window (usually transient). If it persists, check `gbrain doctor` for stale advisory locks and `gbrain jobs supervisor status` for crashed migration workers.'));
@@ -2870,8 +2870,8 @@ async function completeEngineStartup(engine: BrainEngine): Promise<void> {
     writeCliNotice(migrationsNotice(`Schema probe failed (unexpected): ${(err as Error).message}`));
   }
 
-  // #5628: drop this host's markers of a retired managed epoch before any filesystem guard check.
-  try { await (await import('../core/persistence/deactivation.ts')).cleanupRetiredManagedMarkers(engine); } catch { /* status reports pending markers */ }
+  // #5628: drop this host's markers of a retired managed epoch before any filesystem guard check. A one-shot read runs no guard check.
+  if (!opts.oneShotRead) try { await (await import('../core/persistence/deactivation.ts')).cleanupRetiredManagedMarkers(engine); } catch { /* status reports pending markers */ }
 
   // v0.27.1 (F3 fix): re-merge DB-plane config now that the engine is up.
   // Flags like `embedding_multimodal` are user-mutable via `gbrain config set`
@@ -2942,6 +2942,9 @@ const OP_HELP_EXAMPLES: Record<string, string[]> = {
     'gbrain backlinks companies/acme-example --source-id business',
     'gbrain backlinks companies/acme-example --all-sources --json',
   ],
+  search: ['gbrain search "acme-example pricing" --types company,deal --where stage=seed  # --where key=value, repeat for AND; key=a,b matches any', 'gbrain search "acme-example pricing" --json --timings  # {results, timings_ms, cost}'],
+  query: ['gbrain query "what changed at acme-example" --types meeting --since 2026-01-01 --until 2026-03-31', 'gbrain query "open deals" --where stage=seed,series-a --json --timings'],
+  list_pages: ['gbrain list --type deal --slug-prefix deals/ --where stage=seed --updated-after 2026-01-01 --sort updated_asc'],
   // #6255: the receipt command's routing flags and states.
   get_write_request: ['gbrain write-request --brain host -- <request_id> [--json]  # queued/running: pending, read again after retry_after_ms; committed/conflict/failed/cancelled: final'],
   traverse_graph: [

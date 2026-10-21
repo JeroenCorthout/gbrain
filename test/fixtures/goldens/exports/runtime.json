@@ -538,6 +538,7 @@
         "sdkInvocationUsage",
         "withAIAttribution",
         "withAIInvocationGuard",
+        "withAIInvocationMeter",
         "withAIInvocationPreflight"
       ],
       "./backoff": [

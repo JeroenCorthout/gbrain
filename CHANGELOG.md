@@ -10,6 +10,54 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.334.0] - 2026-10-21
+
+**Agents can now filter search and page listings by frontmatter, pass `--types` as plain words, and see what each search cost in time and money.** Without these, agents fell back to grep and raw SQL to answer "which company pages mention this" or "what did I touch this week". Retrieval now answers those questions directly and says where the time went.
+
+### What changed
+
+| Situation | Before | Now |
+|---|---|---|
+| `gbrain search q --types company` or `--types person,company` | failed with "--types requires a JSON array" | a bare value or a comma list works; a JSON array still works (#7173) |
+| Filter by a frontmatter field | not possible from search, query or `list_pages` | `--where key=value` (repeat to AND keys; `key=a,b` matches any value), MCP `where: { key: value \| [values] }`. The existing GIN index serves it; no migration (#7159) |
+| List pages under a slug prefix | not possible | `list_pages --slug-prefix <prefix>` (#7159) |
+| A search names a page type or a time period without filtering on it | no hint | one `search_filter_hint` info notice with the filtered command; results are unchanged |
+| What a search or query cost | not reported | `_meta.retrieval.cost` lists the embedding, rerank, chat, expansion and decide calls with tokens and USD (#7158) |
+| Where a CLI search spent its time | not reported | `--json --timings` prints `{results, timings_ms, cost}` with startup, connect, context and stage timings. Plain `--json` still prints the bare array |
+| A query-expansion call | wrote no usage row | writes a `chat_usage_log` row (phase `expansion`); `think` synthesis records phase `think` (#7176) |
+
+Nothing changes on upgrade. Every new parameter is optional, and existing `--json` output keeps its shape.
+
+### For contributors
+
+- A per-request `AsyncLocalStorage` meter (`withAIInvocationMeter`) keeps cost from concurrent MCP requests separate.
+- Frontmatter `where` keys must be plain identifiers, and values travel only as bound JSON (8 keys, 32 values, 256 characters).
+
+## [0.60.333.0] - 2026-10-21
+
+**`gbrain doctor` has a quick tier for agents on large brains, grades checks that ran out of budget honestly, and stops counting sync-failure ledger rows nothing can retry. One-shot CLI reads also start faster behind a pooler.** On a large brain a full doctor run used to blow its budget and report a wall of unknowns. Agents read those as failures and repeated the run. `gbrain doctor --tier quick` answers the questions an agent gates on within 10 seconds. Every other check comes from its last known result, with the result's age.
+
+### What changed
+
+| Situation | Before | Now |
+|---|---|---|
+| An agent health-checks a large brain | a full `gbrain doctor` blew its budget and reported many checks as unknown | `gbrain doctor --tier quick` runs the ops sections, schema version, sync failures, queue health and partial embeddings under a 10 s deadline. Every other check is reported from its last known result with its age (`details.last_known`, `last_known_sections`) |
+| A brain-wide doctor check runs out of its budget | reported unknown | reports its last result while that result is under 24 h old. Checks with no recent result are named in one `doctor_last_known` warning, and a Postgres brain queues one background `doctor-refresh` job per hour to measure them |
+| A check whose count hit its bound, or a managed-guard check on columns it can't read | graded as a failure or a pass it hadn't earned | graded by what it measured: a capped count says it is capped and names the bound, and an unreadable guard says unknown (#7145) |
+| Doctor lists terminal write failures | in arrival order, so old rows hid live blockers | active blockers first, then the unresolved pile, then historical rows (#7146) |
+| `gbrain doctor --only sync_failures` | reported that durable sync state was unavailable | connects the brain and runs the check (#7143) |
+| The sync-failure ledger holds rows for an unregistered source or a deleted file | counted as failures nothing could clear | set aside and counted separately. A process under `bun test` with neither `GBRAIN_SYNC_FAILURES_DIR` nor `GBRAIN_HOME` set writes a scratch ledger (#7144) |
+| A one-shot read (`search`, `query`, `get`) behind a transaction-mode pooler | printed the prepared-statements banner every time and re-read config per key | prints the banner once per database per gbrain home, reads config once for startup and once for the operation, and skips write-only startup cleanup (#7147) |
+
+On a 5,000-page test brain behind PgBouncer in transaction mode, a cold `gbrain search` went from 115 to 69 database round trips (p50 1,271 ms to 576 ms), `query` from 127 to 81 and `get` from 22 to 15. Per-key config reads went from 32 to 0.
+
+Nothing changes on upgrade. `--tier quick` is opt-in, and the default doctor run is unchanged apart from recording last known results.
+
+### For contributors
+
+- The CI Postgres containers (Ubicloud gate VMs, `docker-compose.ci.yml`, the `e2e.yml` services) get a 1 GiB `/dev/shm`. With Docker's 64 MiB default, a parallel HNSW build's 64 MiB dynamic shared memory segment failed with 53100 "No space left on device" whenever another parallel operation held shared memory.
+- The #7145 Postgres arms run from `test/e2e/*-postgres.test.ts` wrappers, not `test/postgres-unit-arms.txt`.
+
 ## [0.60.332.0] - 2026-10-21
 
 **`search` and `query` stop spending result slots on copies of one page, and `--explain` shows both retrieval arms again.** The same page in two sources, a merge stub beside its target, and the summary and transcript of one document each used to take their own slot in the top 10. They now fold into the best-ranked row, which lists what it absorbed in `collapsed`.

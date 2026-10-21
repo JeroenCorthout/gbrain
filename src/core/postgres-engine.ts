@@ -140,6 +140,7 @@ import * as sourcesImpl from './engine-sql/sources.ts';
 import * as filesImpl from './engine-sql/files.ts';
 import type { ChunkWindowRequest, ChunkWindowOpts, ChunkWindowPage } from './search/chunk-windows.ts';
 import type { KeywordPageWindow } from './search/keyword-statement.ts';
+import { frontmatterWhereSql } from './search/frontmatter-where.ts';
 import type { EmbeddingState, EmbeddingStateCounts, EmbeddingStateRow } from './embedding-state.ts';
 import * as chunksImpl from './engine-sql/chunks.ts';
 import * as pageBodyImpl from './engine-sql/page-body.ts';
@@ -1039,6 +1040,7 @@ export class PostgresEngine implements BrainEngine {
       params.push(opts.types);
       typesClause = `AND p.type = ANY($${params.length}::text[])`;
     }
+    typesClause += frontmatterWhereSql('p', opts?.where, json => `$${params.push(json)}`);
     let excludeSlugsClause = '';
     if (excludeSlugs?.length) {
       params.push(excludeSlugs);
@@ -1258,6 +1260,7 @@ export class PostgresEngine implements BrainEngine {
       params.push(opts.types);
       typesClause = `AND p.type = ANY($${params.length}::text[])`;
     }
+    typesClause += frontmatterWhereSql('p', opts?.where, json => `$${params.push(json)}`);
     let excludeSlugsClause = '';
     if (excludeSlugs?.length) {
       params.push(excludeSlugs);

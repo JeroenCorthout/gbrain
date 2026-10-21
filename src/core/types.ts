@@ -398,6 +398,8 @@ export interface PageFilters {
    * read none of those fields (list_pages).
    */
   listColumnsOnly?: boolean;
+  /** #7159: frontmatter equality (search/frontmatter-where.ts). */
+  where?: import('./search/frontmatter-where.ts').FrontmatterWhere;
 }
 
 /** v0.26.5 — opts for getPage / softDeletePage / restorePage. */
@@ -1273,6 +1275,8 @@ export interface SearchOpts extends PageReadPolicy {
    * entity-only search reuses the parameter.
    */
   types?: PageType[];
+  /** #7159: frontmatter equality, pushed into every SQL leg (search/frontmatter-where.ts). */
+  where?: import('./search/frontmatter-where.ts').FrontmatterWhere;
   exclude_slugs?: string[];
   /**
    * Slug-prefix excludes — additive over DEFAULT_HARD_EXCLUDES (test/,

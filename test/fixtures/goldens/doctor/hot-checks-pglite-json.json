@@ -609,6 +609,18 @@
               "docs": "docs/guides/troubleshooting.md#terminal-write-failures",
               "historical_rows": 0,
               "new_last_24h": 0,
+              "ranked": {
+                "blocking": [],
+                "historical": {
+                  "rows": 0
+                },
+                "unresolved": {
+                  "group_by": [],
+                  "groups": [],
+                  "pages": 0,
+                  "rows": 0
+                }
+              },
               "sources": [],
               "spike": {
                 "daily_7d": [
@@ -995,6 +1007,7 @@
           {
             "category": "ops",
             "details": {
+              "columns": [],
               "extra_columns": [],
               "page_child_source_columns": [],
               "runbook": "docs/guides/write-refusals.md#managed-guard-page-children"
@@ -2090,6 +2103,11 @@
           },
           {
             "category": "brain",
+            "details": {
+              "count": 18,
+              "exact": true,
+              "partial": false
+            },
             "elapsed_ms": "<volatile>",
             "fix_unavailable_reason": "unstructured",
             "message": "18 frontmatter issue(s). notes: 17 (YAML_PARSE=8, EMPTY_FRONTMATTER=1, MISSING_CLOSE=2, NESTED_QUOTES=1, NON_STRING_FIELD=2, NULL_BYTES=2, SLUG_MISMATCH=1); plain: 1 (YAML_PARSE=1). Fix: gbrain repair frontmatter --source <id> previews the line fix for every file it can repair (and names the manual fix for the rest, such as a missing opening ---); on an unmanaged checkout gbrain frontmatter validate <source-path> --fix applies the same safe fixes",
@@ -5044,6 +5062,18 @@
               "docs": "docs/guides/troubleshooting.md#terminal-write-failures",
               "historical_rows": 0,
               "new_last_24h": 0,
+              "ranked": {
+                "blocking": [],
+                "historical": {
+                  "rows": 0
+                },
+                "unresolved": {
+                  "group_by": [],
+                  "groups": [],
+                  "pages": 0,
+                  "rows": 0
+                }
+              },
               "sources": [],
               "spike": {
                 "daily_7d": [
@@ -5430,6 +5460,7 @@
           {
             "category": "ops",
             "details": {
+              "columns": [],
               "extra_columns": [],
               "page_child_source_columns": [],
               "runbook": "docs/guides/write-refusals.md#managed-guard-page-children"
@@ -6525,6 +6556,11 @@
           },
           {
             "category": "brain",
+            "details": {
+              "count": 20,
+              "exact": true,
+              "partial": false
+            },
             "elapsed_ms": "<volatile>",
             "fix_unavailable_reason": "unstructured",
             "message": "20 frontmatter issue(s). notes: 19 (YAML_PARSE=9, EMPTY_FRONTMATTER=1, NESTED_QUOTES=2, MISSING_CLOSE=2, NON_STRING_FIELD=2, NULL_BYTES=2, SLUG_MISMATCH=1); plain: 1 (YAML_PARSE=1). Fix: gbrain repair frontmatter --source <id> previews the line fix for every file it can repair (and names the manual fix for the rest, such as a missing opening ---); on an unmanaged checkout gbrain frontmatter validate <source-path> --fix applies the same safe fixes",
