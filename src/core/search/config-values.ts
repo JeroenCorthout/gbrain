@@ -8,6 +8,7 @@ import { CJK_KEYWORD_DEADLINE_DEFAULT_MS, CJK_KEYWORD_DEADLINE_KEY, cjkKeywordDe
 import { AUTO_PACKING_CONFIG_KEY, DEFAULT_AUTO_PACKING, autoPackingValueProblem } from './evidence-packing.ts';
 import { DEFAULT_LONG_PAGE_MIN_CHARS, LONG_PAGE_MIN_CHARS_CONFIG_KEY, LONG_PAGE_UNIT_CONFIG_KEY, longPageMinCharsValueProblem, longPageUnitValueProblem } from './evidence-delivery.ts';
 import { DIVERSE_POOL_DEPTH_KEY, diversePoolDepthValueProblem } from './diverse-pool.ts';
+import { EVIDENCE_RESOLVE_DATES_KEY, resolveDatesValueProblem } from './evidence-relative-dates.ts';
 
 interface SearchValueRule {
   problem: (value: string) => string | null;
@@ -22,6 +23,7 @@ export const SEARCH_VALUE_RULES: Readonly<Record<string, SearchValueRule>> = {
   [LONG_PAGE_UNIT_CONFIG_KEY]: { problem: longPageUnitValueProblem, example: 'section' },
   [LONG_PAGE_MIN_CHARS_CONFIG_KEY]: { problem: longPageMinCharsValueProblem, example: String(DEFAULT_LONG_PAGE_MIN_CHARS) },
   [DIVERSE_POOL_DEPTH_KEY]: { problem: diversePoolDepthValueProblem, example: '100' },
+  [EVIDENCE_RESOLVE_DATES_KEY]: { problem: resolveDatesValueProblem, example: 'true' },
 };
 
 /** The refusal for an invalid value of a validated `search.*` key, or null. */

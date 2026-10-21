@@ -10,6 +10,7 @@ import { describe, expect, test } from 'bun:test';
 import type { SearchResult } from '../src/core/types.ts';
 import { countEvidenceTokens, DEFAULT_AUTO_PACKING, deliverEvidence, type EvidencePlan } from '../src/core/search/evidence-delivery.ts';
 import { resolveRelativeDatesInTurns, shiftOffset } from '../src/core/search/evidence-relative-dates.ts';
+import { searchConfigValueRefusal } from '../src/core/search/config-values.ts';
 
 const DAY = '2023-05-28'; // a Sunday
 const r = (s: string, day: string | null = DAY) => resolveRelativeDatesInTurns(s, day).text;
@@ -68,6 +69,13 @@ describe('resolveRelativeDatesInTurns', () => {
     expect(shiftOffset(19, out.insertions, false)).toBe(19);
     expect(shiftOffset(19, out.insertions, true)).toBe(32);
     expect(shiftOffset(34, out.insertions, false)).toBe(47);
+  });
+});
+
+describe('config set validation', () => {
+  test('only boolean words are accepted; a value the reader would ignore is refused', () => {
+    for (const v of ['true', 'false', 'on', 'off', '1', '0', 'yes', 'no', 'TRUE']) expect(searchConfigValueRefusal('search.evidence_resolve_dates', v)).toBeNull();
+    for (const v of ['enabled', 'disable', '', '2']) expect(searchConfigValueRefusal('search.evidence_resolve_dates', v)?.example).toBe('true');
   });
 });
 

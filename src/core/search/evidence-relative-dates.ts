@@ -18,6 +18,11 @@ import { FENCE_LINE, SPEAKER_LINE, speakerName } from './speaker-line.ts';
 
 export const EVIDENCE_RESOLVE_DATES_KEY = 'search.evidence_resolve_dates';
 
+/** Set-time check: the flag reads true/on/1/yes as on and anything else as off, so only those and their opposites are accepted. */
+export function resolveDatesValueProblem(value: string): string | null {
+  return /^(?:true|false|on|off|1|0|yes|no)$/i.test(value.trim()) ? null : `${EVIDENCE_RESOLVE_DATES_KEY} must be true or false (got "${value}")`;
+}
+
 export interface DateInsertion {
   /** UTF-16 offset in the input where `text` is inserted (just after the phrase). */
   at: number;
