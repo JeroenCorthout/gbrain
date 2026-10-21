@@ -449,6 +449,7 @@ test/trust-owner-actions.test.ts
 test/unbound-source-6536.test.ts
 test/unindexed-files.test.ts
 test/vector-manifest-probe-bound.test.ts
+test/visibility-fail-closed-derived-writes.test.ts
 test/withdrawal-overlay-concurrency.test.ts
 test/withdrawal-publication-file.test.ts
 test/worktree-refresh-recovery-row-gbra130.test.ts

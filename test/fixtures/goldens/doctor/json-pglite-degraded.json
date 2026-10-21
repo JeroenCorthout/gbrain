@@ -1179,16 +1179,22 @@
         {
           "category": "brain",
           "details": {
+            "alias_pages_without_visibility": 0,
             "count": "exact",
+            "fact_ids_truncated": false,
             "looser_atoms": 0,
             "looser_concepts": 0,
+            "looser_events": 0,
+            "remotely_readable_fact_ids": [],
             "repair": "visibility",
             "truncated": false,
             "unstamped_atoms": 0,
-            "unstamped_concepts": 0
+            "unstamped_concepts": 0,
+            "world_facts_from_private_sources": 0,
+            "world_facts_remotely_readable": 0
           },
           "elapsed_ms": "<volatile>",
-          "message": "Every extracted atom and synthesized concept carries an explicit visibility no looser than its origin.",
+          "message": "Every derived page and fact carries a visibility no looser than its source, and no page relies on a privacy alias alone.",
           "name": "derived_visibility",
           "status": "ok"
         },
