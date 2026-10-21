@@ -175,16 +175,21 @@ Several of the knobs deserve a sentence:
   `explain: true` adds a `fuse` entry to `score_details.rerank`. Autocut
   keeps cutting on `rerank_score`, so it keeps the same rows it keeps under
   `replace`, in fused order; a row the fusion lifted whose provider score is
-  below the cliff is still cut. A reranker failure, timeout or skip falls
+  below the cliff is still cut, and the fused order never creates a cliff of
+  its own. The retrieval-confidence grade (`crag`) reads the provider score
+  of the row now at rank 1, so a row the fusion lifted to the top with a low
+  provider score grades weak. A reranker failure, timeout or skip falls
   back to the first-pass order exactly as under `replace`. Off by default
-  pending eval evidence; `rrf` is part of the cache key.
+  pending eval evidence; `rrf` is part of the cache key, and
+  `gbrain config set` refuses any value other than `replace` or `rrf`.
 - **`reranker_document`** (config key `search.reranker.document`; `chunk` in
   every bundle) is the text sent to the reranker for each row. `chunk` sends
   the chunk text. `titled` sends `<page title>\n<chunk>`, with the page's
   document or event date as `<title> (<YYYY-MM-DD>)` when the row carries one
   (import and creation dates are not shown). Both are capped at the same
-  per-document size. Off by default pending eval evidence; `titled` is part of
-  the cache key.
+  per-document size, applied to the whole text (title and date included).
+  Off by default pending eval evidence; `titled` is part of the cache key,
+  and `gbrain config set` refuses any value other than `chunk` or `titled`.
 - **`keyword_arm_confidence_floor`** (config key
   `search.keyword_arm_confidence_floor`; off in every bundle) down-weights the
   keyword and title arms in the fusion when the keyword arm's top-vs-second
