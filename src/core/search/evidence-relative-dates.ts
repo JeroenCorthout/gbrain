@@ -37,6 +37,8 @@ const APPROXIMATE = /\b(?:about|around|roughly|approximately|almost|nearly|over|
 const ALREADY_RESOLVED = /^\s*\[[≈~]?\d{4}/;
 /** "today" and "this morning" name the session day the reader already sees, and are often generic ("still true today"). */
 const SESSION_DAY = /^(?:today|tonight|this morning|this afternoon|this evening)$/i;
+/** "next weekend" or "next Thursday" said midweek may mean the coming one or the one after: people split on it, so it is left alone. */
+const NEXT_AMBIGUOUS = /^next\s+(?:weekend|monday|tuesday|wednesday|thursday|friday|saturday|sunday)$/i;
 /** "for the next month" is a span from now, not the next calendar month. */
 const SPAN_FROM_NOW = /\bthe\s+$/i;
 /** Only positively identified human roles are annotated; named speakers and every other label end a turn. */
@@ -123,7 +125,7 @@ export function resolveRelativeDatesInTurns(text: string, observedDay: string | 
       if (m.kind !== 'relative' || fenced.some(([a, b]) => from + m.index >= a && from + m.index < b)) continue;
       if (m.qualified || SESSION_DAY.test(m.cue) || (/^next\b/i.test(m.cue) && SPAN_FROM_NOW.test(turn.slice(Math.max(0, m.index - 8), m.index)))) continue;
       const end = from + m.index + m.cue.length;
-      if (/^\s+of\b/i.test(text.slice(end, end + 6))) continue;
+      if (NEXT_AMBIGUOUS.test(m.cue) || /^(?:\s+of\b|['’]s\b)/i.test(text.slice(end, end + 6))) continue;
       if (ALREADY_RESOLVED.test(text.slice(end, end + 16))) continue;
       const approximate = APPROXIMATE.test(text.slice(Math.max(from, from + m.index - 24), from + m.index));
       insertions.push({ at: end, text: ` ${dateBracket(m, approximate)}` });

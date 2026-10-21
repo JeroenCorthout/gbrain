@@ -34,6 +34,7 @@ describe('resolveRelativeDatesInTurns', () => {
     expect(r('**user:** Last month I did 3k.')).toBe('**user:** Last month [2023-04] I did 3k.');
     expect(r('**user:** Last year I started.')).toBe('**user:** Last year [2022] I started.');
     expect(r('**user:** I moved last Saturday.')).toBe('**user:** I moved last Saturday [2023-05-27].');
+    for (const s of ['**user:** I booked a session for next Thursday.', '**user:** We are going next weekend.', "**user:** I can't wait for this year's festival."]) expect(r(s)).toBe(s);
     expect(r('**user:** I fly out next week.')).toBe('**user:** I fly out next week [≈2023-05-29/2023-06-04].');
     expect(r('**user:** Last week I was sick.')).toBe('**user:** Last week [≈2023-05-15/2023-05-21] I was sick.');
   });
