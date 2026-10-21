@@ -424,6 +424,7 @@ test/sync-landing-gaps.test.ts
 test/sync-legacy-holds.test.ts
 test/sync-legacy-retry-actions-6696.test.ts
 test/sync-legacy-slug-adoption-6727.test.ts
+test/sync-legacy-sweep-resume-7189.test.ts
 test/sync-origin-live-wins-6517.test.ts
 test/sync-page-identity-hold-gbra130.test.ts
 test/sync-page-write-failed-gbra130.test.ts
@@ -449,6 +450,7 @@ test/trust-owner-actions.test.ts
 test/unbound-source-6536.test.ts
 test/unindexed-files.test.ts
 test/vector-manifest-probe-bound.test.ts
+test/visibility-fail-closed-derived-writes.test.ts
 test/withdrawal-overlay-concurrency.test.ts
 test/withdrawal-publication-file.test.ts
 test/worktree-refresh-recovery-row-gbra130.test.ts

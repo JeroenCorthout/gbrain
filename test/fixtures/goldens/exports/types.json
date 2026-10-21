@@ -590,7 +590,8 @@
           "database_url?: string | undefined",
           "engine?: \"postgres\" | \"pglite\" | undefined",
           "keyword_statement_timeout_ms?: number | undefined",
-          "pglite_shared_buffers?: string | undefined"
+          "pglite_shared_buffers?: string | undefined",
+          "pool_max?: number | undefined"
         ],
         "name": "EngineConfig"
       },
@@ -1439,6 +1440,7 @@
           "minTrust?: \"user_confirmed\" | \"operator_curated\" | \"tool_observed\" | \"agent_written\" | \"unknown\" | \"external_untrusted\" | undefined",
           "nearSymbol?: string | undefined",
           "offset?: number | undefined",
+          "onKeywordIncomplete?: ((reason: \"candidate_budget\") => void) | undefined",
           "onVectorPoolMeta?: ((m: VectorPoolMeta) => void) | undefined",
           "orFallback?: boolean | undefined",
           "rankQuery?: string | undefined",
@@ -7926,6 +7928,7 @@
           "mode?: string | undefined",
           "nearSymbol?: string | undefined",
           "offset?: number | undefined",
+          "onKeywordIncomplete?: ((reason: \"candidate_budget\") => void) | undefined",
           "onMeta?: ((meta: HybridSearchMeta) => void) | undefined",
           "onQueryEmbedding?: ((embedding: Float32Array) => void) | undefined",
           "onRelationalMeta?: ((meta: RelationalArmMeta) => void) | undefined",
@@ -8864,7 +8867,8 @@
           "database_url?: string | undefined",
           "engine?: \"postgres\" | \"pglite\" | undefined",
           "keyword_statement_timeout_ms?: number | undefined",
-          "pglite_shared_buffers?: string | undefined"
+          "pglite_shared_buffers?: string | undefined",
+          "pool_max?: number | undefined"
         ],
         "name": "EngineConfig"
       },
@@ -9466,6 +9470,7 @@
           "minTrust?: \"user_confirmed\" | \"operator_curated\" | \"tool_observed\" | \"agent_written\" | \"unknown\" | \"external_untrusted\" | undefined",
           "nearSymbol?: string | undefined",
           "offset?: number | undefined",
+          "onKeywordIncomplete?: ((reason: \"candidate_budget\") => void) | undefined",
           "onVectorPoolMeta?: ((m: VectorPoolMeta) => void) | undefined",
           "orFallback?: boolean | undefined",
           "rankQuery?: string | undefined",

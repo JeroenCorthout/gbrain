@@ -1249,6 +1249,8 @@ export interface SearchOpts extends PageReadPolicy {
   hnswIterativeScan?: import('./search/hnsw-iterative-scan.ts').HnswIterativeScanMode;
   /** #5989: bounded CJK keyword arm (deadline + meta sink); set by hybrid only (engine-sql/cjk-search.ts). */
   cjkKeyword?: import('./engine-sql/cjk-search.ts').CjkKeywordRun;
+  /** GBRA-156: the Postgres keyword arm ranked a bounded sample of its matches, or its OR retry dropped common terms (search/keyword-chunk-match.ts, search/keyword-or-narrow.ts). */
+  onKeywordIncomplete?: (reason: 'candidate_budget') => void;
   /**
    * v0.42 — intent-aware adaptive return-sizing. `true` enables with config/
    * default caps; an object overrides caps per-call; omitted/`false` = off
@@ -2327,6 +2329,8 @@ export interface EngineConfig {
   keyword_statement_timeout_ms?: number;
   /** PGLite `shared_buffers` for this open (e.g. '32MB'); unset keeps the data directory's setting. */
   pglite_shared_buffers?: string;
+  /** Postgres: connections the module pool may open (a one-shot read: 2); unset keeps GBRAIN_POOL_SIZE or the default. */
+  pool_max?: number;
 }
 
 // Errors

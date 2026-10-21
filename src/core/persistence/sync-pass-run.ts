@@ -806,7 +806,7 @@ export async function runSyncPass(engine: BrainEngine, input: SyncPassInput): Pr
       await applyPassRound(engine, level, { passId, observedAt: startedAt, remote, admission, fullRound: kind === 'full', obligations: value.obligations, context, processingOptions,
         grantPrefixes: remote ? authority.writer.slugPrefixes : null, onSwept }, applied);
       assertActive();
-      if (applied.sweptAll && !value.obligations.legacy_sweep) value.obligations.legacy_sweep = { first_full_at: new Date().toISOString() };
+      if (applied.sweptAll && !value.obligations.legacy_sweep?.first_full_at) value.obligations.legacy_sweep = { ...value.obligations.legacy_sweep, first_full_at: new Date().toISOString() };
       if (!remote) value.obligations.deletes_withheld = applied.withheld?.set_hash ?? null;
       const { deletes, imports, inFlight, mismatch, owed } = await triageRound(level, { S, legacyWaived, readmitted, admission, remote, counts });
       // Earlier passes' requests that committed since they stopped are this pass's imports (sync-pass-carried.ts).

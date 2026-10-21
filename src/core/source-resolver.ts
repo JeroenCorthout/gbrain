@@ -16,6 +16,7 @@
 import { readFileSync, lstatSync, type Stats } from 'fs';
 import { join, dirname, resolve } from 'path';
 import type { BrainEngine } from './engine.ts';
+import { requestSnapshotRead } from './config-snapshot.ts';
 import type { ExplicitReadBinding } from './ops/contract.ts';
 import { isSourceFederated, parseSourceConfig } from './sources-load.ts';
 import { SOURCE_ID_RE, isValidSourceId, ALL_SOURCES } from './source-id.ts';
@@ -302,6 +303,9 @@ export function resolveSourceIdEngineFree(
 async function listRegisteredLocalPathSources(
   engine: BrainEngine,
 ): Promise<Array<{ id: string; local_path: string; archived?: boolean }>> {
+  const pending = requestSourceRows(engine);
+  const request = pending && await pending;
+  if (request) return request.filter(row => row.local_path !== null).map(({ id, local_path, archived }) => ({ id, local_path: local_path!, archived }));
   try {
     return await engine.executeRaw<{ id: string; local_path: string; archived?: boolean }>(
       `SELECT id, local_path, archived FROM sources WHERE local_path IS NOT NULL`,
@@ -313,21 +317,39 @@ async function listRegisteredLocalPathSources(
   }
 }
 
+/**
+ * Every source row in one statement, once per request config snapshot (#7147): a CLI read or an MCP request resolves
+ * its source through tier 4, tier 5.5 and the federated set, three reads of a table that does not change under one
+ * read. Undefined without an open snapshot (no await, so a live read keeps its timing) and null on a brain older than
+ * the `archived` column; the callers then read live.
+ */
+function requestSourceRows(
+  engine: BrainEngine,
+): Promise<Array<{ id: string; local_path: string | null; archived: boolean; config: unknown }> | null> | undefined {
+  return requestSnapshotRead(engine, 'sources', () => engine.executeRaw<{ id: string; local_path: string | null; archived: boolean; config: unknown }>(
+    `SELECT id, local_path, archived, config FROM sources ORDER BY id`,
+  ).catch(() => null));
+}
+
 async function pickSoleNonDefaultSource(
   engine: BrainEngine,
   opts: { quiet?: boolean } = {},
 ): Promise<string | null> {
   // archived column was added in v34 (v0.26.5). Older brains may not have
   // it — fall back to the un-archived query in that case via try/catch.
-  let rows: Array<{ id: string }>;
-  try {
-    rows = await engine.executeRaw<{ id: string }>(
-      `SELECT id FROM sources WHERE local_path IS NOT NULL AND id != 'default' AND archived = false`,
-    );
-  } catch {
-    rows = await engine.executeRaw<{ id: string }>(
-      `SELECT id FROM sources WHERE local_path IS NOT NULL AND id != 'default'`,
-    );
+  const pending = requestSourceRows(engine);
+  const request = pending && await pending;
+  let rows: Array<{ id: string }> = request ? request.filter(row => row.local_path !== null && row.id !== 'default' && row.archived === false) : [];
+  if (!request) {
+    try {
+      rows = await engine.executeRaw<{ id: string }>(
+        `SELECT id FROM sources WHERE local_path IS NOT NULL AND id != 'default' AND archived = false`,
+      );
+    } catch {
+      rows = await engine.executeRaw<{ id: string }>(
+        `SELECT id FROM sources WHERE local_path IS NOT NULL AND id != 'default'`,
+      );
+    }
   }
   if (rows.length !== 1) return null;
   // #3070 emptiness guard: fire only when 'default' holds no active pages.
@@ -936,6 +958,9 @@ export async function explicitReadBinding(
 }
 
 async function liveSourceRows(engine: BrainEngine): Promise<Array<{ id: string; config: unknown; archived?: boolean }>> {
+  const pending = requestSourceRows(engine);
+  const request = pending && await pending;
+  if (request) return request.filter(row => row.archived === false).map(({ id, config, archived }) => ({ id, config, archived }));
   try {
     return await engine.executeRaw<{ id: string; config: unknown; archived?: boolean }>(
       `SELECT id, config, archived FROM sources WHERE archived = false ORDER BY id`,

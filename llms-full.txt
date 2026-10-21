@@ -1807,6 +1807,14 @@ Bun blocks gbrain's postinstall on `bun install -g` (`Blocked 1 postinstall`); a
 
 ## Memory operating protocol
 
+**Retrieval: gbrain first.** For anything in the brain, run `gbrain search` (names,
+codes, phrases) or `gbrain query` (questions), then `gbrain get <slug>` on a hit.
+Don't grep, cat or SQL the brain checkout first. Filters agents miss:
+`--types '["meeting"]'`, `--match keyword` (every matching page), `--since`/`--until`
+on `query`, `--source <id>`, `--limit`, `--json`; `gbrain backlinks <slug>` and
+`gbrain timeline <slug>` for links and dated events. Copyable examples:
+[brain-first](skills/conventions/brain-first.md#retrieval-gbrain-first).
+
 Recall relevant saved context before answering. Save explicit requests to remember with provenance; confirm corrections against the stored record. Automatic capture requires opt-in. Withdrawal (`forget`) removes a fact from active memory; history, source material, and private backups may remain. Never promise physical erasure. Verify changes with actual GBrain calls and distinguish a local test from a new-conversation test in the harness.
 
 Durable preferences and facts belong in shared memory when the user wants them
@@ -2953,6 +2961,11 @@ gbrain search "a phrase from an imported page" --json
 Only after enabling the selected embedding provider, run `gbrain embed --stale`.
 Use `gbrain query` for expanded retrieval only when its provider use is intended;
 `--no-expand` opts out of expansion independently of the mode.
+
+Once imported, retrieve through gbrain rather than the files: search, then
+`gbrain get <slug>`. Filters (`--types`, `--match keyword`, `query --since/--until`,
+`--source`, `--json`) are in
+[Retrieval: gbrain first](skills/conventions/brain-first.md#retrieval-gbrain-first).
 
 ## Step 4.5: Wire the Knowledge Graph
 
@@ -4805,7 +4818,7 @@ When multiple skills could match:
 
 These apply to ALL brain-writing skills:
 - `skills/conventions/quality.md` — citations, back-links, notability gate
-- `skills/conventions/brain-first.md` — check brain before external APIs
+- `skills/conventions/brain-first.md` — search gbrain before external APIs, brain files or SQL; copyable retrieval filters
 - `skills/conventions/brain-routing.md` — which brain (DB) and which source (repo) to target; cross-brain federation is latent-space only
 - `skills/conventions/schema-evolution.md` — when to add a type vs alias vs prefix (read before `schema-author`)
 - `skills/conventions/line-grammar.md` — typed relation lines (`- works_at [[companies/x]]`), fact lines and `@effective[...)` ranges in compiled truth
@@ -9047,7 +9060,10 @@ Save ONE fact with mandatory attribution.
   (local CLI reads only; session hooks push world facts only, so a private
   fact never reaches a new agent session, and a local private save carries the
   `private_fact_not_pushed` notice saying so). The init quickstart carries the
-  consent line.
+  consent line. An omitted `visibility` saves `private` when the target page is
+  private (by `visibility` or a privacy alias such as `access: private`) or the
+  operator set `facts.default_visibility` to private; a save never lands wider
+  than the page it is written into.
 
 Response: `{ id, status, status_text, entity_slug, valid_until,
 protocol_version }` (+ `degraded_dedup: true` when no embedding provider —

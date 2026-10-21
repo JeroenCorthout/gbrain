@@ -10,6 +10,88 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.341.0] - 2026-10-21
+
+**Facts, events and memories derived from a private page stay private, and a retry can no longer widen them.** A fact extracted from a `visibility: private` page took the brain default, so on a world-default brain it was stored world, and remote callers read it through `recall` and the entity card. `remember` without a `visibility` saved world even onto a private page, and a reworded retry that dropped the parameter did the same.
+
+### What changed
+
+| Situation | Before | Now |
+|---|---|---|
+| Facts from a private page (page-write backstop, `extract_facts` with `source_slug`, `extract-conversation-facts`) | brain default or the caller's `world` | private |
+| Remote `extract_facts` whose source page it cannot see | caller's value | private, the same answer as a missing page |
+| `remember` with no `visibility` onto a private page, or under an explicit private `facts.default_visibility` | world | private; still world otherwise. The resolved value is stored on the request, so retries keep it |
+| A page marked private only by `access: private\|restricted\|confidential` or `confidentiality: confidential\|secret\|private\|restricted` | its facts, chronicle events, meeting timeline rows and `remember` saves were world | they are private |
+| Remote page reads of such a page | visible | unchanged by default; hidden when you set `visibility.honor_aliases true` |
+| Google Calendar events marked private or confidential | page had no visibility | `visibility: private`; a re-sync never drops a private label |
+
+### Check and repair what was written before
+
+Run `gbrain doctor`: `derived_visibility` now counts pages that rely on a privacy alias, chronicle events looser than their origin, and world facts from private pages (with the ids of those a remote caller can read). `gbrain repair visibility` previews every row; `gbrain repair visibility --apply` only tightens them. Nothing changes on upgrade.
+
+Not covered: Calendar events with default visibility on a calendar that is itself private (that needs the Calendar ACL scope), and timeline rows already written from alias-private meetings.
+
+### For contributors
+
+- `test/visibility-fail-closed-derived-writes.test.ts` runs every path on PGLite and Postgres with remote callers.
+- `access` and `confidentiality` are protected frontmatter keys: an ambiguous value is held instead of guessed.
+
+## [0.60.340.0] - 2026-10-21
+
+**Cold one-shot reads behind a transaction pooler make fewer round trips and open at most two connections.** A cold `gbrain search` used to pay a round trip for each startup probe and open a connection for each parallel arm. On a 5,000-page test brain behind PgBouncer, cold search drops from 70 to 56 round trips, `get` from 15 to 13 and `recall` from 20 to 11.
+
+### What changed
+
+| Situation | Before | Now |
+|---|---|---|
+| Config reads in a one-shot read | the startup read and the operation each took a config snapshot | one snapshot per command, handed from startup to the read; the keyword statement timeout reads it too |
+| Source resolution | the sources table was read up to three times per request | read once per request snapshot |
+| The search-statistics guard on every cold search | several statements | one statement |
+| Connections in a one-shot read | one per parallel arm (up to 8 for `entity`) | at most two (`GBRAIN_POOL_SIZE` still wins) |
+| Modules loaded by `gbrain get` | 1,299, including the write path and PGLite WAL repair on a Postgres brain | 663; write handlers load `page-mutations.ts` only when they write |
+
+Nothing changes on upgrade.
+
+### For contributors
+
+- `test/e2e/cli-read-startup-round-trips.test.ts` sets per-verb statement budgets on direct Postgres and through PgBouncer.
+- `test/cold-read-module-graph.test.ts` pins the read path's module graph.
+
+## [0.60.339.0] - 2026-10-21
+
+**A managed source with thousands of pre-managed pages that no longer match their files advances again (#7189).** The first managed full round screened every legacy page before importing anything. A page whose body differs from its file is never recorded, so a pass stopped by its deadline kept nothing, and the next pass screened the same pages from the top. On a large brain every pass ran its full hour, ended partial with 0 changes, and the commits waiting behind the sweep never became searchable.
+
+### What changed
+
+| Situation | Before | Now |
+|---|---|---|
+| The first managed full round of a source with legacy pages | screened every legacy page before importing the round's changes | screens at most 500, then imports the round's changes in the same pass |
+| A pass stopped mid-sweep | the next pass screened the same pages again from the top | the next full round resumes at the last screened path (`obligations.legacy_sweep.cursor`) |
+| Legacy pages whose body differs from the file | the first full sweep never finished, so every pass was another first full round | the first sweep finishes once and records `first_full_at`; later sweeps rotate through the rest, 500 per pass |
+
+### For contributors
+
+- `test/sync-legacy-sweep-resume-7189.test.ts` (PGLite and Postgres) stops any pass past 500 screens and checks that the waiting commit imports and the next full round screens only the rest.
+
+## [0.60.338.0] - 2026-10-21
+
+**Keyword search on a large Postgres brain no longer stalls on a common word, and agent guidance now says to search gbrain first.** At 300k pages, a keyword query whose words matched hundreds of thousands of chunks ranked every one of them and often hit the 8 s keyword statement timeout, so the keyword arm returned nothing. Ranking is now bounded, the OR retry matches only the words that fit, and the candidate pool keeps one chunk per page. On a 305k-page bench behind a transaction-mode pooler, warm search p95 fell from 8.4 s to 2.4 s, warm query from 8.6 s to 1.2 s and warm recall from 8.4 s to 1.0 s. Retrieval quality on the agent-retrieval shapes and the 70-question ranking-shapes set is unchanged.
+
+### What changed
+
+| Situation | Before | Now |
+|---|---|---|
+| A keyword search whose words match more than 50,000 chunks (Postgres) | ts_rank ran over every match and often timed out | the first 50,000 matches that pass the filters are ranked, and the response is stamped `keyword_candidates_incomplete` |
+| The keyword arm's any-word retry after an all-words miss | an OR over common words matched up to 850k chunks | matches only the words that planner statistics say fit under a 20k-chunk cap, and still ranks with the full OR query |
+| A page with hundreds of matching chunks | it could fill the keyword candidate pool | the pool keeps one chunk per page (Postgres and PGLite) |
+| The title arm's any-word retry for local callers | matched page text | matches titles only, as remote callers already did, and drops repeated words (#7135) |
+| An agent deciding where to look | guidance didn't say | brain-first, query, brain-ops, RESOLVER and the AGENTS/INSTALL templates say to search gbrain first, then read the page, with copyable examples |
+
+### For contributors
+
+- `scripts/bench/retrieval-scale/` builds a synthetic large brain and times cold and warm search, query, get and recall behind PgBouncer and toxiproxy.
+- `test/e2e/retrieval-round-trip-budget.test.ts` pins the cold CLI round trips: search 65, get 19, recall 38.
+
 ## [0.60.337.0] - 2026-10-21
 
 **Agents can ask gbrain what happened to a file instead of copying its path rules, and `gbrain sync status` no longer contradicts itself.** A landing check that rebuilt gbrain's path-to-slug rules in its own code reported pages as synced but unsearchable for days when nothing was wrong. `gbrain sources resolve-path` gives gbrain's own answer for each path, and sync status and doctor now flag the pages that really are committed but not yet searchable.

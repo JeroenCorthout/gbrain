@@ -485,6 +485,8 @@ src/core/repair/redacted-facts.ts	pageTexts	field	INLINE	inline branch only (a s
 src/core/repair/redacted-facts.ts	pageTexts	sql	INLINE	page_versions rows that hold a body copy (compiled_truth IS NOT NULL); a segmented version has none and is not read
 src/core/repair/redacted-facts.ts	restoreFencedRows	call:serializePageToMarkdown	INLINE	inline pages only: a segmented page returns before the read, and its fenced rows preview as class segmented
 src/core/repair/redacted-facts.ts	restoreFencedRows	field	INLINE	inline pages only: a segmented page returns before the read, and its fenced rows preview as class segmented
+src/core/repair/visibility.ts	applyFactItem	call:serializePageToMarkdown	INLINE	inline pages only: a segmented page returns before the read and its fenced fact is left for the owner
+src/core/repair/visibility.ts	applyFactItem	field	INLINE	inline pages only: a segmented page returns before the read and its fenced fact is left for the owner
 src/core/repair/safe-chunks.ts	safeChunksRepair	sql	META	
 src/core/repair/segmented-mirror.ts	fileHoldsWithdrawnRows	field	NONE	the overlay result of one file fragment (a facts fence block) for the region digests (body-digests.ts); no page body is read
 src/core/repair/slug-conflicts.ts	pageContent	call:serializePageToMarkdown	SEGW	

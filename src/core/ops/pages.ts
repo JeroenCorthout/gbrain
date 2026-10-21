@@ -1,4 +1,3 @@
-import { pageMutationSource, submitPageMutation, validateMutationSlug } from '../persistence/page-mutations.ts';
 import { funnelPassThrough } from '../funnel.ts';
 import { suffixedSlugDryRun } from '../persistence/suffixed-slug.ts';
 import { AGENT_CONTENT_PARAMS, PAGE_MUTATION_PARAMS, CAPTURE_EVENT_PARAMS, CAPTURE_CLI_PROVENANCE_PARAMS, WRITE_WAIT_PARAM } from '../persistence/params.ts';
@@ -48,6 +47,9 @@ import {
   readPolicyOpts,
   validatePageSlug, pageNotFoundError,
 } from './context.ts';
+
+/** The write path (journal, persistence service, sync), loaded by the mutating handlers only: a cold `gbrain get` never needs it (#7147). */
+const pageMutations = () => import('../persistence/page-mutations.ts');
 
 // --- Page CRUD ---
 
@@ -353,6 +355,7 @@ const put_page: Operation = {
   mutating: true,
   scope: 'write',
   handler: async (ctx, p) => {
+    const { pageMutationSource, submitPageMutation } = await pageMutations();
     const sourceId = pageMutationSource(ctx, p, 'put_page');
     if (ctx.dryRun) {
       if (typeof p.slug === 'string') {
@@ -426,6 +429,7 @@ const delete_page: Operation = {
   mutating: true,
   scope: 'write',
   handler: async (ctx, p) => {
+    const { pageMutationSource, submitPageMutation, validateMutationSlug } = await pageMutations();
     const sourceId = pageMutationSource(ctx, p, 'delete_page');
     assertPurgeParams(p, ctx.remote);
     if (ctx.dryRun) {
@@ -455,6 +459,7 @@ const restore_page: Operation = {
   mutating: true,
   scope: 'write',
   handler: async (ctx, p) => {
+    const { pageMutationSource, submitPageMutation, validateMutationSlug } = await pageMutations();
     const sourceId = pageMutationSource(ctx, p, 'restore_page');
     if (ctx.dryRun) {
       if (typeof p.slug === 'string') {
@@ -699,6 +704,7 @@ const capture: Operation = {
   // hidden hint per the advisor pattern.
   cliHints: { name: 'capture', hidden: true },
   handler: async (ctx, p) => {
+    const { pageMutationSource, submitPageMutation } = await pageMutations();
     pageMutationSource(ctx, p, 'capture');
     if (ctx.dryRun) {
       if (typeof p.slug === 'string') {

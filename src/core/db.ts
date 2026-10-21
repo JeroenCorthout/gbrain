@@ -502,7 +502,7 @@ export async function connect(config: EngineConfig, hooks: PoolHealthHooks = {})
     const prepare = resolvePrepare(url);
     const timeouts = resolveSessionTimeouts();
     const opts: Record<string, unknown> = {
-      max: resolvePoolSize(),
+      max: resolvePoolSize(config.pool_max),
       idle_timeout: 20,
       connect_timeout: resolveUrlConnectTimeout(url),
       // Explicit (matches the postgres.js implicit default; GBRAIN_POOL_MAX_LIFETIME_S overrides).
