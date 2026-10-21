@@ -177,6 +177,7 @@
     "check:behavior-since": "bun scripts/check-behavior-since.ts",
     "check:changelog-headings": "bun scripts/check-changelog-headings.ts",
     "check:compile-autoload": "bash scripts/check-compile-autoload.sh",
+    "check:vendor-postgres": "bash scripts/check-vendor-postgres.sh",
     "check:structural-manifest": "bash scripts/check-structural-manifest.sh",
     "regen:all": "bun scripts/regen-all.ts",
     "release:restamp": "bun scripts/release-restamp.ts",
