@@ -10,7 +10,7 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
-## [Unreleased]
+## [0.60.346.0] - 2026-10-21
 
 **A timeline entry no longer rewrites the passages it didn't change, and a big passage replacement can't time out the write that carries it (#7172).** A managed write replaced its page's passages inside its publication, under the publication's 5 s statement bound. A passage whose index moved (a long entry near the top of a descending timeline adds a passage above the others) was deleted and inserted again with its vector, and on a large index each inserted row can cost about half a second, so the write ended `write_interrupted` (SQLSTATE 57014) on every attempt. Separately, a page whose stored embedding signature was missing or in an older format had every passage re-embedded after each write, which looked the same from outside: every passage got a new embedding time.
 
