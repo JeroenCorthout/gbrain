@@ -187,7 +187,7 @@ export function pendingAwareResponse(ctx: OperationContext, row: WriteRequest): 
  * A committed reply whose outcome left the projection pending says whether search sees the page now (searchable.ts), in
  * the reply and its `write_request`; `projection: 'pending'` stays only while it still is.
  */
-async function withLiveSearchable(ctx: OperationContext, response: Record<string, unknown>): Promise<Record<string, unknown>> {
+export async function withLiveSearchable(ctx: OperationContext, response: Record<string, unknown>): Promise<Record<string, unknown>> {
   if (response.searchable !== 'pending') return response;
   const live = await liveSearchable(ctx, response as Parameters<typeof liveSearchable>[1]);
   const settle = (fields: Record<string, unknown>) => {

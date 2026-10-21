@@ -10,6 +10,26 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.331.0] - 2026-10-20
+
+**Writing many facts at once no longer costs one guard call per row, new pages over 4 MiB reply as soon as they commit, and a remote `append_page` links what it mentions.** The facts purge refusal and withdrawal stamp ran once per row, so a 6,000-row publish spent most of its publication deadline in triggers (#7105). A managed import of a large new page waited for its whole search index to build before replying, which on a loaded host outlasted the deadline (#7106). A remote append added text with links that never became graph edges (#7122).
+
+### What changed
+
+| Situation | Before | Now |
+|---|---|---|
+| A publish inserts thousands of facts | the purge refusal and the withdrawal stamp ran once per row | they run once per statement over the inserted rows; `INSERT … RETURNING` still sees the stamp (migration v264) |
+| A managed `gbrain import` or `gbrain sync`, or a `put_page`, of a new page over 4 MiB stored in segments | replied after its search index was built | replies at commit with `searchable: 'pending'`; the index builds in the background, one at a time. Edits still reply when sealed |
+| A remote `append_page` to a page body with `[[wikilinks]]`, markdown links or page paths | no links were added | plain `mentions` links (`mcp-remote-mention`) to existing pages the writer can see |
+| An owner `append_page` to a page with a purged claim | (undocumented) | still not an owner edit, so it doesn't release the claim's redaction (#7123) |
+| A lane sync reaches a page whose preparation ran past its budget | another lane could claim and prepare it again, overwriting its deadline | the worktree waits for the abandoned preparation to end, and so does a foreground write to it |
+
+Nothing changes on upgrade beyond migration v264, which replaces the per-row facts triggers with statement-level ones.
+
+### For contributors
+
+- `test/sync-pass-xid-arms-gbra108.test.ts` drew snapshot xmax values PostgreSQL never reports (`TransactionIdAdvance` skips low words 0–2), so it failed whenever a new migration moved `txid_current()` onto them. It now draws only reportable values.
+
 ## [0.60.330.0] - 2026-10-20
 
 **Sync no longer deletes a page just because its file is missing when Git never had that file, and the autopilot purge no longer hard-deletes what a sync deleted without review.** A large managed source lost thousands of agent-written pages: their write-through files sat in a `.gitignore`d directory, so they were never committed; when they left the disk, sync read their absence as deletions (4% of the source, under the 50% valve), and the purge phase hard-deleted them 72 hours later (#7130, reported by @liuwenyong1985).

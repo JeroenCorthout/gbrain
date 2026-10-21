@@ -53,6 +53,20 @@ async function failingWrite(error: Error): Promise<{ thrown: OperationError; row
   return { thrown: thrown as OperationError, row };
 }
 
+/**
+ * The row as JSON with its generated identities, counters and clock values replaced: UUIDs, the random slug and source
+ * id, hashes, owner pids and timestamps are hex or digits drawn at random, so a short digit needle such as a fragment of
+ * a redacted number would match them by chance (about one run in forty). Every field a statement's text can reach keeps
+ * its value.
+ */
+const GENERATED_KEYS = new Set(['id', 'principal_id', 'request_id', 'source_id', 'sourceId', 'source_incarnation', 'sourceIncarnation', 'slug',
+  'worktree_id', 'digest', 'execution_token', 'token', 'admitter_host_id', 'consumer_host_id', 'nonce', 'start', 'pid', 'pid_ns', 'boot_id',
+  'sequence', 'intent_bytes', 'terminal_reservation', 'recovery_bytes', 'topology_generation', 'protocol_version', 'created_at', 'updated_at',
+  'completed_at', 'published_at', 'claim_expires_at', 'next_attempt_at', 'since', 'claimed_at', 'step_since']);
+function withoutGeneratedIdentities(row: WriteRequest): string {
+  return JSON.stringify(row, (key, value) => GENERATED_KEYS.has(key) && value !== null ? '<generated>' : value);
+}
+
 describe('#5929 owner exceptions keep a bounded identity', () => {
   test('a TypeError is stored with its class and repo-relative frame, the attempt is stamped, and its message never leaves the owner', async () => {
     // As thrown inside gbrain: a dependency frame first, then gbrain's own source under an absolute checkout path.
@@ -216,7 +230,7 @@ describe('#7112 a database error keeps its redacted server text and statement, o
       const { row } = await failingWrite(await serverError(sql, sql.includes('$1') ? ['x'] : []));
       expect(JSON.stringify(row)).not.toContain('PRIVATE_SECRET');
       expect(JSON.stringify(row)).not.toContain('PRIVATE-SECRET');
-      expect(JSON.stringify(row)).not.toContain('4111');
+      expect(withoutGeneratedIdentities(row)).not.toContain('4111');
       shapes.push((row.error_detail as Record<string, unknown>).statement);
     }
     expect(shapes).toEqual(["SELECT E'…'::uuid", 'SELECT $…$::uuid', 'SELECT ? AS PRIVATE_x, $1::uuid', "SELECT $1::uuid, U&'…'"]);
