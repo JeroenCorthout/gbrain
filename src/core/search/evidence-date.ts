@@ -79,15 +79,15 @@ export function factDateHeader(
 }
 
 /**
- * The page header for each page id: one read of the stored frontmatter and
- * import filename (only the derived day leaves this function) plus
- * `brain.timezone`. Ids missing from the result render `unknown`.
+ * The observation day (YYYY-MM-DD in `brain.timezone`, or null) for each page
+ * id: one read of the stored frontmatter and import filename (only the derived
+ * day leaves this function).
  */
-export async function loadPageDateHeaders(
+export async function loadPageObservationDays(
   engine: { executeRaw<T>(sql: string, params?: unknown[]): Promise<T[]>; getConfig(key: string): Promise<string | null> },
   pageIds: number[],
-): Promise<Map<number, string>> {
-  const out = new Map<number, string>();
+): Promise<Map<number, string | null>> {
+  const out = new Map<number, string | null>();
   const ids = [...new Set(pageIds.filter(id => Number.isInteger(id) && id > 0))];
   if (ids.length === 0) return out;
   const timeZone = (await engine.getConfig('brain.timezone').catch(() => null))?.trim() || null;
@@ -96,9 +96,18 @@ export async function loadPageDateHeaders(
   for (const r of rows) {
     const fm = typeof r.frontmatter === 'string' ? JSON.parse(r.frontmatter) : r.frontmatter;
     const observed = pageObservationDate({ slug: String(r.slug), frontmatter: fm && typeof fm === 'object' ? fm as Record<string, unknown> : null, filename: r.import_filename, timeZone });
-    out.set(Number(r.id), pageDateHeader(formatBrainDay(observed, timeZone)));
+    out.set(Number(r.id), formatBrainDay(observed, timeZone));
   }
   return out;
+}
+
+/** The page header for each page id. Ids missing from the result render `unknown`. */
+export async function loadPageDateHeaders(
+  engine: Parameters<typeof loadPageObservationDays>[0],
+  pageIds: number[],
+): Promise<Map<number, string>> {
+  const days = await loadPageObservationDays(engine, pageIds);
+  return new Map([...days].map(([id, day]) => [id, pageDateHeader(day)]));
 }
 
 /** `recall` fact rows plus `date_header` when `search.evidence_date_header` is on; unchanged otherwise. */
@@ -162,8 +171,13 @@ export async function blockDateHeaders(engine: Parameters<typeof loadPageDateHea
 
 /** `search.evidence_date_header` is on ('true' | 'on' | '1' | 'yes'); off by default and on any read error. */
 export async function evidenceDateHeaderEnabled(engine: { getConfig(key: string): Promise<string | null> }): Promise<boolean> {
+  return configFlagOn(engine, EVIDENCE_DATE_HEADER_KEY);
+}
+
+/** A boolean config key is on ('true' | 'on' | '1' | 'yes'); off when unset and on any read error. */
+export async function configFlagOn(engine: { getConfig(key: string): Promise<string | null> }, key: string): Promise<boolean> {
   try {
-    const raw = (await engine.getConfig(EVIDENCE_DATE_HEADER_KEY))?.trim().toLowerCase();
+    const raw = (await engine.getConfig(key))?.trim().toLowerCase();
     return raw === 'true' || raw === 'on' || raw === '1' || raw === 'yes';
   } catch {
     return false;

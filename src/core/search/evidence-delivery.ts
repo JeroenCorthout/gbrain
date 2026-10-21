@@ -37,7 +37,9 @@ import { DEFAULT_INLINE_BODY_BYTES, locateChunksByStoredSpans, projectPageText, 
 import { readSegmentedWindows } from './segmented-evidence.ts';
 import { stripChunkHeader } from '../chunkers/code.ts';
 import { OperationError } from '../ops/contract.ts';
-import { blockDateHeaders, evidenceDateHeaderEnabled } from './evidence-date.ts';
+import { blockDateHeaders, configFlagOn, evidenceDateHeaderEnabled, loadPageObservationDays } from './evidence-date.ts';
+import { EVIDENCE_RESOLVE_DATES_KEY, withRelativeDates } from './evidence-relative-dates.ts';
+import { FENCE_LINE, SPEAKER_LINE, speakerName } from './speaker-line.ts';
 import { cutWholePages, resolvePageRankCut, type PageRankCut, type PageRankCutMeta } from './page-rank-cut.ts';
 export { pagePlanHits } from './page-plan-hits.ts';
 import { applyEffectiveDate } from '../utils.ts';
@@ -115,6 +117,8 @@ export interface DeliveryMeta {
   budget_clamped?: { requested: number; max: number };
   /** Present (true) when every block starts with its one-line date header (`search.evidence_date_header`). */
   date_header?: true;
+  /** Present when `search.evidence_resolve_dates` is on: relative-date brackets added to conversation blocks. */
+  relative_dates?: { insertions: number };
   /** Present only when an explicit budget engaged the cap: the packing that ran. */
   auto_packing?: AutoPacking;
   /** W5: present when `search.page_rank_cut` cut the page candidates (page-rank-cut.ts). */
@@ -137,6 +141,8 @@ export interface EvidencePlan {
   budgetClamped?: { requested: number; max: number };
   /** `search.evidence_date_header` is on: each block starts with its date header line. */
   dateHeader?: true;
+  /** `search.evidence_resolve_dates` is on: relative dates in user turns of conversation blocks get an absolute bracket. */
+  resolveDates?: true;
   /** F2: set only by the search/query caller (withLongPagePolicy); recall, think and assemble_evidence never carry it. */
   longPage?: LongPagePolicy;
   /** W5: page unit + caller budget + `search.page_rank_cut: whole_pages` (page-rank-cut.ts). */
@@ -285,6 +291,7 @@ export async function resolveEvidencePlan(engine: BrainEngine, input: ResolvePla
     packing,
     ...(budgetClamped ? { budgetClamped } : {}),
     ...(await evidenceDateHeaderEnabled(engine) ? { dateHeader: true as const } : {}),
+    ...(await configFlagOn(engine, EVIDENCE_RESOLVE_DATES_KEY) ? { resolveDates: true as const } : {}),
     ...(rankCut ? { rankCut } : {}),
   };
 }
@@ -567,8 +574,6 @@ interface Doc {
 }
 
 const HEADING = /^ {0,3}(#{1,6})[ \t]+\S/;
-const FENCE = /^ {0,3}(```|~~~)/;
-const SPEAKER = /^\s{0,3}(?:\*\*([^*\n:]{1,40}):\s*\*\*|\*\*([^*\n:]{1,40})\*\*\s*:|(user|assistant|human|ai|system|bot|speaker\s*\d{1,3})\s*:)/i;
 
 function buildDoc(text: string, spans: Doc['spans']): Doc {
   const pieces: Piece[] = [];
@@ -578,12 +583,12 @@ function buildDoc(text: string, spans: Doc['spans']): Doc {
     let heading = 0;
     let speaker: string | null = null;
     if (p.lineStart) {
-      if (FENCE.test(t)) inFence = !inFence;
+      if (FENCE_LINE.test(t)) inFence = !inFence;
       else if (!inFence) {
         const h = HEADING.exec(t);
         if (h) heading = h[1].length;
-        const sp = SPEAKER.exec(t);
-        if (sp) speaker = (sp[1] ?? sp[2] ?? sp[3]).trim().toLowerCase().replace(/\s+/g, ' ');
+        const sp = SPEAKER_LINE.exec(t);
+        if (sp) speaker = speakerName(sp);
       }
     }
     pieces.push({ run: 0, start: p.start, end: p.end, text: t, lineStart: p.lineStart, heading, speaker, tok: -1 });
@@ -1186,6 +1191,12 @@ export async function deliverEvidence(
   scope: DeliveryScope,
   opts: DeliverOptions = {},
 ): Promise<{ results: DeliveredSearchResult[]; delivery: DeliveryMeta }> {
+  const first = await deliverEvidenceOnce(engine, hits, plan, scope, opts);
+  return plan.resolveDates ? withRelativeDates(first, budgetTokens => deliverEvidenceOnce(engine, hits, { ...plan, budgetTokens }, scope, opts),
+    ids => loadPageObservationDays(engine, ids), r => conversationSignal(r) !== null, text => countEvidenceTokens(text, evidenceTokenizer())) : first;
+}
+
+async function deliverEvidenceOnce(engine: BrainEngine, hits: SearchResult[], plan: EvidencePlan, scope: DeliveryScope, opts: DeliverOptions): Promise<{ results: DeliveredSearchResult[]; delivery: DeliveryMeta }> {
   const tokenizer = evidenceTokenizer();
   const fallbacks = new Set<string>();
   const dropped: Record<string, number> = {};
