@@ -3120,6 +3120,24 @@
           "status": "ok"
         },
         {
+          "category": "ops",
+          "details": {
+            "builds": [],
+            "count": 0,
+            "docs": "docs/guides/troubleshooting.md#runtime-build-skew",
+            "earlier_job_children": 0,
+            "job_children": [],
+            "newest": null,
+            "processes": [],
+            "stale": [],
+            "unknown_builds": []
+          },
+          "elapsed_ms": "<volatile>",
+          "message": "No long-running gbrain process (serve, jobs supervisor, worker) is running on this host.",
+          "name": "runtime_build_skew",
+          "status": "ok"
+        },
+        {
           "category": "brain",
           "details": {
             "code": "held_failed",

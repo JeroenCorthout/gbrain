@@ -83,6 +83,26 @@ to share types in: GBrain passes one per database target, so every pool in a
 process that reaches one database shares it, and `src/core/pg-type-cache.ts`
 saves it for the next process.
 
+Stock postgres.js runs a `pg_type` query on every new connection before its
+first statement. The patch's `array_types` option takes a `{ rows }` object:
+the first connection that fetches the array types stores them there, and every
+later connection of any pool given the same object applies them without the
+round trip. GBrain passes one per database target, in-process only, since
+extension type OIDs belong to one database's catalog (#6930,
+`test/pathological/pg-round-trips-6930.test.ts`).
+
+A pool built not to pipeline (`max_pipeline: 0`, a transaction-mode pooler,
+#6543) still pipelines up to `transaction_pipeline` statements on a
+connection its owner holds (`sql.begin`, `sql.reserve`) while every statement
+in flight leaves the connection inside a transaction: the last ReadyForQuery
+said `T` or `E`, or an in-flight statement began one, and none since may end
+it (COMMIT, ROLLBACK other than ROLLBACK TO, END, ABORT, PREPARE TRANSACTION).
+The pooler pins one server connection from BEGIN until the transaction ends,
+and nothing is sent behind a statement that may end it, so another owner's
+statements never reach that server connection. Default 0 (stock behaviour);
+GBrain sets 100 on transaction-mode URLs (#6930,
+`test/e2e/pgbouncer-transaction-pipeline-6930.test.ts`).
+
 Each statement's row count resets at its ReadyForQuery. Stock postgres.js
 resets it only at CommandComplete. A statement that streams rows and then fails
 never gets there: a runtime error after its first rows, or a cancel or timeout

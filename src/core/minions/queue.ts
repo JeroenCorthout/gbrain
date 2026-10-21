@@ -20,7 +20,8 @@ export { WATCHDOG_SUSPECT_MARK } from './watchdog-attribution.ts';
 import { coalesceOnIdempotencyKey, decideCoalesce, insertOrCoalesce } from './idempotency-coalesce.ts';
 import { adoptSpendAuthorization, legacyDefaultClaimSetSql, legacyDefaultClaimParams, type SpendAuthorization } from './spend-authorization.ts';
 import { validateAttachment } from './attachments.ts';
-import { isProtectedJobName } from './protected-names.ts';
+import { isProtectedJobName, LEASE_BEACON_QUEUE } from './protected-names.ts';
+import { jsonbSafeJson } from '../text-safe.ts';
 import { assertEmbedBackfillQueueAdmission } from './embed-backfill-admission.ts';
 import { lockDelegatedSubmission, checkDelegatedCapacity, prepareDelegatedReplay, admitDelegatedRetry } from './delegated-admission.ts';
 import {
@@ -225,6 +226,8 @@ export class MinionQueue {
     // canonical form. Without the trim-before-check, `queue.add(' shell ', ...)`
     // would evade the guard and insert a job literally named 'shell'.
     if (currentSubmissionAuthority() && currentSubmissionAuthority()!.kind !== 'application') throw new Error('Remote jobs cannot submit descendant jobs');
+    // #7240: Postgres refuses a lone UTF-16 surrogate or U+0000 anywhere in a JSONB value, which failed the whole insert.
+    if (data !== undefined) data = jsonbSafeJson(data);
     const authority = parseSubmissionAuthority(trusted?.submissionAuthority ?? APPLICATION_AUTHORITY);
     if (!authority) throw new Error('Unsupported submission authority');
     const delegatedClientId = authority.kind === 'remote_agent' ? authority.principal.id : trusted?.delegatedClientId;
@@ -1523,7 +1526,7 @@ export class MinionQueue {
       // SKIP LOCKED subselect — see killJobs() for the shared tail.
       const candidates = await tx.executeRaw<{ id: number; parent_job_id: number | null }>(
         `SELECT id, parent_job_id FROM minion_jobs
-          WHERE status = 'active'
+          WHERE status = 'active' AND queue <> '${LEASE_BEACON_QUEUE}'
             AND timeout_at IS NOT NULL
             AND timeout_at < now()
             AND lock_until > now()`
@@ -1655,7 +1658,7 @@ export class MinionQueue {
       // handleTimeouts; shared tail in killJobs().
       const candidates = await tx.executeRaw<{ id: number; parent_job_id: number | null }>(
         `SELECT id, parent_job_id FROM minion_jobs
-          WHERE status = 'active'
+          WHERE status = 'active' AND queue <> '${LEASE_BEACON_QUEUE}'
             AND started_at IS NOT NULL
             AND EXTRACT(EPOCH FROM (now() - started_at)) * 1000 > ${WALL_CLOCK_THRESHOLD_MS_SQL}`,
         [lockDurationMs]
@@ -1802,7 +1805,7 @@ export class MinionQueue {
 
   /**
    * Fail a job (token-fenced). All side effects atomic in one transaction:
-   *   1. UPDATE child to 'delayed' (retry) | 'failed' | 'dead'
+   *   1. UPDATE child to 'delayed' (retry) | 'failed' | 'dead'; `result` (a handler result that reported a failure, #7188) is kept
    *   2. If terminal AND parent_job_id, run on_child_fail policy:
    *      - 'fail_parent' → mark parent 'failed' (via failParent SQL)
    *      - 'remove_dep'  → null out parent_job_id (via removeChildDependency SQL)
@@ -1819,7 +1822,8 @@ export class MinionQueue {
     lockToken: string,
     errorText: string,
     newStatus: 'delayed' | 'failed' | 'dead',
-    backoffMs?: number
+    backoffMs?: number,
+    result?: Record<string, unknown>,
   ): Promise<MinionJob | null> {
     return this.engine.transaction(async (tx) => {
       // Lock the parent row first so concurrent sibling completions/failures
@@ -1843,10 +1847,11 @@ export class MinionQueue {
           delay_until = CASE WHEN $1 = 'delayed' THEN now() + ($4::double precision * interval '1 millisecond') ELSE NULL END,
           finished_at = CASE WHEN $1 IN ('failed', 'dead') THEN now() ELSE NULL END,
           started_at = CASE WHEN $1 = 'delayed' THEN NULL ELSE started_at END,
+          result = COALESCE($7::jsonb, result),
           lock_token = NULL, lock_until = NULL, updated_at = now()
          WHERE id = $5 AND status = 'active' AND lock_token = $6
          RETURNING *`,
-        [newStatus, errorText, errorText, backoffMs ?? 0, id, lockToken]
+        [newStatus, errorText, errorText, backoffMs ?? 0, id, lockToken, result ?? null]
       );
       if (rows.length === 0) return null;
 
@@ -2142,7 +2147,7 @@ export class MinionQueue {
       const candidates = await tx.executeRaw<{ id: number; parent_job_id: number | null; stalled_counter: number; max_stalled: number }>(
         `SELECT id, parent_job_id, stalled_counter, max_stalled
            FROM minion_jobs
-          WHERE status = 'active'
+          WHERE status = 'active' AND queue <> '${LEASE_BEACON_QUEUE}'
             AND lock_until < now() - ($1::double precision * interval '1 millisecond')`,
         [graceMs]
       );

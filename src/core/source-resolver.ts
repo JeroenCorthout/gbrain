@@ -14,6 +14,7 @@
  */
 
 import { readFileSync, lstatSync, type Stats } from 'fs';
+import { syncDispatchRow } from './sync-dispatch-read.ts';
 import { join, dirname, resolve } from 'path';
 import type { BrainEngine } from './engine.ts';
 import { requestSnapshotRead } from './config-snapshot.ts';
@@ -121,10 +122,9 @@ function readDotfileWalk(startDir: string): string | null {
  * `pickSoleNonDefaultSource` is already shared for tier 5.5).
  */
 async function resolveRegisteredPathMatch(
-  engine: BrainEngine,
+  registered: RegisteredSource[],
   cwd: string,
 ): Promise<{ id: string; path: string; pathLen: number } | null> {
-  const registered = await listRegisteredLocalPathSources(engine);
   if (registered.length === 0) return null;
   const [cwdResolved, resolvedPaths] = await Promise.all([
     realpathOrResolveAsync(cwd),
@@ -166,11 +166,13 @@ export async function resolveSourceId(
   return id;
 }
 
+/** GBRA-133: `seen.registered` receives the tier-4 listing when the chain reached it, so a caller needs no second read of it. */
 async function resolveSourceIdChain(
   engine: BrainEngine,
   explicit: string | null | undefined,
   cwd: string,
   opts: { skipLocalSignals?: boolean; env?: string },
+  seen: { registered?: RegisteredSource[] } = {},
 ): Promise<string> {
   // 1. Explicit flag wins. The __all__ sentinel passes through verbatim
   //    (#1712) — it is not a source id, so it skips both the regex and
@@ -207,7 +209,11 @@ async function resolveSourceIdChain(
   //    gstack at ~/gstack + plans at ~/gstack/plans) pick the deepest.
   //    #3880 active-over-archived tiering + parallel realpath both live in
   //    the shared resolveRegisteredPathMatch helper.
-  const best = await resolveRegisteredPathMatch(engine, cwd);
+  // GBRA-133: tier 5's config read is independent of the listing, so it is sent with it (unused when tier 4 wins).
+  const defaultRead = engine.getConfig('sources.default');
+  defaultRead.catch(() => {});
+  const registered = seen.registered = await listRegisteredLocalPathSources(engine);
+  const best = await resolveRegisteredPathMatch(registered, cwd);
   if (best) {
     // A local_path registration can outlive source archival. Treat landing in
     // that tree as an explicit unavailable target, never as permission to
@@ -220,7 +226,7 @@ async function resolveSourceIdChain(
   // Silent-fallback tier per codex P1-F: an invalid `sources.default` config
   // value (operator hand-edit gone wrong, legacy underscore id) falls through
   // to tier 6 rather than throwing. Resolver stays robust to bad config.
-  const globalDefault = await engine.getConfig('sources.default');
+  const globalDefault = await defaultRead;
   if (globalDefault && isValidSourceId(globalDefault)) {
     await assertSourceExists(engine, globalDefault);
     return globalDefault;
@@ -308,9 +314,11 @@ export function resolveSourceIdEngineFree(
  * v34+ — fall back to the column-less query on older brains (rows then carry
  * no `archived` key and are treated as active, the pre-v34 behavior).
  */
+type RegisteredSource = { id: string; local_path: string; archived?: boolean };
+
 async function listRegisteredLocalPathSources(
   engine: BrainEngine,
-): Promise<Array<{ id: string; local_path: string; archived?: boolean }>> {
+): Promise<RegisteredSource[]> {
   const pending = requestSourceRows(engine);
   const request = pending && await pending;
   if (request) return request.filter(row => row.local_path !== null).map(({ id, local_path, archived }) => ({ id, local_path: local_path!, archived }));
@@ -346,6 +354,11 @@ async function pickSoleNonDefaultSource(
   // archived column was added in v34 (v0.26.5). Older brains may not have
   // it — fall back to the un-archived query in that case via try/catch.
   const pending = requestSourceRows(engine);
+  // GBRA-133: the emptiness guard's read is sent with the listing (one round trip); it is used only for a sole candidate.
+  const defaultPagesRead = engine.executeRaw<{ one: number }>(
+    `SELECT 1 AS one FROM pages WHERE source_id = 'default' AND deleted_at IS NULL LIMIT 1`,
+  );
+  defaultPagesRead.catch(() => {});
   const request = pending && await pending;
   let rows: Array<{ id: string }> = request ? request.filter(row => row.local_path !== null && row.id !== 'default' && row.archived === false) : [];
   if (!request) {
@@ -362,9 +375,7 @@ async function pickSoleNonDefaultSource(
   if (rows.length !== 1) return null;
   // #3070 emptiness guard: fire only when 'default' holds no active pages.
   try {
-    const defaultPages = await engine.executeRaw<{ one: number }>(
-      `SELECT 1 AS one FROM pages WHERE source_id = 'default' AND deleted_at IS NULL LIMIT 1`,
-    );
+    const defaultPages = await defaultPagesRead;
     if (defaultPages.length > 0) {
       // The flip must not be silent: one stray page in 'default' reroutes
       // every bare command away from the sole side-source, and the user
@@ -647,7 +658,9 @@ export async function assessUnscopedDefaultWrite(
 }
 
 async function assertSourceExists(engine: BrainEngine, id: string): Promise<void> {
-  const rows = await engine.executeRaw<{ id: string }>(
+  // GBRA-133: inside a CLI sync's routing scope the source's routing row answers this (sync-dispatch-read.ts).
+  const routing = await syncDispatchRow(engine, id);
+  const rows = routing ? (routing.id !== null && routing.archived === false ? [routing] : []) : await engine.executeRaw<{ id: string }>(
     `SELECT id FROM sources WHERE id = $1 AND archived = false`,
     [id],
   );
@@ -752,12 +765,15 @@ export async function getDefaultSourcePath(
   engine: BrainEngine,
   cwd: string = process.cwd(),
 ): Promise<string | null> {
-  const sourceId = await resolveSourceId(engine, null, cwd);
-  const rows = await engine.executeRaw<{ local_path: string | null }>(
-    `SELECT local_path FROM sources WHERE id = $1`,
-    [sourceId],
-  );
-  if (rows[0]?.local_path) return rows[0].local_path;
+  const seen: { registered?: RegisteredSource[] } = {};
+  const sourceId = await resolveSourceIdChain(engine, null, cwd, {}, seen);
+  noteResolvedSource(sourceId);
+  // GBRA-133: when the chain listed every source with a local_path, the resolved source's path is in that listing
+  // (absent means NULL), so it is not read again.
+  const localPath = seen.registered
+    ? seen.registered.find(r => r.id === sourceId)?.local_path ?? null
+    : (await engine.executeRaw<{ local_path: string | null }>(`SELECT local_path FROM sources WHERE id = $1`, [sourceId]))[0]?.local_path ?? null;
+  if (localPath) return localPath;
 
   // Legacy fallback: pre-v0.18 brains stored the repo path in the global
   // config table under sync.repo_path. The sources table exists but its
@@ -848,7 +864,7 @@ async function resolveSourceWithTierChain(
   // 4. Registered source whose local_path contains CWD.
   //    #3880 active-over-archived tiering + parallel realpath both live in
   //    the shared resolveRegisteredPathMatch helper.
-  const best = await resolveRegisteredPathMatch(engine, cwd);
+  const best = await resolveRegisteredPathMatch(await listRegisteredLocalPathSources(engine), cwd);
   if (best) {
     await assertSourceExists(engine, best.id);
     return { source_id: best.id, tier: 'local_path', detail: best.path };

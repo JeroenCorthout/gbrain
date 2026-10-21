@@ -18,6 +18,13 @@ export interface ReservedTransactions { transaction<T>(fn: (engine: BrainEngine)
  * follow them instead of a round trip ahead (the server still runs them
  * first). A COMMIT the server answers with ROLLBACK (an earlier statement
  * failed unobserved) is an error, never a silent success.
+ *
+ * Not BEGIN on a pool that does not pipeline (`max_pipeline` 0, a
+ * transaction-mode pooler, #6543): there the body starts after BEGIN's answer.
+ * A pooler can refuse a BEGIN (no server connection in time) and answer the
+ * statements behind it in autocommit, so a body sent with it could commit its
+ * writes outside the transaction; #6930's in-transaction pipelining would
+ * otherwise send them.
  */
 export function reservedTransactions(reserved: postgres.ReservedSql): ReturnType<typeof postgres> {
   const settle = async <T>(marker: Promise<unknown>, body: Promise<T>): Promise<T> => {
@@ -37,8 +44,9 @@ export function reservedTransactions(reserved: postgres.ReservedSql): ReturnType
       },
     });
     const opened = reserved.unsafe('begin').execute();
+    const afterBegin = Number((reserved.options as { max_pipeline?: number } | undefined)?.max_pipeline) > 0 ? Promise.resolve() : opened;
     let result: unknown;
-    try { result = await settle(opened, Promise.resolve().then(() => fn(handle))); }
+    try { result = await settle(opened, afterBegin.then(() => fn(handle))); }
     catch (error) { await reserved.unsafe('rollback').catch(() => reserved.discard()); throw error; }
     const done = await reserved.unsafe('commit') as unknown as { command?: string };
     if (done.command !== 'COMMIT') throw Object.assign(new Error('The transaction was rolled back at commit.'), { code: '25P02' });

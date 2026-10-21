@@ -39,6 +39,7 @@ import { recallWorkingStatCache, rememberWorkingStatCache, SyncTreeReadIncomplet
 import { syncPassKind } from './sync-classify.ts';
 import { PASS_BATCH_KEY_PREFIX, readConvergedWatermark, SyncAdmissionPaused, type PassEntry } from './sync-pass-batch.ts';
 import { assertDrainLease, currentDrainLease } from './sync-lease.ts';
+import { idleClear, readIdleFacts } from './sync-idle-skips.ts';
 import { digest } from './digest.ts';
 import { readSyncTail } from './sync-tail-record.ts';
 import { clearGitHold, holdRescreenDue, readGitHoldRetryPaths, readSyncHoldPolicy, readGitSourceHolds, readSyncImportProvenances, syncImportParserFor } from './sync-holds.ts';
@@ -152,7 +153,18 @@ async function batchEntries(engine: BrainEngine, level: ShadowLevel, deletes: Sh
     slug: entry.slug!, pageId: entry.pageId, revision: entry.revision, level: null }]));
   const leaving = new Map(deletes.map(entry => [entry.path, entry]));
   const fresh = imports.filter(entry => !entry.state.page);
-  const slugOf = new Map(fresh.map(entry => [entry.path, resolveSlugForPath(entryPaths(level, entry.path).sourcePath)]));
+  // Same-blob twins per level, and the leaving pages per recorded blob, counted once: a scan per winner was quadratic.
+  const twinsAt = new Map<string | null | undefined, number>();
+  for (const entry of fresh) twinsAt.set(entry.state.level, (twinsAt.get(entry.state.level) ?? 0) + 1);
+  const leavingAt = new Map<string, ShadowPath[]>();
+  for (const gone of leaving.values()) for (const oid of new Set(gone.state.record?.blobOids ?? [])) { const at = leavingAt.get(oid); if (at) at.push(gone); else leavingAt.set(oid, [gone]); }
+  // A first sync's batch is every new file: each loop below yields between stretches, as a level's own loops do.
+  const step = loopYield();
+  const slugOf = new Map<string, string>();
+  for (const entry of fresh) {
+    if (step.due()) await step.pause();
+    slugOf.set(entry.path, resolveSlugForPath(entryPaths(level, entry.path).sourcePath));
+  }
   // #6727, as discovery does: a new origin with no live page at its slug takes the one legacy page (no recorded origin)
   // that folds to it; several, or one the importer cannot write, keep the slug and the freeze holds legacy_slug_conflict.
   const legacySlugs = new Map<string, Pick<SyncEntry, 'legacySlugs' | 'legacyIdVeto'>>();
@@ -164,6 +176,7 @@ async function batchEntries(engine: BrainEngine, level: ShadowLevel, deletes: Sh
       [level.sourceId, [...new Set(adopting.map(entry => slugOf.get(entry.path)!))]]);
     const bySlug = new Map(identities.map(page => [page.slug, page]));
     for (const entry of adopting) {
+      if (step.due()) await step.pause();
       const adopted = named(entry);
       slugOf.set(entry.path, await adoptLegacyPage(engine, discovery, identities, bySlug.get(slugOf.get(entry.path)!), slugOf.get(entry.path)!, adopted));
       if (adopted.legacySlugs) legacySlugs.set(entry.path, { legacySlugs: adopted.legacySlugs, ...(adopted.legacyIdVeto ? { legacyIdVeto: true as const } : {}) });
@@ -181,6 +194,7 @@ async function batchEntries(engine: BrainEngine, level: ShadowLevel, deletes: Sh
   const entries: PassEntry[] = [], collisions: SyncSlugCollision[] = [], skipped: ShadowPath[] = [], identity: Array<{ entry: ShadowPath; origin: ShadowPath | null; slug: string; ids: { page: string; file: string } }> = [];
   const claims = new Map<string, ShadowPath[]>();
   for (const entry of imports) {
+    if (step.due()) await step.pause();
     const paths = entryPaths(level, entry.path);
     const base = { ...paths, action: 'import' as const, working: working(entry), level: entry.state.level, ...(entry.result.cls === 'drift' && entry.result.side && entry.result.side !== 'deleted' ? { drift: entry.result.side, ...(driftBaseline(entry) ? { driftBaseline: driftBaseline(entry) } : {}) } : {}) };
     if (entry.state.page) { entries.push({ ...base, slug: entry.slug!, pageId: entry.pageId, revision: entry.revision }); continue; }
@@ -209,6 +223,7 @@ async function batchEntries(engine: BrainEngine, level: ShadowLevel, deletes: Sh
     return new Map(manifests.flatMap(manifest => manifest.renamed.map(pair => [pair.to, { from: pair.from, ...(pair.identityHead ? { identityHead: pair.identityHead } : {}) }] as const)));
   })();
   for (const [slug, claimants] of claims) {
+    if (step.due()) await step.pause();
     const holder = holders.get(slug);
     const holderPath = holder?.source_path ? gitPathOfOrigin(holder.source_path) : null;
     const kept = holder && !holder.deleted && holderPath !== null && !leaving.has(holderPath) ? holderPath : null;
@@ -248,12 +263,12 @@ async function batchEntries(engine: BrainEngine, level: ShadowLevel, deletes: Sh
       entries.push({ ...base, pageId: null, revision: null, ...(origin.revision === held.revision ? { renameFrom: held } : { renameHeld: held }) });
       continue;
     }
-    const moved = [...leaving.values()].filter(gone => deleteEntries.has(gone.path) && !renamed.has(gone.path) && gone.state.record?.blobOids.includes(winner.state.level ?? ''));
-    const twins = fresh.filter(other => other.state.level === winner.state.level);
+    const moved = (leavingAt.get(winner.state.level ?? '') ?? []).filter(gone => deleteEntries.has(gone.path) && !renamed.has(gone.path));
+    const twins = twinsAt.get(winner.state.level) ?? 0;
     // #6729: a Git rename with an edit keeps its page when Git pairs it and the identity is confirmed, as discovery's delta does.
-    const inexact = moved.length === 1 && twins.length === 1 ? null : (await gitRenames())?.get(winner.path);
+    const inexact = moved.length === 1 && twins === 1 ? null : (await gitRenames())?.get(winner.path);
     const gitMoved = inexact && deleteEntries.has(inexact.from) && !renamed.has(inexact.from) ? leaving.get(inexact.from) : undefined;
-    if (gitMoved?.pageId != null || (moved.length === 1 && twins.length === 1)) {
+    if (gitMoved?.pageId != null || (moved.length === 1 && twins === 1)) {
       const gone = gitMoved ?? moved[0]!;
       const origin = entryPaths(level, gone.path).sourcePath;
       entries.push({ ...base, pageId: null, revision: null, renameFrom: { sourcePath: origin, slug: gone.slug!, pageId: gone.pageId!, revision: gone.revision! },
@@ -346,13 +361,14 @@ async function pinPass(engine: BrainEngine, input: SyncPassInput, lease: NonNull
     input.processingOptions.noSchemaPack ? null : loadActivePackForEngine(engine, { remote: false, sourceId }).catch(() => null),
     readSyncTail(engine, sourceId), readGitHoldRetryPaths(engine, sourceId, incarnation), readGitSourceHolds(engine, { sourceIds: [sourceId] }),
     passIdleProbe(engine, { sourceId, incarnation, worktreeId: context.binding.worktree_id, requestHwm: null, openAtStamp: null }),
-    engine.executeRaw(`SELECT 1 FROM op_checkpoints WHERE op='managed-sync-failure' AND fingerprint=ANY($1::text[]) LIMIT 1`, [passFailureKeys(sourceId, incarnation)])] as const);
+    engine.executeRaw(`SELECT 1 FROM op_checkpoints WHERE op='managed-sync-failure' AND fingerprint=ANY($1::text[]) LIMIT 1`, [passFailureKeys(sourceId, incarnation)]),
+    readIdleFacts(engine, sourceId, incarnation)] as const);
   pin.catch(() => undefined);
   const handover = await retireLegacyCursors(engine, { sourceId, incarnation, remote, assertActive });
   const empty = (status: SyncResult['status'], reason?: SyncResult['reason']) => emptyPassResult(context, remote, status, reason);
   if (handover.wait) return { ended: { ...empty('partial', 'writer_pending'), ...(remote ? {} : { retryWait: handover.wait }) } };
   if (handover.hostRequired) return { ended: empty('blocked_by_failures', 'reconcile_host_required') };
-  const [prior, admission, configuredWorking, patterns, loadedPack, tail, retry, sourceHolds, rowProbe, failed] = await pin;
+  const [prior, admission, configuredWorking, patterns, loadedPack, tail, retry, sourceHolds, rowProbe, failed, idleFacts] = await pin;
   assertActive();
   const [headLine, refLine] = syncGit(context.gitRoot, ['rev-parse', 'HEAD', '--abbrev-ref', 'HEAD']).split('\n');
   const head = headLine!.trim();
@@ -414,7 +430,7 @@ async function pinPass(engine: BrainEngine, input: SyncPassInput, lease: NonNull
       counts: {}, duration_ms: null, timings_ms: {} } };
   // The incarnation's legacy markers (§2.7 b1) are owed until a local pass wrote them, not only by its first row.
   const markersOwed = () => remote ? !prior : !value.obligations.legacy_markers_at;
-  return { prior, admission, tail, retry, failed, head, mode, selection, configured, selectionFp, parserFp, obligations, passId, optOutEpisode, episode,
+  return { prior, admission, tail, retry, failed, holds, idleFacts, head, mode, selection, configured, selectionFp, parserFp, obligations, passId, optOutEpisode, episode,
     processingOptions, inherited, pack, converged, cacheKey, kindStarted, working, kind, value, markersOwed };
 }
 
@@ -429,7 +445,7 @@ async function stampIdlePass(engine: BrainEngine, input: SyncPassInput, lease: N
   const { opts, context, authority, assertActive } = input;
   const { sourceId, incarnation } = context;
   const remote = authority.writer.remote;
-  const { value, converged, episode, passId, kindStarted, failed, tail, head, inherited } = pinned;
+  const { value, converged, episode, passId, kindStarted, failed, holds, idleFacts, tail, head, inherited } = pinned;
   const at = new Date().toISOString();
   value.obligations.converged = { ...converged!, passes_since_full: converged!.passes_since_full + 1 };
   value.obligations.stuck_since = null;
@@ -448,6 +464,7 @@ async function stampIdlePass(engine: BrainEngine, input: SyncPassInput, lease: N
   if (failed.length) await clearPassFailures(engine, sourceId, incarnation);
   // Nor can a tail be owed since the pin read none: the lease's holder reads none after it (sync-run.ts).
   lease.tailClear = !tail;
+  lease.idleClear = idleClear({ tail: !!tail, holds: holds.length, ...idleFacts });
   return { ...emptyPassResult(context, remote, 'up_to_date'), toCommit: remote ? '' : head, ...(inherited.length ? { inherited_options: inherited } : {}) };
 }
 
@@ -617,7 +634,7 @@ export async function runSyncPass(engine: BrainEngine, input: SyncPassInput): Pr
   const remote = authority.writer.remote;
   const lease = currentDrainLease(sourceId);
   if (!lease) throw new Error(`The live sync pass of ${sourceId} runs only under the source's drain lease.`);
-  lease.tailClear = false;
+  lease.tailClear = false; lease.idleClear = false;
   const started = Date.now(), startedAt = new Date(started).toISOString();
   const pinned = await pinPass(engine, input, lease, started);
   if (pinned.ended) return pinned.ended;

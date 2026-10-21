@@ -96,6 +96,7 @@ import { verifyAndRepairDreamPages, normForGrounding, readVerifyEpoch, loadChild
 import { dreamBreakerRefusal, loadDreamBreaker } from './dream-breaker.ts';
 import { resolveTriageDecide, type TriageDecide, type TriageDecideStats } from './triage-decide.ts';
 import { OperationError } from '../ops/contract.ts';
+import { isRetryableConnError } from '../retry-matcher.ts';
 import { backoffUntil, recordUnreliableTriage, responseDiagnostic, triageBackoffDetails, TRIAGE_UNRELIABLE_BACKOFF, VerdictCacheWrites, type TriageDiagnostic, type VerdictCacheFailure } from './triage-backoff.ts';
 import { resolveGroundingDecide } from './grounding-decide.ts';
 import { passesTriageGate, rescueConfigOf, DEFAULT_RESCUE_FLOOR, DEFAULT_RESCUE_MIN_SEGMENTS, DEFAULT_RESCUE_CONTENT_TYPES, DEFAULT_RESCUE_CONFIG, type RescueConfig, type RescueVerdictLike } from './triage-rescue.ts';
@@ -247,6 +248,12 @@ function warnUnknownModelOnce(model: string): void {
  *
  * Pure function. Tested by `test/cycle/synthesize-chunker.test.ts`.
  */
+/** #7240: the skip reason for a transcript whose child could not be queued: `submit_failed (<code>): <message>`. */
+function submitFailedReason(e: unknown): string {
+  const code = e instanceof OperationError ? e.code : (e as { code?: unknown } | null)?.code;
+  return `submit_failed${typeof code === 'string' ? ` (${code})` : ''}: ${e instanceof Error ? e.message : String(e)}`;
+}
+
 export function splitTranscriptByBudget(
   content: string,
   contentHash: string,
@@ -866,6 +873,14 @@ async function runPhaseSynthesizeInner(
       // (adversarial finding). Coalesced rows are another run's bookkeeping
       // and must not be cancelled.
       const transcriptFreshIds: number[] = [];
+      const rollbackTranscriptChunks = async (): Promise<void> => {
+        for (const id of transcriptFreshIds) {
+          try { await queue.cancelJob(id); } catch { /* best-effort rollback */ }
+          if (childIds.includes(id)) childIds.splice(childIds.indexOf(id), 1);
+          jobRawSource.delete(id);
+          chunkInfo.delete(id);
+        }
+      };
       const prompts = chunks.map((chunk, i) => buildSynthesisPrompt(
         t, chunk, i, chunks.length, priorContradictionsBlock, config.outputRoot,
         buildTriageMapBlock(triageVerdict, chunk, chunks.length),
@@ -961,18 +976,17 @@ async function runPhaseSynthesizeInner(
           // partial chunk set would write partial pages for a transcript the
           // skip report says was skipped.
           if (isQueueQuotaExceededError(e)) {
-            for (const id of transcriptFreshIds) {
-              try { await queue.cancelJob(id); } catch { /* best-effort rollback */ }
-              const idx = childIds.indexOf(id);
-              if (idx >= 0) childIds.splice(idx, 1);
-              jobRawSource.delete(id);
-              chunkInfo.delete(id);
-            }
+            await rollbackTranscriptChunks();
             skipReports.push({ filePath: t.filePath, reason: `admission_quota: ${e.message}` });
             quotaHit = true;
             break;
           }
-          throw e;
+          // #7240: one transcript whose child cannot be queued is skipped, never the phase: rethrowing cancelled every
+          // child already queued for the other transcripts. A lost connection or a cancellation still ends the phase.
+          if (opts.signal?.aborted || isRetryableConnError(e)) throw e;
+          await rollbackTranscriptChunks();
+          skipReports.push({ filePath: t.filePath, reason: submitFailedReason(e) });
+          break;
         }
         // Self-heal (#4152 C1): an idempotency-coalesced row still `waiting`
         // in a FOREIGN dream-inline-* queue was stranded by a previously

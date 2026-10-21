@@ -270,11 +270,31 @@ export async function awaitWrite(engine: BrainEngine, row: WriteRequest, config:
       row = { ...row, ...read.row };
       if (isTerminal(row)) return { kind: 'terminal', row: await getWriteRequestById(engine, id).catch(() => null) ?? row };
     }
+    // A stopped wait settles only what this process can settle at once: one consumer tick (it claims and publishes the
+    // request when nothing holds it back) and the request this consumer is still executing. A write that cannot move
+    // (another owner's lock, a consumer that defers to another process) is left queued under its request id.
+    if (opts.signal?.aborted && !service.stopping && !handed) {
+      const left = () => deadline - performance.now();
+      await Promise.race([consumer.tick().catch(() => undefined), new Promise<void>(resolve => setTimeout(resolve, Math.max(0, left())))]);
+      while (!handed && consumer.holds(id) && left() > 0) {
+        await new Promise<void>(resolve => {
+          const done = () => { clearTimeout(timer); wake = undefined; resolve(); };
+          const timer = setTimeout(done, Math.min(50, left()));
+          wake = done;
+        });
+      }
+    }
   } finally {
     listeners.delete(listener);
     if (!listeners.size && waiters.get(id) === listeners) waiters.delete(id);
   }
   if (handed) row = handed;
+  // A stopped wait then reads the receipt once, so a write that committed meanwhile is banked rather than reported pending.
+  if (!isTerminal(row) && opts.signal?.aborted && !service.stopping) {
+    const latest = await getWriteRequestProgress(engine, id).catch(() => null);
+    if (latest) row = { ...row, ...latest };
+    if (isTerminal(row)) return { kind: 'terminal', row: await getWriteRequestById(engine, id).catch(() => null) ?? row };
+  }
   if (isTerminal(row)) return { kind: 'terminal', row };
   if (failure) {
     const { classifyPgAccessError } = await import('../pg-access-classify.ts');

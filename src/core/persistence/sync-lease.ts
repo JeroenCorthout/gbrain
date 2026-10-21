@@ -40,6 +40,7 @@ import { currentRunDeadline, lastForwardProgressAt, noteForwardProgress } from '
 import { faultPoint } from './fault-points.ts';
 import { MANAGED_SYNC_PASS_OP } from './sync-pass-row.ts';
 import { VERSION } from '../../version.ts';
+import { LEASE_BEACON_QUEUE } from '../minions/protected-names.ts';
 
 export const DRAIN_LEASE_TTL_MINUTES = 2;
 export const DRAIN_LEASE_REFRESH_MS = 20_000;
@@ -49,7 +50,7 @@ export const LEASE_RETRY_AFTER_MS = 60_000;
 /** A follower stops this long before its watchdog would (or half its window, when the window is shorter). */
 const FOLLOW_MARGIN_MS = 30_000;
 /** The minion queue of the holder records (also the beacon older binaries' `liveSyncJob` sees); no worker serves it. */
-export const LEASE_BEACON_QUEUE = 'gbrain-drain-lease';
+export { LEASE_BEACON_QUEUE };
 /** A holder with no commit and no cursor save for this long is wedged (the in-pass governor's no-progress window). */
 export const HOLDER_STALL_MS = 5 * 60_000;
 /** How often a following run prints the holder's progress: on a terminal, and otherwise. */
@@ -65,8 +66,12 @@ export interface DrainHolder { kind: DrainHolderKind | 'unknown'; id: string | n
   version: string | null; progress: DrainHolderProgress | null }
 /** `safe_to_loop` and `retry_after_ms` are the `next` fields of the drain's other owner stops (`owner_wedged_here`). */
 export interface DrainLeaseHeld { code: typeof SYNC_DRAIN_LEASE_HELD; holder: DrainHolder | null; retry_after_ms: number; safe_to_loop: true; lost?: true; fix: Action }
-/** `tailClear`: a pass under this lease read that no tail is owed, and nothing under it owed one since (`withSyncTail` reads none). */
-interface DrainLease { lockId: string; sourceId: string; token: string; signal: AbortSignal; tailClear?: boolean }
+/**
+ * `tailClear`: a pass under this lease read that no tail is owed, and nothing under it owed one since (`withSyncTail` reads none).
+ * `idleClear` (GBRA-133): the last pass under this lease was an idle tick whose pin read no hold, no hold summary, no
+ * recorded failure of the source and no owed tail, so the settles that only act on those (sync-idle-skips.ts) have nothing to do.
+ */
+interface DrainLease { lockId: string; sourceId: string; token: string; signal: AbortSignal; tailClear?: boolean; idleClear?: boolean }
 
 const leases = new AsyncLocalStorage<ReadonlyMap<string, DrainLease>>();
 
