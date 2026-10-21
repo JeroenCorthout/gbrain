@@ -118,7 +118,9 @@ const SPECS: Record<RepairKind, Omit<RepairKindSpec, 'kind'>> = {
   },
   visibility: {
     handler: visibilityRepair, embeds: 'effect', checks: ['derived_visibility'],
-    summary: 'Stamp explicit visibility on extracted atoms and synthesized concepts, tighten-only (#5525). Transcript and missing origins become private; nothing is ever loosened. Each repaired page is re-embedded by its publication.',
+    summary: 'Stamp explicit visibility on extracted atoms and synthesized concepts, tighten-only (#5525). Transcript and missing origins become private; nothing is ever loosened. '
+      + 'Also makes private the chronicle events of a private origin, the pages that carry a privacy alias (access: private, ...) but no visibility, and the world facts held in or extracted from a private page. '
+      + 'Each repaired page is re-embedded by its publication.',
   },
   'safe-chunks': {
     handler: safeChunksRepair, embeds: 'inline', checks: ['safe_index_pending'],

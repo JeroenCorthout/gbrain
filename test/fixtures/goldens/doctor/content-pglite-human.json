@@ -99,7 +99,7 @@
       "  [OK] timeline_orphans: No orphaned timeline rows across 4 page(s).",
       "  [OK] slug_collisions: No slug collisions across 2 source checkout(s).",
       "  [OK] timeline_history: Every timeline row has a bullet in its page (4 page(s) inspected).",
-      "  [OK] derived_visibility: Every extracted atom and synthesized concept carries an explicit visibility no looser than its origin.",
+      "  [OK] derived_visibility: Every derived page and fact carries a visibility no looser than its source, and no page relies on a privacy alias alone.",
       "  [OK] safe_index_pending: Every re-sealable page is at the safe-chunk index version.",
       "  [OK] credential_projection_pending: No page waits for the credential-safe re-chunk.",
       "  [OK] connector_checkpoints: No orphan connector checkpoint rows older than 7 days.",

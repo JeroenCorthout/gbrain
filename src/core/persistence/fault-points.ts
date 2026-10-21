@@ -14,6 +14,8 @@ import type { WriteRequest } from './model.ts';
 
 export type PublicationBoundary = Parameters<NonNullable<PublicationHooks['boundary']>>[0];
 export type FaultPoint = `publication:${PublicationBoundary}` | `effect:${EffectKind}:mid` | 'effect:embedding:settle'
+  // An embedding effect that read its page at its own revision, before it reads the page's text projection (effects.ts `embedPage`).
+  | 'effect:embedding:page_read'
   | 'effect_recovery:before_clear' | 'publication_recovery:before_clear'
   // A streamed (version 2) withdrawal mirror (effect-recovery.ts): once its record is durable and before its file is
   // streamed into the publication stage, and after that step (the stage written and flushed, or left as it was found),

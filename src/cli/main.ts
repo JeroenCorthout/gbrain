@@ -21,7 +21,7 @@ import {
   resolveSelfUpgradeMode,
   justUpgradedPath,
 } from '../core/self-upgrade.ts';
-import { loadConfig, loadConfigFileOnly, loadConfigWithEngine, isThinClient, getDbUrlSource, envShadowDetected } from '../core/config.ts';
+import { loadConfig, loadConfigFileOnly, loadConfigWithEngine, isThinClient, getDbUrlSource, envShadowDetected, MERGED_CONFIG_BY_ENGINE } from '../core/config.ts';
 import {
   classifyPgAccessError as classifyDbAccessError,
   diagnoseDbConfig as diagnoseDbConfigForMarker,
@@ -509,6 +509,7 @@ async function main() {
     return;
   }
 
+  if (['search', 'query', 'get', 'recall'].includes(command) && await (await import('./cli-socket-client.ts')).maybeServeFromCliSocket(command, subArgs)) return; // warm serve socket (opt-in)
   // CLI-only commands
   if (CLI_ONLY.has(command)) {
     await handleCliOnly(command, subArgs);
@@ -1382,16 +1383,6 @@ export function findUnknownOpFlag(op: OperationMeta, args: string[]): string | n
   return null;
 }
 
-/**
- * #1475 — the DB-plane merge `connectEngine` performs after connect, published
- * for `makeContext` so the operation context carries it too.
- *
- * Why a map rather than a module-level variable: a process can hold more than
- * one engine (`--brain <mount>` connects a second one), and the host brain's
- * merged config must never be served for a mounted brain's context. Weak so a
- * disconnected engine does not pin its config for the life of the process.
- */
-const MERGED_CONFIG_BY_ENGINE = new WeakMap<BrainEngine, GBrainConfig>();
 const SELECTED_CONFIG_BY_ENGINE = new WeakMap<BrainEngine, GBrainConfig>();
 
 /**

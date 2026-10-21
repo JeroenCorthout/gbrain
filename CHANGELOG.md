@@ -10,6 +10,69 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.343.0] - 2026-10-21
+
+**An opt-in warm CLI socket lets `gbrain search`, `query`, `get` and `recall` skip most of a cold start's database round trips.** A cold CLI process connects, loads config and resolves its source before it can answer. Behind a transaction-mode pooler at 40 ms RTT, that cost a 305k-page brain about 3.4 s per search. With `gbrain serve --cli-socket` running, the same CLI call goes through a local Unix socket to the running serve and returns byte-identical output: 2.3 s for that search and 0.66 s for a get, against 1.19 s cold. It is off by default.
+
+### What changed
+
+| Situation | Before | Now |
+|---|---|---|
+| A CLI read while `gbrain serve` runs on the same brain | every call paid a cold start | with `gbrain serve --cli-socket` (or `gbrain config set serve.cli_socket true`), search, query, get and recall go through `GBRAIN_HOME/.gbrain/run/cli.sock`. Writes and every other command take the normal path |
+| A socket that is stale, dead, slow, on another brain or set up differently | n/a | the CLI falls back to the cold path silently. `GBRAIN_DEBUG=1` prints why, and `GBRAIN_CLI_SOCKET=0` skips the socket |
+
+The socket is a 0600 Unix socket in a 0700 directory owned by the current user. Peer credentials are checked on every connection, and a handshake token binds it to one brain, config, version and set of provider routing settings. An independent security review approved it. Postgres brains only. See [docs/guides/cli-socket.md](docs/guides/cli-socket.md).
+
+## [0.60.342.0] - 2026-10-21
+
+**A page saved again while its search embedding is being prepared no longer leaves that embedding job retrying for nothing.** When a page changed between two steps of its embedding job, the job waited about a second and tried again for a version of the page that would never come back. It then gave up on the next attempt. Now the job sees that the page moved on and closes at once, the same way it already did when the newer version arrived earlier. The newer version gets its own embedding as before.
+
+### What changed
+
+| Situation | Before | Now |
+|---|---|---|
+| A page is written again between the embedding job's page read and its text read | the job retried after about a second, then closed as superseded | the job closes as superseded on that attempt |
+| An embedding job whose own version's text is not ready yet | retried | retried (unchanged) |
+
+Nothing changes on upgrade, and nothing is rewritten.
+
+### Itemized changes
+
+- `src/core/persistence/effects.ts`: a `projection_pending` from the embedding effect's projection read re-reads the page; if the page is past the effect's revision, the effect completes `superseded`/`revision_changed`. Targeted-withdrawal and source-scan effects are unchanged.
+
+### For contributors
+
+- New fault point `effect:embedding:page_read`, with a regression case in `test/e2e/put-page-persistence-postgres.test.ts`.
+- `check:vendor-postgres` in `bun run verify` runs `vendor/update-postgres.sh --check`, so a driver fix made only in `vendor/postgres/src` (missing from the patch or the `cjs`/`cf` copies) fails verify. The pinned downloads are retried with backoff and cached by hash (`~/.cache/gbrain-vendor`, cached in the verify job); a hash mismatch still fails.
+- `scripts/ubicloud/ubi-runner.sh list --mine`, `gc` and the `up` sweep cover every VM this machine created, under any `UBI_OWNER` tag.
+- Seven timing-dependent tests are fixed at their cause, each proven with a forced probe: the #6511 purge budget, the lp-c publication-ceiling wait, the #5762 lock-timeout receipt, the #6712 shared-budget level, the origin-native legacy deletion, the long-page off-path comparison with a provider key, and the MCP tool-list snapshot boot. No bound, timeout or assertion is loosened.
+
+## [0.60.341.0] - 2026-10-21
+
+**Facts, events and memories derived from a private page stay private, and a retry can no longer widen them.** A fact extracted from a `visibility: private` page took the brain default, so on a world-default brain it was stored world, and remote callers read it through `recall` and the entity card. `remember` without a `visibility` saved world even onto a private page, and a reworded retry that dropped the parameter did the same.
+
+### What changed
+
+| Situation | Before | Now |
+|---|---|---|
+| Facts from a private page (page-write backstop, `extract_facts` with `source_slug`, `extract-conversation-facts`) | brain default or the caller's `world` | private |
+| Remote `extract_facts` whose source page it cannot see | caller's value | private, the same answer as a missing page |
+| `remember` with no `visibility` onto a private page, or under an explicit private `facts.default_visibility` | world | private; still world otherwise. The resolved value is stored on the request, so retries keep it |
+| A page marked private only by `access: private\|restricted\|confidential` or `confidentiality: confidential\|secret\|private\|restricted` | its facts, chronicle events, meeting timeline rows and `remember` saves were world | they are private |
+| Remote page reads of such a page | visible | unchanged by default; hidden when you set `visibility.honor_aliases true` |
+| Google Calendar events marked private or confidential | page had no visibility | `visibility: private`; a re-sync never drops a private label |
+
+### Check and repair what was written before
+
+Run `gbrain doctor`: `derived_visibility` now counts pages that rely on a privacy alias, chronicle events looser than their origin, and world facts from private pages (with the ids of those a remote caller can read). `gbrain repair visibility` previews every row; `gbrain repair visibility --apply` only tightens them. Nothing changes on upgrade.
+
+Not covered: Calendar events with default visibility on a calendar that is itself private (that needs the Calendar ACL scope), and timeline rows already written from alias-private meetings.
+
+### For contributors
+
+- `test/visibility-fail-closed-derived-writes.test.ts` runs every path on PGLite and Postgres with remote callers.
+- `access` and `confidentiality` are protected frontmatter keys: an ambiguous value is held instead of guessed.
+
 ## [0.60.340.0] - 2026-10-21
 
 **Cold one-shot reads behind a transaction pooler make fewer round trips and open at most two connections.** A cold `gbrain search` used to pay a round trip for each startup probe and open a connection for each parallel arm. On a 5,000-page test brain behind PgBouncer, cold search drops from 70 to 56 round trips, `get` from 15 to 13 and `recall` from 20 to 11.
