@@ -16,7 +16,8 @@ import { hybridSearch, type HybridSearchOpts } from '../../src/core/search/hybri
 import { configureGateway, resetGateway, __setEmbedTransportForTests, RerankError, type RerankInput, type RerankResult } from '../../src/core/ai/gateway.ts';
 import { scoresFollowRank } from '../../src/core/search/score-contract.ts';
 import { buildScoreDetails } from '../../src/core/search/explain-formatter.ts';
-import { RERANK_FUSE_K } from '../../src/core/search/rerank-fuse.ts';
+import { RERANK_FUSE_K, rerankOrderScore } from '../../src/core/search/rerank-fuse.ts';
+import { _resetFeedbackSettingsCacheForTests } from '../../src/core/feedback/settings.ts';
 import type { HybridSearchMeta, SearchResult } from '../../src/core/types.ts';
 
 let engine: PGLiteEngine;
@@ -68,7 +69,9 @@ const reverse = (scores: number[]) => async (input: RerankInput): Promise<Rerank
 const search = (rerankerFn: (i: RerankInput) => Promise<RerankResult[]>, extra: HybridSearchOpts = {}) =>
   hybridSearch(engine, 'alpha keyword', { limit: 10, autocut: false, reranker: { enabled: true, topNIn: 30, topNOut: null, rerankerFn }, ...extra });
 const firstPass = async () => (await hybridSearch(engine, 'alpha keyword', { limit: 10, autocut: false })).map(r => r.slug);
-const strip = (rows: SearchResult[]) => JSON.stringify(rows);
+// recency_boost (and the fused score it feeds) moves with the wall clock between two calls; every other byte must match.
+const CLOCK_FIELDS = new Set(['recency_boost', 'fused_score']);
+const strip = (rows: SearchResult[]) => JSON.stringify(rows, (k, v) => (CLOCK_FIELDS.has(k) ? undefined : v));
 
 describe('fuse replace', () => {
   test('setting replace and chunk is byte-identical to leaving them unset', async () => {
@@ -76,7 +79,7 @@ describe('fuse replace', () => {
     await engine.setConfig('search.reranker.fuse', 'replace');
     await engine.setConfig('search.reranker.document', 'chunk');
     const replace = await search(reverse([0.9, 0.8, 0.7, 0.6]));
-    expect(strip(replace)).toBe(strip(unset));
+    expect(strip(scoresFollowRank(replace))).toBe(strip(scoresFollowRank(unset)));
     expect(unset.some(r => r.rerank_fuse !== undefined)).toBe(false);
     expect(unset.map(r => r.slug)).toEqual([...(await firstPass())].reverse());
   });
@@ -116,6 +119,46 @@ describe('fuse rrf', () => {
     expect(replaced.length).toBe(2);
     expect(fused.map(r => r.slug)).toEqual(replaced.map(r => r.slug));
     expect(fused.every(r => r.rerank_score! >= 0.9)).toBe(true);
+  });
+});
+
+describe('output boundary under rrf: feedback, rank priors, autocut, then the score contract', () => {
+  test('every stage ran and the returned score is the fused value times the prior, never rising down the list', async () => {
+    await engine.setConfig('search.reranker.fuse', 'rrf');
+    await engine.setConfig('feedback.enabled', 'true');
+    await engine.setConfig('feedback.influence', '0.5');
+    _resetFeedbackSettingsCacheForTests();
+    // A learned weight of 1.0 on gamma: feedback multiplies its fused value by 1.5.
+    await engine.executeRaw(`INSERT INTO retrieval_weights (source_id, element_kind, element_key, weight, content_hash, updates, updated_at)
+      SELECT source_id, 'page', slug, 1, content_hash, 1, now() FROM pages WHERE slug = 'notes/gamma'`);
+    try {
+      // "when ...": the temporal prior demotes the three undated pages (beta carries a document date).
+      const out = await hybridSearch(engine, 'when alpha keyword', { limit: 10, autocut: true,
+        reranker: { enabled: true, topNIn: 30, topNOut: null, rerankerFn: reverse([0.9, 0.85, 0.8, 0.75]) } });
+      expect(out.length).toBe(4);
+      expect(out.every(r => r.rerank_fuse !== undefined)).toBe(true);
+      expect(out.find(r => r.slug === 'notes/gamma')?.feedback_boost).toBe(1.5);
+      expect(out.filter(r => r.rank_prior !== undefined).map(r => r.slug).sort()).toEqual(['notes/alpha', 'notes/delta', 'notes/gamma']);
+      for (const r of out) if (r.rank_prior) expect(r.rank_score).toBe(r.rerank_fuse!.score * r.rank_prior);
+      const returned = scoresFollowRank(out);
+      for (let i = 1; i < returned.length; i++) expect(returned[i].score).toBeLessThanOrEqual(returned[i - 1].score);
+      expect(returned[0].score).toBe(out[0].rank_score ?? rerankOrderScore(out[0])!);
+      expect(returned.every(r => r.score <= 2 / 61)).toBe(true);
+    } finally {
+      await engine.executeRaw(`DELETE FROM retrieval_weights`);
+      await engine.unsetConfig('feedback.enabled');
+      await engine.unsetConfig('feedback.influence');
+      _resetFeedbackSettingsCacheForTests();
+    }
+  });
+
+  test('replace mode is byte-identical at the boundary with the same stages on', async () => {
+    const run = () => hybridSearch(engine, 'when alpha keyword', { limit: 10, autocut: true,
+      reranker: { enabled: true, topNIn: 30, topNOut: null, rerankerFn: reverse([0.9, 0.85, 0.8, 0.75]) } });
+    const unset = strip(scoresFollowRank(await run()));
+    await engine.setConfig('search.reranker.fuse', 'replace');
+    await engine.setConfig('search.reranker.document', 'chunk');
+    expect(strip(scoresFollowRank(await run()))).toBe(unset);
   });
 });
 

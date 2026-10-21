@@ -10,6 +10,11 @@ import { RERANK_FUSE_K, fuseRerankedHead, normalizeRerankDocument, normalizeRera
 import { applyRankPriors, PERSON_PRIOR } from '../../src/core/search/rank-priors.ts';
 import { scoresFollowRank } from '../../src/core/search/score-contract.ts';
 import { applyAutocut } from '../../src/core/search/autocut.ts';
+import { gradeRetrievalConfidence } from '../../src/core/search/crag.ts';
+import { searchConfigValueRefusal } from '../../src/core/search/config-values.ts';
+import { capRerankDoc } from '../../src/core/search/rerank.ts';
+import { retrievalConfigHash, type RetrievalPins } from '../../src/eval/longmemeval/run-config.ts';
+import { KNOBS_HASH_VERSION, SEARCH_MODES } from '../../src/core/search/mode.ts';
 import { buildScoreDetails, formatResultExplain } from '../../src/core/search/explain-formatter.ts';
 import { knobsHash, loadOverridesFromConfig, resolveSearchMode, MODE_BUNDLES, KNOB_CONFIG_KEY } from '../../src/core/search/mode.ts';
 import { RerankError, type RerankInput, type RerankResult } from '../../src/core/ai/gateway.ts';
@@ -45,6 +50,27 @@ describe('knobs', () => {
     expect([KNOB_CONFIG_KEY.reranker_fuse, KNOB_CONFIG_KEY.reranker_document]).toEqual(['search.reranker.fuse', 'search.reranker.document']);
     expect(loadOverridesFromConfig({ 'search.reranker.fuse': 'rrf', 'search.reranker.document': 'titled' })).toMatchObject({ reranker_fuse: 'rrf', reranker_document: 'titled' });
     expect(loadOverridesFromConfig({ 'search.reranker.fuse': 'nope' }).reranker_fuse).toBeUndefined();
+  });
+  test('config set refuses unknown values and accepts the enums', () => {
+    for (const v of ['replace', 'rrf', 'RRF']) expect(searchConfigValueRefusal('search.reranker.fuse', v)).toBeNull();
+    for (const v of ['chunk', 'titled']) expect(searchConfigValueRefusal('search.reranker.document', v)).toBeNull();
+    expect(searchConfigValueRefusal('search.reranker.fuse', 'borda')).toEqual({ message: expect.stringContaining('replace | rrf'), example: 'replace' });
+    expect(searchConfigValueRefusal('search.reranker.document', 'page')).toEqual({ message: expect.stringContaining('chunk | titled'), example: 'chunk' });
+  });
+  test('every mode: the four arms resolve to four distinct knobs and retrieval identities; defaults keep the unset identity', () => {
+    for (const mode of SEARCH_MODES) {
+      const arms = [{}, { reranker_fuse: 'rrf' as const }, { reranker_document: 'titled' as const }, { reranker_fuse: 'rrf' as const, reranker_document: 'titled' as const }];
+      const knobs = arms.map(overrides => resolveSearchMode({ mode, overrides }));
+      expect(knobs.map(k => [k.reranker_fuse, k.reranker_document])).toEqual([['replace', 'chunk'], ['rrf', 'chunk'], ['replace', 'titled'], ['rrf', 'titled']]);
+      const hashes = knobs.map(k => knobsHash(k));
+      expect(new Set(hashes).size).toBe(4);
+      expect(knobsHash(resolveSearchMode({ mode, overrides: { reranker_fuse: 'replace', reranker_document: 'chunk' } }))).toBe(hashes[0]);
+      const pins = (k: typeof knobs[number]): RetrievalPins => ({ mode, keyword_only: false, reranker: { enabled: true, model: k.reranker_model }, autocut: false, expansion: false,
+        expansion_variant_budget: null, embedder: 'e@1', top_k: 8, trajectory: false,
+        ...(k.reranker_fuse !== 'replace' || k.reranker_document !== 'chunk' ? { reranker_stage: { fuse: k.reranker_fuse, document: k.reranker_document } } : {}) });
+      const ids = knobs.map((k, i) => retrievalConfigHash(pins(k), { knobs_hash: hashes[i], knobs_hash_version: KNOBS_HASH_VERSION }));
+      expect(new Set(ids).size).toBe(4);
+    }
   });
   test('the defaults hash like master; each non-default value re-keys the cache', () => {
     const base = knobsHash(resolveSearchMode({ mode: 'balanced' }));
@@ -126,11 +152,16 @@ describe('document titled', () => {
     await applyReranker('q', input, opts(async (i: RerankInput) => { docs.push(...i.documents); return [{ index: 0, relevanceScore: 1 }]; }, { document: 'titled' }));
     expect(docs).toEqual(['Alpha Page\nalpha body', 'Beta Page (2024-03-05)\nbeta body', 'Gamma Page\ngamma body', 'Delta Page']);
   });
-  test('still capped like a chunk document', async () => {
+  test('the cap applies to the combined title, date and body (the title is never appended after capping)', async () => {
     let doc = '';
-    await applyReranker('q', [row('a', { title: 'T', chunk_text: 'x'.repeat(20_000) })], opts(async (i: RerankInput) => { doc = i.documents[0]; return [{ index: 0, relevanceScore: 1 }]; }, { document: 'titled' }));
-    expect(doc.startsWith('T\nxxx')).toBe(true);
-    expect(doc.length).toBeLessThanOrEqual(6000);
+    const long = row('a', { title: 'Title Example', chunk_text: 'x'.repeat(20_000), effective_date: '2024-03-05', effective_date_source: 'date' });
+    await applyReranker('q', [long], opts(async (i: RerankInput) => { doc = i.documents[0]; return [{ index: 0, relevanceScore: 1 }]; }, { document: 'titled' }));
+    expect(doc).toBe(capRerankDoc('Title Example (2024-03-05)\n' + 'x'.repeat(20_000)));
+    expect(doc.startsWith('Title Example (2024-03-05)\nxxx')).toBe(true);
+    expect(doc.length).toBeLessThan(20_000);
+    let chunkDoc = '';
+    await applyReranker('q', [long], opts(async (i: RerankInput) => { chunkDoc = i.documents[0]; return [{ index: 0, relevanceScore: 1 }]; }));
+    expect(doc.length).toBe(chunkDoc.length);
   });
   test('chunk mode is the old expression', () => {
     expect(rerankDocument(row('a', { chunk_text: '' }), 'chunk')).toBe('A');
@@ -192,6 +223,31 @@ describe('autocut in rrf mode', () => {
     expect(cut(replaced).map(r => r.slug)).toEqual(['c', 'd']);
     // The fusion lifted `a` to rank 1, but its provider score is below the cliff, so autocut drops it.
     expect(cut(fused).map(r => r.slug)).toEqual(['c', 'd']);
+  });
+  test('the fused order never manufactures a cliff: the decision equals replace mode\'s, and a smooth provider curve is not cut', async () => {
+    const cfg = { enabled: true, jumpRatio: 0.2, minKeep: 1, minTopScore: 0.35 };
+    const decide = (list: SearchResult[]) => applyAutocut(list, x => x.rerank_score, cfg).decision;
+    const replaced = await applyReranker('q', rows('a', 'b', 'c', 'd'), opts(provider));
+    const fused = await applyReranker('q', rows('a', 'b', 'c', 'd'), opts(provider, { fuse: 'rrf' }));
+    expect(decide(fused)).toEqual(decide(replaced));
+    // Smooth provider scores (no gap >= 20% of the top) in an order the fusion scrambles: adjacent fused rows jump 0.9 -> 0.6 -> 0.84,
+    // a list-order reading would see a false cliff, and autocut keeps everything.
+    const smooth = fixed([[3, 0.9], [2, 0.84], [1, 0.78], [0, 0.72]]);
+    const scrambled = await applyReranker('q', rows('a', 'b', 'c', 'd', 'e', 'f'), opts(fixed([[5, 0.9], [4, 0.84], [3, 0.78], [2, 0.72], [1, 0.66], [0, 0.6]]), { fuse: 'rrf' }));
+    expect(scrambled.map(r => r.rerank_score)).toEqual([0.6, 0.9, 0.66, 0.84, 0.72, 0.78]);
+    expect(applyAutocut(scrambled, x => x.rerank_score, cfg).kept).toHaveLength(6);
+    const smoothFused = await applyReranker('q', rows('a', 'b', 'c', 'd'), opts(smooth, { fuse: 'rrf' }));
+    expect(applyAutocut(smoothFused, x => x.rerank_score, cfg).decision.applied).toBe(false);
+  });
+});
+
+describe('CRAG grade in rrf mode', () => {
+  test('grades the provider score of the row now at rank 1 (the row the caller reads), not the best provider score in the list', async () => {
+    const fused = await applyReranker('q', rows('a', 'b', 'c', 'd'), opts(fixed([[2, 0.95], [3, 0.9], [0, 0.2], [1, 0.1]]), { fuse: 'rrf' }));
+    expect(fused[0]).toMatchObject({ slug: 'a', rerank_score: 0.2 });
+    expect(gradeRetrievalConfidence(fused, { minTopScore: 0.5 })).toMatchObject({ level: 'weak', reason: 'rerank_top_below_floor', top_rerank_score: 0.2 });
+    const replaced = await applyReranker('q', rows('a', 'b', 'c', 'd'), opts(fixed([[2, 0.95], [3, 0.9], [0, 0.2], [1, 0.1]])));
+    expect(gradeRetrievalConfidence(replaced, { minTopScore: 0.5 })).toMatchObject({ level: 'strong', reason: 'rerank_top', top_rerank_score: 0.95 });
   });
 });
 

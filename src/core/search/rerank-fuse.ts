@@ -52,6 +52,19 @@ export function normalizeRerankDocument(v: unknown): RerankDocumentMode | undefi
   return (RERANK_DOCUMENT_MODES as readonly string[]).includes(s) ? (s as RerankDocumentMode) : undefined;
 }
 
+export const RERANK_FUSE_KEY = 'search.reranker.fuse';
+export const RERANK_DOCUMENT_KEY = 'search.reranker.document';
+
+/** The `gbrain config set` refusal for an unknown `search.reranker.fuse` value, or null (search/config-values.ts). */
+export function rerankFuseValueProblem(value: string): string | null {
+  return normalizeRerankFuse(value) ? null : `${RERANK_FUSE_KEY} must be one of ${RERANK_FUSE_MODES.join(' | ')} (got '${value}'). Nothing was written.`;
+}
+
+/** The `gbrain config set` refusal for an unknown `search.reranker.document` value, or null (search/config-values.ts). */
+export function rerankDocumentValueProblem(value: string): string | null {
+  return normalizeRerankDocument(value) ? null : `${RERANK_DOCUMENT_KEY} must be one of ${RERANK_DOCUMENT_MODES.join(' | ')} (got '${value}'). Nothing was written.`;
+}
+
 /** The uncapped reranker document for one row (the caller caps it with capRerankDoc). */
 export function rerankDocument(r: SearchResult, mode: RerankDocumentMode | undefined): string {
   if (mode !== 'titled') return r.chunk_text || r.title || '';
