@@ -29,6 +29,7 @@ describe('resolveRelativeDatesInTurns', () => {
     expect(r('**user:** I started today and it is still true today.')).toBe('**user:** I started today and it is still true today.');
     expect(r('**user:** Plan my shows for the next month.')).toBe('**user:** Plan my shows for the next month.');
     expect(r('**user:** I fly out next month.')).toBe('**user:** I fly out next month [2023-06].');
+    expect(r('**user:** It was the last week of April.')).toBe('**user:** It was the last week of April.');
     expect(r('**user:** I went hiking last weekend.')).toBe('**user:** I went hiking last weekend [2023-05-20/2023-05-21].');
     expect(r('**user:** Last month I did 3k.')).toBe('**user:** Last month [2023-04] I did 3k.');
     expect(r('**user:** Last year I started.')).toBe('**user:** Last year [2022] I started.');

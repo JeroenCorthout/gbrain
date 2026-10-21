@@ -120,6 +120,7 @@ export function resolveRelativeDatesInTurns(text: string, observedDay: string | 
       if (m.kind !== 'relative' || fenced.some(([a, b]) => from + m.index >= a && from + m.index < b)) continue;
       if (m.qualified || SESSION_DAY.test(m.cue) || (/^next\b/i.test(m.cue) && SPAN_FROM_NOW.test(turn.slice(Math.max(0, m.index - 8), m.index)))) continue;
       const end = from + m.index + m.cue.length;
+      if (/^\s+of\b/i.test(text.slice(end, end + 6))) continue;
       if (ALREADY_RESOLVED.test(text.slice(end, end + 16))) continue;
       const approximate = APPROXIMATE.test(text.slice(Math.max(from, from + m.index - 24), from + m.index));
       insertions.push({ at: end, text: ` ${dateBracket(m, approximate)}` });
