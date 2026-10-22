@@ -199,7 +199,7 @@ describe('unmanaged re-synthesis (#7065): what stays live', () => {
     });
   }, 300_000);
 
-  test('restore brings the retired earlier output back and retires the successor, both versioned', async () => {
+  test('restore brings the retired earlier output back and retires the successor, both versioned, files following', async () => {
     await fixture(false, async f => {
       await synthesize(f, () => [{ stem: 'storage-plan', title: 'Storage plan', body: PLAN }]);
       const [first] = await byStem(f, 'storage-plan');
@@ -214,6 +214,8 @@ describe('unmanaged re-synthesis (#7065): what stays live', () => {
       expect(after.find(p => p.slug === successor)).toMatchObject({ deleted: true, retired_by: 'generation-restore' });
       const [body] = await f.engine.executeRaw<{ compiled_truth: string }>('SELECT compiled_truth FROM pages WHERE source_id=$1 AND slug=$2', [f.sourceId, first!.slug]);
       expect(body!.compiled_truth).toContain('The storage plan moved to object storage.');
+      expect(existsSync(join(f.root, `${first!.slug}.md`))).toBe(true);
+      expect(existsSync(join(f.root, `${successor}.md`))).toBe(false);
     });
   }, 180_000);
 

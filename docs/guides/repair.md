@@ -1541,6 +1541,23 @@ Life Chronicle events publish the same way too (`--kind chronicle-event`, key
 depth page retired, with their timeline rows on the depth page, and it runs on
 managed brains as one coordinated request.
 
+Dream synthesis outputs publish as a generation per transcript (`--kind
+synthesis`, key `transcript:<root>/<path>`): a complete re-synthesis retires an
+earlier output it matched (an exact duplicate, or the same subject with every
+claim, quote and citation covered; `retired_by: synthesis-resynthesis`) and
+keeps every other one live. `--mode cleanup` lists those unmatched
+predecessors with why and what each holds alone; show the user the preview, and
+`--apply --expect <hash> --yes` retires exactly the listed ones
+(`retired_by: synthesis-cleanup`). `--mode restore` brings a retired output back
+and puts its file back (unmanaged brains). `gbrain config set
+generations.synthesis.retire_previous false` stops automatic retirement.
+
+```bash
+gbrain repair generations --kind synthesis --mode cleanup --since 30d --json
+gbrain repair generations --kind synthesis --mode cleanup --since <ISO-8601> --apply --expect <hash> --yes
+gbrain repair generations --kind synthesis --mode restore --since 30d --json
+```
+
 #### Fence absent
 
 A page written without its `## Facts` (or takes) section keeps its rows: the

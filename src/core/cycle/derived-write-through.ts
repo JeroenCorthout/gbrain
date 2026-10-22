@@ -190,7 +190,7 @@ export async function writeDreamPageFile(engine: BrainEngine, brainDir: string, 
   if (await isWriteThroughDisabled(engine)) return { written: false, skipped: 'disabled_by_config' };
   if (await urlCloneReadOnly(engine, sourceId)) return { written: false, skipped: 'url_clone' };
   const target = await resolvePageWriteTarget(engine, slug, sourceId);
-  if (!target.ok && target.skipped !== 'no_repo_configured' && target.skipped !== 'repo_not_found') return { written: false, skipped: target.skipped };
+  if (!target.ok && (!brainDir || (target.skipped !== 'no_repo_configured' && target.skipped !== 'repo_not_found'))) return { written: false, skipped: target.skipped };
   try {
     const storage = loadStorageConfig(target.ok ? target.writeRoot : brainDir);
     if (storage && isDbOnly(slug, storage)) return { written: false, skipped: 'db_only' };

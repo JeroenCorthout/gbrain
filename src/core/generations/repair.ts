@@ -321,7 +321,9 @@ async function applyEntry(ctx: OperationContext, adapter: GenerationAdapter<unkn
   }
   if (restored === 'changed') return changed('the live generation or its items changed since the preview');
   if (Array.isArray(restored)) return { applied: false, outcome: 'refused', reason: restored.join(', ') };
-  return { applied: true, outcome: 'restored', detail: { generation: restored.generation, restore_of: approved.restore_to, revived: approved.revive.length, retired: approved.retire.length } };
+  const fileHolds = adapter.publishesInPlace ? await restoreInPlaceFiles(ctx.engine, key.sourceId, approved.revive, approved.retire) : [];
+  return { applied: true, outcome: 'restored', detail: { generation: restored.generation, restore_of: approved.restore_to, revived: approved.revive.length, retired: approved.retire.length,
+    ...(fileHolds.length ? { file_holds: fileHolds } : {}) } };
 }
 
 /**
@@ -351,6 +353,20 @@ async function retireUnmatched(engine: BrainEngine, adapter: GenerationAdapter<u
   const { removeDreamPageFile } = await import('../cycle/derived-write-through.ts');
   const file = await removeDreamPageFile(engine, '', approved.slug, key.sourceId, '');
   return { applied: true, outcome: 'retired', detail: { generation: outcome.generation, retired_by: SYNTHESIS_CLEANUP_RETIRED_BY, ...(file.held ? { file_held: file.held } : {}) } };
+}
+
+/**
+ * GBRA-161 PR 4: the files of an in-place kind (synthesis pages) after its unmanaged restore committed: each revived page is
+ * written back to its file and each retired page's file removed, both only where the file holds nothing the database
+ * lacks (otherwise its `file_database_drift` entry is returned and the file stays).
+ */
+async function restoreInPlaceFiles(engine: BrainEngine, sourceId: string, revived: readonly string[], retired: readonly string[]): Promise<string[]> {
+  const { removeDreamPageFile, reverseWriteDreamRefs } = await import('../cycle/derived-write-through.ts');
+  const { renderPageToMarkdown } = await import('../cycle/synthesize.ts');
+  const held: string[] = [];
+  for (const slug of retired) { const file = await removeDreamPageFile(engine, '', slug, sourceId, ''); if (file.held) held.push(file.held); }
+  await reverseWriteDreamRefs(engine, '', revived.map(slug => ({ slug, source_id: sourceId })), { phase: 'repair generations', nativeSourceId: '', render: renderPageToMarkdown, held });
+  return held;
 }
 
 /** The approved restore of one key, under its locks in the caller's transaction: 'changed', the refused keys, or the new generation. */
