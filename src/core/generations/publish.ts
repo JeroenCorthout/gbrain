@@ -114,9 +114,9 @@ export async function activateGeneration(tx: BrainEngine, key: GenerationKey, li
 }
 
 /** Rechecks that each item is live at the identity the generation records (Eng-outside r3). */
-export async function assertItemsLive(tx: BrainEngine, adapter: GenerationAdapter<unknown>, key: GenerationKey, expected: ReadonlyMap<string, string>): Promise<void> {
+export async function assertItemsLive(tx: BrainEngine, adapter: GenerationAdapter<unknown>, key: GenerationKey, expected: ReadonlyMap<string, string>, context?: unknown): Promise<void> {
   if (!expected.size) return;
-  const rows = await adapter.readItems(tx, key, [...expected.keys()]);
+  const rows = await adapter.readItems(tx, key, [...expected.keys()], context);
   const wrong = [...expected].filter(([itemKey, identity]) => { const row = rows.get(itemKey); return !row?.live || row.identityHash !== identity; }).map(([itemKey]) => itemKey);
   if (wrong.length) throw liveConflict(key, wrong);
 }
@@ -222,8 +222,10 @@ export async function planPublication<C>(db: BrainEngine, adapter: GenerationAda
   const unrecorded = [...rows.values()].filter(row => row.owned && row.live && !live?.items.has(row.key) && !named.has(row.key));
   const evidence = unrecorded.length ? await adapter.legacyEvidence(db, key, unrecorded) : new Set<string>();
   const valve = await readValve(db, key, request.runId);
+  const proven = request.proof?.kind === 'originIneligible' ? await adapter.proofHolds?.(db, key, request.proof) === true
+    : request.proof ? proofHolds(request.proof, input, live?.inputPin) : false;
   const plan = planGeneration({ live, rows, proposal: request.items, input, config, modelProduced: adapter.modelProduced, strictOrder: adapter.strictOrder, additive: request.partial === true,
-    proofHolds: request.proof ? proofHolds(request.proof, input, live?.inputPin) : false, evidence, valve, release: request.release?.reason, approvedRetire: request.approved?.retire, approvedExpect: request.approved?.expect });
+    proofHolds: proven, evidence, valve, release: request.release?.reason, approvedRetire: request.approved?.retire, approvedExpect: request.approved?.expect });
   return { input, rows, plan };
 }
 
@@ -271,7 +273,7 @@ export async function publishGeneration<C>(engine: BrainEngine, adapter: Generat
       await faultPoint('generation:published', { sourceId: key.sourceId, operation: key.kind });
       const current = [...plan.puts.map(item => [item.key, item.identityHash] as const), ...[...plan.kept, ...plan.adopted].map(itemKey => [itemKey, rows.get(itemKey)!.identityHash] as const)];
       if (!request.partial) await adapter.completeItems?.(tx, key, current.map(([itemKey]) => itemKey), request.context);
-      await assertItemsLive(tx, adapter as GenerationAdapter<unknown>, key, new Map(current));
+      await assertItemsLive(tx, adapter as GenerationAdapter<unknown>, key, new Map(current), request.context);
       await adapter.retireItems(tx, key, plan.retires, request.approved?.retiredBy ?? adapter.retiredBy);
       if (plan.retires.length) await request.onRetired?.(tx, plan.retires);
       await faultPoint('generation:retired', { sourceId: key.sourceId, operation: key.kind });

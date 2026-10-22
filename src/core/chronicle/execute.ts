@@ -180,7 +180,7 @@ export async function executeChronicleRow(ctx: ChronicleExecContext, row: Chroni
   // An ineligible revision of a page that once produced events retires them (E8). No model call.
   if (row.state === 'skipped') {
     const generation = await publishChronicleGeneration(engine, { sourceId: row.source_id, pin, events: [],
-      decisionRequestId: null, replaces: true, maintenance: ctx.maintenance, signal: ctx.signal });
+      decisionRequestId: null, replaces: true, proof: { kind: 'originIneligible', reason: String(row.reason) }, maintenance: ctx.maintenance, signal: ctx.signal });
     await setNextAttempt(engine, row, null);
     return done('skipped', row.reason, { retired: generation.retired.length });
   }

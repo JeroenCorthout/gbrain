@@ -85,7 +85,6 @@ src/core/chronicle/backfill.ts	runChronicleBackfill	sql	STREAM
 src/core/chronicle/execute.ts	executeChronicleRow	field	LEAD	
 src/core/chronicle/extract-events.ts	chronicleJudgeContext	field	LEAD	
 src/core/chronicle/ledger.ts	decideChronicle	field	LEAD	
-src/core/chronicle/publish.ts	publishChronicleGeneration	call:putPage	INLINE	
 src/core/chronicle/publish.ts	publishChronicleGeneration	call:serializeMarkdown	INLINE	
 src/core/code-chunks.ts	prepareCodeChunks	field	INLINE	
 src/core/company-brain/inspection.ts	readPage	field	STREAM	
@@ -603,6 +602,8 @@ src/core/persistence/page-edit.ts	applyPageEdits	call:serializePageToMarkdown	SE
 src/core/persistence/page-edit.ts	applyPageEdits	field	SEGW	within's stored-offset mapping on the materialized snapshot, as pageSegments; a segmented page takes prepareSegmentedEditMutation first
 src/core/persistence/page-edit.ts	prepareSegmentedEditMutation	call:serializePageToMarkdown	NONE	serializes the frontmatter head with an empty body; the body streams from the segments
 src/core/persistence/page-edit.ts	assertSegmentedFencesCompile	field	NONE	the fields hold only the stored fence text laid out at its lines (scanCanonicalFences input); no page body is read
+src/core/generations/adapters/chronicle-events.ts	chronicleEventAdapter	field	NONE	restoreItem reads the body field of a ledger preimage JSON copy; segmented and oversize pages have no preimage
+src/core/generations/adapters/chronicle-events.ts	writeEventPage	call:putPage	INLINE	writes a Life Chronicle event page from the extractor's short proposal or a ledger preimage JSON copy; no stored page body is read
 src/core/generations/adapters/page.ts	pageIdentityHash	field	INLINE	identity hash of a derived page item: a segmented row hashes its empty inline body and is held segmented_unsupported before any write, so no segmented page is rewritten or retired
 src/core/generations/adapters/page.ts	markdownItem	field	NONE	reads the compiled_truth parseMarkdown returns for the producer's proposed markdown; no stored page body is read
 src/core/generations/adapters/page.ts	readPageRows	sql	INLINE	reads derived page items (atoms) with body_storage; a segmented row is marked segmented and held segmented_unsupported, with no preimage

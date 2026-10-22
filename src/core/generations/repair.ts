@@ -24,13 +24,15 @@ import { readFix } from '../ops/op-fix.ts';
 import { maintenanceTransaction } from '../persistence/attribution.ts';
 import { managedPersistenceEnabled } from '../persistence/ownership.ts';
 import { assertInlineBody } from '../page-body/page-shape.ts';
-import { stableJson } from '../persistence/digest.ts';
+import { digest, stableJson } from '../persistence/digest.ts';
+import type { PreparedMutation } from '../persistence/coordinator.ts';
+import type { WriteRequest } from '../persistence/model.ts';
 import { clearApprovedSet, loadApprovedSet, previewChangedError, previewHash, saveApprovedSet } from '../persistence/preview-approval.ts';
 import { afterCursor, type RepairHandler, type RepairItem, type RepairItemOutcome, type RepairPlan, type RepairScope } from '../repair/core.ts';
 import { generationAdapter, generationKinds } from './adapters/index.ts';
 import { readGenerationsConfig, restoreDaysHint } from './config.ts';
 import { RELEASABLE_HELD_REASONS, type GenerationAdapter, type GenerationKey, type HeldReason, type ProposedItem } from './contract.ts';
-import { listOrphanCandidates, listPendingMembers } from './managed.ts';
+import { listOrphanCandidates, listPendingMembers, requestUuid } from './managed.ts';
 import { applyFenceRestore, planFenceRestore } from './fence-restore.ts';
 import { activateGeneration, assertItemsLive, itemSetHash, lockGeneration, publishGeneration, readLiveGeneration, type LedgerItem } from './publish.ts';
 
@@ -272,33 +274,73 @@ async function applyEntry(ctx: OperationContext, adapter: GenerationAdapter<unkn
     if (Array.isArray(restored)) return { applied: false, outcome: 'refused', reason: restored.join(', ') };
     return { applied: true, outcome: 'restored', detail: { restore_of: approved.restore_to, revived: approved.revive.length, retired: approved.retire.length } };
   }
+  let restored: Awaited<ReturnType<typeof restoreGeneration>>;
   if (await managedPersistenceEnabled(ctx.engine)) {
-    return { applied: false, outcome: 'refused', reason: `${approved.owner_key}: a managed source restores retired atoms with gbrain repair atoms-restore; a generation restore here runs on unmanaged brains only` };
+    if (!adapter.databaseOnly) {
+      return { applied: false, outcome: 'refused', reason: `${approved.owner_key}: a managed source restores retired atoms with gbrain repair atoms-restore; a generation restore here runs on unmanaged brains only` };
+    }
+    restored = await submitManagedRestore(ctx.engine, adapter, key, approved);
+  } else {
+    restored = await maintenanceTransaction(ctx.engine, tx => restoreGeneration(tx, adapter, key, approved));
   }
-  const restored = await maintenanceTransaction(ctx.engine, async tx => {
-    const live = await readLiveGeneration(tx, key);
-    const plan0 = live?.id === approved.id ? await planRestore(tx, adapter, key, approved.id, approved.restore_to_id) : null;
-    await lockGeneration(tx, adapter, key, plan0 ? [...plan0.target.keys(), ...plan0.retire] : []);
-    if (!plan0 || (await readLiveGeneration(tx, key))?.id !== approved.id) return 'changed' as const;
-    const plan = await planRestore(tx, adapter, key, approved.id, approved.restore_to_id);
-    if (stableJson([plan.revive, plan.retire, plan.refused]) !== stableJson([approved.revive, approved.retire, approved.refused])) return 'changed' as const;
-    if (plan.refused.length) return plan.refused;
-    for (const itemKey of plan.revive) await adapter.restoreItem(tx, key, itemKey, plan.preimages.get(itemKey)!);
-    await adapter.retireItems(tx, key, plan.retire, 'generation-restore');
-    await assertItemsLive(tx, adapter, key, plan.target);
-    const items: LedgerItem[] = [
-      ...[...plan.target].map(([itemKey, identity]) => ({ key: itemKey, identityHash: identity, action: plan.revive.includes(itemKey) ? 'revived' as const : 'kept' as const,
-        ...(plan.revive.includes(itemKey) && plan.rows.get(itemKey)?.live ? { preimage: plan.rows.get(itemKey)!.preimage() } : {}) })),
-      ...plan.retire.map(itemKey => ({ key: itemKey, identityHash: plan.rows.get(itemKey)!.identityHash, action: 'retired' as const, preimage: plan.rows.get(itemKey)!.preimage() })),
-    ];
-    const setHash = itemSetHash([...plan.target].map(([itemKey, identityHash]) => ({ key: itemKey, identityHash })));
-    const activated = await activateGeneration(tx, key, live, { operationId: `restore:${approved.id}:${approved.restore_to_id}`, input: await adapter.readInput(tx, key, undefined),
-      setHash, completeness: { complete: true, restore: approved.restore_to }, restoreOf: approved.restore_to_id }, items);
-    return activated;
-  });
   if (restored === 'changed') return changed('the live generation or its items changed since the preview');
   if (Array.isArray(restored)) return { applied: false, outcome: 'refused', reason: restored.join(', ') };
   return { applied: true, outcome: 'restored', detail: { generation: restored.generation, restore_of: approved.restore_to, revived: approved.revive.length, retired: approved.retire.length } };
+}
+
+/** The approved restore of one key, under its locks in the caller's transaction: 'changed', the refused keys, or the new generation. */
+async function restoreGeneration(tx: BrainEngine, adapter: GenerationAdapter<unknown>, key: GenerationKey, approved: RestoreEntry): Promise<'changed' | string[] | { generation: number }> {
+  const live = await readLiveGeneration(tx, key);
+  const plan0 = live?.id === approved.id ? await planRestore(tx, adapter, key, approved.id, approved.restore_to_id) : null;
+  await lockGeneration(tx, adapter, key, plan0 ? [...plan0.target.keys(), ...plan0.retire] : []);
+  if (!plan0 || (await readLiveGeneration(tx, key))?.id !== approved.id) return 'changed' as const;
+  const plan = await planRestore(tx, adapter, key, approved.id, approved.restore_to_id);
+  if (stableJson([plan.revive, plan.retire, plan.refused]) !== stableJson([approved.revive, approved.retire, approved.refused])) return 'changed' as const;
+  if (plan.refused.length) return plan.refused;
+  for (const itemKey of plan.revive) await adapter.restoreItem(tx, key, itemKey, plan.preimages.get(itemKey)!);
+  await adapter.retireItems(tx, key, plan.retire, 'generation-restore');
+  await assertItemsLive(tx, adapter, key, plan.target);
+  const items: LedgerItem[] = [
+    ...[...plan.target].map(([itemKey, identity]) => ({ key: itemKey, identityHash: identity, action: plan.revive.includes(itemKey) ? 'revived' as const : 'kept' as const,
+      ...(plan.revive.includes(itemKey) && plan.rows.get(itemKey)?.live ? { preimage: plan.rows.get(itemKey)!.preimage() } : {}) })),
+    ...plan.retire.map(itemKey => ({ key: itemKey, identityHash: plan.rows.get(itemKey)!.identityHash, action: 'retired' as const, preimage: plan.rows.get(itemKey)!.preimage() })),
+  ];
+  const setHash = itemSetHash([...plan.target].map(([itemKey, identityHash]) => ({ key: itemKey, identityHash })));
+  const activated = await activateGeneration(tx, key, live, { operationId: `restore:${approved.id}:${approved.restore_to_id}`, input: await adapter.readInput(tx, key, undefined),
+    setHash, completeness: { complete: true, restore: approved.restore_to }, restoreOf: approved.restore_to_id }, items);
+  return { generation: activated.generation };
+}
+
+export const GENERATION_RESTORE_INTENT = 'managed_generation_restore';
+
+/**
+ * GBRA-161 PR 3: a managed source restores a database-only kind (chronicle events) in one coordinated request, journaled
+ * on the key's input page and bound to its current revision: the request runs `restoreGeneration` under the item locks.
+ */
+async function submitManagedRestore(engine: BrainEngine, adapter: GenerationAdapter<unknown>, key: GenerationKey, approved: RestoreEntry): Promise<'changed' | string[] | { generation: number }> {
+  const { maintenancePreflight, submitDatabaseMaintenanceIntent } = await import('../persistence/prepared-maintenance.ts');
+  const authority = await maintenancePreflight(engine, key.sourceId);
+  if (!authority) return [`${approved.owner_key}: the source is no longer managed; preview again`];
+  const slug = adapter.lockKeys(key, [])[0]!.slug;
+  const input = await engine.readPageSnapshot(slug, { sourceId: key.sourceId, includeDeleted: true });
+  const intent = { kind: GENERATION_RESTORE_INTENT, key, approved, expected_revision: input?.revision ?? null, ...(input?.page.deleted_at ? { deleted_page: true } : {}) };
+  const receipt = await submitDatabaseMaintenanceIntent(engine, authority, slug, intent, requestUuid(digest(['generation-restore-v1', key, approved.id, approved.restore_to_id, input?.revision ?? null])));
+  const result = receipt.restore as 'changed' | string[] | { generation: number } | undefined;
+  return result ?? 'changed';
+}
+
+/** Preparer of `managed_generation_restore` (trusted local only): the restore of a database-only kind, writing no file. */
+export async function prepareGenerationRestore(engine: BrainEngine, row: WriteRequest): Promise<PreparedMutation> {
+  const p = row.intent as { kind?: string; key?: GenerationKey; approved?: RestoreEntry; expected_revision?: string | null } | null;
+  const adapter = p?.key ? generationAdapter(p.key.kind) : undefined;
+  if (!p || p.kind !== GENERATION_RESTORE_INTENT || row.authority.remote || !adapter?.databaseOnly || !p.approved || p.key!.sourceId !== row.source_id) {
+    throw opError('permission_denied', 'Unsupported generation restore request.',
+      `Request ${row.request_id} in source ${row.source_id} is not a generation restore the trusted local writer admitted, so the coordinator refused it before any change. Restores run only from gbrain repair generations on the brain host.`);
+  }
+  const key = p.key!;
+  const approved = p.approved;
+  return { observedRevision: p.expected_revision ?? null, noop: true, additionalPageKeys: adapter.lockKeys(key, [...approved.revive, ...approved.retire]),
+    apply: async tx => ({ restore: await restoreGeneration(tx, adapter, key, approved) }) };
 }
 
 /**

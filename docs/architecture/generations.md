@@ -82,6 +82,19 @@ assistant-attributed or third-party fact is stored on its source page with no en
 as an owner fact. `deleteFactsForPage`, `expireFact` and `insertFacts({ deleteForPageFirst })` are deprecated; no
 production code calls them (`test/generations-deprecated-fact-writers.test.ts`).
 
+Life Chronicle events publish through `publishChronicleGeneration` (`adapters/chronicle-events.ts`, kind
+`chronicle_event`, key `depth:<slug>`, GBRA-161 PR 3). Each judged revision of a depth page (meeting, conversation,
+calendar page) is a generation of event pages; each event's timeline projection row on the depth page belongs to its
+item. A complete re-judgment retires the events it dropped together with their projection rows in the activation
+(versioned, `retired_by: life-chronicle`); a result below the model floor is held `shrunk`, and an empty or partial one
+(#7013) retires nothing. An empty generation retires only with a proof: `originIneligible` (the revision became
+ineligible: `not_chronicle_shaped`, `dream_generated` or `too_short`, rechecked against the chronicle ledger by the
+adapter's `proofHolds`) or `originGone` (the chronicle phase retires the events of a deleted depth page). Ownership
+stays content-addressed: an event is the extractor's while its content hash is on the chronicle ledger, its identity is
+the one the live generation recorded, or it is exactly what this publication proposed; an operator-edited or
+operator-deleted event is never an item, so nothing overwrites, retires or revives it.
+`gbrain repair generations --kind chronicle-event --mode restore` brings retired events and their rows back.
+
 ### Managed sources
 
 A managed source (`generations/managed.ts`) never composes a generation in one transaction: every page write is its own
@@ -93,6 +106,11 @@ coordinated request with its own file. A publication is planned without locks an
    flips the ledger and marks every item a member still overwrites or retires `pending`;
 3. `overwrite` and `retire` members: the existing per-page managed put and delete requests (version first, stamp), each
    refusing unless its item is pending on the live generation its activation made, and clearing the mark on commit.
+
+A database-only kind (`databaseOnly`: chronicle events, which have no canonical file) writes its new and changed items
+as their own requests before the activation, which it journals on the input page bound to its revision; the activation
+checks those members at the identity they now hold, records their before-states from the plan and retires the dropped
+items itself, so nothing is left pending. Its restore runs as one coordinated `managed_generation_restore` request.
 
 The activation id is digest(operation id, run scope) and each member's digest(activation id, slug, action), so a rerun
 replays them. Between steps 1 and 3 old and new items are both live, never neither. The next extraction run of the

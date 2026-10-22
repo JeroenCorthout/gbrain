@@ -1536,6 +1536,11 @@ that leaves the rest of the page alone; it works on managed brains too, and a
 fence edited since is refused. A consolidation restore reopens the chain's
 `valid_until` and consolidation marks.
 
+Life Chronicle events publish the same way too (`--kind chronicle-event`, key
+`depth:<slug>`): a restore brings back the events a re-judgment or a deleted
+depth page retired, with their timeline rows on the depth page, and it runs on
+managed brains as one coordinated request.
+
 #### Fence absent
 
 A page written without its `## Facts` (or takes) section keeps its rows: the

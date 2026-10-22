@@ -39,6 +39,12 @@ export interface GenerationAdapter<C = unknown> {
   strictOrder?: boolean;
   /** A canonical fence kind (generations/fence.ts): it publishes through `publishFenceGeneration` and restores by transplanting the fence. */
   fence?: 'facts' | 'takes';
+  /**
+   * Its items are database-only pages (no canonical file). A managed source then writes the new and changed items as
+   * ordinary requests before the activation, and the activation itself retires what the generation dropped (no retire
+   * members, nothing left pending); a restore runs as one coordinated request (managed.ts).
+   */
+  databaseOnly?: boolean;
   /** Page keys locked before the ledger row, in slug order with the input guard (D7). */
   lockKeys(key: GenerationKey, itemKeys: readonly string[]): Array<{ sourceId: string; slug: string }>;
   /** The input as stored now, or null when it is gone. `context` carries an input the database does not hold (a transcript). */
@@ -57,4 +63,6 @@ export interface GenerationAdapter<C = unknown> {
   restoreItem(tx: BrainEngine, key: GenerationKey, itemKey: string, preimage: Record<string, unknown>): Promise<void>;
   /** The identity hash of a preimage, so a restore can tell whether the item changed since. */
   preimageIdentity(preimage: Record<string, unknown>): string;
+  /** Rechecks an `originIneligible` proof against the input as stored now (proofs.ts); an adapter without it never accepts one. */
+  proofHolds?(engine: BrainEngine, key: GenerationKey, proof: import('./proofs.ts').EmptySourceProof): Promise<boolean>;
 }
