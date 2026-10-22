@@ -102,7 +102,7 @@ export async function planManagedGeneration<C>(engine: BrainEngine, adapter: Gen
     const outcome = await engine.transaction(tx => recordHeld(tx, request.key, config, planned as PublishRequest<unknown>, setHash, plan.reason, plan.context));
     return { kind: 'held', outcome: outcome as Extract<PublishOutcome, { state: 'held' }> };
   }
-  if (plan.kind === 'unchanged' && !request.items.length) return { kind: 'unchanged' };
+  if (plan.kind === 'unchanged' && (!request.items.length || adapter.publishesInPlace)) return { kind: 'unchanged' };
   const retires = plan.kind === 'publish' ? plan.retires : [];
   // A kind whose producer already wrote its items (publishesInPlace) keeps each one live at its identity without a member.
   const inPlace = adapter.publishesInPlace === true ? request.items.filter(item => { const row = rows.get(item.key); return row?.live && row.identityHash === item.identityHash; }) : [];

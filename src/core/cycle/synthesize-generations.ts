@@ -111,13 +111,13 @@ export async function activateSynthesisGenerations(engine: BrainEngine, input: S
       if (maintenance) {
         const plan = await planManagedGeneration(engine, synthesisAdapter, request, { locator: t.filePath });
         if (plan.kind === 'held') { details.held.push({ owner_key: key.ownerKey, reason: plan.outcome.reason }); continue; }
-        if (plan.kind === 'publish') {
-          await admitInPlaceGeneration(engine, maintenance, plan);
-          retired = plan.members.filter(member => member.action === 'retire').map(member => member.slug);
-        }
+        if (plan.kind === 'unchanged') continue;
+        await admitInPlaceGeneration(engine, maintenance, plan);
+        retired = plan.members.filter(member => member.action === 'retire').map(member => member.slug);
       } else {
         const outcome = await publishGeneration(engine, synthesisAdapter, request);
         if (outcome.state === 'held') { details.held.push({ owner_key: key.ownerKey, reason: outcome.reason }); continue; }
+        if (outcome.state === 'unchanged') continue;
         retired = outcome.retired;
         for (const slug of retired) {
           const file = await removeDreamPageFile(engine, input.brainDir, slug, sourceId, sourceId);
