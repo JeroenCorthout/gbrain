@@ -8359,6 +8359,7 @@
           "modelUsed: string",
           "pagesGathered: number",
           "persist?: { answer: string; unverified_claims: Array<{ text: string; reason: string; detail: string; }>; } | undefined",
+          "persist_base?: { sourceId: string; slug: string; revision: string | null; } | undefined",
           "question: string",
           "quote_check?: { grounded: number; repaired: number; unverified: number; } | undefined",
           "requested_model?: string | undefined",

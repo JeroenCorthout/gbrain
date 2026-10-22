@@ -18,6 +18,7 @@ import { policyHash, readGenerationsConfig, type GenerationsConfig } from './con
 import type { DerivedRetiredBy } from '../persistence/derived-retirement-hold.ts';
 import type { GenerationAdapter, GenerationKey, HeldReason, InputState, ItemRow, Preimage, ProposedItem } from './contract.ts';
 import { planGeneration, type LiveGeneration, type Plan } from './plan.ts';
+import type { WriteTrust } from '../trust/tier.ts';
 import { proofHolds, type EmptySourceProof } from './proofs.ts';
 
 /** The largest held proposal the ledger keeps (UTF-8 bytes of its JSON); a larger one is held without a releasable copy. */
@@ -46,6 +47,8 @@ export interface PublishRequest<C = unknown> {
   locator?: string;
   /** Recorded on the generation's completeness evidence (synthesis: the earlier outputs it left live, for the cleanup listing). */
   note?: Record<string, unknown>;
+  /** The write trust of a derived item (single-page kinds): the activation transaction is attributed at this tier. */
+  trust?: WriteTrust;
 }
 
 export type PublishOutcome =
@@ -285,7 +288,7 @@ export async function publishGeneration<C>(engine: BrainEngine, adapter: Generat
       if (plan.retires.length) await bumpValve(tx, key, request.runId, plan.retires.length);
       return { state: 'published', generationId: activated.id, generation: activated.generation, puts: plan.puts.map(item => item.key), kept: plan.kept,
         adopted: plan.adopted, retired: plan.retires, protected: plan.protectedKeys } satisfies PublishOutcome;
-    });
+    }, request.trust);
     if (outcome.state === 'published') await faultPoint('generation:activated', { sourceId: key.sourceId, operation: key.kind });
     return outcome;
   } catch (error) {
