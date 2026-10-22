@@ -125,6 +125,32 @@ the plan approved on Oct 21: replace only on a complete, non-empty result, alway
   delete per retirement (`managed_generation_retire`, `generations/managed-retire.ts`) in one transaction; the next run
   resumes a retirement left behind.
 
+### Single-page kinds and fence-only writers (PR 5)
+
+Three derived pages one writer rewrites in place under a fixed slug publish as single-item generations
+(`adapters/single-page.ts`, owner key `page:<slug>`): the dream summary (kind `dream_summary`, S-2), the `think`
+synthesis page (`think_synthesis`, S-10) and the drift report (`drift_report`, S-11). The writer reads the page revision
+before it composes (the summary before its children are submitted, the drift report before the judge loop, the `think`
+page before gathering, carried on `ThinkResult.persist_base`) and passes it as the generation's input pin. Activation
+rechecks it under the page lock: a page that changed since is fenced (`generation_fenced`, `pin_moved`), keeps the
+edit, and the writer reports it (the summary and drift report on stderr, `think --save` as an error) instead of writing.
+A write that changes a live page copies it to `page_versions` first (`gbrain restore`) and keeps its bounded preimage
+on the ledger, so `gbrain repair generations --kind dream_summary|think_synthesis|drift_report --mode restore` puts the
+earlier page back. A segmented live page is held `segmented_unsupported`. Managed brains keep their coordinated
+maintenance page request, which binds the revision it reads at publish time and versions first.
+
+Derived links and timeline rows are fence-only kinds (plan: the revision fence and the guard, no ledger). Each delete
+runs with the page row locked (`FOR SHARE`) and only while the page is still at the revision its producer read:
+
+- Timeline orphan retraction (T-2): `retractRemovedTimelineEntries` takes `expectedRevision`; `pruneTimelineOrphans`
+  (unmanaged), `gbrain extract timeline --source db` (unmanaged) and `extract --stale` pass the revision they read. A
+  page that moved deletes nothing. File-source extraction reconciles against the file and keeps no fence here.
+- The by-mention rebuild sweep (L-6): `gbrain extract links --by-mention --rebuild` reads the revision before the body;
+  a page that moved before the sweep is not swept and stays unchecked, so a resume retries it.
+- Concept provenance edges (C-4, #4589): `replaceConceptProvenanceLinks` banks a republished concept's edges and retires
+  the edges of atoms that left its member group in one transaction, only while the concept is at the revision its
+  publication produced. Edges retire only when a concept generation replaces the previous one.
+
 ### Managed sources
 
 A managed source (`generations/managed.ts`) never composes a generation in one transaction: every page write is its own

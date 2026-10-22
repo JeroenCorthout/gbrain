@@ -52,7 +52,7 @@ import { readLineGrammarSettings, statedRelationTypes } from '../core/line-gramm
 import { effectiveLinkExtractorWatermark, linkExtractorWatermarkFor } from '../core/link-extraction-watermark.ts';
 import { concurrentWriteSkipLine, replaceDerivedLinksBatchOrReplay, replaceDerivedLinksDeferringConflicts, settingsChangedSkipLine, unknownSourceSkipLine, type DerivedLinkBatchItem, type UnknownSourceSkip } from '../core/derived-links.ts';
 import { pageSnapshotKey } from '../core/page-snapshot-batch.ts';
-import type { PageSnapshot } from '../core/page-state/types.ts';
+import { PageRevisionConflictError, type PageSnapshot } from '../core/page-state/types.ts';
 import { LostWrites, extractionWrite, timelineSnapshotRefs } from '../core/extract-watermark.ts';
 export { reconcileSourceLinks, type SourceLinkReconciliationResult } from '../core/link-reconciliation.ts';
 export { extractMarkdownLinks } from '../core/link-extraction.ts';
@@ -2295,7 +2295,7 @@ export async function extractStaleFromDB(
         if ('unknownSource' in written) { unknownSource.push({ slug: page.slug, source_id: page.source_id, missing_source: written.unknownSource }); continue; }
         linksCreated += written.created;
         const timelineText = fullContent ?? await segmentedTimelineText(engine, snapshot.page);
-        await retractRemovedTimelineEntries(engine, page.slug, page.source_id, timelineText);
+        await retractRemovedTimelineEntries(engine, page.slug, page.source_id, timelineText, { expectedRevision: snapshot.revision });
         for (const entry of typeof timelineText === 'string' ? parseTimelineEntries(timelineText) : timelineText.entries) {
           // #3957: carry the parsed source label — omitting it wrote source=''
           // while the FS path wrote the split label, so the same bullet
@@ -2521,6 +2521,8 @@ async function extractMentionsFromDb(
   }
 
   for (const { slug, source_id } of remaining) {
+    // GBRA-161 PR 5 (L-6): the revision the rebuild scans, read before the body; the sweep runs only at it.
+    const scannedRevision = rebuild ? (await engine.readPageSnapshot(slug, { sourceId: source_id }))?.revision ?? null : null;
     const page = await engine.getPage(slug, { sourceId: source_id });
     // v0.41.19.0 (T5 — codex fix #4): even when we skip a page (filter
     // miss, missing row, empty body, no mentions), MARK IT COMPLETED so
@@ -2566,6 +2568,9 @@ async function extractMentionsFromDb(
         let pageRemoved = 0;
         let pageCreated = 0;
         await engine.transaction(async (tx) => {
+          const [current] = await tx.executeRaw<{ revision: string }>(
+            'SELECT knowledge_revision::text AS revision FROM pages WHERE source_id = $1 AND slug = $2 AND deleted_at IS NULL FOR SHARE', [source_id, slug]);
+          if (current?.revision !== scannedRevision) throw new PageRevisionConflictError(scannedRevision, current?.revision ?? null);
           pageRemoved = await tx.removeLinksByPagesAndSource(
             [{ slug, source_id }],
             {

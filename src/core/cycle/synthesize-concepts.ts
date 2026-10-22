@@ -45,7 +45,7 @@ import { maintenancePreflight } from '../persistence/prepared-maintenance.ts';
 import { derivedWriteThrough, reportFileHolds } from './derived-write-through.ts';
 import { addSpellingRedirects, canonicalConceptStem, loadConceptRedirects, loadLiveConceptStems } from './concept-redirects.ts';
 import {
-  addManagedProvenanceLinks, CONCEPT_DEFERRAL_CODES, CONCEPT_HOLD_CODES, publishClassicConcept, publishManagedConcept, stripFenceSections,
+  replaceConceptProvenanceLinks, CONCEPT_DEFERRAL_CODES, CONCEPT_HOLD_CODES, publishClassicConcept, publishManagedConcept, stripFenceSections,
 } from './concept-publication.ts';
 import { readPhaseConfigNumber, SYNTHESIZE_CONCEPTS_BUDGET_KEY, SYNTHESIZE_CONCEPTS_DEFAULT_BUDGET_USD } from './phase-config-values.ts';
 import { ConceptRetryBound, MAX_CONCEPT_ATTEMPTS } from './concept-retry-bound.ts';
@@ -548,13 +548,13 @@ export async function runPhaseSynthesizeConcepts(
         { from_slug: atomSlug, to_slug: conceptSlug, link_type: 'synthesizes', link_source: 'concept-provenance', context: 'concept synthesized from this atom', from_source_id: src, to_source_id: src },
       ]);
       try {
-        const inserted = maintenance ? await addManagedProvenanceLinks(engine, src, provenanceLinks)
-          : await engine.addLinksBatch(provenanceLinks, { auditSite: 'cycle.synthesize_concepts.provenance' }); // gbrain-allow-direct-insert: concept-provenance edges derived from the synthesis itself (no markdown body to reconcile from)
+        const written = await replaceConceptProvenanceLinks(engine, src, conceptSlug, provenanceLinks, { expectedRevision: maintenance ? conceptRevision : null, managed: !!maintenance });
         // Zero rows back with edges requested means every member atom fell
         // out of the batch JOIN (not in this source) — unless a prior run
         // already banked them (ON CONFLICT DO NOTHING also returns 0). A
         // silent 'ok' here is a graph orphan with a clean receipt.
-        if (inserted === 0 && provenanceLinks.length > 0) {
+        if (written === 'moved') linkWarnings.push({ concept: group.conceptSlug, warning: 'provenance links: the concept changed after it was published, so its edges were left as they were; the next run reconciles them' });
+        else if (written.inserted === 0 && provenanceLinks.length > 0) {
           const banked = (await engine.getLinks(conceptSlug, { sourceId: src }))
             .some((l) => l.link_source === 'concept-provenance');
           if (!banked) {

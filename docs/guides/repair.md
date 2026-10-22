@@ -1558,6 +1558,17 @@ gbrain repair generations --kind synthesis --mode cleanup --since <ISO-8601> --a
 gbrain repair generations --kind synthesis --mode restore --since 30d --json
 ```
 
+The dream summary, the `think` synthesis page and the drift report publish as
+single-page generations (`--kind dream_summary`, `think_synthesis`,
+`drift_report`, key `page:<slug>`): a writer whose page changed while it
+composed writes nothing and the edit stays, and every overwrite keeps the
+earlier page, so `--mode restore` puts it back (`gbrain restore <slug>` reads
+the same copy from page history).
+
+```bash
+gbrain repair generations --kind drift_report --mode restore --since 7d --json
+```
+
 #### Fence absent
 
 A page written without its `## Facts` (or takes) section keeps its rows: the
