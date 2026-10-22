@@ -58,6 +58,7 @@ const EXEMPT: Record<string, string> = {
   'src/core/repair/duplicate-facts.ts': 'owner repair behind a preview: expires exact duplicates of existing fact rows and points them at the row kept (lifecycle); no new text',
   'src/core/generations/adapters/extracted-facts.ts': 'callers gate first and pass only rows the gate inserts or flags (the conversation lane and the backstop decide in conversation-publication.ts and backstop.ts); restore puts back a row\'s own recorded state',
   'src/core/generations/adapters/fact-rows.ts': 'generation restore puts back a fact row\'s own recorded before-state (lifecycle); no new text',
+  'src/core/generations/managed-retire.ts': 'versioned delete of a synthesis output a managed generation retires, plus its retired_by/retired_at stamp (lifecycle); no new text',
   'src/core/repair/extractor-facts.ts': 'owner repair of existing rows',
   'src/core/repair/redacted-facts.ts': 'owner repair behind a preview hash: puts back into existing fact rows the words a stored source page proves; fenced rows publish through put_page, which runs the gate',
   'src/core/repair/facts-rehome.ts': 'owner repair moving existing facts onto their entity page (placement)',
