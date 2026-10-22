@@ -330,6 +330,7 @@ test/pathological/g2-extracted-facts.test.ts
 test/pathological/g2-fence-generations.test.ts
 test/pathological/g3-chronicle-generations.test.ts
 test/pathological/g4-concept-t3-model-hash-7269.test.ts
+test/pathological/g4-synthesis-resynthesis-7065.test.ts
 test/pathological/h1-zero-yield-atom-reextract.test.ts
 test/pathological/h2-git-effect-moved-remote.test.ts
 test/pathological/h3-chronicle-partial-generation.test.ts

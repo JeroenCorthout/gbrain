@@ -621,3 +621,4 @@ src/core/generations/fence.ts	readFenceBlocks	field	INLINE	a segmented page read
 src/core/generations/fence.ts	fenceReadOf	field	NONE	reads the fence block strings already read whole (inline, or from the marker segments of a segmented page), never a stored page body
 src/core/generations/fence.ts	fenceInput	field	NONE	reads the fence block strings of a FenceRead (already parsed), never a stored page body
 src/core/generations/fence.ts	storedBlocks	field	NONE	reads the fence block strings of a FenceRead (already parsed), never a stored page body
+src/core/cycle/synthesize-generations.ts	pages	sql	INLINE	reads the synthesis outputs of one re-synthesized transcript for the predecessor coverage match (generations/synthesis-coverage.ts); segmented pages are excluded in SQL, so a segmented earlier output is never compared and stays live as an unreadable unmatched predecessor

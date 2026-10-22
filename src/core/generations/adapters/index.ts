@@ -8,9 +8,10 @@ import { consolidationAdapter, factFenceAdapter } from './fact-rows.ts';
 import { takeFenceAdapter } from './take-rows.ts';
 import { extractedFactsAdapter } from './extracted-facts.ts';
 import { chronicleEventAdapter } from './chronicle-events.ts';
+import { synthesisAdapter } from './synthesis.ts';
 
 const adapters = new Map<string, GenerationAdapter<unknown>>([atomGenerationAdapter, factFenceAdapter, takeFenceAdapter, consolidationAdapter, extractedFactsAdapter,
-  chronicleEventAdapter].map(adapter => [adapter.kind, adapter as GenerationAdapter<unknown>]));
+  chronicleEventAdapter, synthesisAdapter].map(adapter => [adapter.kind, adapter as GenerationAdapter<unknown>]));
 
 /** The adapter of `kind`; a hyphenated spelling (`chronicle-event`) names the same kind. */
 export function generationAdapter(kind: string): GenerationAdapter<unknown> | undefined { return adapters.get(kind) ?? adapters.get(kind.replaceAll('-', '_')); }

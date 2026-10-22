@@ -64,6 +64,8 @@ export interface ActivationPlanIntent {
   /** The adapter context the activation reads the input and items with (atoms: the transcript file). */
   context: unknown;
   locator: string | null;
+  /** Completeness evidence the producer adds (PublishRequest.note). */
+  note?: Record<string, unknown>;
 }
 /** The journaled activation intent: the plan plus the run key its batch shares. */
 export type ActivationIntent = ActivationPlanIntent & { runKey: string } & Record<string, unknown>;
@@ -102,20 +104,25 @@ export async function planManagedGeneration<C>(engine: BrainEngine, adapter: Gen
   }
   if (plan.kind === 'unchanged' && !request.items.length) return { kind: 'unchanged' };
   const retires = plan.kind === 'publish' ? plan.retires : [];
+  // A kind whose producer already wrote its items (publishesInPlace) keeps each one live at its identity without a member.
+  const inPlace = adapter.publishesInPlace === true ? request.items.filter(item => { const row = rows.get(item.key); return row?.live && row.identityHash === item.identityHash; }) : [];
+  if (adapter.publishesInPlace && inPlace.length !== request.items.length) {
+    throw liveConflict(request.key, request.items.filter(item => !inPlace.includes(item)).map(item => item.key));
+  }
   const members: Array<ActivationMember & { item?: ProposedItem }> = [
-    ...request.items.map(item => { const row = rows.get(item.key);
+    ...request.items.filter(item => !inPlace.includes(item)).map(item => { const row = rows.get(item.key);
       return row?.live ? { slug: item.key, action: 'overwrite' as const, identity: item.identityHash, before: row.identityHash, item,
           ...(adapter.databaseOnly && item.identityHash !== row.identityHash ? { preimage: row.preimage().json } : {}) }
         : { slug: item.key, action: 'create' as const, identity: item.identityHash, before: null, item }; }),
     ...retires.map(slug => ({ slug, action: 'retire' as const, identity: rows.get(slug)!.identityHash, before: rows.get(slug)!.identityHash })),
   ];
   const operationId = publishOperationId(planned as PublishRequest<unknown>, setHash);
-  const kept = request.approved && plan.kind === 'publish' ? plan.kept : [];
+  const kept = request.approved && plan.kind === 'publish' ? plan.kept : inPlace.map(item => item.key);
   return { kind: 'publish', members, intent: { kind: GENERATION_ACTIVATE_INTENT, activationId: activationRequestId(operationId, opts.scope ?? null), key: request.key,
     expectedGeneration: planned.expectedGeneration!, input: request.input ?? input, operationId, setHash, runId: request.runId ?? null, partial: request.partial === true,
     proof: request.proof ?? null, retiredBy: request.approved?.retiredBy ?? opts.retiredBy ?? adapter.retiredBy, approved: request.approved !== undefined,
     members: members.map(({ item: _item, ...member }) => member), kept, carried: plan.kind === 'publish' ? plan.carried : [],
-    context: request.context ?? null, locator: opts.locator ?? null } };
+    context: request.context ?? null, locator: opts.locator ?? null, ...(request.note ? { note: request.note } : {}) } };
 }
 
 /** Records an admitted activation and its members, in the admission transaction (before any member runs). */
@@ -173,7 +180,7 @@ export async function prepareGenerationActivation(engine: BrainEngine, row: Writ
       ];
       if (databaseOnly) await adapter.retireItems(tx, p.key, p.members.filter(member => member.action === 'retire').map(member => member.slug), p.retiredBy);
       const activated = await activateGeneration(tx, p.key, live, { operationId: p.operationId, runId: p.runId ?? undefined, input, setHash: p.setHash,
-        completeness: { complete: !p.partial, proof: p.proof?.kind ?? null, managed: true, ...(p.approved ? { approved: p.retiredBy } : {}) },
+        completeness: { complete: !p.partial, proof: p.proof?.kind ?? null, managed: true, ...(p.approved ? { approved: p.retiredBy } : {}), ...p.note },
         activationId: p.activationId, locator: p.locator }, items);
       await tx.executeRaw(`UPDATE derived_generation_activations SET state='activated', generation_id=$2, updated_at=now() WHERE id=$1`, [p.activationId, activated.id]);
       const retires = p.members.filter(member => member.action === 'retire').length;

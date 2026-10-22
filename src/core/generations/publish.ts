@@ -44,6 +44,8 @@ export interface PublishRequest<C = unknown> {
   onRetired?: (tx: BrainEngine, retired: readonly string[]) => Promise<void>;
   /** A transcript key's current file, recorded on the generation so a moved file keeps its key. */
   locator?: string;
+  /** Recorded on the generation's completeness evidence (synthesis: the earlier outputs it left live, for the cleanup listing). */
+  note?: Record<string, unknown>;
 }
 
 export type PublishOutcome =
@@ -224,7 +226,7 @@ export async function planPublication<C>(db: BrainEngine, adapter: GenerationAda
   const valve = await readValve(db, key, request.runId);
   const proven = request.proof?.kind === 'originIneligible' ? await adapter.proofHolds?.(db, key, request.proof) === true
     : request.proof ? proofHolds(request.proof, input, live?.inputPin) : false;
-  const plan = planGeneration({ live, rows, proposal: request.items, input, config, modelProduced: adapter.modelProduced, strictOrder: adapter.strictOrder, additive: request.partial === true,
+  const plan = planGeneration({ live, rows, proposal: request.items, input, config, modelProduced: adapter.modelProduced, inPlace: adapter.publishesInPlace, strictOrder: adapter.strictOrder, additive: request.partial === true,
     proofHolds: proven, evidence, valve, release: request.release?.reason, approvedRetire: request.approved?.retire, approvedExpect: request.approved?.expect });
   return { input, rows, plan };
 }
@@ -279,7 +281,7 @@ export async function publishGeneration<C>(engine: BrainEngine, adapter: Generat
       await faultPoint('generation:retired', { sourceId: key.sourceId, operation: key.kind });
       const activated = await activateGeneration(tx, key, live, { operationId, runId: request.runId, input, setHash, locator: request.locator,
         completeness: { complete: !request.partial, proof: request.proof?.kind ?? null, released: request.release?.reason ?? null,
-          ...(request.approved ? { approved: request.approved.retiredBy } : {}) } }, ledgerItems(plan, rows, live));
+          ...(request.approved ? { approved: request.approved.retiredBy } : {}), ...request.note } }, ledgerItems(plan, rows, live));
       if (plan.retires.length) await bumpValve(tx, key, request.runId, plan.retires.length);
       return { state: 'published', generationId: activated.id, generation: activated.generation, puts: plan.puts.map(item => item.key), kept: plan.kept,
         adopted: plan.adopted, retired: plan.retires, protected: plan.protectedKeys } satisfies PublishOutcome;

@@ -45,6 +45,11 @@ export interface GenerationAdapter<C = unknown> {
    * members, nothing left pending); a restore runs as one coordinated request (managed.ts).
    */
   databaseOnly?: boolean;
+  /**
+   * Its producer writes the items itself before the activation (synthesis: the phase's children). The activation records
+   * them where they are and never writes one; a managed plan keeps them without members and only retires (managed-retire.ts).
+   */
+  publishesInPlace?: boolean;
   /** Page keys locked before the ledger row, in slug order with the input guard (D7). */
   lockKeys(key: GenerationKey, itemKeys: readonly string[]): Array<{ sourceId: string; slug: string }>;
   /** The input as stored now, or null when it is gone. `context` carries an input the database does not hold (a transcript). */

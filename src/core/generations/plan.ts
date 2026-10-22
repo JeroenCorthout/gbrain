@@ -25,6 +25,11 @@ export interface PlanInput {
   input: InputState | null;
   config: GenerationsConfig;
   modelProduced: boolean;
+  /**
+   * The producer wrote the proposal itself under new keys (publishesInPlace: synthesis): the floor measures the result
+   * against the live generation's items alone, never against the outputs this run just wrote.
+   */
+  inPlace?: boolean;
   strictOrder?: boolean;
   /** A partial result (input cut short): writes its items, retires nothing. */
   additive: boolean;
@@ -73,8 +78,9 @@ export function planGeneration(input: PlanInput): Plan {
   if (!proposal.length && retires.length && !input.proofHolds) return held('no_proof');
   if (Math.max(puts.length, retires.length) > config.maxItems) return held('oversize', { max_items: config.maxItems });
   const shrinkReleased = input.release === 'shrunk' || input.release === 'attempts_exhausted';
-  if (input.modelProduced && !input.additive && !shrinkReleased && proposal.length && retires.length && proposal.length < ownedBefore.size
-    && proposal.length < config.shrinkFloor * ownedBefore.size * ratio) return held('shrunk');
+  const floorBase = input.inPlace ? recorded.size : ownedBefore.size;
+  if (input.modelProduced && !input.additive && !shrinkReleased && proposal.length && retires.length && proposal.length < floorBase
+    && proposal.length < config.shrinkFloor * floorBase * ratio) return held('shrunk');
   if (retires.length) {
     const total = (input.release === 'valve' ? 0 : input.valve.windowRetired) + retires.length;
     const ratioLimit = config.valveMaxRatio * Math.max(input.valve.ownedTotal, ownedBefore.size);

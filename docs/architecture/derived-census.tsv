@@ -9,6 +9,7 @@ src/core/engine.ts	3	engine	BrainEngine interface declarations of softDeletePage
 src/core/facts/derivation-inputs.ts	1	pending:inventory	derived or mixed writer not yet on the generation primitive; reviewed in a later GBRA-161 PR
 src/core/generations/adapters/atoms.ts	1	primitive	the unmanaged atom adapter retires through retireDerivedPagesInTransaction inside the generation activation (publish.ts)
 src/core/generations/adapters/chronicle-events.ts	1	primitive	the Life Chronicle event adapter retires dropped events (with their timeline projection rows) through retireDerivedPagesInTransaction inside the generation activation (publish.ts, managed.ts; GBRA-161 PR 3)
+src/core/generations/adapters/synthesis.ts	1	primitive	the synthesis adapter retires matched earlier outputs of a re-synthesized transcript (synthesis-resynthesis) and operator-approved cleanup retirements (synthesis-cleanup) through retireDerivedPagesInTransaction inside the generation activation (publish.ts; GBRA-161 PR 4, #7065)
 src/core/minions/handlers/ingest-capture.ts	1	pending:inventory	derived or mixed writer not yet on the generation primitive; reviewed in a later GBRA-161 PR
 src/core/ops/extraction.ts	1	pending:inventory	derived or mixed writer not yet on the generation primitive; reviewed in a later GBRA-161 PR
 src/core/page-body/segment-rewrite.ts	1	pending:inventory	derived or mixed writer not yet on the generation primitive; reviewed in a later GBRA-161 PR

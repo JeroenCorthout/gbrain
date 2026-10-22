@@ -64,15 +64,16 @@ export function transcriptRoot(filePath: string, corpusDir: string, meetingDir: 
  * basename or content hash, so two files of one name in two folders never share a key. A file a live generation names as
  * its locator keeps that generation's key (the rename map). A file whose key has no live generation but whose content
  * equals the input of a live transcript generation whose file is gone was moved: it keeps that key, and the generation's
- * locator follows it (recorded even when the unchanged file is not extracted again).
+ * locator follows it (recorded even when the unchanged file is not extracted again). `kind`: the ledger kind whose live
+ * generations hold the rename map (atoms by default; synthesis keys its outputs the same way, GBRA-161 PR 4).
  */
 export async function resolveTranscriptKeys(engine: BrainEngine, sourceId: string, transcripts: ReadonlyArray<{ filePath: string; contentHash: string; root?: { path: string; label: string } }>,
-  dryRun: boolean): Promise<Map<string, string>> {
+  dryRun: boolean, kind: string = ATOM_KIND): Promise<Map<string, string>> {
   const own = new Map(transcripts.map(t => [t.filePath, t.root ? `${t.root.label}/${relative(resolve(t.root.path), resolve(t.filePath)).split(sep).join('/')}` : t.filePath]));
   if (!transcripts.length) return own;
   const live = await engine.executeRaw<{ id: number; owner_key: string; locator: string | null; input_pin: string | null }>(
     `SELECT id, owner_key, locator, input_pin FROM derived_generations WHERE source_id=$1 AND kind=$2 AND state='live' AND owner_key LIKE $3`,
-    [sourceId, ATOM_KIND, `${TRANSCRIPT_KEY_PREFIX}%`]);
+    [sourceId, kind, `${TRANSCRIPT_KEY_PREFIX}%`]);
   const located = new Set<string>();
   for (const t of transcripts) {
     const at = live.find(row => row.locator === t.filePath);
