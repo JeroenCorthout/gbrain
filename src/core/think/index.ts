@@ -614,9 +614,6 @@ export async function runThink(
   if (resolvedWindow?.source === 'question') warnings.push('WINDOW_FROM_QUESTION');
   const windowMeta = resolvedWindow ? { window_source: resolvedWindow.source } : {};
   const temporal = await resolveThinkTemporalContext(engine, { referenceDate: opts.referenceDate });
-  const persistSlug = synthesisSlug(opts.question, new Date().toISOString().slice(0, 10));
-  const persistBase = { sourceId: opts.sourceId ?? 'default', slug: persistSlug,
-    revision: (await engine.readPageSnapshot(persistSlug, { sourceId: opts.sourceId ?? 'default', includeDeleted: true }))?.revision ?? null };
 
   // Resolve the model through the 6-tier chain.
   const modelUsed = await resolveModel(engine, {
@@ -640,6 +637,10 @@ export async function runThink(
       );
     }
   }
+
+  const persistSlug = synthesisSlug(opts.question, new Date().toISOString().slice(0, 10));
+  const persistBase = { sourceId: opts.sourceId ?? 'default', slug: persistSlug,
+    revision: (await engine.readPageSnapshot(persistSlug, { sourceId: opts.sourceId ?? 'default', includeDeleted: true }))?.revision ?? null };
 
   // Optional question embedding — caller decides whether to pay the embedder; an opted-out brain never does.
   const questionEmbedding = await embedThinkQuestion(engine, opts, warnings);
