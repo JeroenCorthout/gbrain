@@ -780,10 +780,20 @@ Size the pooler for every process at once:
 
 ```
 long-running processes x GBRAIN_POOL_SIZE
-  + processes with GBRAIN_DIRECT_DATABASE_URL x GBRAIN_DIRECT_POOL_SIZE (default 3)
-  + one-shot commands running at the same time x their pool
+  + processes whose direct route lands on this pooler x GBRAIN_DIRECT_POOL_SIZE (default 3)
+  + one-shot commands running at the same time x their pool (a full `gbrain sync` is one too)
+  + parallel import workers x 2 (an unmanaged sync of more than 100 files, `--workers N`, or the sync a serve runs)
   <= the pooler's client limit (Supabase Supavisor: the project's pool_size)
 ```
+
+The direct route lands on the pooler when `GBRAIN_DIRECT_DATABASE_URL` names it,
+and also when gbrain derives it from a Supabase pooler URL whose user does not
+name the project (`postgres.<ref>`): the derived route keeps the pooler host on
+port 5432, its session port, even when the main URL uses transaction mode
+(6543). Two long-running processes at the
+defaults (10 + 3 each) already pass a client limit of 25, so a scheduled
+`gbrain sync` next to a `gbrain serve` on the same session port can exhaust it.
+`GBRAIN_MAX_CONNECTIONS` caps a sync's worker fan-out to fit a budget.
 
 When the sum does not fit, run fewer long-running processes (for example one
 shared `gbrain serve --http` instead of one stdio `serve` per agent session),

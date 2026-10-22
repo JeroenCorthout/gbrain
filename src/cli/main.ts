@@ -80,7 +80,8 @@ import {
 } from './command-table.ts';
 import { formatRememberResult } from './remember-format.ts';
 import { formatEntityResult, markEntityMiss } from './entity-format.ts';
-import { applyCliOpNotices, captureCapacityNotices, captureOpNotice, captureRetrievalNotices, withExplainTargetJson } from './op-notices.ts';
+import { applyCliOpNotices, captureCapacityNotices, captureOpNotice, captureRetrievalNotices, retrievalIncompleteLine, withExplainTargetJson } from './op-notices.ts';
+import { admitAcrossCliCalls } from '../core/notice-ledger.ts';
 import { searchTimingsDocument, searchTimingsLine, timeCliPhase } from './search-timings.ts';
 
 // db-availability loop: best-effort brain-id for the GBRAIN_DB_ACCESS marker,
@@ -255,20 +256,15 @@ function maybeEmitUpdateMarker(command: string): void {
       if (latest) {
         // notify mode honors a per-version snooze; auto mode ignores it.
         if (mode === 'notify' && isSnoozeActive(readSnooze(), latest, now)) return;
-        // The raw `UPGRADE_AVAILABLE <cur> <latest>` line is a MACHINE marker
-        // (parsed by the self-upgrade skill / MCP via parseMarker). A human at
-        // an interactive terminal should never see the token as the literal
-        // first line of output — so emit it only when stderr is NOT a TTY
-        // (agent harnesses capture stderr non-interactively and still get it).
-        // GBRAIN_FORCE_UPGRADE_MARKER=1 forces it for the rarer agent harness
-        // that allocates a PTY yet still parses the token. The human sentence
-        // prints on both.
-        if (!process.stderr.isTTY || process.env.GBRAIN_FORCE_UPGRADE_MARKER === '1') {
-          process.stderr.write(`UPGRADE_AVAILABLE ${VERSION} ${latest}\n`);
-        }
-        process.stderr.write(
-          `gbrain ${VERSION} -> ${latest} available. Run: gbrain self-upgrade\n`,
-        );
+        // One line, once per COVERAGE_NOTICE_WINDOW_MS across calls under
+        // GBRAIN_HOME (a newer latest prints at once, #7147). An agent harness
+        // (stderr not a TTY, or GBRAIN_FORCE_UPGRADE_MARKER=1 under a PTY) gets
+        // the raw `UPGRADE_AVAILABLE <cur> <latest>` MACHINE marker the
+        // self-upgrade skill parses; a human at a terminal gets the sentence.
+        if (!admitAcrossCliCalls(`upgrade_available|${VERSION}|${latest}`, 1)) return;
+        process.stderr.write(!process.stderr.isTTY || process.env.GBRAIN_FORCE_UPGRADE_MARKER === '1'
+          ? `UPGRADE_AVAILABLE ${VERSION} ${latest}\n`
+          : `gbrain ${VERSION} -> ${latest} available. Run: gbrain self-upgrade\n`);
       }
       return;
     }
@@ -1652,16 +1648,10 @@ export function formatResult(
     case 'search':
     case 'query': {
       const { results, meta } = redactRetrievalOutput(result as any[], lastRetrievalMeta);
-      const incompleteStages = Array.isArray(meta?.degraded)
-        ? [...new Set((meta.degraded as Array<{ stage?: string }>).map(d => d.stage)
-          .filter(stage => stage === 'vector_candidates_incomplete' || stage === 'projection_pending' || stage === 'projection_status_unknown'))]
-        : [];
-      const incompleteNotice = incompleteStages.length > 0
-        ? `Retrieval incomplete: ${incompleteStages.join(', ')}.\n`
-        : '';
       const answerId = typeof meta?.answer_id === 'string' ? meta.answer_id : undefined;
       if (answerId && results.length > 0) process.stderr.write(`answer: ${answerId} (rate with: gbrain rate ${answerId} 1-5)\n`);
       if (params.json === true) {
+        const incompleteNotice = retrievalIncompleteLine(meta);
         if (incompleteNotice) process.stderr.write(incompleteNotice);
         // --explain --json: the same per-row score_details object MCP `explain: true` returns.
         if (getCliOptions().explain) for (const r of results) r.score_details ??= require('../core/search/explain-formatter.ts').buildScoreDetails(r);
@@ -1683,7 +1673,7 @@ export function formatResult(
         // (autocut decision, `degraded: reranker_skipped (no_key)`) render.
         return formatResultsExplain(results, meta ?? undefined);
       }
-      return incompleteNotice + results.map(r =>
+      return retrievalIncompleteLine(meta) + results.map(r =>
         `[${r.score?.toFixed(4) || '?'}] ${r.slug} -- ${r.chunk_text?.slice(0, 100) || ''}${r.stale ? ' (stale)' : ''}`,
       ).join('\n') + '\n';
     }

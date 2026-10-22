@@ -6503,6 +6503,7 @@
         "kind": "interface",
         "members": [
           "cliKeyValue?: boolean | undefined",
+          "cliRange?: readonly [string, string] | undefined",
           "default?: unknown",
           "description?: string | undefined",
           "enum?: string[] | undefined",

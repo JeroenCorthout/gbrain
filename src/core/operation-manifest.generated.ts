@@ -237,7 +237,7 @@ export const OPERATION_MANIFEST: OperationMeta[] = [
     "outputRedaction": {
       "exempt": "explicit page read by slug/id; governed by page visibility, not output redaction (CEO-17 raw-read exception)"
     },
-    "description": "Read a page by slug. To edit: include_content:true, send `content` to put_page; or edit_page. >256 KB: outline+window, then `next`.",
+    "description": "Read a page; `section` or `grep` reads one part. Edit: include_content:true, `content` to put_page, or edit_page. >256 KB: outline+window, then `next`.",
     "params": {
       "slug": {
         "type": "string",
@@ -246,15 +246,15 @@ export const OPERATION_MANIFEST: OperationMeta[] = [
       },
       "fuzzy": {
         "type": "boolean",
-        "description": "Fuzzy slug match."
+        "description": "Fuzzy match."
       },
       "include_content": {
         "type": "boolean",
-        "description": "Markdown + revision, to edit."
+        "description": "Markdown + revision."
       },
       "content_only": {
         "type": "boolean",
-        "description": "Round-trip fields only."
+        "description": "Round-trip fields."
       },
       "body": {
         "type": "string",
@@ -270,6 +270,10 @@ export const OPERATION_MANIFEST: OperationMeta[] = [
       },
       "lines": {
         "type": "object",
+        "cliRange": [
+          "from",
+          "count"
+        ],
         "description": "Window: 1-based lines.",
         "properties": {
           "from": {
@@ -285,6 +289,10 @@ export const OPERATION_MANIFEST: OperationMeta[] = [
       },
       "bytes": {
         "type": "object",
+        "cliRange": [
+          "offset",
+          "length"
+        ],
         "description": "Window: UTF-8 bytes of size.total_bytes, not body_bytes (snapped to a line start).",
         "properties": {
           "offset": {
@@ -332,13 +340,28 @@ export const OPERATION_MANIFEST: OperationMeta[] = [
         "description": "Outline next_from_index.",
         "fullSurfaceOnly": true
       },
+      "section": {
+        "type": "string",
+        "description": "Only the section under this heading (case-insensitive, first match), with its heading_path.",
+        "fullSurfaceOnly": true
+      },
+      "grep": {
+        "type": "string",
+        "description": "Only the paragraphs containing this text (case-insensitive substring, not a regex), with line numbers and total_matches.",
+        "fullSurfaceOnly": true
+      },
+      "context": {
+        "type": "number",
+        "description": "With grep: paragraphs of context either side (default 1, max 5).",
+        "fullSurfaceOnly": true
+      },
       "include_deleted": {
         "type": "boolean",
         "description": "Soft-deleted too."
       },
       "include_timeline_entries": {
         "type": "boolean",
-        "description": "Timeline rows too."
+        "description": "Timeline rows."
       },
       "grammar_diagnostics": {
         "type": "boolean",

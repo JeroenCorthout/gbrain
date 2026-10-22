@@ -10,6 +10,61 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.360.0] - 2026-10-22
+
+**Search and query notices now describe the query you ran instead of repeating brain-wide state on every call, startup prints one upgrade line, and `gbrain get` can return a single section, the paragraphs matching a term, or a line or byte range.** Before this release, every search on a brain with pending projections or held files carried the same brain-wide notice whether or not those items could affect the answer, two banners printed the same upgrade line, and an agent reading part of a large page had to fetch it whole and cut it down itself.
+
+### What changed
+
+| Situation | Before | Now |
+|---|---|---|
+| Search or query while projections are pending | a brain-wide `projection_pending` notice on every call | `_meta.retrieval.coverage` with a `could_affect` count; the notice only appears when pending items could match this query ("N of M pending page(s) could match this query") |
+| The top hit is the exact page the query named and its projection is current | the readiness hint and `Retrieval incomplete:` line still showed | `could_affect.pending_projection` is 0, with `coverage.top_hit_exact: true`; `degraded` still records it |
+| The same coverage notice on repeated calls | shown on every call | at most once per 30 minutes, again at once when coverage gets materially worse; the structured fields are always present |
+| Pages held by their embedding budget | not named by the held-files notice | counted in `embedding_held` and named; when they are the only cause the fix is `gbrain embed --held --dry-run` |
+| An upgrade is available | two banners with the same line | one line per version pair per window: `UPGRADE_AVAILABLE <cur> <latest>` when stderr is not a TTY, the sentence on a TTY |
+| Reading one part of a large page | fetch the page and cut it down | `gbrain get <slug> --section "<heading>"`, `--grep <term> [--context N]`, `--lines 100-140` / `--lines 100`, `--bytes 0-999` |
+
+### What to watch for after you upgrade
+
+- Nothing is rewritten on upgrade.
+- Scripts that matched the human upgrade sentence on a non-TTY stderr see the `UPGRADE_AVAILABLE <cur> <latest>` token instead.
+- Every `get_page` response now carries `chars`, including `content_only`.
+
+### Itemized changes
+
+- `src/core/search/retrieval-coverage.ts`: query-scoped `coverage` (`pending_projection`, `held_files`, `embedding_held`, each with `could_affect`, capped at 1,000) and the exact-top-hit suppression; `src/core/notice-ledger.ts` throttles the coverage notice per window, per HTTP session or through `GBRAIN_HOME/notices/coverage.json` for one-shot CLI calls.
+- `src/cli/main.ts`, `src/cli/op-notices.ts`: one upgrade line per version pair per window, and the retrieval-incomplete line moves to the op-notices module.
+- `src/core/ops/get-page-slice.ts`: `get_page` `section`, `grep` and `context` (cut from the read projection after authorization; a segmented page streams one segment at a time), with `--section` / `--grep` / `--context` on the CLI and `section`, `grep`, `context` on the full MCP surface.
+- `ParamDef.cliRange`: `--lines N-M` / `--lines N` / `--bytes N-M` range forms on the CLI; JSON still works.
+
+Tests: `test/retrieval-coverage-notices.test.ts`, `test/get-page-slices.test.ts`, `test/cli-range-param.test.ts`, `test/e2e/self-upgrade-marker.test.ts`.
+
+## [0.60.359.0] - 2026-10-22
+
+**Held deleted files now show who deleted them, so each group can be resolved on its own.** A held `file_gone` file can be a page no commit ever held (the database copy is the only one), a file a commit deleted on purpose, or a deletion only the worktree lost. A held preview showed them all the same way, so a single `--prefer` either brought back pages that were culled on purpose or deleted the only copy of others. Each previewed page now names its provenance, and `--provenance` selects one group at a time.
+
+### What changed
+
+| Situation | Before | Now |
+|---|---|---|
+| Previewing held `file_gone` files | Every file looked the same | Each page names the commit that deleted it (sha, author, date, subject, read with `--full-history`), `never_committed`, or `deletion_uncommitted`, and the preview counts each kind |
+| Keeping pages no commit ever held | `--prefer database` recreated a file nobody committed | `--provenance never_committed --prefer database` keeps each page database-only: no file is written, the page forgets its path, and the hold clears for good |
+| `--provenance never_committed --prefer file` | n/a | Refused: each of those pages holds the only copy |
+| Accepting deliberate deletions | Mixed in with the rest | `--provenance deleted_by_commit --prefer file` |
+| A repair apply the database refuses mid-run (40P01, 40001, lost connection) | The command ended with an error, and `--json` printed nothing | The run stops with `stopped.reason` `database_contention` / `connection_lost`, what it applied, and the resume command |
+| A repair apply killed by SIGTERM or SIGHUP (an outer timeout) | Died with no record | Stops before its next item with `stopped.reason: interrupted` and the same result; a second signal exits at once |
+
+**Spend effect:** none. No model calls and no default changes. Nothing is rewritten on upgrade.
+
+### Itemized changes
+
+- `src/core/persistence/sync-origin-evidence.ts`: `readDeletionProvenance` reads HEAD's full history in bounded batches (a side branch's own deleting commit first; a merge only when its resolution dropped the file).
+- `src/core/repair/file-drift.ts`: per-page `provenance` and `details.provenance` counts; `--provenance` filter (`residuals.other_provenance`); the database-only keep (`managed_maintenance_file_drift_detach`, a database maintenance request whose preparer re-checks the page and its provenance and clears the hold).
+- `src/core/repair/core.ts`: database refusals (`recordDatabaseStops`, set by the CLI; the cycle and doctor remediation keep the rethrow their own stops rely on) and the CLI's termination signal stop an apply with a result; `src/commands/repair.ts` owns SIGTERM/SIGHUP during an apply.
+- `docs/guides/repair.md` (provenance), `docs/ENGINES.md#pool-sizing` (sync workers and a derived direct route in the pooler sum).
+- Tests: `test/repair-file-drift-provenance-gbra133.test.ts`, `test/repair-database-stop-gbra133.test.ts` (PGLite and Postgres).
+
 ## [0.60.358.0] - 2026-10-21
 
 **On large brains the scan for committed files with no page now finishes, `sync --dry-run` no longer waits on the writer, pages held or skipped for size get chunks and become keyword-searchable, and the new `gbrain pages status` says why a page is or isn't searchable.** Before this release, the unindexed-file scan started over whenever a commit landed, so a source with hundreds of thousands of files and steady commits never finished it. Pages marked `embed_skip` never got chunks, so keyword search couldn't find them either.

@@ -49,6 +49,7 @@ import { SAFE_FENCE_CHUNKER_VERSION, chunkManifestReads } from '../search/safe-c
 import { expandEngineTypeFilters } from '../schema-pack/query-types.ts';
 import { reconcileTypeFilter } from './search-type-filter.ts';
 import { probeProjectionReadiness } from '../search/projection-readiness.ts';
+import { countEmbeddingHeld, countPendingProjections, coverageRelevance, type RetrievalCoverage } from '../search/retrieval-coverage.ts';
 import { resolveBoostMap, resolveHardExcludes } from '../search/source-boost.ts';
 import { pageReadFilter } from '../search/read-policy-sql.ts';
 import { QUERY_DESCRIPTION, SEARCH_DESCRIPTION, SEARCH_MATCH_DESCRIPTION } from '../operations-descriptions.ts';
@@ -421,6 +422,12 @@ async function matchingSavedFacts(ctx: OperationContext, scope: SourceScope, que
  * #5988: hits whose page's newer file is held get `stale` (the rows are the
  * call's own copies, stamped in place), and a scope with held files gets
  * `held_files` per source plus the `held_files` degraded notice.
+ *
+ * #7165: `coverage` carries the pending-projection and held-file counts and how
+ * many could affect this query (search/retrieval-coverage.ts). `degraded` still
+ * records `projection_pending`; the readiness hint, the `held_files` notice and
+ * the human renderers of the stage (degraded_recall, the CLI line) appear only
+ * when some could. An unknown count stays loud.
  */
 async function buildRetrievalResponseMeta(
   ctx: OperationContext,
@@ -437,19 +444,26 @@ async function buildRetrievalResponseMeta(
   const excludePrivate = await resolveExcludePrivatePages(ctx.engine, ctx.remote);
   const excludeSlugPrefixes = resolveHardExcludes();
   const aliases = (opts.declarations ?? new DeclarationMemo()).scan(results as DeclarationRow[], queryText);
+  const relevance = coverageRelevance(results as SearchResult[], queryText, opts.types, FACT_MATCH_STOPWORDS);
+  const readinessScope = { ...scope, excludePrivate, types: opts.types, excludeSlugPrefixes };
   // #6721: these reads depend on nothing but the inputs above, so they run at once: on a pooled Postgres
   // the wall time is the slowest read's round trips, not their sum. The answer-feedback write still runs last.
-  const [safeIndexPending, readiness, entityFacts, matchedFacts, heldFiles, sourceFreshness, filterNotice] = await Promise.all([
+  const [safeIndexPending, [readiness, pendingCount], entityFacts, matchedFacts, held, sourceFreshness, embeddingHeld, filterNotice] = await Promise.all([
     ctx.remote !== false && hasUnsealedPagesInScope(ctx, scope, excludePrivate, { types: opts.types, excludeSlugPrefixes }),
-    probeProjectionReadiness(ctx.engine, { ...scope, excludePrivate, types: opts.types, excludeSlugPrefixes }),
+    probeProjectionReadiness(ctx.engine, readinessScope).then(async r =>
+      [r, r.status === 'projection_pending' ? await countPendingProjections(ctx.engine, readinessScope, relevance) : null] as const),
     // Facts saved about the entity the query names come first (newest first, one hop through entities they name).
     opts.entity && ctx.emitResponseMeta ? entitySavedFacts(ctx.engine, opts.entity, { remote: ctx.remote !== false, excludePrivate }) : [],
     matchingSavedFacts(ctx, scope, queryText, aliases),
-    stampHeldHits(ctx.engine, results as SearchResult[], scope, ctx).catch(() => []),
+    stampHeldHits(ctx.engine, results as SearchResult[], scope, relevance, ctx).catch(() => ({ coverage: [], couldAffect: 0 })),
     // GBRA-133 PR 2a.5: per-source freshness from the notifier's cached coverage record (no git call).
     readSourceFreshness(ctx.engine, scope),
+    countEmbeddingHeld(ctx.engine, readinessScope, relevance),
     opts.filterHintFor ? searchFilterHint(ctx, scope, excludePrivate, queryText, results as SearchResult[], opts.types, opts.filterHintFor) : null,
   ]);
+  const heldFiles = held.coverage;
+  const topHitExact = pendingCount?.top_counted === false;
+  const pending = topHitExact ? { ...pendingCount!, could_affect: 0 } : pendingCount;
   if (filterNotice) ctx.emitNotice?.(filterNotice);
   const heldBySource = new Map(heldFiles.map(h => [h.source_id, h.missing + h.stale]));
   const freshness = sourceFreshness.map(f => ({ ...f, held_count: heldBySource.get(f.source_id) ?? 0 }));
@@ -457,7 +471,19 @@ async function buildRetrievalResponseMeta(
   const factRowIds = new Set((results as SearchResult[]).flatMap(r => r.fact_row ? [r.fact_row.id] : []));
   const savedFacts = [...entityFacts, ...matchedFacts.filter(m => !entityFacts.some(e => e.id === m.id))]
     .filter(f => !factRowIds.has(f.id));
-  const heldNotice = heldFilesNotice(heldFiles, ctx.remote !== false);
+  const heldTotal = [...heldBySource.values()].reduce((sum, n) => sum + n, 0);
+  const embedding = embeddingHeld?.total ? embeddingHeld : null;
+  const coverage: RetrievalCoverage | undefined = pending || heldTotal || embedding ? {
+    ...(pending ? { pending_projection: pending.total } : {}),
+    ...(heldTotal ? { held_files: heldTotal } : {}),
+    ...(embedding ? { embedding_held: embedding.total } : {}),
+    could_affect: { ...(pending ? { pending_projection: pending.could_affect } : {}), ...(heldTotal && held.couldAffect !== null ? { held_files: held.couldAffect } : {}),
+      ...(embedding ? { embedding_held: embedding.could_affect } : {}) },
+    ...(pending?.capped || embedding?.capped ? { capped: true as const } : {}),
+    ...(topHitExact ? { top_hit_exact: true as const } : {}),
+  } : undefined;
+  const heldNotice = heldFilesNotice(held.couldAffect === 0 ? [] : heldFiles, ctx.remote !== false, held.couldAffect ?? undefined,
+    embedding?.could_affect ? embedding : undefined);
   if (heldNotice) ctx.emitNotice?.(heldNotice);
   const degraded = [...(m?.degraded ?? [])];
   if (safeIndexPending) degraded.push({ stage: 'safe_index_pending' });
@@ -465,6 +491,7 @@ async function buildRetrievalResponseMeta(
   else if (readiness.status !== 'ready') {
     degraded.push({ stage: readiness.status === 'projection_pending' ? 'projection_pending' : 'projection_status_unknown' });
   }
+  const readinessHint = pending?.could_affect === 0 ? undefined : readiness.hint;
   const planNotice = relationalPlanNotice(m?.relational_plan);
   if (planNotice) ctx.emitNotice?.(planNotice);
   return {
@@ -490,8 +517,9 @@ async function buildRetrievalResponseMeta(
     ...(savedFacts.length ? { saved_facts: savedFacts } : {}),
     ...(aliases.length ? { other_names: aliases } : {}),
     ...(heldFiles.length ? { held_files: heldFiles } : {}),
+    ...(coverage ? { coverage } : {}),
     ...(freshness.length ? { freshness } : {}),
-    ...(hint || readiness.hint ? { hint: [hint, readiness.hint].filter(Boolean).join(' ') } : {}),
+    ...(hint || readinessHint ? { hint: [hint, readinessHint].filter(Boolean).join(' ') } : {}),
     ...(opts.feedbackOp ? await searchAnswerFeedback(ctx, opts.feedbackOp, results as SearchResult[]) : {}),
   };
 }

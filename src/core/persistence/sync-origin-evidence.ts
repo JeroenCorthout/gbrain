@@ -85,3 +85,53 @@ export async function readOriginEvidence(gitRoot: string, commits: ReadonlyArray
   }
   return evidence;
 }
+
+/**
+ * GBRA-133: where a held file whose page is still live went. `deleted_by_commit`: the newest commit of HEAD's full history
+ * (`--full-history`, so a side branch's deletion that a merge kept is not simplified away; a merge counts against its first
+ * parent) that deleted the path, with its author, date and subject. `deletion_uncommitted`: HEAD still holds the path, so
+ * only the worktree lost it. `never_committed`: no commit of HEAD's history ever held it (a checkout with no commit yet
+ * included). `unknown`: Git could not answer, or the history touched the path without a deletion this read can name.
+ */
+export type DeletionProvenance =
+  | { kind: 'deleted_by_commit'; commit: string; author: string; date: string; subject: string }
+  | { kind: 'deletion_uncommitted' } | { kind: 'never_committed' } | { kind: 'unknown' };
+export const DELETION_PROVENANCES = ['deleted_by_commit', 'deletion_uncommitted', 'never_committed'] as const;
+
+/** Paths relative to `root` (a work tree or a directory inside one), read against HEAD in bounded batches. */
+export async function readDeletionProvenance(root: string, paths: readonly string[]): Promise<Map<string, DeletionProvenance>> {
+  const provenance = new Map<string, DeletionProvenance>();
+  const unique = [...new Set(paths)];
+  const head = await git(root, ['rev-parse', '--verify', '--quiet', 'HEAD^{commit}']);
+  const unborn = head.code === 1 && (await git(root, ['rev-parse', '--is-inside-work-tree'])).stdout.trim() === 'true';
+  for (const path of unique) provenance.set(path, unborn ? { kind: 'never_committed' } : { kind: 'unknown' });
+  if (head.code !== 0) return provenance;
+  for (let i = 0; i < unique.length; i += BATCH) {
+    const batch = unique.slice(i, i + BATCH);
+    // A side branch's own deleting commit names who removed the path and why; a merge counts (against its first parent) only
+    // for a path no ordinary commit deleted, where the merge's resolution dropped it.
+    for (const merges of [['--no-merges'], ['--merges', '--diff-merges=first-parent']]) {
+      const open = batch.filter(path => provenance.get(path)?.kind === 'unknown');
+      if (!open.length) break;
+      const deleted = await git(root, ['log', '--full-history', '--no-renames', ...merges, '--diff-filter=D', '--relative', '-z',
+        '--format=%x1e%H%x1f%an%x1f%aI%x1f%s', '--name-only', 'HEAD', '--', ...open], true);
+      if (deleted.code !== 0) break;
+      for (const record of deleted.stdout.split('\x1e').slice(1)) {
+        const [header = '', ...names] = record.split('\0');
+        const [commit = '', author = '', date = '', subject = ''] = header.trim().split('\x1f');
+        for (const name of names.map(entry => entry.replace(/^\n+/, '')).filter(Boolean)) {
+          if (provenance.get(name)?.kind === 'unknown' && open.includes(name)) provenance.set(name, { kind: 'deleted_by_commit', commit, author, date, subject });
+        }
+      }
+    }
+    const rest = batch.filter(path => provenance.get(path)?.kind === 'unknown');
+    if (!rest.length) continue;
+    const listed = await git(root, ['ls-tree', '-r', '-z', '--name-only', 'HEAD', '--', ...rest], true);
+    const touched = await git(root, ['log', '--full-history', '--no-renames', '--relative', '-z', '--format=', '--name-only', 'HEAD', '--', ...rest], true);
+    if (listed.code !== 0 || touched.code !== 0) continue;
+    const inHead = new Set(listed.stdout.split('\0').filter(Boolean));
+    const seen = new Set(touched.stdout.split('\0').map(entry => entry.replace(/^\n+/, '')).filter(Boolean));
+    for (const path of rest) provenance.set(path, inHead.has(path) ? { kind: 'deletion_uncommitted' } : seen.has(path) ? { kind: 'unknown' } : { kind: 'never_committed' });
+  }
+  return provenance;
+}

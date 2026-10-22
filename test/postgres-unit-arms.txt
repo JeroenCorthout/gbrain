@@ -376,6 +376,7 @@ test/recall-page-fill.test.ts
 test/receipt-compaction-newest-sync-gbra130.test.ts
 test/remediation-manual-only.test.ts
 test/repair-apply-pending-6543.test.ts
+test/repair-database-stop-gbra133.test.ts
 test/repair-embedding-effects.test.ts
 test/repair-failed-writes-conflict-6429.test.ts
 test/repair-failed-writes-drift-w411.test.ts
@@ -383,10 +384,12 @@ test/repair-fences.test.ts
 test/repair-file-drift-deleted-6712.test.ts
 test/repair-file-drift-held-6712.test.ts
 test/repair-file-drift-held-window-gbra133.test.ts
+test/repair-file-drift-provenance-gbra133.test.ts
 test/repair-frontmatter-keys-sweep-6454.test.ts
 test/repair-frontmatter.test.ts
 test/repair-receipt-compaction.test.ts
 test/repair-rename-identity-6729.test.ts
+test/retrieval-coverage-notices.test.ts
 test/schema-missing-tables.test.ts
 test/scripts/test-stress-postgres.test.ts
 test/search-read-keyword-bound.test.ts

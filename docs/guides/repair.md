@@ -2166,7 +2166,8 @@ gbrain repair file-drift --source <id> --held --side deleted --state file_gone -
 gbrain repair file-drift --source <id> --held --side deleted --state file_gone --cursor <next_cursor> --prefer database  # window 2
 ```
 
-The apply reports each page on stderr as well. Apply each window (or decide not to), then preview the next one. Pages the
+The apply reports each page on stderr as well. If the database refuses an item (a deadlock, a serialization failure, a lost
+connection), the apply stops with a result naming what it applied, the reason and the command that resumes from that item. Apply each window (or decide not to), then preview the next one. Pages the
 apply resolved leave the held set, so rerunning without `--cursor` also
 starts from the first page still held.
 
@@ -2175,6 +2176,36 @@ A `file_gone` hold whose `meta.reason` is `never_committed` or `ignored`
 sync could not tell a deletion from a file that never reached the repository,
 so the page may hold the only copy. `--prefer file` deletes it after review;
 committing the file again clears the hold.
+
+<a id="file-drift-provenance"></a>**Provenance: who deleted each gone file.** Every page of a
+`--held --side deleted --state file_gone` preview names where its file went
+(JSON: `details.pages[].provenance`, counted in `details.provenance`), read from
+HEAD's full history with `--full-history`, so a deletion on a branch a merge
+kept is found (a plain `git log --diff-filter=D -- <path>` simplifies it away):
+
+| Provenance | Meaning |
+|---|---|
+| `deleted_by_commit` | The newest commit that deleted the file, with its sha, author, date and subject (a merge only when its resolution dropped the file). |
+| `never_committed` | No commit ever held the file, so the page holds the only copy. |
+| `deletion_uncommitted` | HEAD still holds the file; only the worktree lost it. |
+| `unknown` | Git could not answer. |
+
+`--provenance <kind>` keeps only the held files of one provenance, so each
+population gets its own decision:
+
+```bash
+# Pages no commit ever held: keep each one database-only. No file is written; the page
+# forgets its recorded path (database_only_reason=detached) and the hold is cleared.
+gbrain repair file-drift --source <id> --held --side deleted --state file_gone --provenance never_committed --prefer database
+# Files a commit deleted on purpose: accept the deletions (soft-deletes those pages).
+gbrain repair file-drift --source <id> --held --side deleted --state file_gone --provenance deleted_by_commit --prefer file
+```
+
+`--provenance never_committed --prefer file` is refused: it would soft-delete
+the only copy of each page. A database-only page is no longer screened against
+a file; a file synced back at its old path binds it again. The apply re-checks
+each page (same revision, file still missing, still never committed) and
+reports `changed_since_preview` otherwise.
 
 `both` and `unknown` resolve as `--slug` does above. `--only` / `--skip` narrow
 the held set by file path, and the preview lists each page's action.
