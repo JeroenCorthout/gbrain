@@ -131,7 +131,9 @@ async function performManagedBranch(engine: BrainEngine, outer: SyncOpts): Promi
   let skips: ReadonlySet<IdleSkip> = new Set();
   const work = async (leaseSignal: AbortSignal | undefined): Promise<SyncResult> => {
     const opts: SyncOpts = leaseSignal ? { ...outer, signal: outer.signal ? AbortSignal.any([outer.signal, leaseSignal]) : leaseSignal } : outer;
-    let result = opts.drain
+    // #7167: a dry run reads and previews once; the drain's stall governor (no commit in 5 min) would abandon a long read
+    // of a large source as a writer stall, and nothing it does is a write the drain needs to watch.
+    let result = opts.drain && !opts.dryRun
       ? await (await import('../../core/persistence/sync-drain.ts')).drainManagedSync(engine, opts, true)
       : await (await import('../../core/persistence/sync-run.ts')).performManagedSync(engine, opts);
     // #6349: a delta past the cursor bound syncs in stages; a drain takes the next stage from where the last one landed

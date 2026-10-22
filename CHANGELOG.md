@@ -10,6 +10,250 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.358.0] - 2026-10-21
+
+**On large brains the scan for committed files with no page now finishes, `sync --dry-run` no longer waits on the writer, pages held or skipped for size get chunks and become keyword-searchable, and the new `gbrain pages status` says why a page is or isn't searchable.** Before this release, the unindexed-file scan started over whenever a commit landed, so a source with hundreds of thousands of files and steady commits never finished it. Pages marked `embed_skip` never got chunks, so keyword search couldn't find them either.
+
+### What changed
+
+| Situation | Before | Now |
+|---|---|---|
+| Unindexed-file scan on a large source with frequent commits | started over on each new commit and never finished | resumes from its cursor and rechecks files changed behind it from the commit diff (up to 5,000 paths) |
+| Several sources due for that scan | the first source could use the whole pass | the least recently scanned source goes first, each with its own budget: 60 s per started 100k pages, at most 5 min |
+| A committed symlink | listed as an unindexed file | named `symlink` in the scan |
+| `gbrain sync --dry-run` on a managed source with open writes | waited for the writer to drain | returns at once and reports `writer: {open_requests, oldest_open_age_seconds, next}` |
+| A page marked `embed_skip` with no chunks | stayed chunkless and keyword search missed it; reported `keyword_only` | the chunk safety net chunks it without vectors; reported `chunkless_healable` until then |
+| An oversized-page rewrite that fails | the page's embedding-budget row was lost | the row is restored (or removed, if the page had none) |
+| Doctor `oversized_pages` and the budget-held finding | one count | `details {marked, chunkless}`, plus `waiting_over_day` and `oldest_updated_at` for holds that have waited more than a day |
+
+### New: `gbrain pages status <slug...> [--source <id>] [--json]`
+
+For each page it reports the state, `searchable` (`true`, `'keyword'` or `false`), the sync hold and embedding hold with their reasons, the chunk count, and the number of visible chunks with no vector. It is CLI-only and reads nothing outside the named pages.
+
+### What to watch for after you upgrade
+
+- Nothing is rewritten on upgrade. The next maintenance chunk pass chunks `embed_skip` pages without embedding them, so it costs no embedding spend.
+- On a very large source, the first unindexed-file scan after upgrade can take several maintenance passes. Each pass now keeps its progress.
+
+### Itemized changes
+
+- `src/core/persistence/unindexed-files.ts`, `src/core/cycle/unindexed-files.ts`: the scan cursor survives commits, changed paths behind it are revisited through `git diff-tree`, sources are ordered least recently scanned first with a per-source budget, scheduled re-screens drain in the level pass, and committed symlinks (mode 120000) are named.
+- `src/core/persistence/sync-dry-run-writer.ts`, `src/core/persistence/sync-pass-run.ts`, `src/commands/sync/perform.ts`: a managed dry run reports the writer instead of draining it.
+- `src/core/engine-sql/chunks.ts`: `chunklessPagesWhere` no longer excludes `embed_skip` pages, and `chunklessPageState` reports them as `chunkless_healable`.
+- `src/core/oversized-backfill.ts`: a failed rewrite restores the page's budget row. `src/core/page-embedding-budget.ts`: `listBudgetLimitedPages` excludes `embed_skip` pages.
+- `src/core/held-embedding.ts`, `src/commands/doctor/checks/content-quality.ts`: the hold age and the split `oversized_pages` details.
+- `src/commands/pages-status.ts`: the new command. `listEmbeddingStateRows` accepts a `slugs` filter.
+
+### For contributors
+
+- New tests, each failing before the fix: `test/unindexed-files-convergence-7149.test.ts`, `test/origin-twin-sequence-7150.test.ts`, `test/sync-dry-run-drain-7167.test.ts`, `test/held-embedding-visibility-7174.test.ts`, `test/oversized-backfill-failed-rewrite-7185.serial.test.ts` and `test/pages-status-7179.test.ts` (Postgres arm).
+
+## [0.60.357.0] - 2026-10-21
+
+**The warm CLI socket now matches a serve that exports `GBRAIN_HOME` with a CLI that doesn't.** After v0.60.350.0, a serve started with `GBRAIN_HOME=$HOME` still refused every CLI that relied on `HOME` alone, with `refused (identity_mismatch): env GBRAIN_HOME`. Both sides resolved to the same home, but the identity compared whether the variable was set. `GBRAIN_HOME` and `GBRAIN_BRAIN_ID` now count by the config home and brain they resolve to, which the identity already compares.
+
+### What changed
+
+| Situation | Before | Now |
+|---|---|---|
+| Serve exports `GBRAIN_HOME`, CLI reaches the same home through `HOME` | refused (`env GBRAIN_HOME`) | answered warm |
+| Serve sets `GBRAIN_BRAIN_ID=host`, CLI leaves it unset | refused | answered warm |
+| A different resolved config home or brain | refused | still refused (`config home`, `brain`) |
+
+### What to watch for after you upgrade
+
+- Restart the serve after upgrading, as before: a serve and a CLI on different gbrain versions never match.
+
+### Itemized changes
+
+- `READ_BEHAVIOR_ENV` drops `GBRAIN_HOME`, `GBRAIN_BRAIN_ID`, `GBRAIN_MOUNTS_PATH` (mount brains, which the socket never serves) and `GBRAIN_CWD_ENV_QUARANTINED` (a re-run marker whose effect already shows in the environment it left). The classification test lists them with the reason.
+
+## [0.60.356.0] - 2026-10-21
+
+**Two rare races in managed writes are closed: a retried page in a grouped import always prepares again, and a sync that normalizes a fence ends at the commit it was asked to sync.** Both showed up only under load.
+
+The first was in grouped imports. When a group of pages took too long to publish, gbrain cancelled the group and scheduled each page to retry after a short pause. If putting the files back took longer than that pause, the same pass could pick a page up again and publish the version it had prepared before the cancellation, without preparing it again. The page's content was still right, but the retry skipped the fresh preparation it was meant to get. Now a page that was cancelled this way always waits for its next turn and prepares again.
+
+The second was in syncs that rewrite a fixable fence and commit the rewritten file. If gbrain's own commit landed in the gap before it was recorded, the sync could record that commit as the one it had synced, instead of the commit it was asked to sync. The next sync then had nothing to do. Now the sync recognizes its own commit in that gap too and records the commit it was asked to sync.
+
+### What changed
+
+| Situation | Before | Now |
+|---|---|---|
+| A grouped import cancelled at the publication ceiling, when restoring the files outlasts the 1 s retry pause | a page could be republished from its old preparation in the same pass | the page waits for its retry and prepares again |
+| A sync whose fence rewrite is committed by gbrain right before the sync records it | `last_commit` could be gbrain's own commit | `last_commit` is the commit the sync targeted, and the next sync reads gbrain's commit as a no-op |
+
+Nothing changes on upgrade, and nothing is rewritten.
+
+### Itemized changes
+
+- `src/core/persistence/group-publish.ts`: a group member charged a transient interruption is no longer listed as reclaimable after the group's files are restored.
+- `src/core/persistence/sync-pass-fold.ts`: `ownWritebackCommit` accepts a writeback effect that is still running when Git already shows its commit byte for byte. Every changed path and blob is still checked.
+
+### For contributors
+
+- `scripts/ci-bounded-run.ts`: a stalled CI setup attempt ends only once its whole process group is gone (bounded by the grace period), so nothing it started overlaps the retry.
+- New forced-probe cases in `test/pathological/lp-c-publication-ceiling-retry.test.ts` and `test/persistence-sync-fence-holds.test.ts` cover both races deterministically.
+
+## [0.60.355.0] - 2026-10-21
+
+**`remember` with a folder-less entity now saves only when the name points to exactly one entity page, a pending write receipt names the page the fact is going to, and `remember --replaces` works on a private fact without passing `--visibility` (#7248).** Before, a short name such as "Alice" could be saved under a bare slug that no page has, so the fact never showed up on the person's card. A slow write also gave the caller no way to tell which page it would land on, and replacing a private fenced fact answered `not_found`.
+
+### What changed
+
+| Situation | Before | Now |
+|---|---|---|
+| `remember` with `entity: "alice-example"` or `"Alice"` (no folder) | saved under a bare slug no page has | saves to the one readable entity page the name points to (by slug, unique basename, alias or name); if several pages match, it only begins a name, it only resembles pages, or the page is not an entity, the call is refused `invalid_params` with `reason` `entity_ambiguous`, `entity_unverified`, `entity_not_entity` or `entity_no_page` and up to 5 candidate slugs, and nothing is saved |
+| A name nothing resembles, or a slug with a folder | saved | unchanged |
+| A `remember` reply that is still publishing | no target in the receipt | `write_request.target {slug, entity_slug}`, and the pending hint names the page |
+| A `remember` batch item still publishing | reported `failed` | reported `pending` |
+| `remember --replaces <id>` on a private fact with no `--visibility`, local caller | `not_found` | replaces it, and the new fact stays private |
+| `remember --replaces <id>` with a `--visibility` that differs from the fact's | `not_found` | `invalid_params` with prefix `replaces_visibility_mismatch` and the visibility to pass |
+| A remote caller replacing a private fact | `not_found` | unchanged (`not_found`) |
+
+**Spend effect:** none. No model calls, no default or cap changes. Nothing is rewritten on upgrade.
+
+### What to watch for after you upgrade
+
+- An agent that saved facts under a short first name may now get `entity_ambiguous` or `entity_unverified`; pass one of the candidate slugs it returns.
+
+### Itemized changes
+
+- `entityReferenceCandidates` in `src/core/entities/resolve.ts`; strict resolution in `src/core/persistence/memory-mutations.ts`.
+- `replacementVisibility` in `src/core/facts/single-prepare.ts`; the replaces contract in `docs/protocol/MEMORY_VERBS_v1.md` lists `replaces_visibility_mismatch`.
+
+## [0.60.354.0] - 2026-10-21
+
+**New `search_exact` (CLI `gbrain search --exact "<phrase>"`) is an unranked, exhaustive literal scan: it returns every page that contains the phrase, plus a `complete` flag that is true only when the whole scope was read (#7191).** Ranked search can miss a rare phrase, so agents fell back to grepping the brain checkout for exact lookups.
+
+### What changed
+
+| Situation | Before | Now |
+|---|---|---|
+| Finding every page that contains an exact phrase | ranked search, which can rank a rare phrase out of the results, or a grep of the checkout | `gbrain search --exact "<phrase>"` / MCP `search_exact`: the phrase's words in order with any whitespace between them, substring, case-insensitive unless `case_sensitive`; regex and LIKE metacharacters are literal; every matching page in page-id order with matching chunks and up to 3 snippets |
+| Knowing the scan saw everything | not possible | `complete: true` only when the whole scope was read; otherwise `incomplete_reasons`: `limit` (default 100 pages, max 1000) or `deadline` (default 30 s, max 120), both resumable with `after: resume_after`, and `unreadable_pages` counted by reason (`unchunked`, `projection_pending`, `unsealed`, `scan_timeout`) |
+| Scope | n/a | `source_id`, `types`, `slug_prefix`, plus the prefixes ranked search hides, echoed as `excluded_slug_prefixes` |
+| `gbrain search --exact` with a ranked-only flag | n/a | refused as an unknown flag instead of ignored |
+
+The scan uses ranked search's visibility rules: remote callers read safe chunks only and never see private, foreign-source or quarantined pages, so fenced facts and takes never match. On Postgres 16 with 50,000 pages and 328 MB of chunk text, a full scan for a rare phrase takes 2.1–2.7 s locally and 2.9 s remotely; a common phrase stops at the 100-page limit in 1.3 s.
+
+**Spend effect:** none. No model calls, no default or cap changes, no schema change. Nothing is rewritten on upgrade.
+
+### What to watch for after you upgrade
+
+- Quotes mean different things: in ranked search a quoted phrase is stemmed; `--exact` matches the characters you typed (punctuation, accents and quote styles are literal).
+- Pages with body text but no chunks yet (for example held pages) show up as `unreadable_pages` with reason `unchunked`, not as misses.
+
+### Itemized changes
+
+- New op `search_exact` (registered `filtered` with `retrieval` output redaction; covered by both privacy sweeps), scanned in keyset batches of 2,000 pages per statement with JIT off; a batch that hits the statement timeout is retried at half the size, down to one page.
+- `src/cli/command-route.ts` rewrites `search --exact` to `search-exact` before ranked-search flags parse.
+- Docs: `docs/guides/exact-search.md`, linked from the search-modes guide.
+
+## [0.60.353.0] - 2026-10-21
+
+**Resolving held file-drift pages in bulk now shows progress and prints its preview within a minute.** `gbrain repair file-drift --held` used to prepare every selected held page before it printed anything. Each page reads the database a few dozen times, so a held set of a few thousand pages against a remote database printed nothing for over an hour: no preview, no hash, and nothing to apply. It also quietly stopped at the first 1,000 held pages. A held preview now covers one window of at most 200 pages, or 60 seconds of work, and reports each page on stderr as it goes. A partial window prints the next preview command with `--cursor <next_cursor>`, and walking the windows covers every held page.
+
+### What changed
+
+| Situation | Before | Now |
+|---|---|---|
+| Previewing a few thousand held pages against a remote database | No output for over an hour | One window of at most 200 pages or 60 s, with progress on stderr |
+| More than 1,000 held pages selected | The rest were silently left out | The windows walk every held page in held-path order |
+| What a preview's hash and apply command cover | The whole selection | That window only; the apply carries its `--cursor` |
+| Applying a preview of large pages | The artifact was parsed again for every page (seconds per page), with no output | Parsed once, with each page reported on stderr |
+
+With Git durability off, a preview that recreates or removes files now leads with "The next sync undoes this repair unless …" and the commit to run, and reports `undone_by_next_sync_unless_committed`. The apply also reports each page on stderr and reads the preview artifact once, instead of parsing it again for every page (with large pages that cost seconds per page). Nothing changes on upgrade, and nothing is rewritten.
+
+### Itemized changes
+
+- `src/core/repair/file-drift.ts`: `--held` selects holds in held-path order (`COLLATE "C"`), previews at most `HELD_WINDOW_PAGES` (200) after `--cursor`, and starts no page after `HELD_WINDOW_BUDGET_MS` (60 s) or the run's deadline. A partial window adds `after_window` (and `before_cursor`) to the residuals, a warning naming the next command, and `details.window` (`previewed`, `remaining`, `complete`, `next_cursor`, `next_command`). The selection digest binds the cursor, and a cursor no preview printed is refused (`invalid_params`).
+- `src/core/repair/file-drift.ts`: `readArtifact` keeps the parsed artifact while the file's identity (device, inode, size, mtime) is unchanged.
+- `src/commands/repair.ts`, `src/core/repair/core.ts`, `src/core/repair/registry.ts`: `--cursor <next_cursor>` for `file-drift --held`, carried into the printed apply command, plus a progress reporter for the CLI preview (`repair.file_drift.preview`) and apply (`repair.file-drift.apply`).
+- `docs/guides/repair.md`: how held windows work.
+- Tests: `test/repair-file-drift-held-window-gbra133.test.ts` (PGLite and Postgres).
+
+## [0.60.352.0] - 2026-10-21
+
+**Reading the timeline of a very large page uses less memory.** When gbrain rebuilds a page's timeline links, it keeps track of the timeline lines it has already seen, so it never writes one twice. On a page with tens of thousands of dated lines, that tracking took about 80 bytes per line, roughly a third of an 8 MiB page's own size. It now takes about 25 bytes per line, and the results are exactly the same.
+
+### What changed
+
+| Situation | Before | Now |
+|---|---|---|
+| Memory held while reading the timeline of an 8 MiB page with about 43,000 dated lines (PGLite) | 4.9–6.6 MiB | 1.7–3.4 MiB |
+| The same page on Postgres | about 5.3 MiB | 2.8–5.1 MiB |
+| A dense page with about 113,000 dated lines (PGLite / Postgres) | 5.6–6.5 / 6.3–7.3 MiB | 2.7–2.9 / 4.5–5.1 MiB |
+| Which timeline entries are kept or dropped | — | unchanged |
+
+Nothing changes on upgrade, and nothing is rewritten.
+
+### Itemized changes
+
+- `src/core/timeline-extract.ts`: `TimelineKeySet` stores its digests with open addressing over two flat number arrays (`firsts` and `values`, growing at 3/4 load) instead of a `Map<number, number>`. Collision handling (`AMBIGUOUS`), `mark` and `marked` behave as before.
+
+### For contributors
+
+- `test/large-pages/managed-links-timeline-heap.test.ts` now has margin under its unchanged bound (`held < page bytes`). The bound and the test are untouched.
+- Unit and serial shard weights are refreshed from a recent full run (`scripts/test-weights.json`, `scripts/serial-weights.json` and their metadata files).
+
+## [0.60.351.0] - 2026-10-21
+
+**Remote page reads now hide a page marked private only by a privacy alias, and `gbrain repair visibility` and doctor `derived_visibility` finish on a large brain: the preview plans one class at a time, world facts from a private page first, lists one bounded window and applies exactly that window with `--apply --expect <hash>`.**
+
+### What changed
+
+| Situation | Before | Now |
+|---|---|---|
+| A page with `access: private` (or `confidentiality: secret`, ...) and no `visibility`, read remotely | shown unless `visibility.honor_aliases` was set | hidden by default, like `visibility: private`; local CLI reads are unchanged; opt out with `gbrain config set visibility.honor_aliases false` |
+| `gbrain repair visibility` on a brain with tens of thousands of atoms and concepts | the plan ran a join that paired every concept with every atom (and every world fact with every page) and could time out before printing anything | set-based plans; one class at a time in the order remote callers are exposed (facts, remotely readable first; chronicle events; alias-only pages; atoms and concepts); only `--class lineage` reads concept-provenance links |
+| Preview size and apply | every row, then `--apply` applied them all | one window (1,000 items, `--limit` up to 10,000) with progress on stderr; `--apply --expect <hash>` applies exactly that window and resumes after its last item; preview again for the next window |
+| A plan class over its statement bound | the whole preview failed | that class is reported and skipped (120 s per statement); the others are listed |
+| Doctor `derived_visibility` | one long pass; the fact count came last | the fact count (what remote callers can read) runs first; derived-page counts that overrun the bound read as unknown |
+| A doctor rerun hint capped to fit an agent tool call | named only the capped `--budget-ms` | also names the uncapped budget to use in a terminal |
+
+On a synthetic brain of about 600k pages (40k atoms, 1k concepts, 20k facts), the default preview takes 0.5 s on Postgres and 0.7 s on PGLite, a lineage preview 0.5 s and 0.75 s, and doctor `derived_visibility` 1.3 s and 1.0 s.
+
+**Spend effect:** none. No model calls; repaired pages are re-embedded by their publication as before. Nothing is rewritten on upgrade: the repair is preview-first and only tightens.
+
+### What to watch for after you upgrade
+
+- Remote callers stop seeing alias-only private pages. Doctor `derived_visibility` counts them; `gbrain repair visibility --class aliases` stamps `visibility: private` on them after you agree.
+- Use the apply command a preview prints. A bare `gbrain repair visibility --apply` (and `--all`, the remediation plan) still applies every class at once.
+
+### Itemized changes
+
+- `visibility.honor_aliases` defaults to on; remote `get_page` and `list_pages` honor the aliases.
+- `gbrain repair visibility`: `--class facts|events|aliases|lineage`, a windowed preview bound to `--expect`, stderr progress, a per-statement bound, set-based fact and concept-lineage queries.
+- Doctor `derived_visibility`: facts first, bounded derived-page counts; the preview hint names the windowed apply.
+
+## [0.60.350.0] - 2026-10-21
+
+**The warm CLI socket now works when serve and the CLI connect through different pooler lanes.** A serve on a Supabase pooler's session lane (port 5432, prepared statements on, a larger pool) refused every CLI call made on the transaction lane (port 6543, `?prepare=false`), because the identity it compared included the port, the URL's query string and every `GBRAIN_*` value, pool sizes included. Each call then took the cold path, so with the socket on nothing got faster. The identity now leaves out what cannot change an answer, and a refusal says which part differed.
+
+### What changed
+
+| Situation | Before | Now |
+|---|---|---|
+| Serve on the session lane (5432), CLI on the transaction lane (6543) of the same Supavisor host, user and database | refused (`identity_mismatch`) | answered warm |
+| `GBRAIN_POOL_SIZE`, `GBRAIN_DIRECT_POOL_SIZE`, `GBRAIN_PREPARE` or the database URL variables differ | refused | answered warm |
+| Driver-only URL parameters (`prepare=`, `sslmode`, `application_name`, timeouts) differ | refused | answered warm |
+| Another port on plain Postgres, another host, user or database, or a different `options` parameter | refused | still refused |
+| A read-behavior setting (model, embeddings, search tuning, visibility, timeouts, schema pack, AI call log, contributor capture) differs | refused | still refused |
+| A refusal | `refused (identity_mismatch)` with no detail | names the part, never its value: `database port`, `env GBRAIN_MODEL`, `provider key VOYAGE_API_KEY`, `config contents`; the serve logs each distinct one once |
+
+### What to watch for after you upgrade
+
+- Restart the serve after upgrading. A serve and a CLI on different gbrain versions never match, so until the restart every CLI call takes its cold path (`refused (identity_mismatch): version`).
+- Nothing changes for a serve without `--cli-socket` or `serve.cli_socket`; the socket stays off by default.
+- With `GBRAIN_DEBUG=1`, a CLI call that still falls back prints the part that differed. Align that setting between the serve's environment and the CLI's, or restart the serve with it.
+
+### Itemized changes
+
+- `src/core/cli-socket/identity.ts`: the identity is now structured: brain, version, engine, config home, file and content, `databaseTarget` (host, port, database, user, `options`) and `behaviorEnv` (SHA-256 values of the explicit `READ_BEHAVIOR_ENV` list and the provider routing variables, plus the names of the provider keys that are set). `cliSocketIdentityMismatch` compares it part by part, and lets the port differ only on a `*.pooler.supabase.com` host.
+- The handshake refusal carries `mismatch`, and the CLI's debug line prints it. An older CLI sends the old token and is refused as `malformed_request`, so it takes its cold path.
+- `test/cli-socket.test.ts` classifies every `GBRAIN_*` name in `src` as read behavior or not, so a new setting can't skip the decision.
+
 ## [0.60.349.0] - 2026-10-21
 
 **`gbrain entity` now finds a person by a nickname, an initial plus surname, a title, reversed order, a one-letter surname typo or a surname only one page has; search and query put pages that contain an exact identifier first; `recall <entity>` reads the same facts the recall op does; and a lookup that matches nothing can exit 12 for scripts (#7160, #7161, #7163, #4828, #7166, #7168, #7177).** An agent asking for a person, a thing it saved or an exact email, URL, phone number or code got a miss or a lower-ranked page even though the brain held it.

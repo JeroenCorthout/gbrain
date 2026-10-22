@@ -9103,13 +9103,16 @@ suggestion are unchanged.
 old fact is no longer current (the texts need not mean the same). Zero model calls; the cosine rule does
 not apply. The target must be an active fact in the same source, with the same
 visibility (world only for remote callers, else `not_found`) and the same
-entity, on the same entity page. A target saved without an entity may be
+entity, on the same entity page. A local call that leaves `visibility` unset
+takes a private target's visibility, so the replacement stays private. A target saved without an entity may be
 replaced by a fact with an entity: that links it (the unlinked fact is
 superseded, not forgotten, so the claim stays rememberable). Refusals come back as `invalid_params` with a
 code prefix and a `suggestion`: `target_withdrawn` (forgotten facts are not
 replaceable; remember without `replaces`), `target_superseded` (names the fact
 that replaced it), `target_expired`, `replaces_entity_mismatch`,
-`replaces_cross_page` (forget the old fact, then remember), and
+`replaces_cross_page` (forget the old fact, then remember),
+`replaces_visibility_mismatch` (an explicit `visibility` that differs from the
+target's; pass the target's visibility), and
 `replaces_duplicate` (another active fact already states the new claim). New
 text equal to the target is `status: duplicate` and changes nothing. On success
 `status` is `superseded`, `superseded_fact_id` names the replaced fact and
@@ -10832,7 +10835,7 @@ derived from the rows against the active embedding column (no stored status):
 | `quarantined` | The content-quality gate hid the page as junk; it has no searchable chunks. Doctor `quarantined_pages` owns its warning. | Review with `gbrain quarantine list --json`; clear a false positive with `gbrain quarantine clear <slug> --source-id <id> --force` (the owner's call). |
 | `empty` | A live page with no body text: nothing to index. | Write content to it, or delete the stub (`gbrain delete <slug> --source <id> --force`, restorable) after the user agrees. |
 | `deleted_page_chunks` | Chunks of a soft-deleted page. Search never reads them; the purge lifecycle removes them after 72 h (info until then, a warning past it, code `deleted_page_chunks_overdue`). | `gbrain pages purge-deleted --dry-run --json`, then `gbrain pages purge-deleted --yes` once the user agrees (brain-wide, irreversible). |
-| `chunkless_healable` | A live page with body text but no chunk rows (written without the chunking step). Doctor warns on a keyed brain (code `chunkless_pages_healable`). | `gbrain embed --stale --catch-up --source <id> --yes` chunks and embeds it (paid). |
+| `chunkless_healable` | A live page with body text but no chunk rows (written without the chunking step, or an `embed_skip` page an older gbrain stored without chunks or whose `reindex --oversized` rewrite failed). Keyword search cannot find it. Doctor warns on a keyed brain (code `chunkless_pages_healable`). | `gbrain embed --stale --catch-up --source <id> --yes` chunks and embeds it (paid); an `embed_skip` page gets chunks and no vectors. The cycle's embed phase runs the same safety net. |
 
 `unsearchable` sums `pending`, `quarantined`, `empty` and `chunkless_healable`;
 `keyword_only` and `deleted_page_chunks` never count. The doctor's ops tier

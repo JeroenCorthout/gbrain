@@ -2,8 +2,8 @@
   "golden": {
     "exitCode": 0,
     "stderr": "",
-    "stdoutBytes": 258655,
-    "stdoutSha256": "ad14c32a587d230a1eb8b6d47bab0cf1da4193be6cc1c7e645bc459dbbc6db6d",
+    "stdoutBytes": 261383,
+    "stdoutSha256": "b3bea0b8035ca442543154608332d02c953bed78078ed3fd4385af993fa02842",
     "toolNames": [
       "remember",
       "entity",
@@ -36,6 +36,7 @@
       "search_modes",
       "search_tune",
       "cache_stats",
+      "search_exact",
       "rate_answer",
       "search_by_image",
       "add_tag",
@@ -2076,6 +2077,81 @@
           "type": "object"
         },
         "scope": "admin"
+      },
+      {
+        "description": "Find every page containing a literal phrase or identifier, exhaustively: use instead of grep. Unranked; returns every match in page order with snippets, and complete: true only when every page you can read was scanned. Literal: words in order with any whitespace between them, case-insensitive unless case_sensitive; no stemming, punctuation literal (ranked search treats quotes as a stemmed phrase). When complete is false, incomplete_reasons says why: deadline or limit (call again with after: resume_after), or unreadable_pages (pages whose text is not indexed yet, listed under unreadable).",
+        "idempotent": true,
+        "local_only": false,
+        "mutating": false,
+        "name": "search_exact",
+        "parameters": {
+          "after": "number?",
+          "case_sensitive": "boolean?",
+          "limit": "number?",
+          "max_seconds": "number?",
+          "min_trust": "string?",
+          "phrase": "string",
+          "slug_prefix": "string?",
+          "source_id": "string?",
+          "types": "array?"
+        },
+        "required_scopes": [],
+        "schema": {
+          "properties": {
+            "after": {
+              "description": "Resume a bounded scan: the resume_after of the previous call.",
+              "type": "number"
+            },
+            "case_sensitive": {
+              "description": "Match case exactly (default false).",
+              "type": "boolean"
+            },
+            "limit": {
+              "description": "Matching pages to return (default 100, max 1000).",
+              "type": "number"
+            },
+            "max_seconds": {
+              "description": "Scan budget in seconds (default 30, max 120).",
+              "type": "number"
+            },
+            "min_trust": {
+              "description": "Lowest trust tier to return (the connection floor still applies).",
+              "enum": [
+                "user_confirmed",
+                "operator_curated",
+                "tool_observed",
+                "agent_written",
+                "unknown",
+                "external_untrusted"
+              ],
+              "type": "string"
+            },
+            "phrase": {
+              "description": "The literal text, e.g. 'INV-2024-0042' or 'quarterly board pack'.",
+              "type": "string"
+            },
+            "slug_prefix": {
+              "description": "Only slugs starting with this, e.g. 'meetings/'.",
+              "type": "string"
+            },
+            "source_id": {
+              "description": "Only this source; '__all__' spans every source you can read.",
+              "type": "string"
+            },
+            "types": {
+              "description": "Only these page types, e.g. ['meeting'].",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "phrase"
+          ],
+          "type": "object"
+        },
+        "scope": "read"
       },
       {
         "description": "Rate how useful an answer's retrieved evidence was, so this brain ranks better next time (zero LLM calls). Pass the answer_id from a query/search/think/synthesize/recall response and rating 1-5, or rate single pages with pages: [{ ref: \"source_id:slug\", rating }]. Example: { answer_id: \"ans_01J…\", pages: [{ ref: \"default:people/alice-example\", rating: 1 }] }. Returns a receipt with each weight before/after; it never edits stored facts.",

@@ -511,7 +511,7 @@ export type ManagedDelegationOutcome =
  * #6543: only a forced rung (the serve cannot take the run) really runs a consumer beside the serve; on the others this
  * process admits its writes and, with persistence.single_consumer on, the serve's consumer publishes them.
  */
-const fallbackLine = (pid: number, cause: string, forced: boolean, fix = 'Restart that serve on this gbrain version to run the catch-up inside it.'): string => forced
+const ownConsumerLine = (pid: number, cause: string, forced: boolean, fix = 'Restart that serve on this gbrain version to run the catch-up inside it.'): string => forced
   ? `[sync] ${cause}; this run uses its own consumer beside the serve (PID ${pid}). ${fix}`
   : `[sync] ${cause}; this run does not delegate to the serve (PID ${pid}): it admits its own writes, and with persistence.single_consumer on the serve's consumer publishes them. ${fix}`;
 
@@ -530,9 +530,13 @@ export async function maybeDelegateManagedSyncToServe(engine: BrainEngine, args:
   // waiter-only behind the serve it bypassed. A healthy serve beside a kill switch or an unsupported flag keeps consuming.
   const own = async (reason: Extract<ManagedDelegationOutcome, { kind: 'own_consumer' }>['reason'], line: string | null = null, force = false): Promise<ManagedDelegationOutcome> => {
     if (line) serr(line);
-    if (force) (await import('../core/persistence/consumer-election.ts')).forceOwnConsumer(reason);
+    // #7167: a dry run writes nothing, so it starts no consumer of its own.
+    if (force && !opts.dryRun) (await import('../core/persistence/consumer-election.ts')).forceOwnConsumer(reason);
     return { kind: 'own_consumer', reason, line };
   };
+  // #7167: a dry run that is not delegated previews in this process and writes nothing; it neither admits writes nor runs a consumer.
+  const fallbackLine = (pid: number, cause: string, forced: boolean, fix?: string): string => opts.dryRun
+    ? `[sync] ${cause}; this dry run previews in this process instead of the serve (PID ${pid}) and writes nothing.` : ownConsumerLine(pid, cause, forced, fix);
   // 0. Opt-outs bypass the ladder before anything is probed or classified.
   if (args.includes('--no-delegate') || env.GBRAIN_SYNC_NO_DELEGATE === '1') return own('opted_out', null, true);
   const { resolveBrainId } = await import('../core/brain-resolver.ts');

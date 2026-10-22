@@ -42,6 +42,7 @@ const load_raw_data = () => import('./ops/raw-data.ts') as Promise<Record<string
 const load_request_tools = () => import('./ops/request-tools.ts') as Promise<Record<string, unknown>>;
 const load_salience = () => import('./ops/salience.ts') as Promise<Record<string, unknown>>;
 const load_schema_packs = () => import('./ops/schema-packs.ts') as Promise<Record<string, unknown>>;
+const load_search_exact = () => import('./ops/search-exact.ts') as Promise<Record<string, unknown>>;
 const load_search = () => import('./ops/search.ts') as Promise<Record<string, unknown>>;
 const load_skillopt = () => import('./ops/skillopt.ts') as Promise<Record<string, unknown>>;
 const load_skills_catalog = () => import('./ops/skills-catalog.ts') as Promise<Record<string, unknown>>;
@@ -87,6 +88,7 @@ export const OPERATION_LOADERS: Record<string, readonly [() => Promise<Record<st
   "search_modes": [load_search, "searchOperations"],
   "search_tune": [load_search, "searchOperations"],
   "cache_stats": [load_search, "searchOperations"],
+  "search_exact": [load_search_exact, "searchExactOperations"],
   "rate_answer": [load_feedback, "feedbackOperations"],
   "search_by_image": [load_image, "imageOperations"],
   "add_tag": [load_tags, "tagsOperations"],

@@ -557,6 +557,45 @@ export async function resolveStrictEntityReference(
 }
 
 /**
+ * #7248: up to five readable live pages a reference could mean, sorted by
+ * slug, for a refusal to name: the entity-directory basenames, organization
+ * variants, alias hits and bare-name prefix expansions, else the nearest
+ * entity pages by title or slug similarity that share the reference's first
+ * name token. Never a slugified guess.
+ */
+export async function entityReferenceCandidates(
+  engine: BrainEngine,
+  source_id: string,
+  raw: string,
+  opts: { excludePrivate?: boolean } = {},
+): Promise<string[]> {
+  const trimmed = raw.trim();
+  const token = slugify(trimmed);
+  if (!token) return [];
+  const privacy = opts.excludePrivate ? `AND ${privatePagesFilterFragment('p')}` : '';
+  const aliases = await aliasHitSlugs(engine, source_id, trimmed).catch(() => [] as string[]);
+  const prefixed = (await findPrefixCandidates(engine, source_id, token)).map(c => c.slug);
+  const named = await engine.executeRaw<{ slug: string }>(
+    `SELECT p.slug FROM pages p
+      WHERE p.source_id = $1 AND p.deleted_at IS NULL AND NOT ${retiredPageSql('p')} AND p.slug = ANY($2::text[]) ${privacy}
+      ORDER BY p.slug LIMIT 5`,
+    [source_id, [...new Set([...BASENAME_DIRS.map(dir => `${dir}/${token}`), ...orgDirVariants(trimmed), ...aliases, ...prefixed])]],
+  );
+  if (named.length) return named.map(r => r.slug);
+  const near = await engine.executeRaw<{ slug: string; title: string; type: string | null }>(
+    `SELECT p.slug, p.title, p.type FROM pages p
+      WHERE p.source_id = $1 AND p.deleted_at IS NULL AND NOT ${retiredPageSql('p')} ${privacy}
+        AND (lower(p.title) % $2 OR p.slug ILIKE '%' || $3 || '%')
+      ORDER BY GREATEST(similarity(lower(p.title), $2), similarity(p.slug, $3)) DESC, p.slug ASC
+      LIMIT 20`,
+    [source_id, trimmed.toLowerCase(), token],
+  ).catch(err => { if (isMissingTrigramError(err)) return []; throw err; });
+  const lead = token.split('-')[0]!;
+  const sharesLead = (r: { slug: string; title: string }) => slugify(r.title).split('-')[0] === lead || (r.slug.split('/').pop() ?? '').split('-')[0] === lead;
+  return near.filter(r => isFactEntityPage(r.slug, r.type) && sharesLead(r)).slice(0, 5).map(r => r.slug).sort();
+}
+
+/**
  * v0.35.5 — phantom-canonical resolver. Variant of `resolveEntitySlug` that
  * SKIPS the exact-slug step at the top: a phantom slug like `'alice'` would
  * always exact-match itself (the phantom page exists as that exact slug),

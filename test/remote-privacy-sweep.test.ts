@@ -158,6 +158,8 @@ const PARAM_FACTORY: Record<string, Record<string, unknown>> = {
   fetch: { id: WORLD_FENCE_SLUG },
   list_pages: {},
   search: { query: 'WORLDSWEEP' },
+  // 'SWEEP_' is inside every PRIVATE sentinel too: the literal scan must still return only world text.
+  search_exact: { phrase: 'SWEEP_' },
   query: { query: 'WORLDSWEEP' },
   assemble_evidence: { hits: [{ source_id: 'default', slug: WORLD_FENCE_SLUG, chunk_id: 0 }], return_unit: 'page' },
   recall: { entity: WORLD_PAGE_SLUG },
@@ -252,6 +254,7 @@ const EXPECTED_OUTCOME: Record<string, Outcome> = {
   fetch: 'data',
   list_pages: 'data',
   search: 'data',
+  search_exact: 'data',
   query: 'data',
   assemble_evidence: 'data',
   recall: 'data',

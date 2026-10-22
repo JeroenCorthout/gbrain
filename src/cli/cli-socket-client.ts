@@ -74,7 +74,7 @@ export function exchangeCliSocket(path: string, request: CliSocketRequest, total
         try { value = JSON.parse(text); } catch { finish({ reason: 'malformed_response' }); return; }
         if (!accepted) {
           if (!isHandshakeFrame(value)) { finish({ reason: 'malformed_response' }); return; }
-          if (!value.accepted) { finish({ reason: `refused (${value.reason})` }); return; }
+          if (!value.accepted) { finish({ reason: `refused (${value.reason})${value.mismatch ? `: ${value.mismatch}` : ''}` }); return; }
           accepted = true;
           arm(Number.POSITIVE_INFINITY, 'round_trip_timeout');
           continue;

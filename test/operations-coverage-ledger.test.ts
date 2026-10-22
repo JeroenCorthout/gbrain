@@ -63,6 +63,7 @@ const LEDGER: Record<string, string> = {
   search_tune: 'test/search-introspection-ops.test.ts',
   cache_stats: 'test/quarantine-cache-ops.test.ts',
   search_by_image: 'test/search-by-image-op.test.ts',
+  search_exact: 'test/search-exact.test.ts',
   assemble_evidence: 'test/evidence-delivery.test.ts',
   add_tag: 'test/source-id-tx-regression.test.ts',
   remove_tag: 'test/e2e/mechanical.test.ts',

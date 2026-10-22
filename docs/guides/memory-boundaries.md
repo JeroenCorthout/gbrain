@@ -288,11 +288,18 @@ for up to two minutes, on the CPU, on keyless brains too, and prints a receipt;
 resumes where it stopped. It removes only gate-written markers whose reason is
 `oversized`, and the matching `content_flag: oversized`; a page above the
 operator's effective `bytes_block` keeps both and is re-chunked for keyword
-search with no vectors. The backfill never embeds.
+search with no vectors. The backfill never embeds. A page whose rewrite is
+refused (an invalid fence the canonical owner will not write, for example)
+keeps its marker and is listed under `failed`; the hold placed for it is put
+back, so it is not left waiting for an approval that cannot embed it. Until
+its content is repaired, the chunk safety net (`gbrain embed --stale`, the
+cycle's embed phase) gives it chunks for keyword search with no vectors, and
+doctor `oversized_pages` counts the marked pages with and without chunks.
 Backfilled pages over 1 MiB are held for consent; the post-upgrade notice,
 `gbrain embed --stale` (its `budget_limited` line) and doctor's
 `partial_embedding` check show how many are held and what embedding them
-would cost. Pages between 500 KB and 1 MiB cost a cent or two each and embed
+would cost; doctor also says how many holds have waited more than a day
+without a decision, and since when. Pages between 500 KB and 1 MiB cost a cent or two each and embed
 through the normal sweep under the existing caps.
 
 Nothing releases a hold automatically. `gbrain embed --held --dry-run` lists

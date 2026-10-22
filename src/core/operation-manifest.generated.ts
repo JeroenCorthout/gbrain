@@ -1662,6 +1662,72 @@ export const OPERATION_MANIFEST: OperationMeta[] = [
     "area": "search"
   },
   {
+    "name": "search_exact",
+    "mutating": false,
+    "idempotent": true,
+    "outputRedaction": "retrieval",
+    "scope": "read",
+    "description": "Find every page containing a literal phrase or identifier, exhaustively: use instead of grep. Unranked; returns every match in page order with snippets, and complete: true only when every page you can read was scanned. Literal: words in order with any whitespace between them, case-insensitive unless case_sensitive; no stemming, punctuation literal (ranked search treats quotes as a stemmed phrase). When complete is false, incomplete_reasons says why: deadline or limit (call again with after: resume_after), or unreadable_pages (pages whose text is not indexed yet, listed under unreadable).",
+    "params": {
+      "phrase": {
+        "type": "string",
+        "required": true,
+        "description": "The literal text, e.g. 'INV-2024-0042' or 'quarterly board pack'."
+      },
+      "case_sensitive": {
+        "type": "boolean",
+        "description": "Match case exactly (default false)."
+      },
+      "source_id": {
+        "type": "string",
+        "description": "Only this source; '__all__' spans every source you can read."
+      },
+      "types": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "Only these page types, e.g. ['meeting']."
+      },
+      "slug_prefix": {
+        "type": "string",
+        "description": "Only slugs starting with this, e.g. 'meetings/'."
+      },
+      "limit": {
+        "type": "number",
+        "description": "Matching pages to return (default 100, max 1000)."
+      },
+      "after": {
+        "type": "number",
+        "description": "Resume a bounded scan: the resume_after of the previous call."
+      },
+      "max_seconds": {
+        "type": "number",
+        "description": "Scan budget in seconds (default 30, max 120)."
+      },
+      "min_trust": {
+        "type": "string",
+        "enum": [
+          "user_confirmed",
+          "operator_curated",
+          "tool_observed",
+          "agent_written",
+          "unknown",
+          "external_untrusted"
+        ],
+        "description": "Lowest trust tier to return (the connection floor still applies).",
+        "fullSurfaceOnly": true
+      }
+    },
+    "cliHints": {
+      "name": "search-exact",
+      "positional": [
+        "phrase"
+      ]
+    },
+    "area": "search"
+  },
+  {
     "name": "rate_answer",
     "area": "search",
     "outputRedaction": "no_stored_text",

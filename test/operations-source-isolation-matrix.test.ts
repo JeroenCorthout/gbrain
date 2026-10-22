@@ -155,6 +155,10 @@ const MATRIX: Row[] = [
   { name: 'list_pages', mode: 'isolated', args: { limit: 100 } },
   { name: 'search', mode: 'isolated', args: { query: 'BETAMARKER', limit: 20 } },
   { name: 'query', mode: 'isolated', args: { query: 'BETAMARKER', limit: 20 } },
+  // search_exact echoes its phrase, so the probe reads the matches and the unreadable-page sample.
+  { name: 'search_exact', mode: 'isolated', args: { phrase: 'BETAMARKER' },
+    controlSees: r => leakToken((r as any).matches) !== null,
+    expectScoped: r => { expect(leakToken({ matches: (r as any).matches, unreadable: (r as any).unreadable })).toBeNull(); } },
   { name: 'assemble_evidence', mode: 'isolated', args: { hits: [{ source_id: 'srcbeta', slug: 'notes/beta-note', chunk_id: 0 }], return_unit: 'page' } },
   { name: 'get_tags', mode: 'isolated', args: { slug: 'notes/beta-note' } },
   { name: 'get_links', mode: 'isolated', args: { slug: 'notes/beta-note' } },

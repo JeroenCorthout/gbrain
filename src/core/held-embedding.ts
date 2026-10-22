@@ -142,7 +142,15 @@ export async function budgetLimitedField(engine: BrainEngine, sourceId: string, 
 export async function budgetLimitedFinding(engine: BrainEngine, signature: string | null): Promise<{ message: string; fix: Action; details: Record<string, unknown> } | null> {
   const found = await budgetLimitedReport(engine, { signature });
   if (!found) return null;
-  return { message: found.line, fix: found.fix, details: { ...found.report } };
+  // #7174: a hold nobody decided on stays put by design, so its age is what tells the operator it is waiting on them.
+  const [age] = await engine.executeRaw<{ stale: number; oldest: Date | string | null }>(
+    `SELECT count(*) FILTER (WHERE b.updated_at < now() - interval '1 day')::int AS stale, min(b.updated_at) AS oldest
+       FROM page_embedding_budget b JOIN pages p ON p.id = b.page_id
+      WHERE ${budgetRowAppliesFilter('b', 'p')} AND p.deleted_at IS NULL AND NOT (COALESCE(p.frontmatter, '{}'::jsonb) ? 'embed_skip')`);
+  const stale = Number(age?.stale ?? 0);
+  const oldest = age?.oldest ? new Date(age.oldest).toISOString() : null;
+  const waited = stale ? ` ${stale} of them have waited more than a day (oldest unchanged since ${oldest}); nothing embeds them until the user approves or declines.` : '';
+  return { message: `${found.line}${waited}`, fix: found.fix, details: { ...found.report, waiting_over_day: stale, oldest_updated_at: oldest } };
 }
 
 type HeldListing = {

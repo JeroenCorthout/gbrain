@@ -42,7 +42,7 @@ import { assertDrainLease, currentDrainLease } from './sync-lease.ts';
 import { idleClear, readIdleFacts } from './sync-idle-skips.ts';
 import { digest } from './digest.ts';
 import { readSyncTail } from './sync-tail-record.ts';
-import { clearGitHold, holdRescreenDue, readGitHoldRetryPaths, readSyncHoldPolicy, readGitSourceHolds, readSyncImportProvenances, syncImportParserFor } from './sync-holds.ts';
+import { clearGitHold, clearGitHoldRetryPaths, holdRescreenDue, readGitHoldRetryPaths, readSyncHoldPolicy, readGitSourceHolds, readSyncImportProvenances, syncImportParserFor } from './sync-holds.ts';
 import { loadActivePackForEngine } from '../schema-pack/engine-resolution.ts';
 import { loadConfig } from '../config.ts';
 import { startPersistenceConsumer } from './service.ts';
@@ -473,8 +473,9 @@ async function stampIdlePass(engine: BrainEngine, input: SyncPassInput, lease: N
  * settle mismatches, and owed paths it cannot settle. A path settled earlier in this pass is admitted at most once more.
  */
 async function triageRound(level: ShadowLevel, input: { S: Map<string, string>; legacyWaived: Set<string>; readmitted: Set<string>; admission: string; remote: boolean;
-  counts: { pausedDeletes: number } }) {
+  counts: { pausedDeletes: number }; consumeRetry: (paths: Iterable<string>) => Promise<void> }) {
   const { S, legacyWaived, readmitted, admission, remote, counts } = input;
+  const settledPaths: string[] = [];
   const settledKey = (path: string, levelOid: string | null) => `${path}\0${levelOid ?? ''}`;
   const deletes: ShadowPath[] = [], imports: ShadowPath[] = [], inFlight: ShadowPath[] = [], mismatch: ShadowPath[] = [], owed: ShadowPath[] = [];
   const heldRenameOrigins = new Set(level.heldRenames.map(held => syncOriginPath(held.rename.sourcePath)));
@@ -482,7 +483,7 @@ async function triageRound(level: ShadowLevel, input: { S: Map<string, string>; 
   for (const entry of level.paths) {
     if (step.due()) await step.pause();
     const r = entry.result;
-    if (r.settled) continue;
+    if (r.settled) { settledPaths.push(entryPaths(level, entry.path).path); continue; }
     if (r.inFlight) { inFlight.push(entry); continue; }
     if (S.has(settledKey(entry.path, entry.state.level))) {
       // A hold this pass wrote or re-screened at L, a slug collision it skipped, or the origin deletion an identity hold keeps
@@ -501,6 +502,7 @@ async function triageRound(level: ShadowLevel, input: { S: Map<string, string>; 
     } else if (r.action === 'import' || r.action === 'reparse' || (!remote && (r.cls === 'drift' || r.cls === 'dirty'))) imports.push(entry);
     else owed.push(entry);
   }
+  await input.consumeRetry(settledPaths);
   return { deletes, imports, inFlight, mismatch, owed };
 }
 
@@ -559,6 +561,22 @@ async function unchangedBlockedRefusal(engine: BrainEngine, input: { sourceId: s
 /** Adds each present count of `add` to `counts`. */
 function addCounts(counts: Record<string, number>, add: Record<string, number | undefined>): void {
   for (const [key, value] of Object.entries(add)) counts[key] = (counts[key] ?? 0) + (value ?? 0);
+}
+
+/**
+ * #7149: a requested re-screen is consumed once the pass settled its path (imported, held, or settled at its level), not
+ * only by the stamp: a pass that stopped before its stamp (timeout, writer_pending, not_converged) left the whole row
+ * behind, so doctor kept reporting imported files as waiting and every later pass was forced to a full round.
+ */
+function retryConsumer(engine: BrainEngine, sourceId: string, incarnation: string, retry: readonly string[]): (paths: Iterable<string>) => Promise<void> {
+  const open = new Set(retry);
+  return async paths => {
+    if (!open.size) return;
+    const taken = [...new Set(paths)].filter(path => open.has(path));
+    if (!taken.length) return;
+    await clearGitHoldRetryPaths(engine, sourceId, incarnation, taken);
+    for (const path of taken) open.delete(path);
+  };
 }
 
 /** The pass stamp (design v3.2 §3.3): what its converged checkpoint publishes; closing the open episode counts what it released. */
@@ -667,7 +685,7 @@ export async function runSyncPass(engine: BrainEngine, input: SyncPassInput): Pr
   // The entries this round's batches settled before the round folds its candidates into S: a slice that stops mid-round
   // reports them (yieldSettled); a blocked stop reports S as it replays.
   let roundSettled = 0, yieldSettled = 0;
-  const retryConsumed = new Set<string>(retry);
+  const retryConsumed = new Set<string>(retry), consumeRetry = retryConsumer(engine, sourceId, incarnation, remote ? [] : retry);
   const sliceBase = { started: performance.now(), pages: 0 };
   let batchNo = 0, waits = 0, candidatesFirst = 0;
   let lastMismatch: ShadowPath[] = [];
@@ -813,7 +831,7 @@ export async function runSyncPass(engine: BrainEngine, input: SyncPassInput): Pr
       assertActive();
       if (applied.sweptAll && !value.obligations.legacy_sweep?.first_full_at) value.obligations.legacy_sweep = { ...value.obligations.legacy_sweep, first_full_at: new Date().toISOString() };
       if (!remote) value.obligations.deletes_withheld = applied.withheld?.set_hash ?? null;
-      const { deletes, imports, inFlight, mismatch, owed } = await triageRound(level, { S, legacyWaived, readmitted, admission, remote, counts });
+      const { deletes, imports, inFlight, mismatch, owed } = await triageRound(level, { S, legacyWaived, readmitted, admission, remote, counts, consumeRetry });
       // Earlier passes' requests that committed since they stopped are this pass's imports (sync-pass-carried.ts).
       if (value.obligations.pending_requests?.length) {
         const carried = await settleCarried(engine, value.obligations.pending_requests);
@@ -893,6 +911,7 @@ export async function runSyncPass(engine: BrainEngine, input: SyncPassInput): Pr
         // A folded stamp writes the pass row with the obligations as they stand when its import is frozen.
         const stopped = await drain(chunk, last ? { ...await stampFor(level), fold: { ...fold, obligations: structuredClone(value.obligations), batch: chunk.length } } : undefined);
         if (stopped) return stop(stopped);
+        await consumeRetry(chunk.map(entry => entry.path));
         value.telemetry.remaining = Math.max(0, built.entries.length - i - chunk.length) + inFlight.length + owed.length + mismatch.length;
         if (await envelopeCrossed(engine, value, costScope, processingOptions)) counts.costDeferred = 1;
         if (last && batchFolded) { await adoptStampedObligations(engine, value); folded = { head, done: doneKey() }; continue; } // the stamp wrote the pass row
