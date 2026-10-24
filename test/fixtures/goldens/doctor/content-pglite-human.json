@@ -228,6 +228,7 @@
       "  [OK] sync_overwritten_db_edits: No page shows a database edit that a sync import overwrote.",
       "  [OK] sync_config_keys: No retired sync config key is stored on this brain.",
       "  [OK] person_title_duplicates: No title-prefixed person page pairs with an unprefixed page (0 titled page(s) examined).",
+      "  [OK] database_canonical: Database-canonical mode is off for this brain (the default), so every source keeps its files as the copy of record.",
       "  [OK] fence_integrity: No malformed facts or takes fence is held, stored or waiting in a checkout (2 source(s) scanned).",
       "  [OK] search_mode: Mode: conservative (no per-key overrides — mode bundle is canonical).",
       "  [OK] hidden_by_search_policy: No pages hidden by search-exclude policy.",

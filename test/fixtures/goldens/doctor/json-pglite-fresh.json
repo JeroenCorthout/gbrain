@@ -3235,6 +3235,18 @@
           "status": "ok"
         },
         {
+          "category": "ops",
+          "details": {
+            "docs": "docs/designs/DATABASE_CANONICAL_MEMORY.md",
+            "enabled": false,
+            "key": "persistence.database_canonical.enabled"
+          },
+          "elapsed_ms": "<volatile>",
+          "message": "Database-canonical mode is off for this brain (the default), so every source keeps its files as the copy of record.",
+          "name": "database_canonical",
+          "status": "ok"
+        },
+        {
           "category": "brain",
           "details": {
             "docs": "docs/guides/write-refusals.md#invalid_fence",
@@ -3314,18 +3326,6 @@
           "elapsed_ms": "<volatile>",
           "message": "No malformed facts or takes fence is held, stored or waiting in a checkout (1 source(s) scanned).",
           "name": "fence_integrity",
-          "status": "ok"
-        },
-        {
-          "category": "ops",
-          "details": {
-            "docs": "docs/designs/DATABASE_CANONICAL_MEMORY.md",
-            "enabled": false,
-            "key": "persistence.database_canonical.enabled"
-          },
-          "elapsed_ms": "<volatile>",
-          "message": "Database-canonical mode is off for this brain (the default), so every source keeps its files as the copy of record.",
-          "name": "database_canonical",
           "status": "ok"
         },
         {

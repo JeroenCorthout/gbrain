@@ -1031,7 +1031,7 @@ More: [docs/guides/repair.md#managed-sync-orphans](../../docs/guides/repair.md#m
 |---|---|---|---|---|---|---|
 | Database-canonical mode is off for this brain (persistence.database_canonical.enabled). | The request itself was wrong or no longer matches the brain; nothing was changed. | Correct the request using the message above, then retry. | agent | `repeat the read that failed` | 1 | no |
 
-More: [docs/designs/DATABASE_CANONICAL_MEMORY.md](../../docs/designs/DATABASE_CANONICAL_MEMORY.md)
+More: [docs/designs/DATABASE_CANONICAL_MEMORY.md#phased-rollout](../../docs/designs/DATABASE_CANONICAL_MEMORY.md#phased-rollout)
 
 ### database_error
 
