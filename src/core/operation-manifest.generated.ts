@@ -2710,18 +2710,6 @@ export const OPERATION_MANIFEST: OperationMeta[] = [
       "source_id": {
         "type": "string",
         "description": "Brain-resident pack skill from this source."
-      },
-      "bundled": {
-        "type": "boolean",
-        "description": "true: read a skill gbrain itself ships (its skill index names them), not this brain's catalog."
-      },
-      "intent": {
-        "type": "string",
-        "description": "With bundled: a task in your words; returns up to 5 matching bundled skill names to fetch."
-      },
-      "asset": {
-        "type": "string",
-        "description": "With bundled and name: one file the skill lists in assets, e.g. conventions/brain-first.md."
       }
     },
     "scope": "read",

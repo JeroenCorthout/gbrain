@@ -624,16 +624,6 @@ export function getSkillDetail(
       `Skill ${name} is over ${MAX_SKILL_MD_BYTES} bytes, so it is not served. The brain host's operator can raise GBRAIN_MAX_SKILL_MD_BYTES if it is legitimately large.`);
   }
 
-  return skillDetailFromText(ctx, name, content, opts);
-}
-
-/** The get_skill result for one SKILL.md text (host catalog or gbrain's bundled skills). */
-export function skillDetailFromText(
-  ctx: OperationContext,
-  name: string,
-  content: string,
-  opts: { gateDisabled?: ReadonlySet<string> } = {},
-): GetSkillResult {
   const parsed = parseSkillFrontmatter(content);
   const raw = parsed?.raw ?? '';
   const body = stripFrontmatterFence(content);

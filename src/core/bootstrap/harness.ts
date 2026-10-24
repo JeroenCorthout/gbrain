@@ -60,6 +60,8 @@ import {
   stripAmbientWritebackBlockAt,
 } from './instructions-block.ts';
 import { removeHarnessBrainFirst, writeHarnessBrainFirst } from './harness-brain-first.ts';
+import { removeHarnessSkillsIndex, writeHarnessSkillsIndex } from './harness-skills-index.ts';
+import { isSkillLoading, type SkillLoading } from '../setup/skills-block.ts';
 import { createEngine } from '../engine-factory.ts';
 import { isValidSourceId } from '../source-id.ts';
 import { ALL_SOURCES, isResolverUserError, localFederatedSourceIds, resolveSourceWithTier } from '../source-resolver.ts';
@@ -163,6 +165,8 @@ export interface HarnessFlags {
   noCapture: boolean;
   /** `--no-instructions`: skip (and remove) the brain-first instruction block. */
   noInstructions?: boolean;
+  /** `--skill-loading off|spring`: the spring-loaded skills index beside that block. */
+  skillLoading?: SkillLoading;
   force: boolean;
   remove: boolean;
   /** `--remove --dry-run`: list what removal would do, write nothing. */
@@ -277,6 +281,11 @@ export function parseHarnessArgs(rest: string[]): HarnessFlags {
   out.refreshSkills = rest.includes('--refresh-skills');
   out.yes = rest.includes('--yes');
   out.json = rest.includes('--json');
+  const skillLoading = value('--skill-loading');
+  if (skillLoading !== undefined) {
+    if (isSkillLoading(skillLoading)) out.skillLoading = skillLoading;
+    else out.error = out.error ?? `unknown --skill-loading '${skillLoading}'; pass off or spring`;
+  }
   const bin = value('--gbrain-bin');
   if (bin !== undefined) out.gbrainBin = bin;
   const seat = parseSeatFlags(rest);
@@ -1983,8 +1992,10 @@ export async function applyHarness(flags: HarnessFlags, rawDeps: HarnessDeps): P
     memoryOnly: skillsPolicy === 'memory-only', leave: leaveHarnessSkills, save }, d);
 
   // 10b. Brain-first instructions beside each confirmed MCP entry.
-  writeHarnessBrainFirst({ hosts: hosts.filter((h) => targets.some((t) => t.host === h && t.kind === 'mcp' && t.state === 'confirmed')),
-    server: flags.name, optOut: flags.noInstructions === true, paths: d, log: d.log });
+  const instructionHosts = hosts.filter((h) => targets.some((t) => t.host === h && t.kind === 'mcp' && t.state === 'confirmed'));
+  writeHarnessBrainFirst({ hosts: instructionHosts, server: flags.name, optOut: flags.noInstructions === true, paths: d, log: d.log });
+  writeHarnessSkillsIndex({ hosts: instructionHosts, launcher: flags.gbrainBin ?? d.gbrainBin ?? 'gbrain', optOut: flags.noInstructions === true,
+    skillLoading: flags.skillLoading, paths: d, log: d.log });
 
   // 11. Degradation + skew honesty.
   if (health.engine === 'postgres') {
@@ -2262,6 +2273,7 @@ export async function removeHarness(flags: HarnessFlags, rawDeps: HarnessDeps): 
   }
 
   removeHarnessBrainFirst(flags.name, d.log);
+  removeHarnessSkillsIndex(d.log);
 
   if (remaining.length === 0 && tokenDone && skillsDone) {
     deleteHarnessReceipt(d.gbrainHome);

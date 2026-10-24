@@ -45,6 +45,8 @@ import { probeBrainIdentity, DEFAULT_PROBE_TIMEOUT_MS } from '../core/connect-pr
 import { opencodeGlobalConfigPath } from '../core/bootstrap/host-specs.ts';
 import { acquireBootstrapLock } from '../core/bootstrap/lock.ts';
 import { brainFirstTarget, describeBrainFirstOutcome, installerBrainFirst, isBrainFirstHarness } from '../core/setup/brain-first.ts';
+import { describeSkillsBlockOutcome, installerSkillsBlock, isSkillLoading, type SkillLoading } from '../core/setup/skills-block.ts';
+import { resolveGbrainBin } from '../core/gbrain-bin.ts';
 import {
   GBRAIN_REMOTE_TOKEN_ENV,
   reconcileOpencodeSiblingGlobal,
@@ -179,6 +181,9 @@ Flags:
                        Also writes the brain-first instruction block into the agent's
                        own instruction file (CLAUDE.md / AGENTS.md)
   --no-instructions    With --install, skip (and remove) the brain-first block
+  --skill-loading M    With --install: off (default) or spring, a compact index of
+                       gbrain's bundled skills beside that block, each loaded on
+                       demand with gbrain bundled-skill <name>. Remembered.
   --yes                The user's approval for --install (writes a credential-
                        bearing MCP entry); without it a non-interactive run exits 3
   --force              On --install, replace an existing server of the same name
@@ -439,7 +444,7 @@ export interface ConnectDeps {
     opts?: { allowReplaceOtherSource?: boolean },
   ): { configPath: string; replacedPrior: boolean } | Promise<{ configPath: string; replacedPrior: boolean }>;
   /** After a successful registration: the brain-first block in the agent's own instruction file. Returns the line to print. */
-  writeInstructions(agent: AgentId, name: string, optOut: boolean): string | null;
+  writeInstructions(agent: AgentId, name: string, optOut: boolean, skillLoading?: SkillLoading): string | null;
 }
 
 async function defaultPromptYesNo(question: string): Promise<boolean> {
@@ -497,12 +502,16 @@ const defaultDeps: ConnectDeps = {
   probe: (url, token, timeoutMs) => probeBrainIdentity(url, token, { timeoutMs }),
   env: (name) => process.env[name],
   registerOAuthClient: defaultRegisterOAuthClient,
-  writeInstructions: (agent, name, optOut) => {
+  writeInstructions: (agent, name, optOut, skillLoading) => {
     if (!isBrainFirstHarness(agent)) return null;
     const target = brainFirstTarget(agent);
     if ('error' in target) return null;
-    const o = installerBrainFirst({ target, access: { kind: 'mcp', server: name }, writer: `gbrain connect --agent ${agent} --install`, instructions: optOut ? false : undefined });
-    return `${describeBrainFirstOutcome(o, false).trim()}${o.decision.value === 'accepted' ? ' (opt out with --no-instructions)' : ''}`;
+    const writer = `gbrain connect --agent ${agent} --install`;
+    const o = installerBrainFirst({ target, access: { kind: 'mcp', server: name }, writer, instructions: optOut ? false : undefined });
+    const skills = installerSkillsBlock({ target, launcher: resolveGbrainBin() ?? 'gbrain', writer, brainFirstDeclined: o.decision.value === 'declined', skillLoading, audience: 'downstream' });
+    const lines = [`${describeBrainFirstOutcome(o, false).trim()}${o.decision.value === 'accepted' ? ' (opt out with --no-instructions)' : ''}`];
+    if (skills.decision.value === 'spring' || skills.action !== 'skip') lines.push(describeSkillsBlockOutcome(skills, false).trim());
+    return lines.join('\n');
   },
   writeOpencodeRemoteEntry: async (name, url, opts) => {
     // The writer's contract: callers hold acquireBootstrapLock on the config
@@ -551,6 +560,7 @@ interface ParsedFlags {
   json: boolean;
   showToken: boolean;
   noInstructions: boolean;
+  skillLoading?: SkillLoading;
   timeoutMs: number;
   help: boolean;
   agentError?: string;
@@ -599,6 +609,13 @@ function parseArgs(args: string[]): ParsedFlags {
       case '--json': out.json = true; break;
       case '--show-token': out.showToken = true; break;
       case '--no-instructions': out.noInstructions = true; break;
+      case '--skill-loading': {
+        const v = takeValue('--skill-loading');
+        if (v === undefined) break;
+        if (isSkillLoading(v)) out.skillLoading = v;
+        else out.agentError = out.agentError ?? `Unknown --skill-loading '${v}'. Use off or spring.`;
+        break;
+      }
       case '--token': { const v = takeValue('--token'); if (v !== undefined) out.token = v; break; }
       case '--client-id': { const v = takeValue('--client-id'); if (v !== undefined) out.clientId = v; break; }
       case '--client-secret': { const v = takeValue('--client-secret'); if (v !== undefined) out.clientSecret = v; break; }

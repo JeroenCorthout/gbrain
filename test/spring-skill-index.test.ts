@@ -1,58 +1,98 @@
 /**
  * GBRA-194: the spring-loaded skill index (the always-loaded half of the
- * resolver) stays inside its byte budget for the real bundled skills tree.
+ * resolver) for the real bundled skills.
  *
- * Protects: the per-turn cost of `--skill-loading spring`. Every bundled
- * skill keeps a line; trigger phrases are what the line carries; the block
- * names the fetch for the access it was written for.
+ * Protects: the per-turn cost of `--skill-loading spring` and the index's
+ * promise that every line can be loaded. Every bundled skill keeps a line;
+ * trigger phrases are what the line carries; the block names
+ * `<launcher> bundled-skill`; the budget is a postcondition, never exceeded;
+ * the generated module is fresh and each skill carries every shared file its
+ * text (and those files) names.
  * Fails when: a new or longer skill pushes the block past
- * SKILL_INDEX_BUDGET_BYTES, a skill drops out of the index, or the fetch
- * sentence stops naming bundled: true / --bundled.
+ * SKILL_INDEX_BUDGET_BYTES, a skill drops out of the index, the renderer
+ * returns an over-budget block, or a skill names a shared file
+ * `gbrain bundled-skill --asset` would refuse.
  */
 import { describe, expect, test } from 'bun:test';
-import { bundledSkills } from '../src/core/skills/bundled.ts';
-import { renderSkillIndexBlock, SKILL_INDEX_BUDGET_BYTES } from '../src/core/skills/spring-index.ts';
+import { existsSync, readFileSync } from 'node:fs';
+import { dirname, join, normalize } from 'node:path';
+import { BUNDLED_SKILL_FILES } from '../src/core/skills/bundled-skills.generated.ts';
+import { bundledCatalogId, bundledSkills, bundledSkillTriggers } from '../src/core/skills/bundled.ts';
+import { renderSkillIndexBlock, SKILL_INDEX_BUDGET_BYTES, SkillIndexTooLarge, skillIndexCatalog } from '../src/core/skills/spring-index.ts';
 import { renderBundledSkillsModule } from '../scripts/generate-bundled-skills.ts';
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
 
-const OPT_OUT = 'gbrain setup claude-code --instructions-only --skill-loading off';
+const OPTS = { refresh: 'gbrain setup claude-code --instructions-only', optOut: 'gbrain setup claude-code --instructions-only --skill-loading off' };
+const LAUNCHER = '/home/alice-example/.bun/bin/gbrain';
 const bytes = (s: string) => Buffer.byteLength(s, 'utf8');
+const entries = (block: string) => block.split('\n').filter(l => l.startsWith('- '));
+const SKILLS_DIR = join(import.meta.dir, '..', 'skills');
 
 describe('spring-loaded skill index', () => {
   for (const audience of ['owner', 'downstream'] as const) {
-    for (const access of [{ kind: 'mcp', server: 'gbrain' }, { kind: 'cli', launcher: '/home/alice-example/.gbrain-agent/bin/gbrain' }] as const) {
-      test(`${audience} / ${access.kind}: under budget with every skill on its own line`, () => {
-        const skills = bundledSkills(audience);
-        const block = renderSkillIndexBlock(skills, access, OPT_OUT);
-        expect(bytes(block)).toBeLessThanOrEqual(SKILL_INDEX_BUDGET_BYTES);
-        const lines = block.split('\n').filter(l => l.startsWith('- '));
-        expect(lines.map(l => l.slice(2, l.indexOf(':')))).toEqual(skills.map(s => s.name));
-        expect(block).toContain(access.kind === 'mcp' ? '`bundled: true`' : 'skill <name> --bundled');
-      });
-    }
+    test(`${audience}: under budget, every skill on its own line, loads through bundled-skill`, () => {
+      const skills = bundledSkills(audience);
+      const block = renderSkillIndexBlock(skills, LAUNCHER, OPTS);
+      expect(bytes(block)).toBeLessThanOrEqual(SKILL_INDEX_BUDGET_BYTES);
+      expect(entries(block).map(l => l.slice(2).split(':')[0])).toEqual(skills.map(s => s.name));
+      expect(block).toContain(`\`${LAUNCHER} bundled-skill <name>\``);
+      expect(block).toContain(`\`${LAUNCHER} bundled-skill <name> --asset <path>\``);
+      expect(skillIndexCatalog(block)).toBe(bundledCatalogId());
+    });
   }
 
-  test('the full three-trigger rendering of the owner set fits without the budget guard', () => {
-    const skills = bundledSkills('owner');
-    const roomy = renderSkillIndexBlock(skills, { kind: 'mcp', server: 'gbrain' }, OPT_OUT, Number.MAX_SAFE_INTEGER);
-    expect(renderSkillIndexBlock(skills, { kind: 'mcp', server: 'gbrain' }, OPT_OUT)).toBe(roomy);
+  test('every bundled skill has trigger phrases for its line', () => {
+    expect(bundledSkills('owner').filter(s => bundledSkillTriggers(s).length === 0).map(s => s.name)).toEqual([]);
   });
 
-  test('over budget, lines drop to fewer triggers but no skill is dropped', () => {
+  test('the budget is a postcondition: tighter budgets trim the longest lines first and never drop a skill', () => {
     const skills = bundledSkills('owner');
-    const tight = renderSkillIndexBlock(skills, { kind: 'mcp', server: 'gbrain' }, OPT_OUT, 4096);
-    expect(tight.split('\n').filter(l => l.startsWith('- '))).toHaveLength(skills.length);
-    expect(tight.split('\n').filter(l => l.startsWith('- ')).every(l => !l.includes('; '))).toBe(true);
+    const full = renderSkillIndexBlock(skills, LAUNCHER, { ...OPTS, budget: Number.MAX_SAFE_INTEGER });
+    for (const budget of [bytes(full) - 1, bytes(full) - 400, 4600]) {
+      const block = renderSkillIndexBlock(skills, LAUNCHER, { ...OPTS, budget });
+      expect(bytes(block)).toBeLessThanOrEqual(budget);
+      expect(entries(block)).toHaveLength(skills.length);
+    }
+    const trimmedOnce = entries(renderSkillIndexBlock(skills, LAUNCHER, { ...OPTS, budget: bytes(full) - 1 }));
+    expect(trimmedOnce.filter((l, i) => l !== entries(full)[i])).toHaveLength(1);
+  });
+
+  test('an impossible budget or an overlong launcher refuses instead of returning an oversized block', () => {
+    const skills = bundledSkills('owner');
+    expect(() => renderSkillIndexBlock(skills, LAUNCHER, { ...OPTS, budget: 1024 })).toThrow(SkillIndexTooLarge);
+    expect(() => renderSkillIndexBlock(skills, `/${'x'.repeat(5000)}/gbrain`, OPTS)).toThrow(SkillIndexTooLarge);
   });
 
   test('deterministic and free of quotes that would break the markdown', () => {
-    const a = renderSkillIndexBlock(bundledSkills('owner'), { kind: 'mcp', server: 'gbrain' }, OPT_OUT);
-    expect(renderSkillIndexBlock(bundledSkills('owner'), { kind: 'mcp', server: 'gbrain' }, OPT_OUT)).toBe(a);
-    expect(a.split('\n').filter(l => l.startsWith('- ')).some(l => /["`]/.test(l))).toBe(false);
+    const a = renderSkillIndexBlock(bundledSkills('owner'), LAUNCHER, OPTS);
+    expect(renderSkillIndexBlock(bundledSkills('owner'), LAUNCHER, OPTS)).toBe(a);
+    expect(entries(a).some(l => /["`]/.test(l))).toBe(false);
   });
 
   test('the embedded bundled-skills module is fresh', () => {
     expect(readFileSync(join(import.meta.dir, '../src/core/skills/bundled-skills.generated.ts'), 'utf8')).toBe(renderBundledSkillsModule());
+  });
+
+  test('each skill carries every file under skills/ that its files link to, transitively (a linked bundled skill loads by name)', () => {
+    const bundledNames = new Set(bundledSkills('owner').map(s => s.name));
+    const missing: string[] = [];
+    for (const skill of bundledSkills('owner')) {
+      const have = new Set([`${skill.name}/SKILL.md`, ...skill.assets]);
+      for (const file of have) {
+        const text = BUNDLED_SKILL_FILES[file] ?? '';
+        for (const m of text.matchAll(/\]\((\.{1,2}\/[^)\s#]+)\)/g)) {
+          const target = normalize(join(dirname(file), m[1]));
+          if (target.startsWith('..') || !existsSync(join(SKILLS_DIR, target)) || !/\.(md|json)$/.test(target)) continue;
+          if (target.endsWith('/SKILL.md') && bundledNames.has(dirname(target))) continue;
+          if (!have.has(target)) missing.push(`${file} -> ${target}`);
+        }
+      }
+    }
+    expect(missing).toEqual([]);
+  });
+
+  test('the filing rules JSON reaches every skill that loads the filing rules', () => {
+    for (const skill of bundledSkills('owner').filter(s => s.assets.includes('_brain-filing-rules.md'))) {
+      expect(skill.assets).toContain('_brain-filing-rules.json');
+    }
   });
 });

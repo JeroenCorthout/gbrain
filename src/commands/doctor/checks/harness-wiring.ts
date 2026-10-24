@@ -24,6 +24,7 @@
  * Doctor seeds nothing; the only file it removes is a status marker whose
  * process is gone.
  */
+import { skillsIndexViews, type SkillsBlockState, type SkillsIndexView } from '../../../core/setup/skills-block.ts';
 import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, isAbsolute, join } from 'node:path';
@@ -409,6 +410,28 @@ export function withInstructionBlocks(check: Check, views: InstructionBlockView[
   return { name: check.name, status: 'warn', message, details, fix };
 }
 
+const SKILLS_INDEX_PROBLEM: Record<Exclude<SkillsBlockState, 'current'>, string> = {
+  stale: 'indexes an older set of bundled skills',
+  absent: 'is gone from the file',
+  no_file: 'is gone (the file was deleted)',
+  damaged: 'has hand-edited markers',
+};
+
+/**
+ * GBRA-194 sibling of withInstructionBlocks: the spring-loaded skills index
+ * (src/core/setup/skills-block.ts) for every harness the ledger has it on.
+ * Informational: a stale index still loads skills by name, so the status is
+ * never changed; the message names the exact refresh command.
+ */
+export function withSkillsIndex(check: Check, views: SkillsIndexView[]): Check {
+  if (views.length === 0) return check;
+  const details = { ...(check.details ?? {}), skills_index: views };
+  const off = views.filter((v) => v.state !== 'current');
+  if (off.length === 0) return { ...check, details };
+  const notes = off.map((v) => `the ${v.harness} skills index in ${v.path} ${SKILLS_INDEX_PROBLEM[v.state as Exclude<SkillsBlockState, 'current'>]}; refresh with \`${v.refresh}\``);
+  return { ...check, message: `${check.message} Skills index: ${notes.join('; ')}.`, details };
+}
+
 /** The setup command that rewrites exactly this block: same file, same connection name and surface. A project file needs its own directory, so the user runs it there. */
 function repairArgv(v: InstructionBlockView): Action {
   const access = v.access;
@@ -430,7 +453,7 @@ function repairArgv(v: InstructionBlockView): Action {
 /** Registration read (full run) or registration read + smoke (`--only harness_wiring`), plus the brain-first block. */
 export async function harnessWiringCheck(opts: { smoke: boolean }): Promise<Check> {
   const regs = readHarnessRegistrations();
-  return withInstructionBlocks(await registrationCheck(opts, regs), instructionBlockViews(regs));
+  return withSkillsIndex(withInstructionBlocks(await registrationCheck(opts, regs), instructionBlockViews(regs)), skillsIndexViews());
 }
 
 async function registrationCheck(opts: { smoke: boolean }, regs: HarnessRegistration[]): Promise<Check> {

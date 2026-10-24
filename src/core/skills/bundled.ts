@@ -13,7 +13,12 @@
  *
  * Every read is a key lookup in the embedded map: a client-supplied name or
  * asset is a lookup key, never a path.
+ *
+ * Read by `gbrain bundled-skill` (src/cli/commands/bundled-skill.ts), which
+ * needs no brain connection, and by the skills index (spring-index.ts).
  */
+import { createHash } from 'node:crypto';
+import { parseSkillFrontmatter } from '../skill-frontmatter.ts';
 import { BUNDLED_SKILLS, BUNDLED_SKILL_FILES, type BundledSkillMeta } from './bundled-skills.generated.ts';
 
 export type BundledSkill = BundledSkillMeta;
@@ -33,7 +38,26 @@ export function bundledSkillText(skill: BundledSkill): string {
   return BUNDLED_SKILL_FILES[`${skill.name}/SKILL.md`] ?? '';
 }
 
+/** The skill's frontmatter `triggers:` (the canonical routing signal), read from the embedded text. */
+export function bundledSkillTriggers(skill: BundledSkill): string[] {
+  return (parseSkillFrontmatter(bundledSkillText(skill))?.triggers ?? []).map(t => String(t).trim()).filter(Boolean);
+}
+
+/** The skill's one-line description, as the skill catalog derives it. */
+export async function bundledSkillDescription(skill: BundledSkill): Promise<string> {
+  const { oneLineDescription } = await import('../skill-catalog.ts');
+  const text = bundledSkillText(skill);
+  return oneLineDescription(parseSkillFrontmatter(text)?.raw ?? '', text.replace(/^---\n[\s\S]*?\n---\n?/, '')).replace(/\s+/g, ' ').trim();
+}
+
 /** One file the skill lists in its assets; undefined for anything else. */
 export function bundledSkillAsset(skill: BundledSkill, asset: string): string | undefined {
   return skill.assets.includes(asset) ? BUNDLED_SKILL_FILES[asset] : undefined;
+}
+
+/** Content identity of the embedded catalog (metadata and every file); the skills index records it so doctor can tell a stale index. */
+export function bundledCatalogId(): string {
+  const h = createHash('sha256').update(JSON.stringify(BUNDLED_SKILLS));
+  for (const key of Object.keys(BUNDLED_SKILL_FILES).sort()) h.update(`\0${key}\0${BUNDLED_SKILL_FILES[key]}`);
+  return h.digest('hex').slice(0, 12);
 }

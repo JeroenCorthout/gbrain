@@ -21,8 +21,10 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { runCli } from './helpers/cli-spawn.ts';
 import { BRAIN_FIRST_BEGIN, BRAIN_FIRST_END } from '../src/core/setup/brain-first.ts';
-import { renderSkillsBlock, SKILLS_BLOCK_BEGIN, SKILLS_BLOCK_END } from '../src/core/setup/skills-block.ts';
+import { inspectSkillsBlock, renderSkillsBlock, SKILLS_BLOCK_BEGIN, SKILLS_BLOCK_END } from '../src/core/setup/skills-block.ts';
+import { bundledCatalogId } from '../src/core/skills/bundled.ts';
 
+const LAUNCHER = '/opt/alice-example/bin/gbrain';
 const roots: string[] = [];
 afterAll(() => { for (const r of roots) rmSync(r, { recursive: true, force: true }); });
 
@@ -63,7 +65,7 @@ const LANES: Lane[] = [
 
 for (const lane of LANES) {
   describe(`skill loading: ${lane.harness}`, () => {
-    const run = (b: Box, extra: string[] = [], env: Record<string, string | undefined> = {}) => setup(b, [lane.harness, '--instructions-only', ...extra], env);
+    const run = (b: Box, extra: string[] = [], env: Record<string, string | undefined> = {}) => setup(b, [lane.harness, '--instructions-only', '--gbrain-bin', LAUNCHER, ...extra], env);
     const seed = (b: Box) => { mkdirSync(dirname(lane.file(b)), { recursive: true }); writeFileSync(lane.file(b), lane.existing); };
 
     test('default off writes no index; spring places it right after brain-first and keeps outside text', async () => {
@@ -81,7 +83,7 @@ for (const lane of LANES) {
       expect(count(text, SKILLS_BLOCK_BEGIN)).toBe(1);
       const lines = text.split('\n');
       expect(lines.indexOf(SKILLS_BLOCK_BEGIN)).toBe(lines.indexOf(BRAIN_FIRST_END) + 1);
-      expect(text).toContain(renderSkillsBlock(lane.harness, { kind: 'mcp', server: 'gbrain' }));
+      expect(text).toContain(renderSkillsBlock(lane.harness, LAUNCHER));
       expect(outside(text)).toBe(lane.existing);
     });
 
@@ -153,11 +155,29 @@ describe('skill loading: selection', () => {
     expect(existsSync(join(b.home, '.claude', 'CLAUDE.md'))).toBe(false);
   });
 
-  test('a verbs-only surface has no get_skill, so the index names the CLI fetch', async () => {
+  test('the index names the absolute launcher the install recorded, whatever the MCP surface', async () => {
     const b = box();
-    await setup(b, ['claude-code', '--instructions-only', '--skill-loading', 'spring', '--surface', 'verbs']);
+    const r = await setup(b, ['claude-code', '--instructions-only', '--gbrain-bin', LAUNCHER, '--skill-loading', 'spring', '--surface', 'verbs']);
+    expect(r.exitCode).toBe(0);
     const text = read(join(b.home, '.claude', 'CLAUDE.md'));
-    expect(text).toContain('gbrain skill <name> --bundled');
-    expect(text).not.toContain('`bundled: true`');
+    expect(text).toContain('`' + LAUNCHER + ' bundled-skill <name>`');
+    expect(text).not.toContain('get_skill');
+    const ledger = JSON.parse(read(join(b.home, '.gbrain', 'skill-loading.json')));
+    expect(ledger.entries[0]).toMatchObject({ harness: 'claude-code', mode: 'spring', launcher: LAUNCHER, audience: 'owner', catalog: bundledCatalogId() });
+  });
+
+  test('an index an upgrade left behind (older catalog) is reported stale and a bare re-run refreshes it', async () => {
+    const b = box();
+    const file = join(b.home, '.claude', 'CLAUDE.md');
+    await setup(b, ['claude-code', '--instructions-only', '--gbrain-bin', LAUNCHER, '--skill-loading', 'spring']);
+    const current = read(file);
+    const older = current.replace('catalog ' + bundledCatalogId(), 'catalog 000000000000').replace(/^- brain-ops:.*$/m, '- brain-ops: an older trigger');
+    expect(older).not.toBe(current);
+    writeFileSync(file, older);
+    expect(inspectSkillsBlock(file).state).toBe('stale');
+    const r = await setup(b, ['claude-code', '--instructions-only', '--gbrain-bin', LAUNCHER]);
+    expect(r.doc.skills).toMatchObject({ action: 'write', state_before: 'stale', decision: { value: 'spring', source: 'prior' } });
+    expect(read(file)).toBe(current);
+    expect(inspectSkillsBlock(file).state).toBe('current');
   });
 });

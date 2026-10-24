@@ -142,9 +142,9 @@ Flags:
                        (default: agents.defaults.workspace, then ~/.openclaw/workspace).
   --skill-loading M    off (default) or spring. spring adds a compact index of
                        gbrain's bundled skills beside the brain-first block (about
-                       1.4k tokens) and loads a skill's full text only when a task
-                       matches (get_skill bundled: true, or gbrain skill <name>
-                       --bundled). off removes an index an earlier run wrote. The
+                       1.5k tokens) and loads a skill's full text only when a task
+                       matches (gbrain bundled-skill <name>, from this gbrain).
+                       off removes an index an earlier run wrote. The
                        choice is remembered; GBRAIN_SKILL_LOADING sets it too.
 
 Brain-first instructions: registering MCP is not enough; agents use a brain they
@@ -454,7 +454,7 @@ export async function runSetup(args: string[]): Promise<number> {
         ...Object.entries(found.edited).map(([event]) => ({ step: 'hooks' as const, action: 'preserve' as const, detail: `${event} was edited after setup wrote it; kept` })),
       ];
       const instructions = brainFirstFor('claude-code', flags, { kind: 'mcp', server: flags.name, surface }, { scope, projectDir });
-      const skills = skillsFor('claude-code', flags, { kind: 'mcp', server: flags.name, surface }, { scope, projectDir }, instructions);
+      const skills = skillsFor('claude-code', flags, launcher, { scope, projectDir }, instructions);
       return finish(out, { dryRun: true, target, consent, steps, states: [], verify: null, notices: [], notes, instructions, skills });
     }
 
@@ -465,7 +465,7 @@ export async function runSetup(args: string[]): Promise<number> {
     });
     for (const s of result.steps) say(out, `  ${s.action.padEnd(8)} ${s.step.padEnd(7)} ${s.detail}`);
     const instructions = brainFirstFor('claude-code', flags, { kind: 'mcp', server: flags.name, surface }, { scope, projectDir });
-    const skills = skillsFor('claude-code', flags, { kind: 'mcp', server: flags.name, surface }, { scope, projectDir }, instructions);
+    const skills = skillsFor('claude-code', flags, launcher, { scope, projectDir }, instructions);
     if (!result.changed && !instructionsChanged(instructions) && !instructionsChanged(skills)) say(out, 'Nothing changed: this install is already wired.');
 
     let verify: { ok: boolean; reason: string; message: string } | null;
@@ -599,7 +599,7 @@ async function runCodexSetup(flags: SetupFlags, launcher: string, cfg: GBrainCon
         ...Object.keys(found.edited).map((event) => ({ step: 'hooks' as const, action: 'preserve' as const, detail: `${event} was edited after setup wrote it; kept` })),
       ];
       const instructions = brainFirstFor('codex', flags, { kind: 'mcp', server: flags.name, surface }, {});
-      const skills = skillsFor('codex', flags, { kind: 'mcp', server: flags.name, surface }, {}, instructions);
+      const skills = skillsFor('codex', flags, launcher, {}, instructions);
       return finish(out, { harness: 'codex', dryRun: true, target, consent, steps, states: [], verify: null, notices: [], notes, instructions, skills });
     }
 
@@ -611,7 +611,7 @@ async function runCodexSetup(flags: SetupFlags, launcher: string, cfg: GBrainCon
     for (const s of result.steps) say(out, `  ${s.action.padEnd(8)} ${s.step.padEnd(7)} ${s.detail}`);
     for (const n of result.notes) say(out, `note: ${n}`);
     const instructions = brainFirstFor('codex', flags, { kind: 'mcp', server: flags.name, surface }, {});
-    const skills = skillsFor('codex', flags, { kind: 'mcp', server: flags.name, surface }, {}, instructions);
+    const skills = skillsFor('codex', flags, launcher, {}, instructions);
     if (!result.changed && !instructionsChanged(instructions) && !instructionsChanged(skills)) say(out, 'Nothing changed: this install is already wired.');
 
     let verify: { ok: boolean; reason: string; message: string };
@@ -701,13 +701,13 @@ function removeBrainFirstFor(harness: BrainFirstHarness, where: { scope?: Wiring
  * The skills index for this run (--skill-loading, GBRAIN_SKILL_LOADING, the ledger; off by default).
  * It sits beside the brain-first block, so declining that block (--no-instructions) removes the index too.
  */
-function skillsFor(harness: BrainFirstHarness, flags: SetupFlags, access: BrainFirstAccess, where: { scope?: WiringScope; projectDir?: string }, brainFirst: BrainFirstOutcome | null): SkillsBlockOutcome | null {
+function skillsFor(harness: BrainFirstHarness, flags: SetupFlags, launcher: string, where: { scope?: WiringScope; projectDir?: string }, brainFirst: BrainFirstOutcome | null): SkillsBlockOutcome | null {
   const target = brainFirstTarget(harness, { ...where, workspace: flags.workspace });
   if ('error' in target) return null;
   const decision = brainFirst?.decision.value === 'declined'
     ? { value: 'off' as const, source: 'instructions_off' as const }
     : resolveSkillLoading(flags.skillLoading, priorSkillLoading(harness, target.path));
-  return syncSkillsBlock({ target, access, decision, writer: `gbrain setup ${harness}`, dryRun: flags.dryRun });
+  return syncSkillsBlock({ target, launcher, decision, writer: `gbrain setup ${harness}`, dryRun: flags.dryRun });
 }
 
 function removeSkillsFor(harness: BrainFirstHarness, where: { scope?: WiringScope; projectDir?: string }, flags: SetupFlags): SkillsBlockOutcome | null {
@@ -766,7 +766,7 @@ async function runInstructionsOnly(flags: SetupFlags, out: Out): Promise<number>
     say(out, `Target (${adapter.label}): ${target.path} (${target.role})`);
     const decision = resolveBrainFirstDecision(flags.instructions, priorBrainFirst(harness, target.path));
     instructions = syncBrainFirst({ target, access, decision, writer: `gbrain setup ${harness}`, dryRun: flags.dryRun });
-    skills = skillsFor(harness, flags, access, where, instructions);
+    skills = skillsFor(harness, flags, flags.gbrainBin ?? resolveGbrainBin() ?? 'gbrain', where, instructions);
   }
   const code = instructions?.action === 'preserve' || skillsFailed(skills) ? 1 : 0;
   if (out.json) {
@@ -814,4 +814,4 @@ async function finish(out: Out, doc: {
 }
 
 /** An index the user asked for by flag that could not be written fails the run (the rest of the install still finished). */
-const skillsFailed = (o: SkillsBlockOutcome | null): boolean => o?.action === 'preserve' && o.decision.source === 'flag';
+const skillsFailed = (o: SkillsBlockOutcome | null): boolean => o?.action === 'preserve' && (o.decision.value === 'spring' || o.decision.source !== 'default');

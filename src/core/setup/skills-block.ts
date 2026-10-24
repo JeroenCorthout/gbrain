@@ -7,8 +7,11 @@
  * it; `off`, the default, writes nothing and strips a block an earlier run
  * wrote. `--no-instructions` strips it with the brain-first block. The block
  * is a compact index of gbrain's bundled skills plus one sentence on loading a
- * skill on demand (spring-index.ts); the skill bodies stay out of the context
- * until a task matches.
+ * skill on demand with `<launcher> bundled-skill <name>` (spring-index.ts);
+ * the skill bodies stay out of the context until a task matches. The launcher
+ * is the same absolute gbrain the install registered, so the index and the
+ * text it loads come from one binary, whatever MCP server or brain the
+ * harness is connected to.
  *
  * Ownership is by markers (managed-block.ts): the interior is gbrain's, text
  * outside the markers is never touched. Decisions live in their own ledger,
@@ -23,9 +26,9 @@ import { atomicWriteTextFile } from '../bootstrap/atomic-write.ts';
 import { configDir } from '../config.ts';
 import { probeBlock, removeBlock, spliceBlock, type BlockMarkers } from '../managed-block.ts';
 import { ensureGitExcluded } from '../context/compiled-core.ts';
-import { bundledSkills, type SkillAudience } from '../skills/bundled.ts';
-import { renderSkillIndexBlock, SKILL_INDEX_VERSION, type SkillIndexAccess } from '../skills/spring-index.ts';
-import { BRAIN_FIRST_END, CURSOR_HEAD, direntExists, readBrainFirstLedger, writeUnlessChanged, type BrainFirstAccess, type BrainFirstTarget } from './brain-first.ts';
+import { bundledCatalogId, bundledSkills, type SkillAudience } from '../skills/bundled.ts';
+import { renderSkillIndexBlock, SKILL_INDEX_VERSION, SkillIndexTooLarge, skillIndexCatalog } from '../skills/spring-index.ts';
+import { BRAIN_FIRST_END, CURSOR_HEAD, direntExists, readBrainFirstLedger, writeUnlessChanged, type BrainFirstTarget } from './brain-first.ts';
 
 export const SKILLS_BLOCK_BEGIN = '<!-- gbrain:skills:begin -->';
 export const SKILLS_BLOCK_END = '<!-- gbrain:skills:end -->';
@@ -39,15 +42,24 @@ export function isSkillLoading(v: unknown): v is SkillLoading {
   return (SKILL_LOADING_MODES as readonly unknown[]).includes(v);
 }
 
-/** The access the block names. A verbs-only MCP surface has no get_skill, so it gets the CLI form. */
-export function skillIndexAccess(access: BrainFirstAccess): SkillIndexAccess {
-  if (access.kind === 'cli') return access;
-  return access.surface === 'verbs' ? { kind: 'cli', launcher: 'gbrain' } : { kind: 'mcp', server: access.server };
+/** The command that refreshes an index after an upgrade; the recorded mode makes a bare re-run keep it. */
+export function skillsRefreshCommand(harness: string): string {
+  return `gbrain setup ${harness} --instructions-only`;
 }
 
-/** The block interior for a harness. Local installs run on the brain host and index every bundled skill. */
-export function renderSkillsBlock(harness: string, access: BrainFirstAccess, audience: SkillAudience = 'owner'): string {
-  return renderSkillIndexBlock(bundledSkills(audience), skillIndexAccess(access), `gbrain setup ${harness} --instructions-only --skill-loading off`);
+/**
+ * The block interior for a harness. `owner` (an install on the brain host)
+ * indexes every bundled skill; `downstream` (a thin client) leaves out the
+ * host-only ones, as `gbrain bundled-skill` does there. Throws
+ * SkillIndexTooLarge rather than return a block over budget.
+ */
+export function renderSkillsBlock(harness: string, launcher: string, audience: SkillAudience = 'owner', how?: { refresh: string; optOut: string }): string {
+  return renderSkillIndexBlock(bundledSkills(audience), launcher, how ?? { refresh: skillsRefreshCommand(harness), optOut: `gbrain setup ${harness} --instructions-only --skill-loading off` });
+}
+
+/** The block with its markers, for a file gbrain writes whole (the thin-client GBRAIN-INSTRUCTIONS.md). */
+export function renderSkillsSnippet(harness: string, launcher: string, audience: SkillAudience, how: { refresh: string; optOut: string }): string {
+  return `${SKILLS_BLOCK_BEGIN}\n${renderSkillsBlock(harness, launcher, audience, how)}\n${SKILLS_BLOCK_END}\n`;
 }
 
 // ── Ledger ────────────────────────────────────────────────────────────────
@@ -57,7 +69,10 @@ export interface SkillLoadingLedgerEntry {
   path: string;
   mode: SkillLoading;
   block_version: number;
-  access: BrainFirstAccess;
+  /** The catalog the written block indexes (bundledCatalogId). */
+  catalog?: string;
+  launcher?: string;
+  audience?: SkillAudience;
   writer: string;
   created_file: boolean;
   updated_at: string;
@@ -110,13 +125,20 @@ export function resolveSkillLoading(flag: SkillLoading | undefined, prior: Pick<
 
 export type SkillsBlockState = 'no_file' | 'absent' | 'current' | 'stale' | 'damaged';
 
-export function inspectSkillsBlock(path: string, expected?: string): { state: SkillsBlockState; version?: number } {
+/**
+ * The block's state. With `expected` (the interior this run would write),
+ * current means identical; without it, current means the block indexes this
+ * gbrain's catalog (same index version and catalog identity).
+ */
+export function inspectSkillsBlock(path: string, expected?: string): { state: SkillsBlockState; version?: number; catalog?: string } {
   if (!existsSync(path)) return { state: 'no_file' };
   const probe = probeBlock(MARKERS, readFileSync(path, 'utf8'));
   if (probe.state !== 'present') return { state: probe.state };
-  const version = Number(/gbrain skills v(\d+)/.exec(probe.interior ?? '')?.[1] ?? 0);
-  const current = expected !== undefined ? probe.interior === expected : version === SKILL_INDEX_VERSION;
-  return { state: current ? 'current' : 'stale', version };
+  const interior = probe.interior ?? '';
+  const version = Number(/gbrain skills v(\d+)/.exec(interior)?.[1] ?? 0);
+  const catalog = skillIndexCatalog(interior);
+  const current = expected !== undefined ? interior === expected : version === SKILL_INDEX_VERSION && catalog === bundledCatalogId();
+  return { state: current ? 'current' : 'stale', version, ...(catalog ? { catalog } : {}) };
 }
 
 export interface SkillsBlockOutcome {
@@ -147,9 +169,17 @@ export function placeSkillsBlock(existing: string, body: string): string {
  * `spring`, strip it for `off`. Never throws: a damaged block or an
  * unwritable file is reported as `preserve` and the install carries on.
  */
-export function syncSkillsBlock(opts: { target: BrainFirstTarget; access: BrainFirstAccess; decision: SkillLoadingDecision; writer: string; dryRun: boolean; audience?: SkillAudience }): SkillsBlockOutcome {
-  const { target, access, decision } = opts;
-  const body = renderSkillsBlock(target.harness, access, opts.audience);
+export function syncSkillsBlock(opts: { target: BrainFirstTarget; launcher: string; decision: SkillLoadingDecision; writer: string; dryRun: boolean; audience?: SkillAudience }): SkillsBlockOutcome {
+  const { target, launcher, decision } = opts;
+  const audience = opts.audience ?? 'owner';
+  let body: string | undefined;
+  let tooLarge: SkillIndexTooLarge | undefined;
+  try {
+    body = renderSkillsBlock(target.harness, launcher, audience);
+  } catch (e) {
+    if (!(e instanceof SkillIndexTooLarge)) throw e;
+    tooLarge = e;
+  }
   const before = inspectSkillsBlock(target.path, body);
   const out = (action: SkillsBlockOutcome['action'], detail: string): SkillsBlockOutcome =>
     ({ harness: target.harness, path: target.path, decision, action, state_before: before.state, detail });
@@ -157,7 +187,7 @@ export function syncSkillsBlock(opts: { target: BrainFirstTarget; access: BrainF
   const record = (mode: SkillLoading, created: boolean) => {
     if (opts.dryRun) return;
     if (mode === 'off' && decision.source === 'default' && !prior) return;
-    upsertLedger({ harness: target.harness, path: target.path, mode, block_version: SKILL_INDEX_VERSION, access, writer: opts.writer, created_file: created, updated_at: new Date().toISOString() });
+    upsertLedger({ harness: target.harness, path: target.path, mode, block_version: SKILL_INDEX_VERSION, ...(mode === 'spring' ? { catalog: bundledCatalogId(), launcher, audience } : {}), writer: opts.writer, created_file: created, updated_at: new Date().toISOString() });
   };
   try {
     if (before.state === 'damaged') {
@@ -176,6 +206,9 @@ export function syncSkillsBlock(opts: { target: BrainFirstTarget; access: BrainF
       }
       record('off', false);
       return out('remove', `skills index from ${target.path}`);
+    }
+    if (body === undefined) {
+      return out('preserve', `${tooLarge!.message}; ${target.path} was left as it was`);
     }
     const brainFirstCreated = readBrainFirstLedger().find((e) => e.harness === target.harness && e.path === target.path)?.created_file ?? false;
     if (before.state === 'current') {
@@ -233,3 +266,40 @@ export function describeSkillsBlockOutcome(o: SkillsBlockOutcome, dryRun: boolea
   const how = o.decision.value === 'spring' ? 'turn off with --skill-loading off' : 'turn on with --skill-loading spring';
   return `  ${(dryRun && o.action !== 'keep' && o.action !== 'skip' ? `would ${o.action}` : o.action).padEnd(8)} ${'skills'.padEnd(7)} ${o.detail} [${o.decision.source}; ${how}]`;
 }
+
+/**
+ * The installer lanes (`gbrain connect --install`, `gbrain connect --harness`,
+ * `gbrain bootstrap harness`): the same decision as setup (flag, then
+ * GBRAIN_SKILL_LOADING, then the recorded choice, then off), with the
+ * brain-first outcome deciding `--no-instructions`. Never throws.
+ */
+export function installerSkillsBlock(opts: {
+  target: BrainFirstTarget; launcher: string; writer: string; brainFirstDeclined: boolean;
+  skillLoading?: SkillLoading; audience?: SkillAudience; remove?: boolean; dryRun?: boolean;
+}): SkillsBlockOutcome {
+  if (opts.remove) return removeSkillsBlock({ harness: opts.target.harness, path: opts.target.path, dryRun: opts.dryRun ?? false });
+  const decision: SkillLoadingDecision = opts.brainFirstDeclined
+    ? { value: 'off', source: 'instructions_off' }
+    : resolveSkillLoading(opts.skillLoading, priorSkillLoading(opts.target.harness, opts.target.path));
+  return syncSkillsBlock({ target: opts.target, launcher: opts.launcher, decision, writer: opts.writer, dryRun: opts.dryRun ?? false, audience: opts.audience });
+}
+
+/** Removal for a lane that records its writer: strip every index that writer wrote. */
+export function removeSkillsBlocksBy(writer: string, dryRun = false): SkillsBlockOutcome[] {
+  return readSkillLoadingLedger().filter((e) => e.writer === writer && e.mode === 'spring').map((e) => removeSkillsBlock({ harness: e.harness, path: e.path, dryRun }));
+}
+
+export interface SkillsIndexView { harness: string; path: string; state: SkillsBlockState; refresh: string }
+
+/**
+ * Doctor's read of every index the ledger says is on: current, stale (an
+ * upgrade changed the catalog), absent (the block was deleted by hand),
+ * damaged or no_file. Informational only: a stale index still loads skills
+ * by name, so doctor names the refresh command and never warns on it.
+ */
+export function skillsIndexViews(): SkillsIndexView[] {
+  return readSkillLoadingLedger().filter((e) => e.mode === 'spring').map((e) => ({
+    harness: e.harness, path: e.path, state: inspectSkillsBlock(e.path).state, refresh: skillsRefreshCommand(e.harness),
+  }));
+}
+
