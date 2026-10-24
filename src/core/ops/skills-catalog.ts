@@ -95,27 +95,49 @@ const get_skill: Operation = {
       type: 'string',
       description: 'Brain-resident pack skill from this source.',
     },
+    bundled: {
+      type: 'boolean',
+      description: 'true: read a skill gbrain itself ships (its skill index names them), not this brain\'s catalog.',
+    },
+    intent: {
+      type: 'string',
+      description: 'With bundled: a task in your words; returns up to 5 matching bundled skill names to fetch.',
+    },
+    asset: {
+      type: 'string',
+      description: 'With bundled and name: one file the skill lists in assets, e.g. conventions/brain-first.md.',
+    },
   },
   handler: async (ctx, p) => {
-    if (p.schema_version === 2) return (await import('../shared-skills/catalog.ts')).getSharedSkill(ctx, sharedSkillReadSelector(p));
+    // A miss on a name gbrain ships as a bundled skill says how to load that one; it never substitutes it.
+    const pointBundled = async (err: unknown) => (await import('../skills/bundled-op.ts')).pointAtBundled(ctx, p, err);
+    if (p.schema_version === 2) return (await import('../shared-skills/catalog.ts')).getSharedSkill(ctx, sharedSkillReadSelector(p)).catch(pointBundled);
     if (p.expected_brain_id !== undefined) throw opError('invalid_params', 'expected_brain_id requires schema_version 2; it asserts identity and never selects a brain connection.', 'Pass schema_version: 2 with expected_brain_id, or drop expected_brain_id.');
     if (p.schema_version !== undefined && p.schema_version !== 1) throw invalidParam(ctx, 'get_skill', 'schema_version', 'Supported skill catalog schema versions are 1 and 2.', { choices: ['1', '2'], example: 2 });
+    if (p.bundled !== undefined || p.intent !== undefined || p.asset !== undefined) {
+      return (await import('../skills/bundled-op.ts')).bundledSkillRequest(ctx, p);
+    }
+    const sourceId = typeof p.source_id === 'string' && p.source_id.length > 0 ? p.source_id : undefined;
     const compatibility = await import('../shared-skills/compatibility.ts');
-    if (await compatibility.sharedCatalogActive(ctx)) return compatibility.getLegacySharedSkill(ctx, p.name, typeof p.source_id === 'string' ? p.source_id : undefined);
+    if (await compatibility.sharedCatalogActive(ctx)) return compatibility.getLegacySharedSkill(ctx, p.name, sourceId).catch(pointBundled);
     const sc = await import('../skill-catalog.ts');
     const publish = await sc.readMcpPublishSkills(ctx);
     sc.assertPublishEnabled(ctx, publish);
     // Brain-resident path: when source_id is supplied, fetch the per-source pack
     // skill (confined to that source's pack root) rather than the host catalog.
-    if (typeof p.source_id === 'string' && p.source_id.length > 0) {
+    if (sourceId) {
       const brl = await import('../skillpack/brain-resident-locate.ts');
       const slug = typeof p.name === 'string' ? p.name : '';
-      return brl.getResidentSkillDetail(ctx, p.source_id, slug);
+      return brl.getResidentSkillDetail(ctx, sourceId, slug);
     }
-    const override = await sc.readMcpSkillsDir(ctx);
-    const { dir } = sc.resolveSkillsDir(ctx, override);
     const name = typeof p.name === 'string' ? p.name : '';
-    return sc.getSkillDetail(ctx, dir, name, { gateDisabled: await sc.readSkillToolGates(ctx) });
+    try {
+      const override = await sc.readMcpSkillsDir(ctx);
+      const { dir } = sc.resolveSkillsDir(ctx, override);
+      return sc.getSkillDetail(ctx, dir, name, { gateDisabled: await sc.readSkillToolGates(ctx) });
+    } catch (err) {
+      return pointBundled(err);
+    }
   },
   scope: 'read',
   cliHints: { name: 'skill', positional: ['name'] },
