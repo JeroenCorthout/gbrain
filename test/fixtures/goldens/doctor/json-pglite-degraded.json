@@ -972,14 +972,14 @@
         {
           "category": "meta",
           "elapsed_ms": "<volatile>",
-          "message": "1403 column(s) verified against live schema",
+          "message": "1462 column(s) verified against live schema",
           "name": "schema_columns",
           "status": "ok"
         },
         {
           "category": "meta",
           "elapsed_ms": "<volatile>",
-          "message": "All 163 table(s) the applied migrations create exist.",
+          "message": "All 166 table(s) the applied migrations create exist.",
           "name": "schema_missing_tables",
           "status": "ok"
         },
@@ -3213,6 +3213,30 @@
           "elapsed_ms": "<volatile>",
           "message": "No source has a database-canonical shadow export on (the default), so the export outbox triggers do nothing.",
           "name": "database_canonical_shadow",
+          "status": "ok"
+        },
+        {
+          "category": "ops",
+          "details": {
+            "docs": "docs/designs/DATABASE_CANONICAL_MEMORY.md",
+            "enabled": false,
+            "key": "persistence.database_canonical.enabled"
+          },
+          "elapsed_ms": "<volatile>",
+          "message": "Database-canonical mode is off for this brain, so the import lane does not run and no writer census is kept.",
+          "name": "database_canonical_census",
+          "status": "ok"
+        },
+        {
+          "category": "ops",
+          "details": {
+            "database_sources": [],
+            "docs": "docs/designs/database-canonical-w4-contract.md",
+            "findings": []
+          },
+          "elapsed_ms": "<volatile>",
+          "message": "No source is in database mode, so the canonical fence is inert.",
+          "name": "database_canonical_fence",
           "status": "ok"
         },
         {

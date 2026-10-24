@@ -34,11 +34,14 @@ export const IMPORT_LANE_OUTCOMES = ['adopt', 'import', 'streamed_import', 'crea
 
 export const IMPORT_CONFLICT_STATES = ['open', 'resolved'] as const;
 
-/** Why an open row closed: a later pass saw another outcome, the file went back to its ledger bytes, or the shadow epoch moved. */
-export const IMPORT_CONFLICT_RESOLUTIONS = ['superseded', 'cleared', 'epoch_changed'] as const;
+/**
+ * Why an open row closed: a later pass saw another outcome, the file went back to its ledger bytes, or the shadow epoch moved.
+ * taken_file, taken_database and written are reserved for the live lane (wave 5); this wave never writes them.
+ */
+export const IMPORT_CONFLICT_RESOLUTIONS = ['superseded', 'cleared', 'epoch_changed', 'taken_file', 'taken_database', 'written'] as const;
 
-/** Observe mode only in this wave; a live lane adds its mode here. */
-export const IMPORT_LANE_MODES = ['observe'] as const;
+/** observe is the only mode this wave runs; live is reserved for the live lane (wave 5) so its rows need no constraint change. */
+export const IMPORT_LANE_MODES = ['observe', 'live'] as const;
 
 /** Conflict bytes up to this size are kept in the row; larger ones as a SHA-256 plus a private Git ref (the request cap). */
 export const IMPORT_CONFLICT_INLINE_BYTES = 24 * 1024 * 1024;
