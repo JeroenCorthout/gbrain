@@ -17,7 +17,7 @@ import { DATABASE_CANONICAL_KEY } from '../src/core/persistence/canonical-export
 import { lockExportWriters, writeSourceShadow } from '../src/core/persistence/canonical-shadow.ts';
 import { decideImportCase, mergeCounts, observeImportLane } from '../src/core/persistence/import-lane.ts';
 import { HOLD_CONFLICT_KINDS, holdConflictKind } from '../src/core/persistence/import-conflict-mapping.ts';
-import { IMPORT_CONFLICT_KINDS } from '../src/core/persistence/import-conflicts-schema.ts';
+import { IMPORT_CONFLICT_KINDS, IMPORT_CONFLICT_RESOLUTIONS, IMPORT_LANE_MODES } from '../src/core/persistence/import-conflicts-schema.ts';
 import { watchImportLane } from '../src/core/persistence/import-lane-watch.ts';
 import { readImportCensus } from '../src/core/persistence/import-census.ts';
 import { censusImportLane, observeOnce, parseCensusArgs } from '../src/commands/sources-canonical-census.ts';
@@ -335,6 +335,26 @@ for (const backend of testBackends()) describe(`database-canonical wave 3 import
     expect(check).toMatchObject({ name: 'database_canonical_census', status: 'warn', details: { next: 'gbrain sources canonical default --census' } });
     expect((check!.details as { writers: Array<{ writer: string }> }).writers.map(w => w.writer).sort()).toEqual(['Alice Example', 'notes-cron']);
     expect(check!.message).not.toContain('gbrain_git_effect');
+  });
+
+  test('the constraints accept the reserved live mode and live-lane resolutions, default to observe and reject unknown values', async () => {
+    for (const resolution of IMPORT_CONFLICT_RESOLUTIONS) {
+      await engine.executeRaw(`INSERT INTO import_conflicts(source_id, path, path_folded, mode, outcome, state, shadow_epoch, resolved_at, resolution)
+        VALUES ('default', $1, $1, 'live', 'import', 'resolved', 1, now(), $2)`, [`notes/${resolution}.md`, resolution]);
+    }
+    expect(IMPORT_LANE_MODES).toEqual(['observe', 'live']);
+    expect([...IMPORT_CONFLICT_RESOLUTIONS].sort()).toEqual(['cleared', 'epoch_changed', 'superseded', 'taken_database', 'taken_file', 'written']);
+    expect((await engine.executeRaw<{ resolution: string }>("SELECT resolution FROM import_conflicts WHERE mode='live' ORDER BY resolution")).map(r => r.resolution))
+      .toEqual([...IMPORT_CONFLICT_RESOLUTIONS].sort());
+    await engine.executeRaw("INSERT INTO import_lane_passes(source_id, shadow_epoch, mode, started_at) VALUES ('default', 1, 'live', now())");
+    await engine.executeRaw("INSERT INTO import_lane_passes(source_id, shadow_epoch, started_at) VALUES ('default', 1, now())");
+    await engine.executeRaw("INSERT INTO import_conflicts(source_id, path, path_folded, outcome, shadow_epoch) VALUES ('default', 'notes/d.md', 'notes/d.md', 'import', 1)");
+    expect((await engine.executeRaw<{ mode: string }>('SELECT mode FROM import_lane_passes ORDER BY id')).map(r => r.mode)).toEqual(['live', 'observe']);
+    expect((await engine.executeRaw<{ mode: string }>("SELECT mode FROM import_conflicts WHERE path='notes/d.md'"))[0]!.mode).toBe('observe');
+    await expect(engine.executeRaw("INSERT INTO import_lane_passes(source_id, shadow_epoch, mode, started_at) VALUES ('default', 1, 'apply', now())")).rejects.toThrow();
+    await expect(engine.executeRaw(`INSERT INTO import_conflicts(source_id, path, path_folded, outcome, state, shadow_epoch, resolved_at, resolution)
+      VALUES ('default', 'notes/e.md', 'notes/e.md', 'import', 'resolved', 1, now(), 'discarded')`)).rejects.toThrow();
+    await expect(engine.executeRaw("INSERT INTO import_conflicts(source_id, path, path_folded, mode, outcome, shadow_epoch) VALUES ('default', 'notes/f.md', 'notes/f.md', 'apply', 'import', 1)")).rejects.toThrow();
   });
 });
 
