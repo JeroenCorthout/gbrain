@@ -10,22 +10,27 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
-## [0.60.432.0] - 2026-10-24
+## [0.60.431.0] - 2026-10-24
 
-**Three intermittent test failures are fixed: the lp-c publication-ceiling test's load-only double charge, an ENOENT race in the Git coalescing fixture, and test git processes that ignored the hermetic preload's environment. The shard weights are refreshed. Nothing changes for gbrain users.**
+**A thin client now reuses its OAuth access token across `gbrain` commands until shortly before it expires, instead of minting a new token for every command. A hook that runs one remote search per prompt no longer spends the host's /token budget and locks itself out with 429s.**
 
 ### What changed
 
 | Situation | Before | Now |
 |---|---|---|
-| The lp-c publication-ceiling test on a loaded host | the 300 ms test ceiling, which runs from the start of a publication, could cancel a publication before it reached the test's park; the bookkeeping kept only at the park never ran, so the next claim published under the test ceiling, was taken for a group again and was cancelled a second time (`transient_interruptions` 2 where 1 was expected, or claims 3 where 2 were expected) | the test sets the next claim's ceiling and records the cancelled group at the charge, which every cancelled publication reaches; three Postgres cases stall a publication past the ceiling before the park and pin it. Each charge was always one cancelled publication: the retry budget was never consumed twice |
-| The Git coalescing fixture copies a template repository right after its push | Git 2.55's detached `git maintenance run --auto` created and deleted `objects/maintenance.lock` during the copy, which then failed with ENOENT | the template repositories set `maintenance.auto false` before their first commit, and every copy inherits it |
-| A test helper runs `Bun.spawn` or `Bun.spawnSync` without an `env` option | the child got the environment the process started with, so the hermetic preload's edits (the inherited GIT_DIR and GIT_WORK_TREE drop, the gpg override) never reached it | the preload defaults `env` to `process.env`, as `child_process` does; an explicit `env` still wins |
-| CI shard balancing | weights from older runs | weights refreshed from recent unit and full E2E runs |
+| Each `gbrain` command on a thin client (`remote_mcp` set) | minted a fresh `client_credentials` token, so 50 commands in 15 minutes hit the host's default /token limit and got `OAuth /token returned 429` | the token is cached in `~/.gbrain/remote-tokens/` (one 0600 file per client, bearer and expiry only) and reused until 30 s before it expires; an HTTP 401 drops it and re-mints once |
+| Two thin-client configurations (different client id or secret) used in one process or one gbrain home | the in-process cache was keyed by MCP URL | every cache entry is keyed by issuer, MCP URL, client id and secret, so each client always uses a token minted for it |
 
 ### What to watch for after you upgrade
 
-- Nothing changes for gbrain users: this is tests and CI only. Nothing is rewritten on upgrade, and there is no schema migration.
+- The host still checks every request against the client's current grant, so narrowing or revoking a client applies to a cached token at once.
+- Deleting `~/.gbrain/remote-tokens/` is always safe; the next command mints a new token. Changing the client id or secret also starts a new token.
+- Processes that start together with no cached token each mint one.
+- Nothing is rewritten on upgrade, and there is no schema migration.
+
+### For contributors
+
+- `src/core/remote-token-cache.ts` owns the cache file: written by atomic rename, read through an `O_NOFOLLOW` descriptor, ignored and deleted when another user owns it or could read it. `_clearMcpClientTokenCache({ keepDisk: true })` simulates a new CLI process in tests.
 
 ## [0.60.430.0] - 2026-10-24
 
