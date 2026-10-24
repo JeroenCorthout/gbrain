@@ -689,7 +689,7 @@ index 07f6716..2978d0b 100644
    seconds = typeof seconds === 'function' ? seconds() : seconds
    if (!seconds)
 diff --git a/cjs/src/index.js b/vendor/postgres/cjs/src/index.js
-index f09c61c7e..ef672e7c9 100644
+index f09c61c..2c31a38 100644
 --- a/cjs/src/index.js
 +++ b/vendor/postgres/cjs/src/index.js
 @@ -62,10 +62,36 @@ function Postgres(a, b) {
@@ -730,7 +730,7 @@ index f09c61c7e..ef672e7c9 100644
    Object.assign(sql, {
      get parameters() { return options.parameters },
      largeObject: largeObject.bind(null, sql),
-@@ -200,58 +226,242 @@ function Postgres(a, b) {
+@@ -200,58 +226,248 @@ function Postgres(a, b) {
      return await sql`select pg_notify(${ channel }, ${ '' + payload })`
    }
  
@@ -957,21 +957,18 @@ index f09c61c7e..ef672e7c9 100644
      try {
 -      await sql.unsafe('begin ' + options.replace(/[^a-z ]/ig, ''), [], { onexecute }).execute()
 -      return await Promise.race([
+-        scope(connection, fn),
+-        new Promise((_, reject) => connection.onclose = reject)
+-      ])
 +      const begun = sql.unsafe('begin ' + options.replace(/[^a-z ]/ig, ''), [], { onexecute }).execute()
 +      if (!first && !early) {
 +        await begun
-+        return await Promise.race([
-+          scope(connection, fn),
-+          new Promise((_, reject) => connection.onclose = reject)
-+        ])
++        return await raceClose(scope(connection, fn))
 +      }
 +      await Promise.race([new Promise(resolve => written = resolve), begun])
 +      opening = begun.then(() => { opening = null })
 +      opening.catch(() => { /* each held statement rejects with BEGIN's error */ })
-+      const ran = Promise.race([
-         scope(connection, fn),
-         new Promise((_, reject) => connection.onclose = reject)
-       ])
++      const ran = raceClose(scope(connection, fn))
 +      const [opened, result] = await Promise.allSettled([begun, ran])
 +      if (opened.status === 'rejected')
 +        throw opened.reason
@@ -982,6 +979,18 @@ index f09c61c7e..ef672e7c9 100644
        throw error
      }
  
++    // GBrain (#7358): the close handler leaves the connection when the transaction settles; left in place, it kept the
++    // transaction's result reachable from the pooled connection until its next transaction.
++    async function raceClose(ran) {
++      const c = connection
++      let onclose
++      try {
++        return await Promise.race([ran, new Promise((_, reject) => c.onclose = onclose = reject)])
++      } finally {
++        c.onclose === onclose && (c.onclose = null)
++      }
++    }
++
      async function scope(c, fn, name) {
 +      const reservation = c.reserved
 +      if (!reservation)
@@ -994,7 +1003,7 @@ index f09c61c7e..ef672e7c9 100644
        let uncaughtError
          , result
  
-@@ -281,6 +491,8 @@ function Postgres(a, b) {
+@@ -281,6 +497,8 @@ function Postgres(a, b) {
        return result
  
        function savepoint(name, fn) {
@@ -1003,7 +1012,7 @@ index f09c61c7e..ef672e7c9 100644
          if (name && Array.isArray(name.raw))
            return savepoint(sql => sql.apply(sql, arguments))
  
-@@ -290,18 +502,33 @@ function Postgres(a, b) {
+@@ -290,18 +508,33 @@ function Postgres(a, b) {
  
        function handler(q) {
          q.catch(e => uncaughtError || (uncaughtError = e))
@@ -1043,7 +1052,7 @@ index f09c61c7e..ef672e7c9 100644
      }
    }
  
-@@ -351,7 +578,7 @@ function Postgres(a, b) {
+@@ -351,7 +584,7 @@ function Postgres(a, b) {
      return new Promise((resolve, reject) => {
        query.state
          ? query.active
@@ -1052,7 +1061,7 @@ index f09c61c7e..ef672e7c9 100644
            : query.cancelled = { resolve, reject }
          : (
            queries.remove(query),
-@@ -362,6 +589,25 @@ function Postgres(a, b) {
+@@ -362,6 +595,25 @@ function Postgres(a, b) {
      })
    }
  
@@ -1078,7 +1087,7 @@ index f09c61c7e..ef672e7c9 100644
    async function end({ timeout = null } = {}) {
      if (ending)
        return ending
-@@ -398,7 +644,14 @@ function Postgres(a, b) {
+@@ -398,7 +650,14 @@ function Postgres(a, b) {
      move(c, ended)
    }
  
@@ -1094,7 +1103,7 @@ index f09c61c7e..ef672e7c9 100644
      if (queries.length === 0)
        return move(c, open)
  
-@@ -418,12 +671,50 @@ function Postgres(a, b) {
+@@ -418,12 +677,50 @@ function Postgres(a, b) {
        : move(c, full)
    }
  
@@ -1146,7 +1155,7 @@ index f09c61c7e..ef672e7c9 100644
    }
  }
  
-@@ -444,7 +735,7 @@ function parseOptions(a, b) {
+@@ -444,7 +741,7 @@ function parseOptions(a, b) {
    'timeout' in o && (console.log('The timeout option is deprecated, use idle_timeout instead'), o.idle_timeout = o.timeout) // eslint-disable-line
    query.sslrootcert === 'system' && (query.ssl = 'verify-full')
  
@@ -1155,7 +1164,7 @@ index f09c61c7e..ef672e7c9 100644
    const defaults = {
      max             : globalThis.Cloudflare ? 3 : 10,
      ssl             : false,
-@@ -453,6 +744,10 @@ function parseOptions(a, b) {
+@@ -453,6 +750,10 @@ function parseOptions(a, b) {
      connect_timeout : 30,
      max_lifetime    : max_lifetime,
      max_pipeline    : 100,
@@ -1166,7 +1175,7 @@ index f09c61c7e..ef672e7c9 100644
      backoff         : backoff,
      keep_alive      : 60,
      prepare         : true,
-@@ -491,11 +786,19 @@ function parseOptions(a, b) {
+@@ -491,11 +792,19 @@ function parseOptions(a, b) {
      onnotice        : o.onnotice,
      onnotify        : o.onnotify,
      onclose         : o.onclose,
@@ -1947,7 +1956,7 @@ index 1b1cccd..28f3e50 100644
    seconds = typeof seconds === 'function' ? seconds() : seconds
    if (!seconds)
 diff --git a/src/index.js b/vendor/postgres/src/index.js
-index c7fba3dac..f93237cbd 100644
+index c7fba3d..5bacfcb 100644
 --- a/src/index.js
 +++ b/vendor/postgres/src/index.js
 @@ -62,10 +62,36 @@ function Postgres(a, b) {
@@ -1988,7 +1997,7 @@ index c7fba3dac..f93237cbd 100644
    Object.assign(sql, {
      get parameters() { return options.parameters },
      largeObject: largeObject.bind(null, sql),
-@@ -200,58 +226,242 @@ function Postgres(a, b) {
+@@ -200,58 +226,248 @@ function Postgres(a, b) {
      return await sql`select pg_notify(${ channel }, ${ '' + payload })`
    }
  
@@ -2215,21 +2224,18 @@ index c7fba3dac..f93237cbd 100644
      try {
 -      await sql.unsafe('begin ' + options.replace(/[^a-z ]/ig, ''), [], { onexecute }).execute()
 -      return await Promise.race([
+-        scope(connection, fn),
+-        new Promise((_, reject) => connection.onclose = reject)
+-      ])
 +      const begun = sql.unsafe('begin ' + options.replace(/[^a-z ]/ig, ''), [], { onexecute }).execute()
 +      if (!first && !early) {
 +        await begun
-+        return await Promise.race([
-+          scope(connection, fn),
-+          new Promise((_, reject) => connection.onclose = reject)
-+        ])
++        return await raceClose(scope(connection, fn))
 +      }
 +      await Promise.race([new Promise(resolve => written = resolve), begun])
 +      opening = begun.then(() => { opening = null })
 +      opening.catch(() => { /* each held statement rejects with BEGIN's error */ })
-+      const ran = Promise.race([
-         scope(connection, fn),
-         new Promise((_, reject) => connection.onclose = reject)
-       ])
++      const ran = raceClose(scope(connection, fn))
 +      const [opened, result] = await Promise.allSettled([begun, ran])
 +      if (opened.status === 'rejected')
 +        throw opened.reason
@@ -2240,6 +2246,18 @@ index c7fba3dac..f93237cbd 100644
        throw error
      }
  
++    // GBrain (#7358): the close handler leaves the connection when the transaction settles; left in place, it kept the
++    // transaction's result reachable from the pooled connection until its next transaction.
++    async function raceClose(ran) {
++      const c = connection
++      let onclose
++      try {
++        return await Promise.race([ran, new Promise((_, reject) => c.onclose = onclose = reject)])
++      } finally {
++        c.onclose === onclose && (c.onclose = null)
++      }
++    }
++
      async function scope(c, fn, name) {
 +      const reservation = c.reserved
 +      if (!reservation)
@@ -2252,7 +2270,7 @@ index c7fba3dac..f93237cbd 100644
        let uncaughtError
          , result
  
-@@ -281,6 +491,8 @@ function Postgres(a, b) {
+@@ -281,6 +497,8 @@ function Postgres(a, b) {
        return result
  
        function savepoint(name, fn) {
@@ -2261,7 +2279,7 @@ index c7fba3dac..f93237cbd 100644
          if (name && Array.isArray(name.raw))
            return savepoint(sql => sql.apply(sql, arguments))
  
-@@ -290,18 +502,33 @@ function Postgres(a, b) {
+@@ -290,18 +508,33 @@ function Postgres(a, b) {
  
        function handler(q) {
          q.catch(e => uncaughtError || (uncaughtError = e))
@@ -2301,7 +2319,7 @@ index c7fba3dac..f93237cbd 100644
      }
    }
  
-@@ -351,7 +578,7 @@ function Postgres(a, b) {
+@@ -351,7 +584,7 @@ function Postgres(a, b) {
      return new Promise((resolve, reject) => {
        query.state
          ? query.active
@@ -2310,7 +2328,7 @@ index c7fba3dac..f93237cbd 100644
            : query.cancelled = { resolve, reject }
          : (
            queries.remove(query),
-@@ -362,6 +589,25 @@ function Postgres(a, b) {
+@@ -362,6 +595,25 @@ function Postgres(a, b) {
      })
    }
  
@@ -2336,7 +2354,7 @@ index c7fba3dac..f93237cbd 100644
    async function end({ timeout = null } = {}) {
      if (ending)
        return ending
-@@ -398,7 +644,14 @@ function Postgres(a, b) {
+@@ -398,7 +650,14 @@ function Postgres(a, b) {
      move(c, ended)
    }
  
@@ -2352,7 +2370,7 @@ index c7fba3dac..f93237cbd 100644
      if (queries.length === 0)
        return move(c, open)
  
-@@ -418,12 +671,50 @@ function Postgres(a, b) {
+@@ -418,12 +677,50 @@ function Postgres(a, b) {
        : move(c, full)
    }
  
@@ -2404,7 +2422,7 @@ index c7fba3dac..f93237cbd 100644
    }
  }
  
-@@ -444,7 +735,7 @@ function parseOptions(a, b) {
+@@ -444,7 +741,7 @@ function parseOptions(a, b) {
    'timeout' in o && (console.log('The timeout option is deprecated, use idle_timeout instead'), o.idle_timeout = o.timeout) // eslint-disable-line
    query.sslrootcert === 'system' && (query.ssl = 'verify-full')
  
@@ -2413,7 +2431,7 @@ index c7fba3dac..f93237cbd 100644
    const defaults = {
      max             : globalThis.Cloudflare ? 3 : 10,
      ssl             : false,
-@@ -453,6 +744,10 @@ function parseOptions(a, b) {
+@@ -453,6 +750,10 @@ function parseOptions(a, b) {
      connect_timeout : 30,
      max_lifetime    : max_lifetime,
      max_pipeline    : 100,
@@ -2424,7 +2442,7 @@ index c7fba3dac..f93237cbd 100644
      backoff         : backoff,
      keep_alive      : 60,
      prepare         : true,
-@@ -491,11 +786,19 @@ function parseOptions(a, b) {
+@@ -491,11 +792,19 @@ function parseOptions(a, b) {
      onnotice        : o.onnotice,
      onnotify        : o.onnotify,
      onclose         : o.onclose,

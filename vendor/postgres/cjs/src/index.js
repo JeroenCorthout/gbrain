@@ -431,18 +431,12 @@ function Postgres(a, b) {
       const begun = sql.unsafe('begin ' + options.replace(/[^a-z ]/ig, ''), [], { onexecute }).execute()
       if (!first && !early) {
         await begun
-        return await Promise.race([
-          scope(connection, fn),
-          new Promise((_, reject) => connection.onclose = reject)
-        ])
+        return await raceClose(scope(connection, fn))
       }
       await Promise.race([new Promise(resolve => written = resolve), begun])
       opening = begun.then(() => { opening = null })
       opening.catch(() => { /* each held statement rejects with BEGIN's error */ })
-      const ran = Promise.race([
-        scope(connection, fn),
-        new Promise((_, reject) => connection.onclose = reject)
-      ])
+      const ran = raceClose(scope(connection, fn))
       const [opened, result] = await Promise.allSettled([begun, ran])
       if (opened.status === 'rejected')
         throw opened.reason
@@ -451,6 +445,18 @@ function Postgres(a, b) {
       return result.value
     } catch (error) {
       throw error
+    }
+
+    // GBrain (#7358): the close handler leaves the connection when the transaction settles; left in place, it kept the
+    // transaction's result reachable from the pooled connection until its next transaction.
+    async function raceClose(ran) {
+      const c = connection
+      let onclose
+      try {
+        return await Promise.race([ran, new Promise((_, reject) => c.onclose = onclose = reject)])
+      } finally {
+        c.onclose === onclose && (c.onclose = null)
+      }
     }
 
     async function scope(c, fn, name) {

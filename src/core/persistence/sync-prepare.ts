@@ -16,6 +16,7 @@ import { importFromContent, importCodeFile, verifyPageReadable } from '../import
 import { screenImportContent, screenNormalized, type ContentRefusal, type ImportScreenResult, type ImportSanityConfig } from '../import-screen.ts';
 import { ContentSanityBlockError } from '../content-sanity.ts';
 import { parseMarkdown, resolveParsedSubtype, serializePageToMarkdown, type ParseOpts } from '../markdown.ts';
+import { keepGrandfatherStamp } from './align-stored.ts';
 import { resolveSlugForPath, slugifyPath, isCodeFilePath, isImageFilePath } from '../sync.ts';
 import { prepareManagedSyncImage } from './sync-image.ts';
 import { SOURCE_CONFIG_OBJECT_SQL } from '../source-config-sql.ts';
@@ -877,6 +878,7 @@ async function prepareSyncMutation(unbounded: BrainEngine, row: WriteRequest, _c
   }
   const parsed = parseMarkdown(p.content, `${row.slug}.md`, { activePack });
   resolveParsedSubtype(parsed, base?.page);
+  keepGrandfatherStamp(parsed.frontmatter, base?.page);
   const tags = [...new Set([...(base?.tags ?? []), ...ready.parsedPage.tags])].sort();
   const renderedPage = { ...(base ? withoutBody(base.page) : { id: 0, source_id: row.source_id, created_at: new Date(), updated_at: new Date() }), ...ready.parsedPage } as Page;
   if (renamed && parsedInput.typeExplicit !== true) renderedPage.type = parsedInput.type;

@@ -3255,7 +3255,8 @@
           "15 error_code text/text NULL",
           "16 outcome jsonb/jsonb NULL",
           "17 recovery jsonb/jsonb NULL",
-          "18 recovery_bytes bigint/int8 NOT NULL DEFAULT 0"
+          "18 recovery_bytes bigint/int8 NOT NULL DEFAULT 0",
+          "19 claim_owner jsonb/jsonb NULL"
         ],
         "flags": "relkind=r rls=true force_rls=false"
       },

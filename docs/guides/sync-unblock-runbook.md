@@ -122,7 +122,7 @@ Every hold and error has three fields, from one table
 |---|---|---|---|---|
 | `worktree_dirty` | page | retry_when_clean | no | 3 failed attempts over 24 h with no edit in the last 24 h: the uncommitted edit is abandoned |
 | `concurrent_write` | page | reconcile | yes | always: the file and the database page diverge |
-| `file_drift` | page | reconcile | yes | always: the page changed in the database since its file was last imported |
+| `file_drift` | page | reconcile | yes | always: importing the file would replace a database version of the page that sync cannot trace to an import of it |
 | `preparation_stalled` | page | retry, upgrade | no | 3 failed attempts over 24 h, or writer status names a step that never finishes |
 | `write_interrupted` | page | retry | no | 3 failed attempts over 24 h: gbrain sources writer status --source <source> --json (read-only) names the load on the write owner |
 | `invalid_fence` | page | repair | no | the fence repair preview offers no plan (a manual reason) |

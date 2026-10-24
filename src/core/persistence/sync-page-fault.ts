@@ -147,10 +147,13 @@ function base(entry: HoldEntry, slug: string, pageId: number | null, code: 'conc
 export function fileDriftHold(entry: HoldEntry, slug: string, pageId: number | null, intent: Pick<SyncIntent, 'content' | 'blobOid'>,
   observed: { sides: 'database' | 'both' | 'unknown'; revision: string | null; proof: PageChangeProof | null; sharedOrigin: boolean }): HeldEntry {
   const by = observed.proof ? `${observed.proof.operation} request ${observed.proof.request_id} wrote page ${slug} straight to the database` : `page ${slug} changed in the database`;
-  const file = observed.sides === 'database' ? 'its file did not change in Git' : observed.sides === 'both' ? 'its file changed too'
-    : 'there is no import record to tell which side changed';
+  const file = observed.sides === 'database' ? 'its file did not change in Git' : 'its file changed too';
+  // GBRA-133: with no import record and no database write on record, nothing shows the database side changed.
+  const held = observed.sides === 'unknown' && !observed.proof
+    ? `page ${slug} differs from its file and has no import record to tell whether the file or the database changed`
+    : `${by} since the file was last imported and ${observed.sides === 'unknown' ? 'there is no import record to tell whether the file changed too' : file}`;
   return base(entry, slug, pageId, 'file_drift',
-    `${entry.path}: ${by} since the file was last imported and ${file}, so sync held the import instead of overwriting the database version; the rest of the source synced.`,
+    `${entry.path}: ${held}, so sync held the import instead of overwriting the database version; the rest of the source synced.`,
     intent.content ?? null, intent.blobOid, { sides: observed.sides, drift_version: FILE_DRIFT_VERSION, ...(observed.sides !== 'database' ? { side: observed.sides } : {}), ...(observed.revision ? { page_revision: observed.revision } : {}),
       ...(observed.proof ? { competing_request_id: observed.proof.request_id, competing_operation: observed.proof.operation } : {}),
       ...(observed.sharedOrigin ? { shared_origin: true as const } : {}) });

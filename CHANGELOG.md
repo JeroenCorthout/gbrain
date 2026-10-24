@@ -10,21 +10,25 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
-## [0.60.418.0] - 2026-10-24
+## [0.60.417.0] - 2026-10-24
 
-**The drain lease that keeps two `gbrain sync` drainers off one source now has a TLA+ model that CI checks on every change to it, and mutants that tie each guard the model relies on to the code line that implements it and the test that pins it.** No product code changes.
+**A killed gbrain process no longer leaves its Git, embedding or facts effects stuck for two minutes, legacy pages stop being held `file_drift` each time their files are committed, and a pending-import refusal no longer tells agents to start a competing sync.**
 
 ### What changed
 
 | Situation | Before | Now |
 |---|---|---|
-| A change to the drain lease's fence, takeover, renewal or release | caught only when a hand-written test happened to cover that interleaving | TLC checks every interleaving of two drainers (fenced transactions, the pass stamp, renewal, takeover, release, sleep, crash) at small bounds, and fails the PR on a lost lease or two drainers with fenced work open |
-| A guard loses the test that pins it | nothing noticed | its code mutant runs that test with the guard removed and fails the PR when the test still passes |
+| A gbrain process is killed while it runs a Git, embedding, links, facts or withdrawal-mirror effect (Linux, Postgres) | every other consumer waited out the effect's 2-minute claim lease; replayed crash seeds took 127.5 s, 130.8 s and 4.4 s | a consumer on the same machine that proves the owner dead claims the effect on its next scan; the same seeds took 4.7 s, 8.2 s and 4.8 s |
+| A pooled Postgres connection after a transaction (#7358) | `begin`'s close handler kept the transaction's result reachable | the handler is removed when the transaction settles |
+| A page an older gbrain imported, whose database copy carries the v0.13.1 grandfather stamp `validate: false` that its file lacks, when its file is committed again | sync could not tell which side changed and held it `file_drift` (unknown side) | sync compares the file as carrying the stamp, as page writes already did (#6429): the commit imports and the page keeps the stamp |
+| The message of an unknown-side `file_drift` hold with no database write on record | "page … changed in the database" | it says the page differs from its file and no import record shows which side changed |
+| A `remember` or `put_page` refused `pending_import` (a committed Git change sync has not imported yet) | the fix named `gbrain sync --source <source> --no-pull`, which an agent ran beside a live `serve` | the fix is the read-only `gbrain sync status --source <source> --json`; the running owner imports the commit |
 
 ### What to watch for after you upgrade
 
-- Nothing changes at runtime.
-- Contributors: `bun run test:tla` runs TLC on every config and every mutant locally (Java 11 or later; the TLC jar is downloaded and checked against its pinned sha256). `spec/tla/README.md` explains each failure code.
+- Migration 268 adds the nullable `persistence_effects.claim_owner` column; nothing is backfilled or rewritten.
+- New `file_drift` holds on legacy pages should stop arriving after a cron commit. A hold that is already open stays held: preview it with `gbrain repair file-drift --source <source> --held --side unknown --prefer file` (writes nothing) and apply the set you approve.
+- An owner on another machine or in another container, or one whose process this machine cannot inspect, keeps its full 2-minute lease.
 
 ## [0.60.416.0] - 2026-10-23
 
