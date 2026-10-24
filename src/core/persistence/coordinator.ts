@@ -16,7 +16,7 @@ import { acquireWorktree, getWorktreeBinding, guardOwnership, type WorktreeBindi
 import { chargePreparationAttempt, clearResolvedRecovery, completeWrite, getWriteRequestById, lockCounters, markRecovering, prepareRecovery, releaseUnpublishedClaim } from './journal.ts';
 import type { WaitingOn } from './claim-phase.ts';
 import { PREPARATION_BUDGET_KEYS, preparationKind } from './preparation-budget.ts';
-import { chargeTransientInterruption, transientInterruption, type TransientInterruption } from './transient-retry.ts';
+import { chargeTransientInterruption, chargedInterruptionDetail, transientInterruption, type TransientInterruption } from './transient-retry.ts';
 import { readWriteSwitchSnapshot } from './switches.ts';
 import { isSharedReadFailure } from './bounded-reads.ts';
 import { isTerminal, principalKey, requestPrincipal, recoveryFiles, type FileRecoveryRecord, type RecoveryRecord, type WriteRequest } from './model.ts';
@@ -351,7 +351,7 @@ export async function releaseChargedInterruption(engine: BrainEngine, row: Write
     return null;
   }).then(outcome => ({ outcome }), () => null);
   if (!done) return null;
-  await faultPoint('persistence:interruption_charged', { requestId: row.request_id, writeId: row.id, sourceId: row.source_id, operation: row.operation });
+  await faultPoint('persistence:interruption_charged', { requestId: row.request_id, writeId: row.id, sourceId: row.source_id, operation: row.operation, ...chargedInterruptionDetail(charge.interruption, error) });
   return done.outcome ?? (await getWriteRequestById(engine, row.id))!;
 }
 
@@ -636,7 +636,7 @@ export async function publishMutation(engine: BrainEngine, row: WriteRequest, pr
       // A charged interruption under the limit is retried after its backoff whatever error it surfaced as (a publication the
       // ceiling cancelled can reject with a bare AbortError); past the limit it is the terminal failure.
       const charged = transactionBodyCompleted ? null : await chargedInterruption(engine, row, error);
-      if (!transactionBodyCompleted && transientInterruption(error)) await faultPoint('persistence:recovery_interruption_charged', { requestId: row.request_id, writeId: row.id, sourceId: row.source_id, operation: row.operation });
+      if (!transactionBodyCompleted && transientInterruption(error)) await faultPoint('persistence:recovery_interruption_charged', { requestId: row.request_id, writeId: row.id, sourceId: row.source_id, operation: row.operation, ...chargedInterruptionDetail(transientInterruption(error), error) });
       const terminal = charged ? charged.failure
         : !transactionBodyCompleted && !mayReprepare(row, requestError(error)) && !transientDatabaseFailure(error) ? requestError(error) : null;
       const failure = terminal ? withAttempt(terminal, published ? 'after_file_publication' : 'publication') : undefined;
