@@ -213,7 +213,8 @@ export const BUNDLED_SKILLS: readonly BundledSkillMeta[] = [
     "assets": [
       "_brain-filing-rules.json",
       "_brain-filing-rules.md",
-      "conventions/agent-operator-protocol.md"
+      "conventions/agent-operator-protocol.md",
+      "conventions/brain-first.md"
     ]
   },
   {
@@ -276,7 +277,8 @@ export const BUNDLED_SKILLS: readonly BundledSkillMeta[] = [
     "name": "cold-start",
     "audience": "downstream",
     "assets": [
-      "conventions/agent-operator-protocol.md"
+      "conventions/agent-operator-protocol.md",
+      "conventions/brain-first.md"
     ]
   },
   {
