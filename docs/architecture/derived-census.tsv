@@ -1,6 +1,7 @@
 # Derived-retirement census (GBRA-161 PR 1a). Enforced by scripts/check-derived-census.ts (bun run check:derived-census, in verify).
 # Rows: path<TAB>ceiling<TAB>class<TAB>note. Ceilings only shrink (--prune lowers them); a new soft-delete site needs a reviewed row.
 # class: primitive | engine | canonical | pending:inventory (a derived or mixed writer each later GBRA-161 PR reviews onto the generation primitive).
+src/commands/sources-conflicts.ts	1	canonical	gbrain sources conflicts resolve --take file (database-canonical wave 5b) soft-deletes the page of a deleted_vs_edited conflict, preview-bound, under the page row lock at the conflict revision
 src/commands/sync/deletes.ts	1	canonical	sync deletes a page whose canonical file was removed
 src/core/company-brain/profile.ts	1	pending:inventory	derived or mixed writer not yet on the generation primitive; reviewed in a later GBRA-161 PR
 src/core/cycle/phantom-redirect.ts	1	pending:inventory	derived or mixed writer not yet on the generation primitive; reviewed in a later GBRA-161 PR
