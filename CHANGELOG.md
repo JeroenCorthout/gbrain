@@ -10,6 +10,30 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.434.0] - 2026-10-24
+
+**Agents triaging email or calendar can now ask whether a sender or attendee is a known contact and get an exact answer: `gbrain whois <email or name>` (MCP tool `whois`) returns only pages whose email, title or declared alias equals the query, and an empty list when none does.**
+
+Semantic search can rank the wrong person first for a name or address, and `gbrain entity` resolves fuzzy name variants on purpose. `whois` never does either.
+
+**Say to your agent:** *"Is alice@acme-example.com a known contact in my brain?"*
+
+### What changed
+
+| Situation | Before | Now |
+|---|---|---|
+| Checking an email address against the brain | search or query, which can return a different person with a high score | `whois alice@acme-example.com` matches frontmatter `email` / `emails` (whole address, case-insensitive), the title or a declared alias |
+| Checking a display name | search, or `entity`, which accepts nicknames, initials and one-letter typos | `whois "José Example"` matches a title or declared alias equal to the name, ignoring case, accents, width forms and surrounding quotes; "Jose Example" finds "José Example", "Matt Example" never finds "Matthew Example" |
+| Two pages carry the same name or address | the agent saw whichever ranked first | every match is returned, labeled `email`, `title` or `alias` (in that order), with `ambiguous: true` |
+| No page matches | an unrelated nearest result | `matches: []`, not an error and never a search fallback |
+
+### What to watch for after you upgrade
+
+- By default `whois` reads the schema pack's entity types (people, companies, accounts); pass `types` to widen or narrow it, and `source_id` for one source.
+- A remote caller sees only the sources its grant covers, and never a private or quarantined page.
+- Matching is exact by design, and two cases depend on how a page is written. An unaccented query finds an accented title when the page's slug follows the title (`people/jose-example`), because slugs drop accents; on a page whose slug does not, write the accents or declare the unaccented name as an alias. A frontmatter email stored in mixed case is found from its exact spelling, its lowercase form, or a declared alias.
+- Nothing is rewritten on upgrade, and there is no schema migration.
+
 ## [0.60.428.0] - 2026-10-24
 
 **Production agents can now follow a stable release channel: a release a maintainer promotes only after the production-shaped soak passed on its exact git tree. `gbrain upgrade` also restarts every gbrain process on the host onto the new build and verifies that one build runs, and doctor fails when two builds run.**
