@@ -1130,14 +1130,14 @@
           {
             "category": "meta",
             "elapsed_ms": "<volatile>",
-            "message": "1351 column(s) verified against live schema",
+            "message": "1403 column(s) verified against live schema",
             "name": "schema_columns",
             "status": "ok"
           },
           {
             "category": "meta",
             "elapsed_ms": "<volatile>",
-            "message": "All 157 table(s) the applied migrations create exist.",
+            "message": "All 163 table(s) the applied migrations create exist.",
             "name": "schema_missing_tables",
             "status": "ok"
           },
@@ -3713,6 +3713,30 @@
             "status": "ok"
           },
           {
+            "category": "ops",
+            "details": {
+              "docs": "docs/designs/DATABASE_CANONICAL_MEMORY.md",
+              "enabled": false,
+              "key": "persistence.database_canonical.enabled"
+            },
+            "elapsed_ms": "<volatile>",
+            "message": "Database-canonical mode is off for this brain (the default), so every source keeps its files as the copy of record.",
+            "name": "database_canonical",
+            "status": "ok"
+          },
+          {
+            "category": "ops",
+            "details": {
+              "docs": "docs/designs/database-canonical-w2-contract.md",
+              "enabled": false,
+              "sources": []
+            },
+            "elapsed_ms": "<volatile>",
+            "message": "No source has a database-canonical shadow export on (the default), so the export outbox triggers do nothing.",
+            "name": "database_canonical_shadow",
+            "status": "ok"
+          },
+          {
             "category": "brain",
             "details": {
               "auto_repair": {
@@ -5772,14 +5796,14 @@
           {
             "category": "meta",
             "elapsed_ms": "<volatile>",
-            "message": "1351 column(s) verified against live schema",
+            "message": "1403 column(s) verified against live schema",
             "name": "schema_columns",
             "status": "ok"
           },
           {
             "category": "meta",
             "elapsed_ms": "<volatile>",
-            "message": "All 157 table(s) the applied migrations create exist.",
+            "message": "All 163 table(s) the applied migrations create exist.",
             "name": "schema_missing_tables",
             "status": "ok"
           },
@@ -8352,6 +8376,30 @@
             "elapsed_ms": "<volatile>",
             "message": "No title-prefixed person page pairs with an unprefixed page (0 titled page(s) examined).",
             "name": "person_title_duplicates",
+            "status": "ok"
+          },
+          {
+            "category": "ops",
+            "details": {
+              "docs": "docs/designs/DATABASE_CANONICAL_MEMORY.md",
+              "enabled": false,
+              "key": "persistence.database_canonical.enabled"
+            },
+            "elapsed_ms": "<volatile>",
+            "message": "Database-canonical mode is off for this brain (the default), so every source keeps its files as the copy of record.",
+            "name": "database_canonical",
+            "status": "ok"
+          },
+          {
+            "category": "ops",
+            "details": {
+              "docs": "docs/designs/database-canonical-w2-contract.md",
+              "enabled": false,
+              "sources": []
+            },
+            "elapsed_ms": "<volatile>",
+            "message": "No source has a database-canonical shadow export on (the default), so the export outbox triggers do nothing.",
+            "name": "database_canonical_shadow",
             "status": "ok"
           },
           {

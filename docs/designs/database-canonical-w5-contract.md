@@ -242,8 +242,12 @@ PGLite without a resident, export lag is expected until the next command.
 
 ### Flip-back materialization
 
-**Status at W5a:** deferred. Wave 4's `--to files` apply does not exist on the wave 4 branch yet, so there is nothing to put
-the batch in front of; the exporter and its claim are ready for it, and this section is what W5a adds once wave 4 lands.
+**Status:** built at the wave 4 merge into W5a (`drainExportBeforeFlipBack` in `src/commands/sources-canonical-mode.ts`). The
+deadline is the constant `EXPORT_FLIPBACK_DEADLINE_MS` (120 s, `export-runner.ts`), not a config key. The preview shows
+`export_drain: { export_commits, pending }` beside wave 4's `holds_to_write`, outside the fingerprint. Wave 4's fingerprint
+digests the source's own page and withdrawal rows, not an outbox watermark, so the drain cannot cause `preview_changed`.
+Unfinished export batches count in wave 4's `inflightWork` (`export_batches`), so a flip in either direction refuses
+`canonical_inflight_work` while one is open.
 
 Wave 4's `--to files` apply keeps every unmaterialized live page as a `file_drift` hold. W5a puts one export batch in
 front of that step: the preview reports how many pages one batch would materialize and how many would stay holds; when
@@ -372,9 +376,14 @@ paths of a database-mode source; W5b adds the agent route (`put_page` / `remembe
 and keeps non-page paths of a database-mode worktree committable under the commit lock (the operator row of the design's
 "who writes where" table).
 
-## Wave 4 dependency (fallback in W5a)
+## Wave 4 dependency (fallback in W5a, retired)
 
-Wave 4's branch carries its contract only. The exporter reads the source's mode, so W5a's migration adds wave 4's mode
+**Retired at the wave 4 merge:** wave 4's v272 (`canonical-mode-schema.ts`) now owns the mode columns, and W5a's v273 fragment
+no longer adds them. The exporter's live lane and the conflict takes declare `gbrain.canonical_protocol` in their page-writing
+transactions, because wave 4's fence refuses an undeclared content change to a database-mode source. What follows is the
+history.
+
+Wave 4's branch carried its contract only. The exporter reads the source's mode, so W5a's migration adds wave 4's mode
 columns to `database_canonical_sources` (`mode`, `mode_epoch`, `mode_changed_at`, `eligibility_generation`) with wave 4's
 exact definitions and `ADD COLUMN IF NOT EXISTS`, so whichever wave lands first creates them and the other is a no-op.
 W5a adds no constraint, trigger, fence or flip verb: those stay wave 4's. Until wave 4 lands, nothing sets `mode='database'`,

@@ -6,6 +6,7 @@ import type { WithdrawalFailureDetail } from '../facts/withdrawal.ts';
 import type { Action } from '../agent-output.ts';
 import { classifyPgAccessError } from '../pg-access-classify.ts';
 import { READ_ONLY_SQLSTATE } from '../postgres-engine/read-write-transactions.ts';
+import { canonicalFenceRefusal } from './canonical-mode.ts';
 
 /**
  * #5974: a database refusal during preparation or publication becomes a
@@ -142,6 +143,9 @@ export function databaseRefusal(error: unknown): PublicationFailure | null {
   }
   if (message.startsWith(PURGED_PREFIX)) return { code: 'purged_content', message: `${message.slice(PURGED_PREFIX.length).trim()}. Nothing was committed.`,
     detail: { origin: 'database_trigger', sqlstate, ...(raiser ? { raiser } : {}), ...(table ? { table } : {}) } };
+  const fence = canonicalFenceRefusal(e);
+  if (fence) return { code: fence.code, message: fence.message, detail: { origin: 'database_trigger', sqlstate, ...(raiser ? { raiser } : {}),
+    ...(table ? { table } : {}), ...(fence.point ? { branch: fence.point } : {}) } };
   if (message.startsWith(GUARD_PREFIX) || constraint.startsWith('managed_writer_guard')) {
     const branch = constraint.startsWith('managed_writer_guard:') ? ident(constraint.slice('managed_writer_guard:'.length)) : undefined;
     const detail: PublicationFailureDetail = { origin: 'database_guard', sqlstate, raiser: raiser ?? 'gbrain_require_managed_writer',

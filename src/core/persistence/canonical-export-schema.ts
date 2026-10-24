@@ -9,10 +9,6 @@
  *   No export row is ever written to `persistence_requests` or `persistence_effects`; one unfinished batch per source.
  * - `export_batch_entries`: one row per path of a batch, with the hash it expects on disk and the bytes it writes.
  *
- * - Wave 4's mode columns on `database_canonical_sources` (`mode`, `mode_epoch`, `mode_changed_at`,
- *   `eligibility_generation`), with wave 4's definitions and `ADD COLUMN IF NOT EXISTS`, so the exporter can read the mode
- *   whichever wave lands first. Wave 4 owns their constraint, triggers and the flip verb; nothing here writes them.
- *
  * Everything is additive and empty: a source exports only after an operator turns export commits on for it, while it is in
  * database mode and the brain gate is on.
  */
@@ -39,10 +35,6 @@ const list = (values: readonly string[]) => values.map(v => `'${v}'`).join(',');
 export const UNFINISHED_EXPORT_BATCH_STATES_SQL = `(${list(UNFINISHED_EXPORT_BATCH_STATES)})`;
 
 export const DATABASE_CANONICAL_EXPORT_SCHEMA_SQL = `
-ALTER TABLE database_canonical_sources ADD COLUMN IF NOT EXISTS mode TEXT NOT NULL DEFAULT 'files' CHECK (mode IN ('files','database'));
-ALTER TABLE database_canonical_sources ADD COLUMN IF NOT EXISTS mode_epoch BIGINT NOT NULL DEFAULT 0;
-ALTER TABLE database_canonical_sources ADD COLUMN IF NOT EXISTS mode_changed_at TIMESTAMPTZ;
-ALTER TABLE database_canonical_sources ADD COLUMN IF NOT EXISTS eligibility_generation BIGINT NOT NULL DEFAULT 0;
 CREATE TABLE IF NOT EXISTS canonical_export_sources (
   source_id            TEXT PRIMARY KEY REFERENCES sources(id) ON DELETE CASCADE,
   source_incarnation   UUID NOT NULL,

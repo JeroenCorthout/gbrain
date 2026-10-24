@@ -11,6 +11,8 @@ import { runExportTick, type ExportTickResult } from './exporter.ts';
 
 export const EXPORT_FETCH_INTERVAL_MS = 60_000;
 export const EXPORT_ONESHOT_DEADLINE_MS = 15_000;
+/** How long a flip back to files spends draining the outbox through export batches before wave 4 keeps the rest as holds. */
+export const EXPORT_FLIPBACK_DEADLINE_MS = 120_000;
 
 const lastFetch = new Map<string, number>();
 

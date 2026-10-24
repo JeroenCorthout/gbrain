@@ -30,6 +30,7 @@ import { assertGraduationAdmission } from './graduation-custody.ts';
 import { schemaAdmissionRefusal } from './schema-admission.ts';
 import { CAPACITY_VERIFY } from './capacity-verify.ts';
 import { readManagedMode } from './managed-mode.ts';
+import { isFileLaneAdmission, sourceDatabaseModeError, sourceInDatabaseMode } from './canonical-mode.ts';
 import { localHostId } from './identity.ts';
 import { MANAGED_SYNC_PASS_OP } from './sync-pass-row.ts';
 import { BACKOFF_ELAPSED } from './transient-retry.ts';
@@ -266,30 +267,32 @@ async function prepareAdmission(engine: BrainEngine, input: WriteAdmission, over
   const stamp = writerStamp();
   const origin = resolveAdmissionOrigin(input.origin);
   // #6741 C: a declared background producer is refused before any receipt when the source's owner fails its verification.
-  if (input.worktreeId && declaredBackground(input.origin)) await assertBackgroundOwner(engine, input.sourceId, ownerStatusFix);
+  if (input.worktreeId && declaredBackground(input.origin)) await databaseModeWaives(engine, input.sourceId, assertBackgroundOwner(engine, input.sourceId, ownerStatusFix));
   return { requestId, apply: async (tx: BrainEngine): Promise<WriteRequest> => {
     await declarePersistenceProtocol(tx);
     // The guards are sent together in lock order (worktree, source, writer, counters) and judged in
     // that order: the first refusal in this list is the one reported, as when they ran one by one.
-    const [, , , , , counters, topology, prior] = await pipelined(tx, [
+    const [, , , databaseMode, , counters, topology, prior] = await pipelined(tx, [
       () => assertGraduationAdmission(tx),
       async () => assertMutationProtocol({ target_kind: input.targetKind, protocol_version: input.protocolVersion }),
-      async () => { if (input.worktreeId) await assertWorktreeAdmission(tx, input); },
+      async () => { if (input.worktreeId) await databaseModeWaives(tx, input.sourceId, assertWorktreeAdmission(tx, input)); },
       // Source membership is locked before principal/counter/request guards. A
       // deleted/recreated source never receives work accepted for its old identity.
       async () => {
-        const [source] = await tx.executeRaw<{ incarnation: string; archived: boolean }>(
-          'SELECT incarnation,archived FROM sources WHERE id=$1 FOR SHARE', [input.sourceId]);
+        const [source] = await tx.executeRaw<{ incarnation: string; archived: boolean; database_mode: boolean }>(
+          `SELECT incarnation,archived,${SOURCE_DATABASE_MODE_SQL} FROM sources WHERE id=$1 FOR SHARE`, [input.sourceId]);
         if (!source || source.archived || source.incarnation !== input.sourceIncarnation) {
           throw new OperationError('source_changed', 'The write source is missing, archived, or was replaced.', 'Resolve the source again and submit a new request.');
         }
+        return source.database_mode;
       },
       () => authorizeWrite(tx, input.authority, input.operation, input.slug, true),
       () => lockCounters(tx, ['brain', principalKey(input.principal)]),
       () => input.principal.kind === 'local_cli' ? tx.executeRaw('SELECT id FROM persistence_topology_changes WHERE principal_id=$1::uuid AND request_id=$2::uuid', [input.principal.id, requestId])
         : Promise.resolve([]),
       () => getWriteRequest(tx, input.principal, requestId),
-    ]) as [unknown, unknown, unknown, unknown, unknown, Counter[], unknown[], WriteRequest | null];
+    ]) as [unknown, unknown, unknown, boolean, unknown, Counter[], unknown[], WriteRequest | null];
+    if (databaseMode && isFileLaneAdmission(input)) throw sourceDatabaseModeError(input.sourceId, 'this checkout operation');
     if (topology.length) throw lifecycleIdConflict(requestId);
     if (prior) {
       if ((prior.target_kind ?? 'page') !== (input.targetKind ?? 'page') || (prior.protocol_version ?? 1) !== (input.protocolVersion ?? 1)) {
@@ -326,7 +329,7 @@ async function prepareAdmission(engine: BrainEngine, input: WriteAdmission, over
       RETURNING *`, [input.principal.kind, input.principal.id, requestId, input.operation, input.sourceId,
       input.sourceIncarnation, input.pageId ?? null, input.slug, input.worktreeId ?? null, input.topologyGeneration ?? null,
       fingerprint, JSON.stringify(input.intent), JSON.stringify(input.authority), bytes, terminalBytes, input.targetKind ?? 'page', input.protocolVersion ?? 1,
-      stamp.version, stamp.hostId, counters.map(c => c.key), input.clientRequestId ?? null]);
+      stamp.version, stamp.hostId, counters.map(c => c.key), input.clientRequestId ?? null].map((value, i) => databaseMode && (i === 8 || i === 9) ? null : value));
     return row;
   } };
 }
@@ -350,7 +353,7 @@ export async function admitWriteGroupInTransaction(tx: BrainEngine, inputs: Writ
   const items = inputs.map(input => ({ input, requestId: requireUuid(input.requestId ?? randomUUID()), fingerprint: intentDigest(input),
     bytes: jsonBytes(input.intent) + jsonBytes(input.authority), terminalBytes: Math.max(input.terminalReservation ?? 0, receiptReservation(input)) }));
   assertMutationProtocol({ target_kind: 'page', protocol_version: 1 });
-  if (first.worktreeId && declaredBackground(first.origin)) await assertBackgroundOwner(tx, first.sourceId, ownerStatusFix);
+  if (first.worktreeId && declaredBackground(first.origin)) await databaseModeWaives(tx, first.sourceId, assertBackgroundOwner(tx, first.sourceId, ownerStatusFix));
   const ids = items.map(item => item.requestId);
   // #5984: the checks are independent reads and share locks, so they go out back to back in the order they always
   // had (protocol, graduation, worktree, source, writer, counters); a failure is raised in that order.
@@ -358,8 +361,8 @@ export async function admitWriteGroupInTransaction(tx: BrainEngine, inputs: Writ
     () => readJournalLimits(tx, overrides),
     () => declarePersistenceProtocol(tx),
     () => assertGraduationAdmission(tx),
-    () => first.worktreeId ? assertWorktreeAdmission(tx, first) : Promise.resolve(),
-    () => tx.executeRaw<{ incarnation: string; archived: boolean }>('SELECT incarnation,archived FROM sources WHERE id=$1 FOR SHARE', [first.sourceId]),
+    () => first.worktreeId ? databaseModeWaives(tx, first.sourceId, assertWorktreeAdmission(tx, first)) : Promise.resolve(),
+    () => tx.executeRaw<{ incarnation: string; archived: boolean; database_mode: boolean }>(`SELECT incarnation,archived,${SOURCE_DATABASE_MODE_SQL} FROM sources WHERE id=$1 FOR SHARE`, [first.sourceId]),
     () => Promise.all(items.map(({ input }) => authorizeWrite(tx, input.authority, input.operation, input.slug, true))),
     () => lockCounters(tx, ['brain', principalKey(first.principal)]),
     () => first.principal.kind === 'local_cli'
@@ -367,10 +370,16 @@ export async function admitWriteGroupInTransaction(tx: BrainEngine, inputs: Writ
       : Promise.resolve([]),
     () => tx.executeRaw<WriteRequest>('SELECT * FROM persistence_requests WHERE principal_kind=$1 AND principal_id=$2 AND request_id=ANY($3::uuid[])',
       [first.principal.kind, first.principal.id, ids]),
-  ]) as [JournalLimits, unknown, unknown, unknown, Array<{ incarnation: string; archived: boolean }>, unknown, Counter[], Array<{ request_id: string }>, WriteRequest[]];
+  ]) as [JournalLimits, unknown, unknown, unknown, Array<{ incarnation: string; archived: boolean; database_mode: boolean }>, unknown, Counter[], Array<{ request_id: string }>, WriteRequest[]];
   const [source] = sources;
   if (!source || source.archived || source.incarnation !== first.sourceIncarnation) {
     throw new OperationError('source_changed', 'The write source is missing, archived, or was replaced.', 'Resolve the source again and submit a new request.');
+  }
+  const databaseMode = source.database_mode;
+  if (databaseMode) {
+    const lanes = new Set(inputs.map(input => isFileLaneAdmission(input)));
+    if (lanes.size > 1) throw canonicalMixedGroup(first.sourceId);
+    if (lanes.has(true)) throw sourceDatabaseModeError(first.sourceId, 'this checkout operation');
   }
   if (topology[0]) throw lifecycleIdConflict(topology[0].request_id);
   const priors = new Map(priorRows.map(row => [row.request_id, row]));
@@ -405,8 +414,8 @@ export async function admitWriteGroupInTransaction(tx: BrainEngine, inputs: Writ
       SELECT $1,$2,(e->>'request_id')::uuid,$3,$4,$5::uuid,(e->>'page_id')::integer,e->>'slug',$6::uuid,$7,e->>'digest',e->'intent',$8::text::jsonb,
         (e->>'intent_bytes')::bigint,(e->>'terminal_reservation')::bigint,'page',1,$9,$10::uuid,e->>'client_request_id',true
       FROM jsonb_array_elements($11::text::jsonb) WITH ORDINALITY AS t(e,n) ORDER BY n
-      RETURNING *`, [first.principal.kind, first.principal.id, first.operation, first.sourceId, first.sourceIncarnation, first.worktreeId ?? null,
-      first.topologyGeneration ?? null, JSON.stringify(first.authority), stamp.version, stamp.hostId,
+      RETURNING *`, [first.principal.kind, first.principal.id, first.operation, first.sourceId, first.sourceIncarnation, databaseMode ? null : first.worktreeId ?? null,
+      databaseMode ? null : first.topologyGeneration ?? null, JSON.stringify(first.authority), stamp.version, stamp.hostId,
       JSON.stringify(fresh.map(item => ({ request_id: item.requestId, page_id: item.input.pageId ?? null, slug: item.input.slug, digest: item.fingerprint,
         intent: item.input.intent, intent_bytes: item.bytes, terminal_reservation: item.terminalBytes, client_request_id: item.input.clientRequestId ?? null })))]),
       () => tx.executeRaw(`UPDATE persistence_counters SET outstanding_count=outstanding_count+$4,
@@ -526,6 +535,21 @@ export async function chargePreparationAttempt(engine: SqlEngine, row: WriteRequ
   const [charged] = await engine.executeRaw<{ preparation_attempts: number }>(`UPDATE persistence_requests SET preparation_attempts=preparation_attempts+1,updated_at=now()
     WHERE id=$1::uuid AND execution_token=$2::uuid AND state='running' AND ${PERSISTENCE_PROTOCOL_PREDICATE} RETURNING preparation_attempts`, [row.id, row.execution_token]);
   return charged?.preparation_attempts ?? (row.preparation_attempts ?? 0) + 1;
+}
+
+/**
+ * Database-canonical wave 4: whether the source is in database mode, read on the source row admission already locks
+ * FOR SHARE. Such a write is admitted with no worktree (the publication branch: the database is canonical and the
+ * exporter owns the checkout), so the worktree checks below do not apply to it.
+ */
+const SOURCE_DATABASE_MODE_SQL = 'gbrain_source_publication_epoch(id) IS NOT NULL AS database_mode';
+/** A worktree check's refusal stands unless the source is in database mode; the mode is read only on that refusal path. */
+async function databaseModeWaives(engine: SqlEngine, sourceId: string, check: Promise<void>): Promise<void> {
+  try { await check; } catch (error) { if (!(error instanceof OperationError) || !await sourceInDatabaseMode(engine, sourceId).catch(() => false)) throw error; }
+}
+function canonicalMixedGroup(sourceId: string): OperationError {
+  return opError('canonical_mixed_group', `A grouped admission for source ${sourceId} mixed checkout operations with page writes while the source is in database mode.`,
+    'Nothing was admitted. Submit the page writes on their own; the checkout operations do not run for a database-mode source.');
 }
 
 /**

@@ -177,3 +177,31 @@ export function registeredManagedRootRecords(): Array<{ root: string; source_id?
   }
   return records;
 }
+
+/** Database-canonical wave 4: one source root in database mode on this host (the checkout root and the source's root inside it). */
+export interface DatabaseModeRoot { root: string; source_root: string; source_id: string }
+function databaseModeDirectory(): string { return join(configDir(), 'persistence', 'database-mode-roots'); }
+/**
+ * Records this host's database-mode source roots for one brain, read before connect by the DB-free
+ * `gbrain git commit-push` so it refuses page paths of those sources. A brain with none keeps no file.
+ */
+export function recordDatabaseModeRoots(brainId: string, roots: DatabaseModeRoot[]): void {
+  const file = join(databaseModeDirectory(), `${brainId}.json`);
+  if (!roots.length) {
+    try { unlinkSync(file); flushDirectory(dirname(file)); } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+    return;
+  }
+  mkdirSync(databaseModeDirectory(), { recursive: true, mode: 0o700 }); ensureMode(databaseModeDirectory(), 0o700);
+  const sorted = [...roots].sort((a, b) => a.source_id < b.source_id ? -1 : a.source_id > b.source_id ? 1 : 0);
+  if (writePrivateRecord(file, JSON.stringify({ version: 1, brain_id: brainId, roots: sorted }))) flushDirectory(databaseModeDirectory());
+}
+/** Every recorded database-mode source root on this host, across brains. */
+export function registeredDatabaseModeRoots(): DatabaseModeRoot[] {
+  let files: string[];
+  try { files = readdirSync(databaseModeDirectory()); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []; throw error; }
+  return files.filter(file => file.endsWith('.json')).flatMap(file => {
+    const value = JSON.parse(readFileSync(join(databaseModeDirectory(), file), 'utf8')) as { version?: number; roots?: DatabaseModeRoot[] };
+    return value.version === 1 && Array.isArray(value.roots) ? value.roots.filter(r => typeof r.root === 'string' && typeof r.source_id === 'string') : [];
+  });
+}

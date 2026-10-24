@@ -72,3 +72,4 @@ test/e2e/doctor-entry-deadline-postgres.test.ts
 test/e2e/s-sync-queue-wake-postgres.test.ts
 test/e2e/pooler-inherited-read-only-7183.test.ts
 test/e2e/search-frontmatter-where-parity.test.ts
+test/e2e/database-canonical-fence-pooled-postgres.test.ts

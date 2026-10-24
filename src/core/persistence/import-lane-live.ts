@@ -5,6 +5,7 @@
  * revision check under the page row's lock, a delete soft-deletes with the same check, and every conflict parks the path in
  * an open `import_conflicts` row with `mode='live'`. It never writes the checkout: the exporter renders what changed.
  */
+import { CANONICAL_PROTOCOL_DECLARATION } from './canonical-mode.ts';
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import type { BrainEngine } from '../engine.ts';
@@ -155,6 +156,7 @@ async function writePage(ctx: LiveImportContext, outcome: 'import' | 'create' | 
   const blob = bytes ? await writeBlob(ctx.top, bytes) : null;
   return engine.transaction(async txEngine => {
     const tx = txEngine as BrainEngine;
+    await tx.executeRaw(`SELECT ${CANONICAL_PROTOCOL_DECLARATION}`);
     if (outcome === 'create') {
       const slug = pathToSlug(change.path);
       const [taken] = await tx.executeRaw<{ id: number }>('SELECT id FROM pages WHERE source_id=$1 AND slug=$2 AND deleted_at IS NULL FOR UPDATE', [sourceId, slug]);

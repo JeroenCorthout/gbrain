@@ -32,6 +32,7 @@ import { appendBeliefEvents, type BeliefEventDraft } from './append.ts';
 import { appendDerivedHidden, bumpPurgeEpoch, derivedBeliefTargets, pageLifetimesOf, pagePurgeClaims, redactCarryingFields, redactPurgedKeys, registerLiveCarriers } from './purge.ts';
 import { derivedRowsFrom, hideDerivedRows, type DerivationRef } from '../facts/derivation-inputs.ts';
 import { writeOriginDeletedMarker } from '../persistence/sync-markers.ts';
+import { CANONICAL_PROTOCOL_DECLARATION } from '../persistence/canonical-mode.ts';
 
 export const PURGE_MIRROR_FILE = 'purge-events.jsonl';
 
@@ -106,7 +107,7 @@ export const replayState = (records: readonly ReplayRecord[]): PurgeReplayState 
  */
 async function replayOne(tx: BrainEngine, intent: PurgeMirrorIntent, ledger: boolean): Promise<ReplayOutcome> {
   const src = intent.source_id, actor = 'restore_replay', publicationId = randomUUID();
-  await tx.executeRaw("SELECT set_config('gbrain.write_sources', $1, true)", [JSON.stringify([src])]);
+  await tx.executeRaw(`SELECT set_config('gbrain.write_sources', $1, true),${CANONICAL_PROTOCOL_DECLARATION}`, [JSON.stringify([src])]);
   if (ledger) await bumpPurgeEpoch(tx, src);
   for (const f of intent.facts) {
     await tx.executeRaw(`INSERT INTO fact_purges(source_id,visibility,subject,fact_hash,request_id,actor,reason) VALUES ($1,$2,$3,$4,$5::uuid,$6,'restore replay')

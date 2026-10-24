@@ -1015,7 +1015,7 @@
         {
           "category": "meta",
           "elapsed_ms": "<volatile>",
-          "message": "1532 column(s) verified against live schema",
+          "message": "1535 column(s) verified against live schema",
           "name": "schema_columns",
           "status": "ok"
         },
@@ -3238,6 +3238,54 @@
           "status": "ok"
         },
         {
+          "category": "ops",
+          "details": {
+            "docs": "docs/designs/DATABASE_CANONICAL_MEMORY.md",
+            "enabled": false,
+            "key": "persistence.database_canonical.enabled"
+          },
+          "elapsed_ms": "<volatile>",
+          "message": "Database-canonical mode is off for this brain (the default), so every source keeps its files as the copy of record.",
+          "name": "database_canonical",
+          "status": "ok"
+        },
+        {
+          "category": "ops",
+          "details": {
+            "docs": "docs/designs/database-canonical-w2-contract.md",
+            "enabled": false,
+            "sources": []
+          },
+          "elapsed_ms": "<volatile>",
+          "message": "No source has a database-canonical shadow export on (the default), so the export outbox triggers do nothing.",
+          "name": "database_canonical_shadow",
+          "status": "ok"
+        },
+        {
+          "category": "ops",
+          "details": {
+            "docs": "docs/designs/DATABASE_CANONICAL_MEMORY.md",
+            "enabled": false,
+            "key": "persistence.database_canonical.enabled"
+          },
+          "elapsed_ms": "<volatile>",
+          "message": "Database-canonical mode is off for this brain, so the import lane does not run and no writer census is kept.",
+          "name": "database_canonical_census",
+          "status": "ok"
+        },
+        {
+          "category": "ops",
+          "details": {
+            "database_sources": [],
+            "docs": "docs/designs/database-canonical-w4-contract.md",
+            "findings": []
+          },
+          "elapsed_ms": "<volatile>",
+          "message": "No source is in database mode, so the canonical fence is inert.",
+          "name": "database_canonical_fence",
+          "status": "ok"
+        },
+        {
           "category": "brain",
           "details": {
             "docs": "docs/guides/write-refusals.md#invalid_fence",
@@ -3317,30 +3365,6 @@
           "elapsed_ms": "<volatile>",
           "message": "No malformed facts or takes fence is held, stored or waiting in a checkout (1 source(s) scanned).",
           "name": "fence_integrity",
-          "status": "ok"
-        },
-        {
-          "category": "ops",
-          "details": {
-            "docs": "docs/designs/DATABASE_CANONICAL_MEMORY.md",
-            "enabled": false,
-            "key": "persistence.database_canonical.enabled"
-          },
-          "elapsed_ms": "<volatile>",
-          "message": "Database-canonical mode is off for this brain (the default), so every source keeps its files as the copy of record.",
-          "name": "database_canonical",
-          "status": "ok"
-        },
-        {
-          "category": "ops",
-          "details": {
-            "docs": "docs/designs/DATABASE_CANONICAL_MEMORY.md",
-            "enabled": false,
-            "key": "persistence.database_canonical.enabled"
-          },
-          "elapsed_ms": "<volatile>",
-          "message": "Database-canonical mode is off for this brain, so the import lane does not run and no writer census is kept.",
-          "name": "database_canonical_census",
           "status": "ok"
         },
         {
