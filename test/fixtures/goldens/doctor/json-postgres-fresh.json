@@ -3345,6 +3345,18 @@
         },
         {
           "category": "ops",
+          "details": {
+            "docs": "docs/designs/DATABASE_CANONICAL_MEMORY.md",
+            "enabled": false,
+            "key": "persistence.database_canonical.enabled"
+          },
+          "elapsed_ms": "<volatile>",
+          "message": "Database-canonical mode is off for this brain (the default), so every source keeps its files as the copy of record.",
+          "name": "database_canonical",
+          "status": "ok"
+        },
+        {
+          "category": "ops",
           "elapsed_ms": "<volatile>",
           "message": "Mode: conservative (no per-key overrides — mode bundle is canonical).",
           "name": "search_mode",
