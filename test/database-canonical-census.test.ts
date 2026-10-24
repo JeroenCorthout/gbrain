@@ -15,7 +15,7 @@ import { OperationError } from '../src/core/ops/contract.ts';
 import { createSegmentedPage } from './helpers/segmented-page.ts';
 import { requirePostgresTestDatabase, testBackends } from './helpers/test-backends.ts';
 
-const policy = { mirror: false, storage: null, ignored: new Set<string>() };
+const policy = { mirror: false, dbOnly: () => false, ignored: new Set<string>() };
 const fact = (claim: string) => ({ rowNum: 1, claim, kind: 'fact' as const, confidence: 1, visibility: 'world' as const, notability: 'medium' as const, active: true, context: '' });
 
 function git(root: string, ...args: string[]): string {
@@ -125,7 +125,8 @@ for (const backend of testBackends()) describe(`database-canonical wave 1: ${bac
     expect(exportIneligibility(page({ visibility: 'private' }), 'notes/x.md', policy)).toBe('private');
     expect(exportIneligibility(page({ access: 'private' }), 'notes/x.md', policy)).not.toBeNull();
     expect(exportIneligibility(page({}, { database_only_reason: 'detached' }), 'notes/x.md', policy)).toBe('database_only');
-    expect(exportIneligibility(page(), 'notes/x.md', { ...policy, storage: { db_tracked: [], db_only: ['notes/'] } })).toBe('db_only_prefix');
+    expect(exportIneligibility(page(), 'notes/x.md', { ...policy, dbOnly: slug => slug.startsWith('notes/') })).toBe('db_only_prefix');
+    expect(exportIneligibility(page({}, { lineage_private: true }), 'notes/x.md', policy)).toBe('lineage_private');
     expect(exportIneligibility(page(), 'notes/x.md', { ...policy, ignored: new Set(['notes/x.md']) })).toBe('git_ignored');
   });
 
@@ -161,12 +162,44 @@ for (const backend of testBackends()) describe(`database-canonical wave 1: ${bac
       writeFileSync(join(root, 'notes', 'edited.md'), inlineExportMarkdown(await snapshotOf('notes/edited')).replace('Database body.', 'File body.'));
       const census = await censusSource(engine, 'default', 20);
       expect(census).toMatchObject({ status: 'census', source_id: 'default', checkout: root, pages: 5, eligible: 3, ignore_check: 'ok',
-        ineligible: { private: 1, git_ignored: 1, mirror_source: 0, alias_private: 0, database_only: 0, db_only_prefix: 0 },
+        ineligible: { private: 1, git_ignored: 1, mirror_source: 0, alias_private: 0, lineage_private: 0, database_only: 0, db_only_prefix: 0 },
         files: { equal: 1, differs: 1, missing: 1, unparseable: 0, unsafe_path: 0 } });
       expect(census.sample).toEqual([{ slug: 'notes/edited', path: 'notes/edited.md', state: 'differs', fields: ['/compiled_truth'] }]);
       await engine.executeRaw("UPDATE sources SET config=jsonb_build_object('mirror_read_only',true) WHERE id='default'");
       expect((await censusSource(engine, 'default', 20)).ineligible.mirror_source).toBe(5);
     } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  test('the census walks every page across batches, whatever the numeric ids sort like as text', async () => {
+    await engine.executeRaw("SELECT setval(pg_get_serial_sequence('pages','id'), 1, false)");
+    await engine.setConfig(DATABASE_CANONICAL_KEY, 'true');
+    for (let i = 0; i < 300; i++) await engine.putPage(`notes/n${i}`, { type: 'note', title: `N${i}`, compiled_truth: 'Body.', timeline: '' });
+    const [{ min, max }] = await engine.executeRaw<{ min: string; max: string }>("SELECT min(id)::text AS min, max(id)::text AS max FROM pages");
+    expect(min.length).toBeLessThan(max.length);
+    expect(await censusSource(engine, 'default', 0)).toMatchObject({ pages: 300, eligible: 300 });
+  }, 120000);
+
+  test('eligibility fails closed: an unanswered ignore check or an unresolvable db_only refuses, and the shared storage, mirror and lineage rules apply', async () => {
+    await engine.setConfig(DATABASE_CANONICAL_KEY, 'true');
+    await engine.putPage('notes/x', { type: 'note', title: 'X', compiled_truth: 'Body.', timeline: '' });
+    const plain = realpathSync(mkdtempSync(join(tmpdir(), 'canonical-plain-')));
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'canonical-policy-')));
+    try {
+      await engine.executeRaw("UPDATE sources SET local_path=$1 WHERE id='default'", [plain]);
+      await expect(censusSource(engine, 'default', 0)).rejects.toMatchObject({ code: 'storage_error' });
+      git(root, 'init', '-q');
+      await engine.executeRaw("UPDATE sources SET local_path=$1 WHERE id='default'", [root]);
+      writeFileSync(join(root, 'gbrain.yml'), 'storage:\n  db_only: [notes/]\n');
+      await expect(censusSource(engine, 'default', 0)).rejects.toMatchObject({ code: 'storage_error' });
+      writeFileSync(join(root, 'gbrain.yml'), 'storage:\n  db_only:\n    - Notes/\n');
+      expect((await censusSource(engine, 'default', 0)).ineligible.db_only_prefix).toBe(1);
+      rmSync(join(root, 'gbrain.yml'));
+      await engine.putPage('private/origin', { type: 'note', title: 'Origin', compiled_truth: 'Secret.', timeline: '', frontmatter: { visibility: 'private' } });
+      await engine.putPage('notes/summary', { type: 'note', title: 'Summary', compiled_truth: 'Digest.', timeline: '', frontmatter: { derived_from: ['private/origin'] } });
+      expect((await censusSource(engine, 'default', 0))).toMatchObject({ pages: 3, eligible: 1, ineligible: { private: 1, lineage_private: 1 } });
+      await engine.executeRaw("UPDATE sources SET config=jsonb_build_object('managed_clone',true) WHERE id='default'");
+      expect((await censusSource(engine, 'default', 0)).ineligible.mirror_source).toBe(3);
+    } finally { rmSync(plain, { recursive: true, force: true }); rmSync(root, { recursive: true, force: true }); }
   });
 
   test('the doctor check is green with the gate off and on', async () => {

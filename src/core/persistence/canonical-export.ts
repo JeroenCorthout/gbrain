@@ -11,7 +11,6 @@ import { hardenedGitStream, NulRecordSplitter } from '../hardened-git.ts';
 import { exportBodyLedger, segmentedExportHead, segmentedExportMarkdown, type ExportSnapshot, type ExportWithdrawal } from '../export-snapshot.ts';
 import { parseMarkdown } from '../markdown.ts';
 import { isDerivationPrivate, isPrivatePage } from '../search/private-visibility.ts';
-import { isDbOnly, type StorageConfig } from '../storage-config.ts';
 import { alignWithStored } from './align-stored.ts';
 import { digest } from './digest.ts';
 import { classifyDrift } from './reconcile-additive.ts';
@@ -25,24 +24,31 @@ export async function databaseCanonicalEnabled(engine: BrainEngine): Promise<boo
   return ['true', '1', 'on', 'yes'].includes((await engine.getConfig(DATABASE_CANONICAL_KEY))?.trim().toLowerCase() ?? '');
 }
 
-export type ExportIneligibility = 'mirror_source' | 'private' | 'alias_private' | 'database_only' | 'db_only_prefix' | 'git_ignored';
+export type ExportIneligibility = 'mirror_source' | 'private' | 'alias_private' | 'lineage_private' | 'database_only' | 'db_only_prefix' | 'git_ignored';
 
-/** What decides eligibility beyond the page itself: the source's mirror flag, its storage tiers and the checkout's ignore rules. */
-export interface ExportPolicy { mirror: boolean; storage: StorageConfig | null; ignored: ReadonlySet<string> }
+/**
+ * What decides eligibility beyond the page itself: whether the source is read-only (sourceMirrorReadOnly), whether a slug
+ * sits under a declared `storage.db_only` dir (isSourceDbOnlySlug, which refuses an invalid gbrain.yml) and the paths the
+ * checkout's Git ignores.
+ */
+export interface ExportPolicy { mirror: boolean; dbOnly: (slug: string) => boolean; ignored: ReadonlySet<string> }
 
 /**
  * Why a page may not reach a tracked file, or null when it may. A read-only mirror is never exported (#5409), private
  * and alias-private pages never reach a remote, a page the database keeps on purpose (`database_only_reason`: detached,
  * mirror, never committed) or under a `storage.db_only` prefix stays there, and a path the checkout's Git ignores stays
- * database-only (it could never be committed). Callers load `visibility.honor_aliases` (readHonorAliases) first.
+ * database-only (it could never be committed). `lineage_private` is what privatePagesFilterFragment adds over the row's
+ * own fields (an explicitly private `derived_from` input, a private derivation origin); the caller computes it in SQL.
+ * Callers load `visibility.honor_aliases` (readHonorAliases) first.
  */
-export function exportIneligibility(page: { slug: string; type?: string | null; frontmatter?: unknown; database_only_reason?: string | null },
-  relativePath: string | null, policy: ExportPolicy): ExportIneligibility | null {
+export function exportIneligibility(page: { slug: string; type?: string | null; frontmatter?: unknown; database_only_reason?: string | null;
+  lineage_private?: boolean }, relativePath: string | null, policy: ExportPolicy): ExportIneligibility | null {
   if (policy.mirror) return 'mirror_source';
   if (isPrivatePage(page)) return 'private';
   if (isDerivationPrivate(page)) return 'alias_private';
+  if (page.lineage_private) return 'lineage_private';
   if (page.database_only_reason) return 'database_only';
-  if (policy.storage && isDbOnly(page.slug, policy.storage)) return 'db_only_prefix';
+  if (policy.dbOnly(page.slug)) return 'db_only_prefix';
   if (relativePath !== null && policy.ignored.has(relativePath)) return 'git_ignored';
   return null;
 }

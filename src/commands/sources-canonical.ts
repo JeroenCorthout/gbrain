@@ -14,9 +14,10 @@ import { OperationError } from '../core/ops/contract.ts';
 import { cliRenderContext, toAgentError } from '../core/agent-output.ts';
 import { readExportPage, readExportWithdrawals } from '../core/export-snapshot.ts';
 import { RestoreTargetError, restoreFilePath } from '../core/restore-target.ts';
-import { readHonorAliases } from '../core/search/private-visibility.ts';
+import { privatePagesFilterFragment, readHonorAliases } from '../core/search/private-visibility.ts';
 import { resolveSourceId } from '../core/source-resolver.ts';
-import { loadStorageConfig } from '../core/storage-config.ts';
+import { sourceMirrorReadOnly } from '../core/persistence/mirror-read-only.ts';
+import { isSourceDbOnlySlug } from '../core/persistence/source-storage.ts';
 import { scannerSlugRootMode, scannerSourcePath } from '../core/write-through.ts';
 import { compareInlineExportFile, compareSegmentedExportFile, DATABASE_CANONICAL_KEY, databaseCanonicalEnabled, exportIneligibility, ignoredPaths,
   type ExportIneligibility } from '../core/persistence/canonical-export.ts';
@@ -36,8 +37,7 @@ export interface CanonicalCensus {
   ineligible: Record<ExportIneligibility, number>;
   /** Files of eligible pages by comparison with their export view; null when the source has no checkout. */
   files: Record<FileState, number> | null;
-  /** `failed`: Git could not say which paths are ignored, so none were counted as `git_ignored`. */
-  ignore_check: 'ok' | 'failed' | 'no_checkout';
+  ignore_check: 'ok' | 'no_checkout';
   sample: Array<{ slug: string; path: string; state: FileState; fields?: string[] }>;
   next: string;
 }
@@ -75,9 +75,10 @@ export async function censusSource(engine: BrainEngine, sourceId: string, sample
       `Nothing changed. Turn the gate on with gbrain config set ${DATABASE_CANONICAL_KEY} true (by itself it changes no behavior), then rerun gbrain sources canonical ${sourceId} --dry-run.`, DOCS);
   }
   await resolveSourceId(engine, sourceId, undefined, { skipLocalSignals: true });
-  const [source] = await engine.executeRaw<{ local_path: string | null; mirror: boolean }>(
-    `SELECT local_path, COALESCE(config->>'mirror_read_only','false')='true' AS mirror FROM sources WHERE id=$1`, [sourceId]);
+  const [source] = await engine.executeRaw<{ local_path: string | null }>('SELECT local_path FROM sources WHERE id=$1', [sourceId]);
   const root = source?.local_path && existsSync(source.local_path) ? source.local_path : null;
+  const mirror = await sourceMirrorReadOnly(engine, sourceId);
+  if (root) isSourceDbOnlySlug(root, '', 'refuse');
   await readHonorAliases(engine);
   const mode = root ? await scannerSlugRootMode(engine, sourceId, root) : null;
   const target = (key: { slug: string; source_path: string | null; source_path_bytes: number }): string | null => {
@@ -86,14 +87,15 @@ export async function censusSource(engine: BrainEngine, sourceId: string, sample
   };
   const posix = (path: string) => relative(root!, path).split(sep).join('/');
 
-  type Key = { id: string; slug: string; source_id: string; source_path: string | null; source_path_bytes: number; database_only_reason: string | null; segmented: boolean };
+  type Key = { id: string; slug: string; source_id: string; source_path: string | null; source_path_bytes: number; database_only_reason: string | null;
+    segmented: boolean; lineage_private: boolean };
   const scan = async (visit: (tx: BrainEngine, batch: Key[]) => Promise<void>) => {
     for (let cursor = '0'; ;) {
       const done = await engine.transaction(async tx => {
         await tx.executeRaw('SET TRANSACTION READ ONLY');
         const batch = await tx.executeRaw<Key>(`SELECT id::text, slug, source_id, source_path, octet_length(source_path) AS source_path_bytes,
-            database_only_reason, body_storage='segmented' AS segmented
-          FROM pages WHERE source_id=$1 AND deleted_at IS NULL AND id > $2::bigint ORDER BY id LIMIT ${BATCH}`, [sourceId, cursor]);
+            database_only_reason, body_storage='segmented' AS segmented, NOT ${privatePagesFilterFragment('pages')} AS lineage_private
+          FROM pages WHERE source_id=$1 AND deleted_at IS NULL AND pages.id > $2::bigint ORDER BY pages.id LIMIT ${BATCH}`, [sourceId, cursor]);
         if (batch.length) { await visit(tx, batch); cursor = batch[batch.length - 1]!.id; }
         return batch.length < BATCH;
       });
@@ -101,14 +103,20 @@ export async function censusSource(engine: BrainEngine, sourceId: string, sample
     }
   };
 
-  let ignored: Set<string> | null = new Set();
+  let ignored = new Set<string>();
   if (root) {
     const paths: string[] = [];
     await scan(async (_tx, batch) => { for (const key of batch) { const path = target(key); if (path) paths.push(posix(path)); } });
-    ignored = await ignoredPaths(root, paths);
+    const answer = await ignoredPaths(root, paths);
+    if (!answer) {
+      throw new OperationError('storage_error', `Git could not say which paths the checkout at ${root} ignores, so eligibility is unknown.`,
+        `Nothing changed. Check that ${root} is a Git checkout (git -C ${root} status), then rerun gbrain sources canonical ${sourceId} --dry-run.`, DOCS);
+    }
+    ignored = answer;
   }
-  const policy = { mirror: source?.mirror === true, storage: root ? loadStorageConfig(root) : null, ignored: ignored ?? new Set<string>() };
-  const ineligible: Record<ExportIneligibility, number> = { mirror_source: 0, private: 0, alias_private: 0, database_only: 0, db_only_prefix: 0, git_ignored: 0 };
+  const policy = { mirror, dbOnly: (slug: string) => root !== null && isSourceDbOnlySlug(root, slug, 'refuse'), ignored };
+  const ineligible: Record<ExportIneligibility, number> = { mirror_source: 0, private: 0, alias_private: 0, lineage_private: 0, database_only: 0,
+    db_only_prefix: 0, git_ignored: 0 };
   const files: Record<FileState, number> = { equal: 0, differs: 0, missing: 0, unparseable: 0, unsafe_path: 0 };
   const sample: CanonicalCensus['sample'] = [];
   let pages = 0, eligible = 0;
@@ -118,7 +126,8 @@ export async function censusSource(engine: BrainEngine, sourceId: string, sample
       pages++;
       const snapshot = await readExportPage(tx, key, withdrawals);
       const path = root ? target(key) : null;
-      const reason = exportIneligibility({ ...snapshot.page, database_only_reason: key.database_only_reason }, path ? posix(path) : null, policy);
+      const reason = exportIneligibility({ ...snapshot.page, database_only_reason: key.database_only_reason, lineage_private: key.lineage_private },
+        path ? posix(path) : null, policy);
       if (reason) { ineligible[reason]++; continue; }
       eligible++;
       if (!root) continue;
@@ -138,7 +147,7 @@ export async function censusSource(engine: BrainEngine, sourceId: string, sample
     }
   });
   return { status: 'census', source_id: sourceId, checkout: root, pages, eligible, ineligible, files: root ? files : null,
-    ignore_check: root ? (ignored ? 'ok' : 'failed') : 'no_checkout', sample,
+    ignore_check: root ? 'ok' : 'no_checkout', sample,
     next: `Nothing changed. This release ships the census only; switching a source to database-canonical arrives in a later release (${DOCS}).` };
 }
 
@@ -148,7 +157,6 @@ function describe(census: CanonicalCensus): string {
     `Ineligible: ${counts(census.ineligible)}.`];
   if (census.files) lines.push(`Files of eligible pages, compared with their export view: ${counts(census.files)}.`);
   else lines.push('The source has no checkout, so no file was compared.');
-  if (census.ignore_check === 'failed') lines.push('Git could not say which paths it ignores, so no page was counted as git_ignored.');
   for (const item of census.sample) lines.push(`  ${item.state}: ${item.slug} (${item.path})${item.fields ? ` fields ${item.fields.join(', ')}` : ''}`);
   lines.push(census.next);
   return lines.join('\n');
