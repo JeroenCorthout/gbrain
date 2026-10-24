@@ -31,7 +31,7 @@ import { isAbsolute, join, relative, resolve } from 'node:path';
 import { execFileSync } from '../spawn.ts';
 import { gitChildEnv } from '../git-env.ts';
 import { GIT_ENV, GIT_ENV_AUTH, GIT_SSRF_SUBCOMMAND_FLAGS, durableSsrfFlags } from '../git-transport.ts';
-import { assertManagedFilesystemWrite } from '../persistence/filesystem-guard.ts';
+import { assertManagedFilesystemWrite, hasFilesystemPublication, managedFilesystemRootFor, type ManagedFilesystemRoot } from '../persistence/filesystem-guard.ts';
 import { acquireNativeLock, acquireNativeLockSync, type NativeLockSyncHandle } from '../persistence/native-lock.ts';
 import { OperationError, opError } from '../ops/contract.ts';
 
@@ -55,8 +55,11 @@ const INDEX_LOCK_RETRIES = 5;
 export type CheckoutState = 'advanced' | 'unchanged' | 'lagging';
 
 export interface CommitPushResult {
-  /** `push_deferred`: an unattended publish found another publish running and left it a request to publish HEAD too. */
-  outcome: 'pushed' | 'nothing_to_commit' | 'pushed_checkout_lagging' | 'push_deferred';
+  /**
+   * `push_deferred`: an unattended publish found another publish running and left it a request to publish HEAD too.
+   * `committed_local`: a managed canonical worktree, where commit-push only commits the named paths and never pushes.
+   */
+  outcome: 'pushed' | 'nothing_to_commit' | 'pushed_checkout_lagging' | 'push_deferred' | 'committed_local';
   /** The commit now on the remote branch (the caller's commit or the merge built over it). */
   sha: string | null;
   committed: string | null;
@@ -992,9 +995,41 @@ function defaultPublishWaitMs(): number {
   return Number.isFinite(secs) && secs >= 0 ? secs * 1000 : 300_000;
 }
 
+/**
+ * Q1: on a managed canonical worktree commit-push commits only the paths the caller names (pages written outside gbrain,
+ * which would otherwise land as bare commits), under the commit lock, and nothing more: no fetch, merge, push or checkout
+ * move, so the owner stays the only publisher. The commit reaches the remote on the owner's next Git publish, or with
+ * `gbrain git commit-push --push-only --keep-checkout`.
+ */
+function commitManagedPaths(root: string, opts: CommitPushOptions, managed: ManagedFilesystemRoot): CommitPushResult {
+  const where = `${root} is the managed canonical worktree${managed.sourceId ? ` of source ${managed.sourceId}` : ''}`;
+  if (opts.pending || opts.branch || opts.resolutions || opts.expectRemote || opts.allowOutsideSourceRoot || opts.advanceOnlyWhenClean) {
+    throw opError('commit_paths_invalid', `${where}: commit-push there only commits the paths you name.`,
+      `Run gbrain git commit-push with only -m and the page paths after --; gbrain sources refresh${managed.sourceId ? ` ${managed.sourceId}` : ''} brings remote commits in.`);
+  }
+  if (!opts.message?.trim()) throw opError('commit_paths_invalid', 'A commit message is required.', 'Pass the commit message with -m.');
+  const rel = scopePaths(root, opts.paths ?? [], opts.cwd ?? process.cwd());
+  if (!rel.length) throw opError('commit_paths_invalid', `${where}: name the paths to commit.`, 'Pass -- <paths> after the message.');
+  const branch = git(root, ['symbolic-ref', '--quiet', '--short', 'HEAD']).stdout.trim();
+  if (!branch) throw opError('git_detached_head', `${root} is on a detached HEAD, so there is no branch to commit to.`, 'Leave the checkout to its owner; gbrain sources writer status names its state.');
+  assertNoOperationInProgress(root);
+  const lock = acquireCommitLock(root, opts.lockWaitMs);
+  let committed: string | null;
+  try {
+    assertNoOperationInProgress(root);
+    committed = commitPaths(root, rel, opts.message.trim(), { roots: configuredSourceRoots(root), lockPath: lock.lockPath, markHeld: true });
+  } finally {
+    lock.release();
+  }
+  const remote = git(root, ['config', '--get', `branch.${branch}.remote`]).stdout.trim();
+  return { outcome: committed ? 'committed_local' : 'nothing_to_commit', sha: committed, committed, branch, remote, paths: rel, integrated: 0, checkout: 'unchanged' };
+}
+
 export function commitAndPush(opts: CommitPushOptions): CommitPushResult {
   const root = checkoutRoot(opts.repo);
   if (opts.keepCheckout && !opts.pushOnly) throw opError('commit_paths_invalid', 'keepCheckout publishes commits already on the branch; it commits nothing.', 'Use --push-only --keep-checkout.');
+  const managed = opts.keepCheckout || opts.pushOnly ? null : managedFilesystemRootFor(root);
+  if (managed && !hasFilesystemPublication(root)) return commitManagedPaths(root, opts, managed);
   if (!opts.keepCheckout) assertManagedFilesystemWrite(root);
   const cwd = opts.cwd ?? process.cwd();
   const roots = configuredSourceRoots(root);
