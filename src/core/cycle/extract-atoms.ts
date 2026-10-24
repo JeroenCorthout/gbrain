@@ -88,7 +88,7 @@ import { atomSourceDate } from './atom-source-date.ts';
 import { normalizeForGrounding } from './synthesize-verify.ts';
 import type { TranscriptPageIndex } from '../transcripts/discover.ts';
 import { atomOriginPin, managedAtomSession, readAtomOrigin, resumeManagedAtoms, publishManagedAtoms, publishManagedAtomGeneration, resumeManagedGenerationMembers,
-  MANAGED_ATOM_DISCOVERY_SQL, type AtomOrigin } from '../persistence/atom-maintenance.ts';
+  MANAGED_ATOM_DISCOVERY_SQL, managedAtomDiscoverySql, type AtomOrigin } from '../persistence/atom-maintenance.ts';
 import { effectiveVisibility } from '../search/private-visibility.ts';
 import { OperationError } from '../ops/contract.ts';
 import { isOpPageSlug } from '../ops/context.ts';
@@ -152,11 +152,15 @@ const RAW_SOURCE_HOLDER_EXCLUSION_SQL =
 
 // #6503: a partial row (the page was cut at the input cap) is skipped like a
 // tombstone until releasePartialDispositions clears it under a raised cap.
-const PAGE_SCAN_STATE_EXCLUSION_SQL = `AND NOT EXISTS (
+// #7391: the backlog count passes the current cap, so a row recorded below it
+// (one the phase's release clears) counts before any phase has run.
+const pageScanStateExclusionSql = (maxInputChars?: string) => `AND NOT EXISTS (
   SELECT 1 FROM extract_atoms_page_state scan
   WHERE scan.source_incarnation=(SELECT s.incarnation FROM sources s WHERE s.id=p.source_id)
-    AND scan.page_id=p.id AND scan.content_hash=p.content_hash AND (scan.tombstoned OR scan.partial_input_chars IS NOT NULL)
+    AND scan.page_id=p.id AND scan.content_hash=p.content_hash
+    AND (scan.tombstoned OR ${maxInputChars ? `scan.partial_input_chars >= ${maxInputChars}` : 'scan.partial_input_chars IS NOT NULL'})
 )`;
+const PAGE_SCAN_STATE_EXCLUSION_SQL = pageScanStateExclusionSql();
 
 /**
  * Pure allowlist policy: the legacy floor (minus floor types the pack declares not extractable, #5756: the floor
@@ -473,6 +477,10 @@ export async function discoverExtractablePages(
  * rides migration v104's `pages_atom_source_hash_idx` partial index and stays
  * O(log n) on 100K+ brains.
  *
+ * #7391: a partial disposition recorded below the current input cap counts,
+ * because the phase releases it before discovery; without it a drain under a
+ * raised cap stopped at a zero count before any phase could release it.
+ *
  * PAGE-BACKLOG-ONLY (Codex #11): extract_atoms also discovers transcript files
  * at runtime; this count covers DB pages only. Callers label that caveat.
  *
@@ -502,8 +510,8 @@ export async function countExtractAtomsBacklog(
            AND COALESCE(p.frontmatter->>'dream_generated', '') <> 'true'
            ${RAW_SOURCE_HOLDER_EXCLUSION_SQL}
            AND ${minCompiledTruthChars('$3')}
-           ${MANAGED_ATOM_DISCOVERY_SQL}
-           ${PAGE_SCAN_STATE_EXCLUSION_SQL}
+           ${managedAtomDiscoverySql('$4::integer')}
+           ${pageScanStateExclusionSql('$4::integer')}
            ${connectorExclusion}
            AND NOT EXISTS (
              SELECT 1 FROM pages atom
@@ -520,8 +528,8 @@ export async function countExtractAtomsBacklog(
            AND COALESCE(p.frontmatter->>'dream_generated', '') <> 'true'
            ${RAW_SOURCE_HOLDER_EXCLUSION_SQL}
            AND ${minCompiledTruthChars('$2')}
-           ${MANAGED_ATOM_DISCOVERY_SQL}
-           ${PAGE_SCAN_STATE_EXCLUSION_SQL}
+           ${managedAtomDiscoverySql('$3::integer')}
+           ${pageScanStateExclusionSql('$3::integer')}
            ${connectorExclusion}
            AND NOT EXISTS (
              SELECT 1 FROM pages atom
@@ -531,9 +539,10 @@ export async function countExtractAtomsBacklog(
                AND atom.deleted_at IS NULL
            )`;
     const extractableTypes = await resolveExtractableTypes();
+    const maxInputChars = await resolveExtractAtomsInputCap(engine);
     const params = scoped
-      ? [sourceId, extractableTypes, MIN_PAGE_CHARS_FOR_EXTRACTION]
-      : [extractableTypes, MIN_PAGE_CHARS_FOR_EXTRACTION];
+      ? [sourceId, extractableTypes, MIN_PAGE_CHARS_FOR_EXTRACTION, maxInputChars]
+      : [extractableTypes, MIN_PAGE_CHARS_FOR_EXTRACTION, maxInputChars];
     const rows = await engine.executeRaw<{ cnt: string | number }>(sql, params, { signal: opts.signal });
     return Number(rows[0]?.cnt ?? 0);
   } catch (err) {

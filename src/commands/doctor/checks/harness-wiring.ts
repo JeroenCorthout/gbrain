@@ -471,7 +471,18 @@ function repairArgv(v: InstructionBlockView): Action {
 export async function harnessWiringCheck(opts: { smoke: boolean }): Promise<Check> {
   const regs = readHarnessRegistrations();
   const { skillsIndexViews } = await import('../../../core/setup/skills-block.ts');
-  return withSkillsIndex(withInstructionBlocks(await registrationCheck(opts, regs), instructionBlockViews(regs)), skillsIndexViews());
+  return withSkillsIndex(withSurfaceNote(withInstructionBlocks(await registrationCheck(opts, regs), instructionBlockViews(regs)), regs), skillsIndexViews());
+}
+
+/**
+ * Information only: a stdio registration pinned to `--surface full` keeps
+ * working and is never rewritten; new installs register starter (the smaller
+ * daily-driver tool list). Status and fix are unchanged.
+ */
+export function withSurfaceNote(check: Check, regs: HarnessRegistration[]): Check {
+  const full = regs.filter((r) => r.kind === 'stdio' && !r.env?.GBRAIN_SURFACE && r.args?.[r.args.indexOf('--surface') + 1] === 'full' && r.args.includes('--surface'));
+  if (full.length === 0) return check;
+  return { ...check, details: { ...(check.details ?? {}), surface_note: `${full.map((r) => HARNESS_LABEL[r.harness]).join(', ')} registered with --surface full, which stays supported. New installs register starter (a smaller tool list; request_tools reaches the rest).` } };
 }
 
 async function registrationCheck(opts: { smoke: boolean }, regs: HarnessRegistration[]): Promise<Check> {

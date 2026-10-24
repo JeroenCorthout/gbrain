@@ -26,7 +26,7 @@ Before it writes anything, setup resolves and prints:
 | Source | `--source`, else `GBRAIN_SOURCE`, else unpinned (the server uses the brain's default source). |
 | Transport | Local stdio: the harness starts `<launcher> serve --surface <surface>`. |
 | Launcher | `--gbrain-bin`, else the absolute `gbrain` on `PATH` (GUI-launched hosts inherit no `PATH`, so a bare name is never written). |
-| Surface | `--surface`, else `GBRAIN_SURFACE`, else the surface already registered, else `full`. |
+| Surface | `--surface`, else `GBRAIN_SURFACE`, else the surface already registered, else `starter` (`--surface full` is the opt-in for every tool; an existing registration keeps its surface). |
 | Owner | Who owns the MCP name now: nobody, this setup (its receipt), or the gbrain Claude Code or Codex plugin (setup then adds hooks only). |
 
 It refuses with a coded error, before any write, when the target is not safe:

@@ -564,7 +564,7 @@ registers `gbrain serve --access read-only` as its stdio MCP command.
 
 ```bash
 claude mcp add gbrain -- "$(command -v gbrain)" serve --access read-only
-gbrain serve --surface full --access read-only
+gbrain serve --access read-only   # bare serve: the full surface, read-only
 ```
 
 `--access read-only` intersects the selected `--surface` with operations that

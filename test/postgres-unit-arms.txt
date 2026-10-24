@@ -44,6 +44,7 @@ test/company-brain-policy.test.ts
 test/company-brain-runtime.test.ts
 test/consolidate-same-instant-6023.test.ts
 test/conversation-facts-oversized-sidecar.test.ts
+test/conversation-facts-purged-claim-7438.test.ts
 test/cycle/synthesize-concepts-merge.test.ts
 test/db-lock-reconnect.test.ts
 test/decide/conflict-proposals-managed.test.ts
@@ -60,6 +61,7 @@ test/embedding-completion-atomic.serial.test.ts
 test/engine-sql-facts-keyset.test.ts
 test/extract-all-stamp-intersection.serial.test.ts
 test/extract-atoms-input-truncated-6503.test.ts
+test/extract-atoms-raised-cap-drain-7391.test.ts
 test/extract-endpoint-revision.serial.test.ts
 test/extract-entities-managed.test.ts
 test/extract-timeline-from-meetings-managed.test.ts
@@ -70,6 +72,7 @@ test/fact-purge-lookup-timeout-6511.test.ts
 test/facts-absorb-stalled-receipt-7439.test.ts
 test/facts-insert-guards-7105.test.ts
 test/facts-publication-large-fence-6898.test.ts
+test/facts-subject-infer-7405.test.ts
 test/fence-repair-receipts.test.ts
 test/file-drift-soft-delete-hold-release-gbra133.test.ts
 test/forecast-journal.test.ts
@@ -89,6 +92,7 @@ test/graduation-verify.test.ts
 test/grandfather-managed.test.ts
 test/harness-skills-epoch.test.ts
 test/held-read-signals.test.ts
+test/hermes-clarify-transcripts-7396.test.ts
 test/hold-action-chain-6712.test.ts
 test/import-file-result-callback-gbra130.test.ts
 test/import-frontmatter-key-order-5158.test.ts
@@ -252,6 +256,7 @@ test/page-prepare-shared-origin-6517.test.ts
 test/page-purge-batch-sweep-6884.test.ts
 test/page-purge-journal-timeout-6511.test.ts
 test/page-state-engine.test.ts
+test/pages-source-created-idx-7379.test.ts
 test/pages-status-7179.test.ts
 test/pathological/a-36-facts-batch-partial-refusal.test.ts
 test/pathological/a-42-atom-dot-led-slug.test.ts
@@ -390,6 +395,7 @@ test/recall-page-fill.test.ts
 test/receipt-compaction-newest-sync-gbra130.test.ts
 test/reconcile-clears-stalled-hold-7364.test.ts
 test/remediation-manual-only.test.ts
+test/remember-batch-entity-7432.test.ts
 test/repair-apply-pending-6543.test.ts
 test/repair-database-stop-gbra133.test.ts
 test/repair-embedding-effects.test.ts

@@ -69,7 +69,7 @@ tools use the plugin lane's own approval flow.
 ## Option 1: Local (recommended, zero server needed)
 
 ```bash
-claude mcp add gbrain -- "$(command -v gbrain)" serve --surface full
+claude mcp add gbrain -- "$(command -v gbrain)" serve --surface starter
 gbrain setup claude-code --instructions-only
 ```
 
@@ -90,14 +90,13 @@ tunnel, no token needed. Works with both PGLite and Supabase engines.
 > connections. Details:
 > [serve ↔ sync concurrency](../architecture/serve-sync-concurrency.md).
 
-`--surface full` serves the whole operation catalog (`get_page`, `put_page`,
-`put_pages`, `search`, graph ops, …), the seven-verb memory protocol (`recall`,
-`remember`, `entity`, `synthesize`, `forget`, `context_pack`, `delta` —
-[MEMORY_VERBS v1](../protocol/MEMORY_VERBS_v1.md)) included; it is the surface
-every registration gbrain writes pins and what a bare `serve` defaults to. A
-harness that caps its tool count can register `--surface starter` (the verbs
-plus the daily-driver page/search/graph ops and capture) or `--surface verbs`
-(only the seven verbs).
+`--surface starter` lists the daily-driver tools: the seven memory verbs
+([MEMORY_VERBS v1](../protocol/MEMORY_VERBS_v1.md)), `search`, `query`,
+`get_page`, `put_page`, `capture`, graph reads and skills. It is the surface every
+new registration gbrain writes pins (a bare `serve` still defaults to full). A parameter it leaves out is still accepted,
+and `request_tools` returns full schemas or widens the session to a left-out tool. `--surface full` lists every
+operation (`put_pages`, admin and tuning ops) and is the opt-in; `--surface verbs`
+lists only the seven verbs.
 
 ## Option 2: Remote, one command (fastest from a bearer token)
 

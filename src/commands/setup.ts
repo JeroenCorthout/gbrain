@@ -120,7 +120,8 @@ Flags:
   --dry-run            Print the target and every step; write nothing.
   --json               One JSON document on stdout (target, decisions, steps, states).
   --surface S          MCP tool surface: verbs, starter or full (default: GBRAIN_SURFACE,
-                       then the surface already registered, then full).
+                       then the surface already registered, then starter; full is the
+                       opt-in for every operation).
   --scope user|project Wiring scope: every Claude Code session (user, default) or only
                        sessions in this directory (project: ~/.claude.json projects
                        entry + .claude/settings.local.json). Codex: user only.

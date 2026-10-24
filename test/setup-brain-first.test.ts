@@ -24,7 +24,7 @@ import {
   renderBrainFirstBlock,
   renderBrainFirstSnippet,
 } from '../src/core/setup/brain-first.ts';
-import { harnessWiringCheck, instructionBlockViews, withInstructionBlocks, type InstructionBlockView } from '../src/commands/doctor/checks/harness-wiring.ts';
+import { harnessWiringCheck, instructionBlockViews, withInstructionBlocks, withSurfaceNote, type InstructionBlockView } from '../src/commands/doctor/checks/harness-wiring.ts';
 import { installHarnessConnection } from '../src/core/harness/install.ts';
 import type { HarnessCredentials } from '../src/core/harness/credentials.ts';
 
@@ -311,6 +311,18 @@ describe('brain-first block: hardening', () => {
     const project = withInstructionBlocks({ name: 'harness_wiring', status: 'ok', message: 'wired.' }, [{ harness: 'cursor', path: '/repo/.cursor/rules/gbrain-brain-first.mdc', state: 'missing', from: 'ledger' }]);
     expect(project.fix?.argv).toBeUndefined();
     expect(project.fix?.user_message).toContain('From /repo, run: gbrain setup cursor --instructions-only');
+  });
+});
+
+describe('doctor harness_wiring: a full registration is information only', () => {
+  test('a stdio registration pinned to --surface full gets a note; status and fix are unchanged; starter or a GBRAIN_SURFACE override gets none', () => {
+    const ok = { name: 'harness_wiring', status: 'ok' as const, message: 'wired.' };
+    const full = withSurfaceNote(ok, [{ harness: 'codex', source: '/x/config.toml', kind: 'stdio', command: '/bin/gbrain', args: ['serve', '--surface', 'full'] }]);
+    expect(full.status).toBe('ok');
+    expect(full.fix).toBeUndefined();
+    expect(String(full.details?.surface_note)).toContain('Codex registered with --surface full, which stays supported');
+    expect(withSurfaceNote(ok, [{ harness: 'codex', source: '/x', kind: 'stdio', args: ['serve', '--surface', 'starter'] }])).toEqual(ok);
+    expect(withSurfaceNote(ok, [{ harness: 'codex', source: '/x', kind: 'stdio', args: ['serve', '--surface', 'full'], env: { GBRAIN_SURFACE: 'starter' } }])).toEqual(ok);
   });
 });
 

@@ -81,7 +81,7 @@ describe('gbrain setup claude-code: install lifecycle', () => {
     expect(first.doc.consent.providers).toMatchObject({ value: 'declined', source: 'default' });
     expect(readJson(join(b.gbrainHome, '.gbrain', 'config.json')).embedding_disabled).toBe(true);
     const entry = readJson(claudeJson(b)).mcpServers.gbrain;
-    expect(entry).toEqual({ type: 'stdio', command: b.bin, args: ['serve', '--surface', 'full'], env: { GBRAIN_HOME: b.gbrainHome } });
+    expect(entry).toEqual({ type: 'stdio', command: b.bin, args: ['serve', '--surface', 'starter'], env: { GBRAIN_HOME: b.gbrainHome } });
     expect(Object.keys(readJson(settings(b)).hooks).sort()).toEqual(['SessionStart', 'UserPromptSubmit']);
     expect(readJson(receipt(b)).status).toBe('installed');
     const [bundle] = first.doc.notices;
@@ -95,6 +95,16 @@ describe('gbrain setup claude-code: install lifecycle', () => {
     expect(second.doc.steps.map((s: any) => s.action)).toEqual(['keep', 'keep', 'keep']);
     expect([readFileSync(claudeJson(b), 'utf8'), readFileSync(settings(b), 'utf8'), readFileSync(receipt(b), 'utf8')]).toEqual(before);
     expect(existsSync(`${settings(b)}.bak`)).toBe(false);
+  });
+
+  test('starter is the default surface; --surface full is the opt-in, and a re-run keeps the surface already registered', async () => {
+    const b = box();
+    expect((await setup(b, ['claude-code', '--surface', 'full', '--json'])).exitCode).toBe(0);
+    expect(readJson(claudeJson(b)).mcpServers.gbrain.args).toEqual(['serve', '--surface', 'full']);
+    const rerun = await setup(b, ['claude-code', '--json']);
+    expect(rerun.exitCode).toBe(0);
+    expect(readJson(claudeJson(b)).mcpServers.gbrain.args).toEqual(['serve', '--surface', 'full']);
+    expect(rerun.doc.steps.map((s: any) => s.action)).toEqual(['keep', 'keep', 'keep']);
   });
 
   test('human output ends with one non-blocking settings block after Next, and none of init\'s standalone steps', async () => {
@@ -222,7 +232,7 @@ describe('gbrain setup claude-code: install lifecycle', () => {
     expect(readFileSync(claudeJson(b), 'utf8')).toBe(foreignCfg);
     expect(existsSync(settings(b))).toBe(false);
 
-    const same = { type: 'stdio', command: b.bin, args: ['serve', '--surface', 'full'], env: { GBRAIN_HOME: b.gbrainHome } };
+    const same = { type: 'stdio', command: b.bin, args: ['serve', '--surface', 'starter'], env: { GBRAIN_HOME: b.gbrainHome } };
     writeFileSync(claudeJson(b), JSON.stringify({ mcpServers: { gbrain: same } }));
     const adopted = await setup(b, ['claude-code', '--json']);
     expect(adopted.exitCode).toBe(0);
@@ -516,7 +526,7 @@ describe('gbrain setup codex: install lifecycle', () => {
     expect(first.doc.capability).toMatchObject({ harness: 'codex', setup: 'supported', push: 'native-verified', read_events: ['SessionStart', 'UserPromptSubmit'] });
     expect(first.doc.consent.capture).toMatchObject({ value: 'declined', source: 'default' });
     expect(readJson(join(b.gbrainHome, '.gbrain', 'config.json')).embedding_disabled).toBe(true);
-    expect(toml(b).mcp_servers.gbrain).toEqual({ command: b.bin, args: ['serve', '--surface', 'full'], env: { GBRAIN_HOME: b.gbrainHome } });
+    expect(toml(b).mcp_servers.gbrain).toEqual({ command: b.bin, args: ['serve', '--surface', 'starter'], env: { GBRAIN_HOME: b.gbrainHome } });
     expect(Object.keys(readJson(hooksJson(b)).hooks).sort()).toEqual(['SessionStart', 'UserPromptSubmit']);
     expect(groups(b, 'UserPromptSubmit')).toEqual([{ hooks: [{ type: 'command', timeout: 15,
       command: `env GBRAIN_HOOK_LANE=setup GBRAIN_HOME=${b.gbrainHome} ${b.bin} hook user-prompt --harness codex` }] }]);
@@ -683,7 +693,7 @@ describe('gbrain setup codex: install lifecycle', () => {
     expect(readFileSync(codexToml(b), 'utf8')).toBe(foreign);
     expect(existsSync(hooksJson(b))).toBe(false);
 
-    const same = `[mcp_servers.gbrain]\ncommand = ${JSON.stringify(b.bin)}\nargs = ["serve", "--surface", "full"]\nenv = { GBRAIN_HOME = ${JSON.stringify(b.gbrainHome)} }\n`;
+    const same = `[mcp_servers.gbrain]\ncommand = ${JSON.stringify(b.bin)}\nargs = ["serve", "--surface", "starter"]\nenv = { GBRAIN_HOME = ${JSON.stringify(b.gbrainHome)} }\n`;
     writeFileSync(codexToml(b), same);
     expect((await setup(b, ['codex'])).exitCode).toBe(0);
     expect(readJson(codexReceipt(b)).mcp_adopted).toBe(true);
