@@ -1200,6 +1200,7 @@ export class PostgresEngine implements BrainEngine {
     // search/keyword-identifier-probe.ts.
     return keywordArmRows<Record<string, unknown>>({ query, strict, orFallback: opts?.orFallback, limit, offset, toResult: rowToSearchResult,
       runProbe: (match, rank) => runKeyword(match, true, rank),
+      runHandles: handles => keywordPagesImpl.searchHandlePages((read, settings) => this.withScopedReadTransaction(opts?.sourceIds, opts?.sourceId, tx => read(scopedRead(this.engineSqlOn(tx))), { alwaysTransaction: true, jitOff: true, settings }), query, handles, opts, limit, { statementTimeout }),
       runRelaxed: async (orQuery) => {
         const shares = await readOrTokenShares((sql, p) => this.executeRaw(sql, p), query, ftsLang);
         const narrowed = narrowedOrFallbackText(shares), common = commonOrTokens(shares, RARE_TERM_CHUNK_CAP);

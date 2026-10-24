@@ -27,6 +27,7 @@
 import type { SearchResult } from '../types.ts';
 import { parseIdentifier } from './identifier-query.ts';
 import { buildOrFallbackWebsearchQuery, orFallbackTokens } from './sql-ranking.ts';
+import { slugHandles } from './keyword-handles.ts';
 
 const HASH_NUMBER_RE = /^#(\d+)$/;
 
@@ -84,11 +85,15 @@ export async function keywordArmRows<R>(a: {
   toResult: (row: R) => SearchResult;
   runProbe: (matchQuery: string, rankQuery: string) => Promise<R[]>;
   runRelaxed: (orQuery: string) => Promise<R[]>;
+  /** GBRA-108: the pages the query's slug handles name (search/keyword-handles.ts); they lead the rows, untagged. */
+  runHandles?: (handles: string[]) => Promise<SearchResult[]>;
 }): Promise<SearchResult[]> {
+  const handles = a.orFallback && a.offset === 0 && a.runHandles ? slugHandles(a.query) : null;
+  const named = handles ? await a.runHandles!(handles).catch(() => [] as SearchResult[]) : [];
   const orQuery = a.orFallback ? buildOrFallbackWebsearchQuery(a.query) : null;
   const probeQuery = orQuery && a.offset === 0 ? identifierProbeQuery(a.query) : null;
   const probe = probeQuery ? (await a.runProbe(probeQuery, orQuery!).catch(() => [] as R[])).map(a.toResult) : [];
-  if (a.strict.length > 0 || !orQuery) return appendPages(a.strict.map(a.toResult), probe, a.limit);
+  if (a.strict.length > 0 || !orQuery) return appendPages(named, appendPages(a.strict.map(a.toResult), probe, a.limit), a.limit);
   const relaxed = (await a.runRelaxed(orQuery)).map(r => ({ ...a.toResult(r), keyword_relaxed: true as const }));
-  return appendPages(probe, relaxed, a.limit);
+  return appendPages(named, appendPages(probe, relaxed, a.limit), a.limit);
 }

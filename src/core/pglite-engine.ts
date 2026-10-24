@@ -1527,6 +1527,7 @@ export class PGLiteEngine implements BrainEngine {
     // relaxed-row tag (#3617 follow-up) live in search/keyword-identifier-probe.ts.
     const run = async (matchQuery: string, rankQuery: string) => (await this.db.query(keywordSql, params.map((v, i) => i === 0 ? matchQuery : i === rankIdx && !opts?.rankQuery ? rankQuery : v))).rows as Record<string, unknown>[];
     return keywordArmRows({ query, strict: strict as Record<string, unknown>[], orFallback: opts?.orFallback, limit, offset, toResult: rowToSearchResult, runProbe: run,
+      runHandles: handles => keywordPagesImpl.searchHandlePages(async (read) => read(scopedRead(this.engineSql)), query, handles, opts, limit, {}),
       runRelaxed: async orQuery => rankOrFallbackByRarity({ query, rows: await run(orQuery, orQuery), limit, offset, runRare: q => run(q, orQuery),
         readTermPages: async terms => (await this.db.query(rareTermPagesSql(ftsLang), [terms, RARE_TERM_CHUNK_CAP])).rows as RareTermPages[] }) }).finally(settle);
   }
