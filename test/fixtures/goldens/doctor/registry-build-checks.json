@@ -987,6 +987,10 @@
       },
       {
         "category": "ops",
+        "name": "database_canonical"
+      },
+      {
+        "category": "ops",
         "name": "search_mode"
       },
       {
