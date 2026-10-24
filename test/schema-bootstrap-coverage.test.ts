@@ -263,6 +263,9 @@ test('applyForwardReferenceBootstrap covers every forward reference declared in 
       -- The v230 trust generation trigger's WHEN reads pages.source_id, slug and
       -- deleted_at; a pre-v0.18 brain predates it (v230 recreates it).
       DROP TRIGGER IF EXISTS trust_generation_update ON pages;
+      -- The v272 database-canonical eligibility trigger's WHEN reads
+      -- pages.source_id too; a pre-v0.18 brain predates it as well.
+      DROP TRIGGER IF EXISTS database_canonical_eligibility_update ON pages;
       ALTER TABLE pages DROP COLUMN IF EXISTS source_id;
       DROP TABLE IF EXISTS sources CASCADE;
 
@@ -429,6 +432,9 @@ test('after bootstrap, PGLITE_SCHEMA_SQL replays without crashing on missing for
       -- The v230 trust generation trigger's WHEN reads pages.source_id, slug and
       -- deleted_at; a pre-v0.18 brain predates it (v230 recreates it).
       DROP TRIGGER IF EXISTS trust_generation_update ON pages;
+      -- The v272 database-canonical eligibility trigger's WHEN reads
+      -- pages.source_id too; a pre-v0.18 brain predates it as well.
+      DROP TRIGGER IF EXISTS database_canonical_eligibility_update ON pages;
       ALTER TABLE pages DROP COLUMN IF EXISTS source_id;
       DROP TABLE IF EXISTS sources CASCADE;
       DROP INDEX IF EXISTS idx_links_source;
