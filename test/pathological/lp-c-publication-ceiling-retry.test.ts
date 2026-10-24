@@ -78,7 +78,7 @@ for (const { backend, databaseUrl } of pathologicalArms()) describe(`[${backend}
 
   /** Every publication of claims `overruns(k)` parks past the ceiling and then fails as a discarded connection. */
   function overrun(requestId: string, overruns: (claim: number) => boolean) {
-    const seen = { claims: 0, publications: 0, transient: [] as number[], preparation: [] as number[] };
+    const seen = { claims: 0, publications: 0, transient: [] as number[], preparation: [] as number[], charges: [] as string[] };
     installFaultHook(async (point, detail) => {
       if (detail.requestId !== requestId) return;
       if (point === 'consumer:preparing') {
@@ -89,6 +89,7 @@ for (const { backend, databaseUrl } of pathologicalArms()) describe(`[${backend}
         return;
       }
       if (point === 'persistence:interruption_charged' || point === 'persistence:recovery_interruption_charged') {
+        seen.charges.push(`claim ${seen.claims} ${point} ${JSON.stringify(detail.interruption ?? null)}`);
         // Only a released row: one still held (the recovery route charges before it requeues) keeps its backoff, which the
         // owner's reclaim of a row it released itself must honour.
         await engine.executeRaw("UPDATE persistence_requests SET next_attempt_at=now() WHERE request_id=$1::uuid AND state='queued'", [requestId]).catch(() => undefined);
@@ -103,6 +104,17 @@ for (const { backend, databaseUrl } of pathologicalArms()) describe(`[${backend}
       }
     });
     return seen;
+  }
+
+  /** A claim count other than the expected one prints every charge (its cause and error) and the row, so a load-only failure names its cause. */
+  async function expectClaims(seen: { claims: number; transient: number[]; preparation: number[]; charges: string[] }, expected: number, requestId: string) {
+    if (seen.claims !== expected) console.error('lp-c unexpected claims', JSON.stringify({ expected, ...seen, row: await row(requestId).then(({ state, error_code, error_detail, preparation_attempts, transient_interruptions }) =>
+      ({ state, error_code, error_detail, preparation_attempts, transient_interruptions }), error => String(error)) }));
+    expect(seen.claims).toBe(expected);
+  }
+  /** The grouped tests' charge log: each member's charges with their cause and error, printed when a member is charged other than once. */
+  function recordCharge(charges: Map<string, string[]>, point: string, detail: { requestId?: string; interruption?: unknown }) {
+    if (point.endsWith('interruption_charged') && detail.requestId) charges.set(detail.requestId, [...charges.get(detail.requestId) ?? [], `${point} ${JSON.stringify(detail.interruption ?? null)}`]);
   }
 
   beforeAll(async () => {
@@ -129,7 +141,7 @@ for (const { backend, databaseUrl } of pathologicalArms()) describe(`[${backend}
     const seen = overrun(requestId, () => true);
     const outcome = await call({ slug, content: page(`Overrun ${n}`), request_id: requestId }).catch(error => error as { code?: string });
     installFaultHook(undefined);
-    expect(seen.claims).toBe(6);
+    await expectClaims(seen, 6, requestId);
     // One publication per claim: on Postgres a cancelled group of one is never published again under the same claim.
     expect(seen.publications).toBe(6);
     expect((outcome as { code?: string }).code).toBe('write_interrupted');
@@ -146,7 +158,7 @@ for (const { backend, databaseUrl } of pathologicalArms()) describe(`[${backend}
     const slug = `db/overrun-once-${++n}`, requestId = randomUUID();
     const seen = overrun(requestId, claim => claim === 1);
     expect(await call({ slug, content: page(`Once ${n}`), request_id: requestId })).toMatchObject({ state: 'committed' });
-    expect(seen.claims).toBe(2);
+    await expectClaims(seen, 2, requestId);
     expect(seen.transient).toEqual([0, 1]);
     expect(await engine.readPageSnapshot(slug, { sourceId: 'default' })).not.toBeNull();
   }, 180_000);
@@ -177,7 +189,7 @@ for (const { backend, databaseUrl } of pathologicalArms()) describe(`[${backend}
       const seen = overrun(requestId, () => true);
       const outcome = await call({ slug, content: page(`Next ${n}`), request_id: requestId, expected_revision: before!.revision }, sourceId).catch(error => error as { code?: string });
       installFaultHook(undefined);
-      expect(seen.claims).toBe(3);
+      await expectClaims(seen, 3, requestId);
       expect((outcome as { code?: string }).code).toBe('write_interrupted');
       expect(seen.transient).toEqual([0, 1, 2]);
       expect(await row(requestId)).toMatchObject({ state: 'failed', error_code: 'write_interrupted', transient_interruptions: 3, recovery: null,
@@ -236,9 +248,10 @@ for (const { backend, databaseUrl } of pathologicalArms()) describe(`[${backend}
       });
       // A publication overruns only while another member prepared in the same pass is still unpublished (a group of two):
       // the members prepare together and then reach before_commit one after the other inside the one transaction.
-      const unpublished = new Set<string>(), claims = new Map<string, number>(), grouped: string[][] = [];
+      const unpublished = new Set<string>(), claims = new Map<string, number>(), grouped: string[][] = [], charges = new Map<string, string[]>();
       installFaultHook(async (point, detail) => {
         if (detail.sourceId !== sourceId) return;
+        recordCharge(charges, point, detail);
         if (point === 'consumer:preparing') { unpublished.add(detail.requestId!); claims.set(detail.requestId!, (claims.get(detail.requestId!) ?? 0) + 1); return; }
         if (point !== 'publication:before_commit') return;
         const together = unpublished.size;
@@ -261,6 +274,7 @@ for (const { backend, databaseUrl } of pathologicalArms()) describe(`[${backend}
         [sourceId, `${dir}/%`]);
       expect(rows.length).toBe(2);
       for (const member of rows) {
+        if (member.transient_interruptions !== 1 || claims.get(member.request_id) !== 2) console.error('lp-c unexpected member charges', JSON.stringify({ member, claims: claims.get(member.request_id), charges: charges.get(member.request_id) ?? [], grouped }));
         expect(member).toMatchObject({ state: 'committed', transient_interruptions: 1 });
         expect(claims.get(member.request_id)).toBe(2);
       }
@@ -280,9 +294,10 @@ for (const { backend, databaseUrl } of pathologicalArms()) describe(`[${backend}
       // As above, and each member's charge is followed by a pause longer than the first backoff (1 s), as on a loaded host:
       // the first member's backoff has elapsed before the pass is done with the group, so only the charge itself keeps the
       // pass from taking that claim back and publishing its old preparation under it.
-      const unpublished = new Set<string>(), claims = new Map<string, number>(), grouped: string[][] = [];
+      const unpublished = new Set<string>(), claims = new Map<string, number>(), grouped: string[][] = [], charges = new Map<string, string[]>();
       installFaultHook(async (point, detail) => {
         if (detail.sourceId !== sourceId) return;
+        recordCharge(charges, point, detail);
         if (point === 'consumer:preparing') { unpublished.add(detail.requestId!); claims.set(detail.requestId!, (claims.get(detail.requestId!) ?? 0) + 1); return; }
         if (point === 'persistence:recovery_interruption_charged') { await new Promise(resolve => setTimeout(resolve, 1_200)); return; }
         if (point !== 'publication:before_commit') return;
@@ -305,6 +320,7 @@ for (const { backend, databaseUrl } of pathologicalArms()) describe(`[${backend}
         [sourceId, `${dir}/%`]);
       expect(rows.length).toBe(2);
       for (const member of rows) {
+        if (member.transient_interruptions !== 1 || claims.get(member.request_id) !== 2) console.error('lp-c unexpected member charges', JSON.stringify({ member, claims: claims.get(member.request_id), charges: charges.get(member.request_id) ?? [], grouped }));
         expect(member).toMatchObject({ state: 'committed', transient_interruptions: 1 });
         expect(claims.get(member.request_id)).toBe(2);
       }
@@ -317,7 +333,7 @@ for (const { backend, databaseUrl } of pathologicalArms()) describe(`[${backend}
       const requestId = randomUUID();
       const seen = overrun(requestId, claim => claim === 1);
       expect(await call({ slug, content: page(`Next ${n}`), request_id: requestId, expected_revision: before!.revision }, sourceId)).toMatchObject({ state: 'committed' });
-      expect(seen.claims).toBe(2);
+      await expectClaims(seen, 2, requestId);
       expect(seen.transient).toEqual([0, 1]);
       expect(readFileSync(join(brainDir, `${slug}.md`), 'utf8')).toContain(`Next ${n}`);
     }, 180_000);
