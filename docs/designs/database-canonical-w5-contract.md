@@ -72,7 +72,7 @@ The consumers the Git effect would have reached are told directly instead:
 
 ### Claims
 
-`claimExportBatch(engine, hostId, sourceId, deadOwners)` (`export-claim.ts`) is the only way to hold a batch. It claims the
+`claimExportBatch(engine, sourceId, hostId)` (in `canonical-export-store.ts`, beside the manifest transitions) is the only way to hold a batch. It claims the
 source's unfinished batch, or lets the exporter create the next one, only when: this host is
 `persistence_worktrees.owner_host_id` of the source binding's worktree; a host binding with a `local_path` exists for this
 host; the batch's `topology_generation` equals the binding's and its `mode_epoch` equals
@@ -242,6 +242,9 @@ PGLite without a resident, export lag is expected until the next command.
 
 ### Flip-back materialization
 
+**Status at W5a:** deferred. Wave 4's `--to files` apply does not exist on the wave 4 branch yet, so there is nothing to put
+the batch in front of; the exporter and its claim are ready for it, and this section is what W5a adds once wave 4 lands.
+
 Wave 4's `--to files` apply keeps every unmaterialized live page as a `file_drift` hold. W5a puts one export batch in
 front of that step: the preview reports how many pages one batch would materialize and how many would stay holds; when
 export commits are on and this process holds the owner lease, the apply first drains the outbox through export batches
@@ -369,6 +372,15 @@ paths of a database-mode source; W5b adds the agent route (`put_page` / `remembe
 and keeps non-page paths of a database-mode worktree committable under the commit lock (the operator row of the design's
 "who writes where" table).
 
+## Wave 4 dependency (fallback in W5a)
+
+Wave 4's branch carries its contract only. The exporter reads the source's mode, so W5a's migration adds wave 4's mode
+columns to `database_canonical_sources` (`mode`, `mode_epoch`, `mode_changed_at`, `eligibility_generation`) with wave 4's
+exact definitions and `ADD COLUMN IF NOT EXISTS`, so whichever wave lands first creates them and the other is a no-op.
+W5a adds no constraint, trigger, fence or flip verb: those stay wave 4's. Until wave 4 lands, nothing sets `mode='database'`,
+so no source exports; the tests set the mode directly. The deactivation refusal for unfinished export batches stands on its
+own and does not wait on wave 4's database-mode refusal.
+
 ## Error codes
 
 Registered in `src/core/error-registry.ts` and the generated error-codes doc. Only the two `put_page` can return join
@@ -396,11 +408,12 @@ Reused: `preview_changed`, `database_canonical_disabled`, `write_claim_lost`, `g
 
 New in W5a: this contract; `src/core/persistence/canonical-export-schema.ts`,
 `src/core/schema-migrations/v273-database-canonical-export.ts`, `src/core/persistence/canonical-export-store.ts` (switch and
-manifest reads and transitions), `export-claim.ts`, `export-core.ts`, `exporter.ts`, `export-runner.ts` (the resident loop
+manifest reads and transitions, and the claim), `export-core.ts`, `exporter.ts`, `export-runner.ts` (the resident loop
 and the one-shot attempt), `import-lane-live.ts`, `src/commands/sources-canonical-export.ts`; tests
-`test/database-canonical-exporter.test.ts` (batch, claim, transfer, privacy, crash points, bare core),
-`test/database-canonical-export-clones.test.ts` (two real clones, the `AGENTS.md` race, operator commit-push during a batch,
-`diff-index` clean) and `test/database-canonical-live-lane.test.ts`.
+`test/database-canonical-exporter.test.ts` (batch, claim, transfer, privacy at every step, crash at every step, two real clones
+and the `AGENTS.md` race, the fast-forward compare-and-set, an operator commit during a batch, `diff-index` clean, the live
+lane's import and park, filter drivers, parking and `--export-retry`, the `--export-commits` preview, the PGLite one-shot
+outcomes, the deactivation and graduation-drain refusals and the bare core).
 
 New in W5b: `src/core/persistence/canonical-status.ts`, `src/commands/sources-conflicts.ts`,
 `src/core/ops/source-conflicts.ts`, `src/commands/doctor/checks/database-canonical-export.ts`; tests
@@ -414,7 +427,7 @@ Existing files, **persistence/sync lane (GBRA-133)**, each edit behind the mode 
 | File | Wave | Edit |
 |---|---|---|
 | `src/core/persistence/consumer.ts` | 5a | the resident owner starts and stops the export runner for exporting sources whose worktree it owns; the one-shot shutdown tick makes the PGLite attempt (both return at once while no source exports) |
-| `src/core/git/commit-push.ts` | 5a | export the in-memory non-page merge (`integrate` / `mergeTrees`) and the publish-request helpers for the exporter; no behavior change for commit-push |
+| `src/core/git/commit-push.ts` | 5a | no edit: the exporter takes `acquireCommitLockAsync` and `PUBLISH_LOCK_NAME` as they are, and `export-core.ts` merges non-page paths with `git merge-tree` itself |
 | `src/core/persistence/fault-points.ts` | 5a | the `export:*` fault point names |
 | `src/core/persistence/graduation-drain.ts` | 5a | refuse while an export batch is unfinished (one predicate) |
 | `src/core/persistence/deactivation.ts` | 5a | refuse while an export batch is unfinished, beside wave 4's database-mode refusal |

@@ -1317,6 +1317,46 @@ More: [docs/guides/move-to-postgres.md#graduated-datastore](../../docs/guides/mo
 |---|---|---|---|---|---|---|
 | `gbrain eval run-all` was asked for a suite it does not run in-process (longmemeval or replay); nothing ran. | run-all runs only wired suites (brainbench). Recording a skipped run and exiting 0 would read as a completed sweep with no numbers behind it. | Run each requested suite with its own command (`gbrain eval longmemeval <dataset.jsonl> --mode <mode> --record`, `gbrain eval replay --mode <mode>`), once per mode, or drop it from --suites. | agent | `repeat the read that failed` | 1 | no |
 
+### export_commits_requires_database_mode
+
+<a id="export_commits_requires_database_mode"></a>
+
+| Meaning | Why | Next step | Who acts · consent | Verify | Exit | Retryable |
+|---|---|---|---|---|---|---|
+| Export commits are turned on only for a source in database mode; flip the source to database mode first. | The request itself was wrong or no longer matches the brain; nothing was changed. | Correct the request using the message above, then retry. | agent | `repeat the read that failed` | 1 | no |
+
+More: [docs/designs/database-canonical-w5-contract.md](../../docs/designs/database-canonical-w5-contract.md)
+
+### export_commits_unchanged
+
+<a id="export_commits_unchanged"></a>
+
+| Meaning | Why | Next step | Who acts · consent | Verify | Exit | Retryable |
+|---|---|---|---|---|---|---|
+| The source's export switch is already in the requested state; nothing changed. | The request itself was wrong or no longer matches the brain; nothing was changed. | Correct the request using the message above, then retry. | agent | `repeat the read that failed` | 1 | no |
+
+More: [docs/designs/database-canonical-w5-contract.md](../../docs/designs/database-canonical-w5-contract.md)
+
+### export_failed
+
+<a id="export_failed"></a>
+
+| Meaning | Why | Next step | Who acts · consent | Verify | Exit | Retryable |
+|---|---|---|---|---|---|---|
+| An export batch step failed with an unexpected error; the batch backs off, retries from its manifest and parks after 8 attempts. | The server failed; this is not a caller mistake. | Server-side failure, not a caller mistake. Run `gbrain doctor --json` on the brain host; if it repeats, report it to the user. | host_admin | `gbrain doctor --json` | 1 | no |
+
+More: [docs/designs/database-canonical-w5-contract.md](../../docs/designs/database-canonical-w5-contract.md)
+
+### export_filter_driver
+
+<a id="export_filter_driver"></a>
+
+| Meaning | Why | Next step | Who acts · consent | Verify | Exit | Retryable |
+|---|---|---|---|---|---|---|
+| A page root of the source has a Git filter driver (.gitattributes), so the exporter would not write its bytes faithfully; remove the attribute for page paths. | The request itself was wrong or no longer matches the brain; nothing was changed. | Correct the request using the message above, then retry. | agent | `repeat the read that failed` | 1 | no |
+
+More: [docs/designs/database-canonical-w5-contract.md](../../docs/designs/database-canonical-w5-contract.md)
+
 ### export_limit
 
 <a id="export_limit"></a>
@@ -1324,6 +1364,56 @@ More: [docs/guides/move-to-postgres.md#graduated-datastore](../../docs/guides/mo
 | Meaning | Why | Next step | Who acts · consent | Verify | Exit | Retryable |
 |---|---|---|---|---|---|---|
 | This migration is bounded to 5,000 active pages per source; split or use a reviewed bulk export. | The request itself was wrong or no longer matches the brain; nothing was changed. | Correct the request using the message above, then retry. | agent | `repeat the read that failed` | 1 | no |
+
+### export_mode_changed
+
+<a id="export_mode_changed"></a>
+
+| Meaning | Why | Next step | Who acts · consent | Verify | Exit | Retryable |
+|---|---|---|---|---|---|---|
+| The source's mode changed after an export batch committed; the batch is parked until an operator retries it (gbrain sources canonical <id> --export-retry). | The request itself was wrong or no longer matches the brain; nothing was changed. | Correct the request using the message above, then retry. | agent | `repeat the read that failed` | 1 | no |
+
+More: [docs/designs/database-canonical-w5-contract.md](../../docs/designs/database-canonical-w5-contract.md)
+
+### export_push_contended
+
+<a id="export_push_contended"></a>
+
+| Meaning | Why | Next step | Who acts · consent | Verify | Exit | Retryable |
+|---|---|---|---|---|---|---|
+| The remote kept moving through 8 rejected pushes in one claim; the export commit stays local and the next tick resumes from the manifest. | A temporary condition (a lock, a pending write, a rate limit); the same request can succeed later. | Wait briefly, then retry the same request (writes: reuse the same request_id). | agent | `repeat the read that failed` | 1 | yes |
+
+More: [docs/designs/database-canonical-w5-contract.md](../../docs/designs/database-canonical-w5-contract.md)
+
+### export_retry_nothing_parked
+
+<a id="export_retry_nothing_parked"></a>
+
+| Meaning | Why | Next step | Who acts · consent | Verify | Exit | Retryable |
+|---|---|---|---|---|---|---|
+| The source has no parked export batch, so there is nothing to retry. | The request itself was wrong or no longer matches the brain; nothing was changed. | Correct the request using the message above, then retry. | agent | `repeat the read that failed` | 1 | no |
+
+More: [docs/designs/database-canonical-w5-contract.md](../../docs/designs/database-canonical-w5-contract.md)
+
+### export_target_missing
+
+<a id="export_target_missing"></a>
+
+| Meaning | Why | Next step | Who acts · consent | Verify | Exit | Retryable |
+|---|---|---|---|---|---|---|
+| The source has no worktree binding with a checkout on this host, so there is nowhere to export to; bind the source's checkout first (gbrain sources writer status <id>). | The request itself was wrong or no longer matches the brain; nothing was changed. | Correct the request using the message above, then retry. | agent | `repeat the read that failed` | 1 | no |
+
+More: [docs/designs/database-canonical-w5-contract.md](../../docs/designs/database-canonical-w5-contract.md)
+
+### export_worktree_shared
+
+<a id="export_worktree_shared"></a>
+
+| Meaning | Why | Next step | Who acts · consent | Verify | Exit | Retryable |
+|---|---|---|---|---|---|---|
+| Another source shares this source's worktree; this release exports a worktree that holds one source only. Give the source its own checkout. | The request itself was wrong or no longer matches the brain; nothing was changed. | Correct the request using the message above, then retry. | agent | `repeat the read that failed` | 1 | no |
+
+More: [docs/designs/database-canonical-w5-contract.md](../../docs/designs/database-canonical-w5-contract.md)
 
 ### extract_write_lost
 

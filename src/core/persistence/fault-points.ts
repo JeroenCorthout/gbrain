@@ -12,6 +12,7 @@ import type { EffectKind } from './effect-model.ts';
 import type { PublicationHooks } from './coordinator.ts';
 import type { WriteRequest } from './model.ts';
 
+export type ExportFaultStep = 'prepared' | 'built' | 'files_written' | 'index_updated' | 'ref_updated' | 'committed' | 'before_push' | 'pushed' | 'fetched' | 'laned' | 'fast_forwarded';
 export type PublicationBoundary = Parameters<NonNullable<PublicationHooks['boundary']>>[0];
 export type FaultPoint = `publication:${PublicationBoundary}` | `effect:${EffectKind}:mid` | 'effect:embedding:settle'
   // An embedding effect that read its page at its own revision, before it reads the page's text projection (effects.ts `embedPage`).
@@ -28,6 +29,8 @@ export type FaultPoint = `publication:${PublicationBoundary}` | `effect:${Effect
   | 'persistence:recovery_interruption_charged'
   // Flip lane C: before a group's memoized shared preparation read (group-publish.ts `preparationReads`) is sent; a hook that throws a 57014 models the database cancelling it.
   | 'group:shared_read'
+  // Database-canonical wave 5a: the exporter's steps (exporter.ts); a hook that throws models a crash at that point and recovery walks forward from the manifest.
+  | `export:${ExportFaultStep}`
   // Before each claim attempt of the consumer, a FIFO claim or a lane head's: a stalling hook keeps this process from starting
   // another request or lane group meanwhile, while the requests it already holds run on.
   | 'consumer:claiming'

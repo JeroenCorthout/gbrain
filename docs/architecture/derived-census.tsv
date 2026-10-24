@@ -16,6 +16,7 @@ src/core/ops/extraction.ts	1	pending:inventory	derived or mixed writer not yet o
 src/core/page-body/segment-rewrite.ts	1	pending:inventory	derived or mixed writer not yet on the generation primitive; reviewed in a later GBRA-161 PR
 src/core/persistence/connector-sync.ts	1	canonical	connector sync applies an upstream deletion of a connected item
 src/core/persistence/derived-retirement-hold.ts	4	primitive	retireDerivedPagesInTransaction: versions, soft-deletes and stamps retired_by; the helper every generation adapter retires through
+src/core/persistence/import-lane-live.ts	1	canonical	the live import lane (database-canonical wave 5a) soft-deletes a page whose file a commit removed, under the page row lock at the ledger revision
 src/core/persistence/page-prepare.ts	2	canonical	coordinated delete_page preparation (an operator or agent deletion)
 src/core/persistence/sync-image.ts	1	canonical	sync image publication applies a committed file deletion
 src/core/persistence/sync-prepare.ts	1	canonical	managed sync prepares the soft delete of a page whose file was removed

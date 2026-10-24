@@ -212,6 +212,9 @@ export class PersistenceConsumer implements PersistenceConsumerLike {
   /** GBRA-133: the dead owners the last `deadOwnerClaims` scan found, handed to every effect pass until the next scan. */
   private deadOwnerKeys: string[] = [];
   private projectionWorker: Promise<unknown> | undefined;
+  /** Database-canonical wave 5a: the resident's exporter pass (export-runner.ts), at most one at a time and once a second. */
+  private exportWorker: Promise<unknown> | undefined;
+  private nextExportAt = 0;
   private effectsWorker: Promise<void> | undefined;
   private draining: { since: number; settled: number; ran: number; noticedAt: number } | undefined;
   private settleCursor: NoopSettleCursor | undefined;
@@ -289,7 +292,7 @@ export class PersistenceConsumer implements PersistenceConsumerLike {
     // #6317: one loud line when every round-trip of this consumer goes through a transaction-mode pooler with no direct route.
     const exposure = poolerExposureLine(consumerConnectionRoute(this.engine));
     if (exposure && !this.routeLogged && !this.opts.onError) { this.routeLogged = true; process.stderr.write(`${exposure}\n`); }
-    if (this.opts.requestsOnly) this.projectionWorker = this.effectsWorker = this.topologyWorker = this.maintenanceWorker = PARKED_WORKER;
+    if (this.opts.requestsOnly) this.projectionWorker = this.effectsWorker = this.topologyWorker = this.maintenanceWorker = this.exportWorker = PARKED_WORKER;
     this.schedule(0);
   }
   /**
@@ -384,6 +387,15 @@ export class PersistenceConsumer implements PersistenceConsumerLike {
     } finally {
       clearTimeout(timer);
     }
+    // Wave 5a: on PGLite (no resident can hold the datastore) one bounded, best-effort export attempt after the reply.
+    if (this.engine.kind === 'pglite') await import('./export-runner.ts').then(({ runOneShotExport }) => runOneShotExport(this.engine, this.hostId)).catch(() => undefined);
+  }
+  /** Wave 5a: a resident (never a one-shot command) runs the exporter beside its other workers; it gates itself on the brain flag. */
+  private startExportWorker(): void {
+    if (this.opts.oneShot || this.housekeepingOnly || this.exportWorker || Date.now() < this.nextExportAt) return;
+    this.nextExportAt = Date.now() + 1000;
+    this.exportWorker = import('./export-runner.ts').then(({ runExportPass }) => runExportPass(this.engine, this.hostId, { signal: this.abort.signal }))
+      .catch(error => this.report(error)).finally(() => { this.exportWorker = undefined; });
   }
   private backoff(): number {
     this.idleDelayMs = Math.min(Math.max(this.idleDelayMs, this.pollMs) * 2, this.idleMaxMs);
@@ -587,6 +599,7 @@ export class PersistenceConsumer implements PersistenceConsumerLike {
   }
   private async doTick(afterProgress: boolean): Promise<void> {
     if (this.stopping) return;
+    this.startExportWorker();
     if (!this.housekeepingOnly) this.housekeepingTurn = false;
     const requested = this.fullTickRequested;
     this.fullTickRequested = false;
@@ -1258,6 +1271,7 @@ export class PersistenceConsumer implements PersistenceConsumerLike {
     }
     while (this.outlived.size) await Promise.all([...this.outlived]);
     await this.projectionWorker;
+    await this.exportWorker;
     await this.effectsWorker;
     await this.topologyWorker;
     await this.maintenanceWorker;

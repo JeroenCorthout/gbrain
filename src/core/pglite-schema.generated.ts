@@ -2944,6 +2944,106 @@ DO \$rls\$ BEGIN
 END \$rls\$;
 CREATE INDEX IF NOT EXISTS import_lane_passes_source_idx ON import_lane_passes(source_id, finished_at);
 
+ALTER TABLE database_canonical_sources ADD COLUMN IF NOT EXISTS mode TEXT NOT NULL DEFAULT 'files' CHECK (mode IN ('files','database'));
+ALTER TABLE database_canonical_sources ADD COLUMN IF NOT EXISTS mode_epoch BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE database_canonical_sources ADD COLUMN IF NOT EXISTS mode_changed_at TIMESTAMPTZ;
+ALTER TABLE database_canonical_sources ADD COLUMN IF NOT EXISTS eligibility_generation BIGINT NOT NULL DEFAULT 0;
+CREATE TABLE IF NOT EXISTS canonical_export_sources (
+  source_id            TEXT PRIMARY KEY REFERENCES sources(id) ON DELETE CASCADE,
+  source_incarnation   UUID NOT NULL,
+  export_commits       BOOLEAN NOT NULL DEFAULT false,
+  export_epoch         BIGINT NOT NULL DEFAULT 0,
+  export_changed_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  committed_commit     TEXT,
+  committed_at         TIMESTAMPTZ,
+  pushed_commit        TEXT,
+  pushed_at            TIMESTAMPTZ,
+  remote_tip           TEXT,
+  remote_tip_seen_at   TIMESTAMPTZ,
+  laned_through        TEXT,
+  import_pending_since TIMESTAMPTZ,
+  checkout_state       TEXT NOT NULL DEFAULT 'current' CHECK (checkout_state IN ('current','lagging','unbound')),
+  checkout_reason      TEXT,
+  oneshot_outcome      TEXT CHECK (oneshot_outcome IN ('exported','skipped_no_checkout','skipped_no_remote','skipped_lock_busy','skipped_deadline','skipped_not_owner','skipped_failed')),
+  oneshot_at           TIMESTAMPTZ,
+  last_error_code      TEXT,
+  last_error_at        TIMESTAMPTZ,
+  created_at           TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+DO \$rls\$ BEGIN
+  IF EXISTS (SELECT 1 FROM pg_roles r WHERE pg_has_role(current_user, r.oid, 'USAGE') AND (r.rolbypassrls OR r.rolsuper)) THEN
+    ALTER TABLE canonical_export_sources ENABLE ROW LEVEL SECURITY;
+  END IF;
+END \$rls\$;
+CREATE TABLE IF NOT EXISTS export_batches (
+  id                     UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  source_id              TEXT NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
+  source_incarnation     UUID NOT NULL,
+  mode_epoch             BIGINT NOT NULL,
+  export_epoch           BIGINT NOT NULL,
+  eligibility_generation BIGINT NOT NULL,
+  target                 TEXT NOT NULL DEFAULT 'worktree' CHECK (target IN ('worktree','bare')),
+  worktree_id            UUID,
+  topology_generation    BIGINT,
+  owner_epoch            BIGINT,
+  host_id                UUID,
+  state                  TEXT NOT NULL DEFAULT 'prepared' CHECK (state IN ('prepared','built','committed','pushed','completed','abandoned')),
+  claim_token            UUID,
+  claim_owner            JSONB,
+  claim_expires_at       TIMESTAMPTZ,
+  attempts               INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+  next_attempt_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+  parked_at              TIMESTAMPTZ,
+  parent_commit          TEXT,
+  tree_oid               TEXT,
+  commit_sha             TEXT,
+  pushed_commit          TEXT,
+  remote_tip             TEXT,
+  push_attempts          INTEGER NOT NULL DEFAULT 0 CHECK (push_attempts >= 0),
+  oldest_enqueued_at     TIMESTAMPTZ,
+  renderer_fp            TEXT,
+  error_code             TEXT,
+  detail                 JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at             TIMESTAMPTZ NOT NULL DEFAULT now(),
+  built_at               TIMESTAMPTZ,
+  committed_at           TIMESTAMPTZ,
+  pushed_at              TIMESTAMPTZ,
+  completed_at           TIMESTAMPTZ,
+  updated_at             TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CHECK ((parked_at IS NULL) OR error_code IS NOT NULL)
+);
+DO \$rls\$ BEGIN
+  IF EXISTS (SELECT 1 FROM pg_roles r WHERE pg_has_role(current_user, r.oid, 'USAGE') AND (r.rolbypassrls OR r.rolsuper)) THEN
+    ALTER TABLE export_batches ENABLE ROW LEVEL SECURITY;
+  END IF;
+END \$rls\$;
+CREATE UNIQUE INDEX IF NOT EXISTS export_batches_unfinished_idx ON export_batches(source_id) WHERE state IN ('prepared','built','committed','pushed');
+CREATE INDEX IF NOT EXISTS export_batches_source_idx ON export_batches(source_id, created_at);
+CREATE TABLE IF NOT EXISTS export_batch_entries (
+  batch_id          UUID NOT NULL REFERENCES export_batches(id) ON DELETE CASCADE,
+  path              TEXT NOT NULL,
+  path_folded       TEXT NOT NULL,
+  page_id           INTEGER,
+  lifetime          INTEGER,
+  op                TEXT NOT NULL CHECK (op IN ('write','remove','adopt')),
+  revision          UUID,
+  prior_disk_sha256 TEXT,
+  prior_blob_oid    TEXT,
+  disk_sha256       TEXT,
+  blob_oid          TEXT,
+  outbox_seq        BIGINT,
+  first_enqueued_at TIMESTAMPTZ,
+  state             TEXT NOT NULL DEFAULT 'pending' CHECK (state IN ('pending','committed','skipped')),
+  skip_reason       TEXT CHECK (skip_reason IN ('outside_edit','parked','ineligible','remote_imported','remote_conflict','filter_driver','superseded')),
+  PRIMARY KEY (batch_id, path_folded),
+  CHECK ((state = 'skipped') = (skip_reason IS NOT NULL))
+);
+DO \$rls\$ BEGIN
+  IF EXISTS (SELECT 1 FROM pg_roles r WHERE pg_has_role(current_user, r.oid, 'USAGE') AND (r.rolbypassrls OR r.rolsuper)) THEN
+    ALTER TABLE export_batch_entries ENABLE ROW LEVEL SECURITY;
+  END IF;
+END \$rls\$;
+
 `;
 
 export function getPGLiteSchema(

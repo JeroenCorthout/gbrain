@@ -19,6 +19,10 @@
       "budget_reservations.budget_reservations_pkey": "p PRIMARY KEY (reservation_id)",
       "calibration_profiles.calibration_profiles_pkey": "p PRIMARY KEY (id)",
       "calibration_profiles.calibration_profiles_source_id_fkey": "f FOREIGN KEY (source_id) REFERENCES sources(id) ON DELETE CASCADE",
+      "canonical_export_sources.canonical_export_sources_checkout_state_check": "c CHECK ((checkout_state = ANY (ARRAY['current'::text, 'lagging'::text, 'unbound'::text])))",
+      "canonical_export_sources.canonical_export_sources_oneshot_outcome_check": "c CHECK ((oneshot_outcome = ANY (ARRAY['exported'::text, 'skipped_no_checkout'::text, 'skipped_no_remote'::text, 'skipped_lock_busy'::text, 'skipped_deadline'::text, 'skipped_not_owner'::text, 'skipped_failed'::text])))",
+      "canonical_export_sources.canonical_export_sources_pkey": "p PRIMARY KEY (source_id)",
+      "canonical_export_sources.canonical_export_sources_source_id_fkey": "f FOREIGN KEY (source_id) REFERENCES sources(id) ON DELETE CASCADE",
       "chat_usage_log.chat_usage_log_pkey": "p PRIMARY KEY (id)",
       "chronicle_judge_reservations.chronicle_judge_reservations_pkey": "p PRIMARY KEY (id)",
       "chronicle_page_state.chronicle_page_state_attempts_check": "c CHECK ((attempts >= 0))",
@@ -51,6 +55,7 @@
       "database_canonical_brain.database_canonical_brain_active_sources_check": "c CHECK ((active_sources >= 0))",
       "database_canonical_brain.database_canonical_brain_pkey": "p PRIMARY KEY (singleton)",
       "database_canonical_brain.database_canonical_brain_singleton_check": "c CHECK ((singleton = 1))",
+      "database_canonical_sources.database_canonical_sources_mode_check": "c CHECK ((mode = ANY (ARRAY['files'::text, 'database'::text])))",
       "database_canonical_sources.database_canonical_sources_pkey": "p PRIMARY KEY (source_id)",
       "database_canonical_sources.database_canonical_sources_source_id_fkey": "f FOREIGN KEY (source_id) REFERENCES sources(id) ON DELETE CASCADE",
       "decide_calibrations.decide_calibrations_pkey": "p PRIMARY KEY (id)",
@@ -100,6 +105,19 @@
       "eval_takes_quality_runs.eval_takes_quality_runs_pkey": "p PRIMARY KEY (id)",
       "eval_takes_quality_runs.eval_takes_quality_runs_receipt_sha8_corpus_receipt_sha8_pr_key": "u UNIQUE (receipt_sha8_corpus, receipt_sha8_prompt, receipt_sha8_models, receipt_sha8_rubric)",
       "eval_takes_quality_runs.eval_takes_quality_runs_verdict_check": "c CHECK ((verdict = ANY (ARRAY['pass'::text, 'fail'::text, 'inconclusive'::text])))",
+      "export_batch_entries.export_batch_entries_batch_id_fkey": "f FOREIGN KEY (batch_id) REFERENCES export_batches(id) ON DELETE CASCADE",
+      "export_batch_entries.export_batch_entries_check": "c CHECK (((state = 'skipped'::text) = (skip_reason IS NOT NULL)))",
+      "export_batch_entries.export_batch_entries_op_check": "c CHECK ((op = ANY (ARRAY['write'::text, 'remove'::text, 'adopt'::text])))",
+      "export_batch_entries.export_batch_entries_pkey": "p PRIMARY KEY (batch_id, path_folded)",
+      "export_batch_entries.export_batch_entries_skip_reason_check": "c CHECK ((skip_reason = ANY (ARRAY['outside_edit'::text, 'parked'::text, 'ineligible'::text, 'remote_imported'::text, 'remote_conflict'::text, 'filter_driver'::text, 'superseded'::text])))",
+      "export_batch_entries.export_batch_entries_state_check": "c CHECK ((state = ANY (ARRAY['pending'::text, 'committed'::text, 'skipped'::text])))",
+      "export_batches.export_batches_attempts_check": "c CHECK ((attempts >= 0))",
+      "export_batches.export_batches_check": "c CHECK (((parked_at IS NULL) OR (error_code IS NOT NULL)))",
+      "export_batches.export_batches_pkey": "p PRIMARY KEY (id)",
+      "export_batches.export_batches_push_attempts_check": "c CHECK ((push_attempts >= 0))",
+      "export_batches.export_batches_source_id_fkey": "f FOREIGN KEY (source_id) REFERENCES sources(id) ON DELETE CASCADE",
+      "export_batches.export_batches_state_check": "c CHECK ((state = ANY (ARRAY['prepared'::text, 'built'::text, 'committed'::text, 'pushed'::text, 'completed'::text, 'abandoned'::text])))",
+      "export_batches.export_batches_target_check": "c CHECK ((target = ANY (ARRAY['worktree'::text, 'bare'::text])))",
       "export_ledger.export_ledger_lifetime_check": "c CHECK ((lifetime >= 1))",
       "export_ledger.export_ledger_pkey": "p PRIMARY KEY (id)",
       "export_ledger.export_ledger_seeded_from_check": "c CHECK ((seeded_from = ANY (ARRAY['sync_provenance'::text, 'shadow_adopt'::text, 'export'::text, 'import_lane'::text, 'adoption'::text])))",
@@ -617,6 +635,9 @@
       "calibration_profiles": [
         "<current_role> -> <current_role> WITH GRANT OPTION: DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE"
       ],
+      "canonical_export_sources": [
+        "<current_role> -> <current_role> WITH GRANT OPTION: DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE"
+      ],
       "chat_usage_log": [
         "<current_role> -> <current_role> WITH GRANT OPTION: DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE"
       ],
@@ -723,6 +744,12 @@
         "<current_role> -> <current_role> WITH GRANT OPTION: DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE"
       ],
       "eval_takes_quality_runs": [
+        "<current_role> -> <current_role> WITH GRANT OPTION: DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE"
+      ],
+      "export_batch_entries": [
+        "<current_role> -> <current_role> WITH GRANT OPTION: DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE"
+      ],
+      "export_batches": [
         "<current_role> -> <current_role> WITH GRANT OPTION: DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE"
       ],
       "export_ledger": [
@@ -1114,6 +1141,7 @@
       "calibration_profiles_holder_recent_idx": "CREATE INDEX calibration_profiles_holder_recent_idx ON public.calibration_profiles USING btree (source_id, holder, generated_at DESC)",
       "calibration_profiles_pkey": "CREATE UNIQUE INDEX calibration_profiles_pkey ON public.calibration_profiles USING btree (id)",
       "calibration_profiles_published_idx": "CREATE INDEX calibration_profiles_published_idx ON public.calibration_profiles USING btree (source_id, published, holder) WHERE (published = true)",
+      "canonical_export_sources_pkey": "CREATE UNIQUE INDEX canonical_export_sources_pkey ON public.canonical_export_sources USING btree (source_id)",
       "chat_usage_log_pkey": "CREATE UNIQUE INDEX chat_usage_log_pkey ON public.chat_usage_log USING btree (id)",
       "chronicle_judge_reservations_at_idx": "CREATE INDEX chronicle_judge_reservations_at_idx ON public.chronicle_judge_reservations USING btree (reserved_at)",
       "chronicle_judge_reservations_pkey": "CREATE UNIQUE INDEX chronicle_judge_reservations_pkey ON public.chronicle_judge_reservations USING btree (id)",
@@ -1189,6 +1217,10 @@
       "eval_takes_quality_runs_pkey": "CREATE UNIQUE INDEX eval_takes_quality_runs_pkey ON public.eval_takes_quality_runs USING btree (id)",
       "eval_takes_quality_runs_receipt_sha8_corpus_receipt_sha8_pr_key": "CREATE UNIQUE INDEX eval_takes_quality_runs_receipt_sha8_corpus_receipt_sha8_pr_key ON public.eval_takes_quality_runs USING btree (receipt_sha8_corpus, receipt_sha8_prompt, receipt_sha8_models, receipt_sha8_rubric)",
       "eval_takes_quality_runs_trend_idx": "CREATE INDEX eval_takes_quality_runs_trend_idx ON public.eval_takes_quality_runs USING btree (rubric_version, created_at DESC)",
+      "export_batch_entries_pkey": "CREATE UNIQUE INDEX export_batch_entries_pkey ON public.export_batch_entries USING btree (batch_id, path_folded)",
+      "export_batches_pkey": "CREATE UNIQUE INDEX export_batches_pkey ON public.export_batches USING btree (id)",
+      "export_batches_source_idx": "CREATE INDEX export_batches_source_idx ON public.export_batches USING btree (source_id, created_at)",
+      "export_batches_unfinished_idx": "CREATE UNIQUE INDEX export_batches_unfinished_idx ON public.export_batches USING btree (source_id) WHERE (state = ANY (ARRAY['prepared'::text, 'built'::text, 'committed'::text, 'pushed'::text]))",
       "export_ledger_lifetime_idx": "CREATE UNIQUE INDEX export_ledger_lifetime_idx ON public.export_ledger USING btree (source_id, page_id, lifetime)",
       "export_ledger_live_page_idx": "CREATE UNIQUE INDEX export_ledger_live_page_idx ON public.export_ledger USING btree (source_id, page_id) WHERE (retired_at IS NULL)",
       "export_ledger_live_path_idx": "CREATE UNIQUE INDEX export_ledger_live_path_idx ON public.export_ledger USING btree (source_id, path_folded) WHERE (retired_at IS NULL)",
@@ -1806,6 +1838,31 @@
         ],
         "flags": "relkind=r rls=true force_rls=false"
       },
+      "canonical_export_sources": {
+        "columns": [
+          "1 source_id text/text NOT NULL",
+          "2 source_incarnation uuid/uuid NOT NULL",
+          "3 export_commits boolean/bool NOT NULL DEFAULT false",
+          "4 export_epoch bigint/int8 NOT NULL DEFAULT 0",
+          "5 export_changed_at timestamp with time zone/timestamptz NOT NULL DEFAULT now()",
+          "6 committed_commit text/text NULL",
+          "7 committed_at timestamp with time zone/timestamptz NULL",
+          "8 pushed_commit text/text NULL",
+          "9 pushed_at timestamp with time zone/timestamptz NULL",
+          "10 remote_tip text/text NULL",
+          "11 remote_tip_seen_at timestamp with time zone/timestamptz NULL",
+          "12 laned_through text/text NULL",
+          "13 import_pending_since timestamp with time zone/timestamptz NULL",
+          "14 checkout_state text/text NOT NULL DEFAULT 'current'::text",
+          "15 checkout_reason text/text NULL",
+          "16 oneshot_outcome text/text NULL",
+          "17 oneshot_at timestamp with time zone/timestamptz NULL",
+          "18 last_error_code text/text NULL",
+          "19 last_error_at timestamp with time zone/timestamptz NULL",
+          "20 created_at timestamp with time zone/timestamptz NOT NULL DEFAULT now()"
+        ],
+        "flags": "relkind=r rls=true force_rls=false"
+      },
       "chat_usage_log": {
         "columns": [
           "1 id bigint/int8 NOT NULL DEFAULT nextval('chat_usage_log_id_seq'::regclass)",
@@ -2003,7 +2060,11 @@
           "3 shadow boolean/bool NOT NULL DEFAULT false",
           "4 shadow_epoch bigint/int8 NOT NULL DEFAULT 0",
           "5 shadow_changed_at timestamp with time zone/timestamptz NOT NULL DEFAULT now()",
-          "6 created_at timestamp with time zone/timestamptz NOT NULL DEFAULT now()"
+          "6 created_at timestamp with time zone/timestamptz NOT NULL DEFAULT now()",
+          "7 mode text/text NOT NULL DEFAULT 'files'::text",
+          "8 mode_epoch bigint/int8 NOT NULL DEFAULT 0",
+          "9 mode_changed_at timestamp with time zone/timestamptz NULL",
+          "10 eligibility_generation bigint/int8 NOT NULL DEFAULT 0"
         ],
         "flags": "relkind=r rls=true force_rls=false"
       },
@@ -2394,6 +2455,65 @@
           "11 receipt_json jsonb/jsonb NOT NULL",
           "12 receipt_disk_path text/text NULL",
           "13 created_at timestamp with time zone/timestamptz NOT NULL DEFAULT now()"
+        ],
+        "flags": "relkind=r rls=true force_rls=false"
+      },
+      "export_batch_entries": {
+        "columns": [
+          "1 batch_id uuid/uuid NOT NULL",
+          "2 path text/text NOT NULL",
+          "3 path_folded text/text NOT NULL",
+          "4 page_id integer/int4 NULL",
+          "5 lifetime integer/int4 NULL",
+          "6 op text/text NOT NULL",
+          "7 revision uuid/uuid NULL",
+          "8 prior_disk_sha256 text/text NULL",
+          "9 prior_blob_oid text/text NULL",
+          "10 disk_sha256 text/text NULL",
+          "11 blob_oid text/text NULL",
+          "12 outbox_seq bigint/int8 NULL",
+          "13 first_enqueued_at timestamp with time zone/timestamptz NULL",
+          "14 state text/text NOT NULL DEFAULT 'pending'::text",
+          "15 skip_reason text/text NULL"
+        ],
+        "flags": "relkind=r rls=true force_rls=false"
+      },
+      "export_batches": {
+        "columns": [
+          "1 id uuid/uuid NOT NULL DEFAULT gen_random_uuid()",
+          "2 source_id text/text NOT NULL",
+          "3 source_incarnation uuid/uuid NOT NULL",
+          "4 mode_epoch bigint/int8 NOT NULL",
+          "5 export_epoch bigint/int8 NOT NULL",
+          "6 eligibility_generation bigint/int8 NOT NULL",
+          "7 target text/text NOT NULL DEFAULT 'worktree'::text",
+          "8 worktree_id uuid/uuid NULL",
+          "9 topology_generation bigint/int8 NULL",
+          "10 owner_epoch bigint/int8 NULL",
+          "11 host_id uuid/uuid NULL",
+          "12 state text/text NOT NULL DEFAULT 'prepared'::text",
+          "13 claim_token uuid/uuid NULL",
+          "14 claim_owner jsonb/jsonb NULL",
+          "15 claim_expires_at timestamp with time zone/timestamptz NULL",
+          "16 attempts integer/int4 NOT NULL DEFAULT 0",
+          "17 next_attempt_at timestamp with time zone/timestamptz NOT NULL DEFAULT now()",
+          "18 parked_at timestamp with time zone/timestamptz NULL",
+          "19 parent_commit text/text NULL",
+          "20 tree_oid text/text NULL",
+          "21 commit_sha text/text NULL",
+          "22 pushed_commit text/text NULL",
+          "23 remote_tip text/text NULL",
+          "24 push_attempts integer/int4 NOT NULL DEFAULT 0",
+          "25 oldest_enqueued_at timestamp with time zone/timestamptz NULL",
+          "26 renderer_fp text/text NULL",
+          "27 error_code text/text NULL",
+          "28 detail jsonb/jsonb NOT NULL DEFAULT '{}'::jsonb",
+          "29 created_at timestamp with time zone/timestamptz NOT NULL DEFAULT now()",
+          "30 built_at timestamp with time zone/timestamptz NULL",
+          "31 committed_at timestamp with time zone/timestamptz NULL",
+          "32 pushed_at timestamp with time zone/timestamptz NULL",
+          "33 completed_at timestamp with time zone/timestamptz NULL",
+          "34 updated_at timestamp with time zone/timestamptz NOT NULL DEFAULT now()"
         ],
         "flags": "relkind=r rls=true force_rls=false"
       },

@@ -31,6 +31,7 @@ import { dirname, join, resolve } from 'node:path';
 import type { BrainEngine } from '../engine.ts';
 import { configDir } from '../config.ts';
 import { opError, OperationError } from '../ops/contract.ts';
+import { unfinishedExportBatches } from './canonical-export-store.ts';
 import { readFix } from '../ops/op-fix.ts';
 import { acquireWorktree, getWorktreeBinding, readPersistenceBrain, type PersistenceBrainRow } from './ownership.ts';
 import { existingLocalHostId } from './identity.ts';
@@ -50,7 +51,7 @@ import { EMBEDDING_ZERO_NORM } from '../ai/embedding-guard.ts';
 export const DEACTIVATE_DOCS = 'docs/architecture/topologies.md#deactivate-runbook';
 
 export interface DeactivationBlocker {
-  kind: 'writer_admin_lock' | 'request' | 'topology_recovery' | 'effect' | 'lease' | 'connector_holds' | 'physical_root';
+  kind: 'writer_admin_lock' | 'request' | 'topology_recovery' | 'effect' | 'lease' | 'connector_holds' | 'physical_root' | 'export_batch';
   id: string;
   source_id?: string;
   detail: string;
@@ -127,6 +128,9 @@ export async function deactivationBlockers(engine: BrainEngine): Promise<Deactiv
           ? `wait for the owner to drain it, then rerun deactivate; one still queued after an hour is re-queued by gbrain repair embedding-effects --source ${e.source_id}`
           : 'wait for the owner to drain it, then rerun deactivate' });
   }
+  // Database-canonical wave 5a: an export batch that has not completed still owes a commit or a push.
+  for (const b of await unfinishedExportBatches(engine)) blockers.push({ kind: 'export_batch', id: b.id, source_id: b.source_id, detail: `export batch ${b.state} for ${b.source_id}`,
+    exit: `let the owner of ${b.source_id} finish it (gbrain sync status --source ${b.source_id} --json; a parked batch: gbrain sources canonical ${b.source_id} --export-retry --dry-run), then rerun deactivate` });
   // Managed connector holds live in the managed checkpoint, which classic mode does not read. Deactivation copies
   // them into each source's classic state file; only a source whose holds have nowhere to go blocks it.
   for (const carry of await planHoldCarry(engine, existingLocalHostId())) {

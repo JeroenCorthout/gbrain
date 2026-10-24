@@ -49,6 +49,7 @@ import { WRITE_GATE_SCHEMA_SQL } from '../src/core/write-gate-schema.ts';
 import { BELIEF_LEDGER_SCHEMA_SQL } from '../src/core/belief/schema.ts';
 import { DATABASE_CANONICAL_SCHEMA_SQL } from '../src/core/persistence/canonical-schema.ts';
 import { IMPORT_CONFLICTS_SCHEMA_SQL } from '../src/core/persistence/import-conflicts-schema.ts';
+import { DATABASE_CANONICAL_EXPORT_SCHEMA_SQL } from '../src/core/persistence/canonical-export-schema.ts';
 
 const REPO = resolve(import.meta.dir, '..');
 export const SCHEMA_SQL_PATH = 'src/schema.sql';
@@ -119,6 +120,7 @@ export const FRAGMENTS: readonly Fragment[] = [
   { source: 'src/core/belief/schema.ts', expr: 'BELIEF_LEDGER_SCHEMA_SQL', postgres: BELIEF_LEDGER_SCHEMA_SQL, pglite: BELIEF_LEDGER_SCHEMA_SQL },
   { source: 'src/core/persistence/canonical-schema.ts', expr: 'DATABASE_CANONICAL_SCHEMA_SQL', postgres: DATABASE_CANONICAL_SCHEMA_SQL, pglite: DATABASE_CANONICAL_SCHEMA_SQL },
   { source: 'src/core/persistence/import-conflicts-schema.ts', expr: 'IMPORT_CONFLICTS_SCHEMA_SQL', postgres: IMPORT_CONFLICTS_SCHEMA_SQL, pglite: IMPORT_CONFLICTS_SCHEMA_SQL },
+  { source: 'src/core/persistence/canonical-export-schema.ts', expr: 'DATABASE_CANONICAL_EXPORT_SCHEMA_SQL', postgres: DATABASE_CANONICAL_EXPORT_SCHEMA_SQL, pglite: DATABASE_CANONICAL_EXPORT_SCHEMA_SQL },
 ];
 
 const fragmentLabel = (f: Fragment) => `${f.source} (${f.expr})`;

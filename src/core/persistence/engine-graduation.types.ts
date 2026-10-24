@@ -272,7 +272,7 @@ export interface Tombstone {
 export interface GraduationBlocker {
   kind: 'request' | 'topology_recovery' | 'writer_admin_lock' | 'effect_recovery' | 'foreign_host_binding'
     | 'writer_held' | 'env_override' | 'embedding_dimension' | 'unclassified_relation' | 'target_not_empty'
-    | 'target_unsupported' | 'unsupported_platform' | 'source_doctor' | 'dangling_reference';
+    | 'target_unsupported' | 'unsupported_platform' | 'source_doctor' | 'dangling_reference' | 'export_batch';
   id: string;
   detail: string;
   /** Exact command or MCP call that clears it, with real values filled in. */

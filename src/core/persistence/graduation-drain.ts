@@ -12,6 +12,7 @@ import { PersistenceConsumer } from './consumer.ts';
 import { disposePersistenceConsumer, preparePersistedMutation } from './service.ts';
 import { readWriterAdminLock } from './admin-lock.ts';
 import type { GraduationBlocker } from './engine-graduation.types.ts';
+import { unfinishedExportBatches } from './canonical-export-store.ts';
 
 const PENDING_REQUESTS_SQL = `SELECT r.request_id::text AS request_id, r.source_id, r.operation, r.state,
     r.recovery IS NOT NULL AS recovering, r.blocked_reason, w.owner_host_id::text AS owner_host_id
@@ -74,6 +75,7 @@ export async function graduationBlockers(source: BrainEngine, hostId: string): P
       argv: e.kind === 'embedding' ? ['gbrain', 'repair', 'embedding-effects', '--source', sourceId]
         : stuck ? stuckRecoveryPreview(sourceId, e.request_id) : ['gbrain', 'sources', 'writer', 'status', sourceId, '--json'], needsUser: stuck });
   }
+  for (const b of await unfinishedExportBatches(source)) blockers.push({ kind: 'export_batch', id: b.id, detail: `export batch ${b.state} for source ${b.source_id}`, argv: ['gbrain', 'sync', 'status', '--source', b.source_id, '--json'], needsUser: false });
   const bindings = await source.executeRaw<{ worktree_id: string; host_id: string; source_id: string | null }>(
     `SELECT b.worktree_id::text AS worktree_id, b.host_id::text AS host_id,
        (SELECT s.source_id FROM persistence_source_bindings s WHERE s.worktree_id = b.worktree_id ORDER BY s.source_id LIMIT 1) AS source_id
