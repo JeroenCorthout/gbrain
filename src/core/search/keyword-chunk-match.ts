@@ -27,7 +27,7 @@
  * told (SearchOpts.onKeywordIncomplete), and hybrid reports
  * `keyword_candidates_incomplete`, because the rows come from a sample.
  */
-export const KEYWORD_RANK_CANDIDATES = 50_000;
+export const KEYWORD_RANK_CANDIDATES = Number(process.env.GBRAIN_BENCH_KEYWORD_RANK_CANDIDATES) || 50_000;
 
 /**
  * Transaction-local settings for the keyword statement. At the 4 MB

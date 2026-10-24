@@ -21,7 +21,7 @@
 import { orFallbackTokens } from './sql-ranking.ts';
 
 /** Estimated chunk matches the tracked terms of an OR retry may add: about 0.2 s of ts_rank on the 2M-chunk bench. */
-export const OR_FALLBACK_MATCH_CAP = 20_000;
+export const OR_FALLBACK_MATCH_CAP = Number(process.env.GBRAIN_BENCH_OR_FALLBACK_MATCH_CAP) || 20_000;
 
 /**
  * A token's statistics: `lexemes` its lexeme count (0 for a stopword),
