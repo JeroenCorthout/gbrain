@@ -10,6 +10,22 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.418.0] - 2026-10-24
+
+**The drain lease that keeps two `gbrain sync` drainers off one source now has a TLA+ model that CI checks on every change to it, and mutants that tie each guard the model relies on to the code line that implements it and the test that pins it.** No product code changes.
+
+### What changed
+
+| Situation | Before | Now |
+|---|---|---|
+| A change to the drain lease's fence, takeover, renewal or release | caught only when a hand-written test happened to cover that interleaving | TLC checks every interleaving of two drainers (fenced transactions, the pass stamp, renewal, takeover, release, sleep, crash) at small bounds, and fails the PR on a lost lease or two drainers with fenced work open |
+| A guard loses the test that pins it | nothing noticed | its code mutant runs that test with the guard removed and fails the PR when the test still passes |
+
+### What to watch for after you upgrade
+
+- Nothing changes at runtime.
+- Contributors: `bun run test:tla` runs TLC on every config and every mutant locally (Java 11 or later; the TLC jar is downloaded and checked against its pinned sha256). `spec/tla/README.md` explains each failure code.
+
 ## [0.60.417.0] - 2026-10-24
 
 **A killed gbrain process no longer leaves its Git, embedding or facts effects stuck for two minutes, legacy pages stop being held `file_drift` each time their files are committed, and a pending-import refusal no longer tells agents to start a competing sync.**
