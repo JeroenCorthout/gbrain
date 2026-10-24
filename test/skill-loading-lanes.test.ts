@@ -13,12 +13,13 @@
  * --no-instructions, or doctor warns on (or hides) a stale index.
  */
 import { afterAll, describe, expect, test } from 'bun:test';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { withEnv } from './helpers/with-env.ts';
 import { BRAIN_FIRST_END, brainFirstTargetAt } from '../src/core/setup/brain-first.ts';
-import { installerSkillsBlock, loaderAllowRule, readSkillLoadingLedger, SKILLS_BLOCK_BEGIN, SKILLS_BLOCK_END } from '../src/core/setup/skills-block.ts';
+import { installerSkillsBlock, loaderAllowRule, readSkillLoadingLedger, skillsIndexViews, SKILLS_BLOCK_BEGIN, SKILLS_BLOCK_END } from '../src/core/setup/skills-block.ts';
+import { removeHarnessBrainFirst, writeHarnessBrainFirst } from '../src/core/bootstrap/harness-brain-first.ts';
 import { installHarnessConnection } from '../src/core/harness/install.ts';
 import { removeHarnessSkillsIndex, writeHarnessSkillsIndex } from '../src/core/bootstrap/harness-skills-index.ts';
 import { withSkillsIndex } from '../src/commands/doctor/checks/harness-wiring.ts';
@@ -115,20 +116,41 @@ describe('bootstrap harness', () => {
       const paths = { claudeMemoryPath: join(b.home, '.claude', 'CLAUDE.md'), codexAgentsPath: join(b.home, '.codex', 'AGENTS.md'),
         codexAgentsOverride: join(b.home, '.codex', 'AGENTS.override.md'), opencodeAgentsPath: join(b.home, '.config', 'opencode', 'AGENTS.md') };
       const log: string[] = [];
-      const off = writeHarnessSkillsIndex({ hosts: ['claude-code'], launcher: LAUNCHER, optOut: false, paths, log: (l) => log.push(l) });
+      const settingsPath = join(b.home, '.claude', 'settings.json');
+      const off = writeHarnessSkillsIndex({ hosts: ['claude-code'], launcher: LAUNCHER, optOut: false, paths, settingsPath, log: (l) => log.push(l) });
       expect(off[0].action).toBe('skip');
       expect(log).toEqual([]);
-      const on = writeHarnessSkillsIndex({ hosts: ['claude-code', 'codex'], launcher: LAUNCHER, optOut: false, skillLoading: 'spring', paths, log: (l) => log.push(l) });
+      const on = writeHarnessSkillsIndex({ hosts: ['claude-code', 'codex'], launcher: LAUNCHER, optOut: false, skillLoading: 'spring', paths, settingsPath, log: (l) => log.push(l) });
       expect(on.map(o => o.action)).toEqual(['write', 'write']);
       expect(indexed(read(paths.claudeMemoryPath))).toEqual(bundledSkills('owner').map(s => s.name));
       expect(read(paths.codexAgentsPath)).toContain('\`' + LAUNCHER + ' bundled-skill <name>\`');
 
       const other = join(b.home, 'other', 'AGENTS.md');
       installerSkillsBlock({ target: brainFirstTargetAt('opencode', other), launcher: LAUNCHER, writer: 'gbrain setup opencode', brainFirstDeclined: false, skillLoading: 'spring' });
-      removeHarnessSkillsIndex(() => {});
+      removeHarnessSkillsIndex('gbrain', () => {});
       expect(existsSync(paths.claudeMemoryPath)).toBe(false);
       expect(read(other)).toContain(SKILLS_BLOCK_BEGIN);
       expect(readSkillLoadingLedger().map(e => e.writer)).toEqual(['gbrain setup opencode']);
+    });
+  });
+
+  test('removing one connection leaves the index in a file whose brain-first block belongs to another connection', async () => {
+    const b = box();
+    await withEnv(b.env, async () => {
+      const paths = { claudeMemoryPath: join(b.home, '.claude', 'CLAUDE.md'), codexAgentsPath: join(b.home, '.codex', 'AGENTS.md'),
+        codexAgentsOverride: join(b.home, '.codex', 'AGENTS.override.md'), opencodeAgentsPath: join(b.home, '.config', 'opencode', 'AGENTS.md') };
+      const settingsPath = join(b.home, '.claude', 'settings.json');
+      const quiet = () => {};
+      writeHarnessBrainFirst({ hosts: ['codex'], server: 'conn-b', optOut: false, paths, log: quiet });
+      writeHarnessSkillsIndex({ hosts: ['codex'], launcher: LAUNCHER, optOut: false, skillLoading: 'spring', paths, settingsPath, log: quiet });
+      removeHarnessBrainFirst('conn-a', quiet);
+      removeHarnessSkillsIndex('conn-a', quiet);
+      expect(read(paths.codexAgentsPath)).toContain(SKILLS_BLOCK_BEGIN);
+      expect(readSkillLoadingLedger()).toHaveLength(1);
+      removeHarnessBrainFirst('conn-b', quiet);
+      removeHarnessSkillsIndex('conn-b', quiet);
+      expect(existsSync(paths.codexAgentsPath) ? read(paths.codexAgentsPath) : '').not.toContain(SKILLS_BLOCK_BEGIN);
+      expect(readSkillLoadingLedger()).toEqual([]);
     });
   });
 });
@@ -165,11 +187,136 @@ describe('doctor: skills index', () => {
     const warn = withSkillsIndex({ ...check, status: 'warn' as any }, [{ harness: 'cursor', path: '/p/.cursor/rules/x.mdc', state: 'absent', refresh: 'gbrain setup cursor --instructions-only' }]);
     expect(warn.status).toBe('warn');
   });
+  test('an index whose recorded gbrain is gone reports launcher_missing with a --gbrain-bin refresh', async () => {
+    const b = box();
+    const moved = join(b.root, 'old-install', 'gbrain');
+    mkdirSync(dirname(moved), { recursive: true });
+    copyFileSync(LAUNCHER, moved);
+    chmodSync(moved, 0o755);
+    await withEnv(b.env, async () => {
+      installerSkillsBlock({ target: brainFirstTargetAt('opencode', join(b.home, 'agents', 'AGENTS.md')), launcher: moved, writer: 'test', brainFirstDeclined: false, skillLoading: 'spring' });
+      expect(skillsIndexViews().map(v => v.state)).toEqual(['current']);
+      rmSync(moved);
+      const views = skillsIndexViews();
+      expect(views).toMatchObject([{ state: 'launcher_missing' }]);
+      expect(views[0].refresh).toContain('--gbrain-bin');
+      const out = withSkillsIndex(check, views);
+      expect(out.status).toBe('ok');
+      expect(out.message).toContain('no longer there');
+    });
+  });
   test('no index on: the check is returned unchanged; all current: only details are added', () => {
     expect(withSkillsIndex(check, [])).toBe(check);
     const cur = withSkillsIndex(check, [{ harness: 'codex', path: '/x', state: 'current', refresh: 'r' }]);
     expect(cur.message).toBe(check.message);
   });
+});
+
+describe('Claude Code loader rule', () => {
+  const allowList = (settings: string): string[] => (existsSync(settings) ? JSON.parse(read(settings)).permissions?.allow ?? [] : []);
+  const setup = (b: ReturnType<typeof box>) => {
+    const settings = join(b.home, '.claude', 'settings.json');
+    const user = brainFirstTargetAt('claude-code', join(b.home, '.claude', 'CLAUDE.md'));
+    const project = brainFirstTargetAt('claude-code', join(b.root, 'repo', 'CLAUDE.md'));
+    mkdirSync(dirname(project.path), { recursive: true });
+    const spring = (target: typeof user, extra: Record<string, unknown> = { skillLoading: 'spring' }) =>
+      installerSkillsBlock({ target, launcher: LAUNCHER, writer: 'test', brainFirstDeclined: false, ...extra });
+    const remove = (target: typeof user) => spring(target, { remove: true });
+    return { settings, user, project, spring, remove, rule: loaderAllowRule(LAUNCHER) };
+  };
+
+  for (const order of ['user first', 'project first'] as const) {
+    test(`two indexes sharing one rule: it stays until the last is removed (${order}), and only the real removal reports it`, async () => {
+      const b = box();
+      await withEnv(b.env, async () => {
+        const s = setup(b);
+        expect(s.spring(s.user).permission).toMatchObject({ change: 'added', rule: s.rule });
+        expect(s.spring(s.project).permission).toBeUndefined();
+        const [first, second] = order === 'user first' ? [s.user, s.project] : [s.project, s.user];
+        const r1 = s.remove(first);
+        expect(r1.action).toBe('remove');
+        expect(r1.permission).toBeUndefined();
+        expect(allowList(s.settings)).toContain(s.rule);
+        const r2 = s.remove(second);
+        expect(r2.permission).toMatchObject({ change: 'removed', rule: s.rule, settings: s.settings });
+        expect(allowList(s.settings)).not.toContain(s.rule);
+        expect(readSkillLoadingLedger()).toEqual([]);
+      });
+    });
+  }
+
+  test('a rule the user had before gbrain is never taken out', async () => {
+    const b = box();
+    await withEnv(b.env, async () => {
+      const s = setup(b);
+      mkdirSync(dirname(s.settings), { recursive: true });
+      writeFileSync(s.settings, JSON.stringify({ permissions: { allow: [s.rule] } }));
+      expect(s.spring(s.user).permission).toBeUndefined();
+      expect(readSkillLoadingLedger()[0]).toMatchObject({ allow_rule: s.rule, allow_owned: false });
+      expect(s.remove(s.user).permission).toBeUndefined();
+      expect(allowList(s.settings)).toEqual([s.rule]);
+    });
+  });
+
+  test('a rule the user removed is not added back by a remembered choice, only by an explicit --skill-loading spring', async () => {
+    const b = box();
+    await withEnv(b.env, async () => {
+      const s = setup(b);
+      s.spring(s.user);
+      writeFileSync(s.settings, JSON.stringify({ permissions: { allow: [] } }));
+      const again = s.spring(s.user, {});
+      expect(again).toMatchObject({ action: 'keep', decision: { source: 'prior' } });
+      expect(again.detail).toContain('--skill-loading spring');
+      expect(allowList(s.settings)).toEqual([]);
+      expect(readSkillLoadingLedger()[0]).toMatchObject({ allow_owned: false, allow_declined: true });
+      expect(s.spring(s.user, {}).permission).toBeUndefined();
+      expect(allowList(s.settings)).toEqual([]);
+      expect(s.spring(s.user).permission).toMatchObject({ change: 'added', rule: s.rule });
+      expect(allowList(s.settings)).toEqual([s.rule]);
+      expect(readSkillLoadingLedger()[0]).toMatchObject({ allow_owned: true });
+      expect(readSkillLoadingLedger()[0].allow_declined).toBeUndefined();
+    });
+  });
+
+  test('a failed grant keeps the recorded ownership, so the rule still comes out after the settings are repaired', async () => {
+    const b = box();
+    await withEnv(b.env, async () => {
+      const s = setup(b);
+      s.spring(s.user);
+      const good = read(s.settings);
+      writeFileSync(s.settings, '{broken');
+      const failed = s.spring(s.user);
+      expect(failed).toMatchObject({ action: 'preserve', reason: 'permission_update_failed' });
+      expect(readSkillLoadingLedger()[0]).toMatchObject({ allow_rule: s.rule, allow_owned: true });
+      writeFileSync(s.settings, good);
+      expect(s.spring(s.user).action).toBe('keep');
+      expect(readSkillLoadingLedger()[0]).toMatchObject({ allow_owned: true });
+      expect(s.spring(s.user, { skillLoading: 'off' }).permission).toMatchObject({ change: 'removed', rule: s.rule });
+      expect(allowList(s.settings)).not.toContain(s.rule);
+    });
+  });
+
+  for (const how of ['off', 'remove'] as const) {
+    test(`a settings write that fails during ${how} is a typed refusal that keeps the index and the record`, async () => {
+      const b = box();
+      await withEnv(b.env, async () => {
+        const s = setup(b);
+        s.spring(s.user);
+        const dir = dirname(s.settings);
+        chmodSync(dir, 0o500);
+        try {
+          const o = how === 'off' ? s.spring(s.user, { skillLoading: 'off' }) : s.remove(s.user);
+          expect(o).toMatchObject({ action: 'preserve', reason: 'permission_update_failed' });
+          expect(o.detail).toContain(s.rule);
+        } finally {
+          chmodSync(dir, 0o755);
+        }
+        expect(read(s.user.path)).toContain(SKILLS_BLOCK_BEGIN);
+        expect(readSkillLoadingLedger()[0]).toMatchObject({ mode: 'spring', allow_owned: true });
+        expect(allowList(s.settings)).toContain(s.rule);
+      });
+    });
+  }
 });
 
 describe('refusals keep everything as it was', () => {

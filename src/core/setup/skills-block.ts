@@ -20,7 +20,7 @@
  * through either block, so whichever block is removed last deletes a file
  * nothing else was written into.
  */
-import { existsSync, lstatSync, readFileSync, unlinkSync } from 'node:fs';
+import { accessSync, constants as fsConstants, existsSync, lstatSync, readFileSync, unlinkSync } from 'node:fs';
 import { basename, isAbsolute, join } from 'node:path';
 import { resolveGbrainBin } from '../gbrain-bin.ts';
 import { addPermissionsAllowEntry, removePermissionsAllowEntry } from '../bootstrap/hooks.ts';
@@ -31,7 +31,8 @@ import { configDir } from '../config.ts';
 import { probeBlock, removeBlock, spliceBlock, type BlockMarkers } from '../managed-block.ts';
 import { ensureGitExcluded } from '../context/compiled-core.ts';
 import { bundledCatalogId, bundledSkills, type SkillAudience } from '../skills/bundled.ts';
-import { renderSkillIndexBlock, shellWord, SKILL_INDEX_VERSION, SkillIndexTooLarge, skillIndexCatalog } from '../skills/spring-index.ts';
+import { shellQuote } from '../shell-quote.ts';
+import { renderSkillIndexBlock, SKILL_INDEX_VERSION, SkillIndexTooLarge, skillIndexCatalog } from '../skills/spring-index.ts';
 import { BRAIN_FIRST_END, brainFirstTargetAt, CURSOR_HEAD, direntExists, readBrainFirstLedger, writeUnlessChanged, type BrainFirstHarness, type BrainFirstTarget } from './brain-first.ts';
 
 export const SKILLS_BLOCK_BEGIN = '<!-- gbrain:skills:begin -->';
@@ -67,8 +68,18 @@ export function indexLauncher(): string | null {
  * from the ones indexed (another install earlier on PATH, a stale
  * --gbrain-bin). Engine-free and read-only on the launcher's side.
  */
+const servedCatalogs = new Map<string, { catalog: string } | { error: string }>();
+
 export function launcherCatalog(launcher: string): { catalog: string } | { error: string } {
   if (!isAbsolute(launcher)) return { error: `${launcher} is not an absolute path (GUI-launched harnesses inherit no PATH)` };
+  const known = servedCatalogs.get(launcher);
+  if (known) return known;
+  const served = askLauncher(launcher);
+  servedCatalogs.set(launcher, served);
+  return served;
+}
+
+function askLauncher(launcher: string): { catalog: string } | { error: string } {
   const r = spawnSync(launcher, ['bundled-skill', '--json'], { encoding: 'utf8', timeout: 20_000 }) as { status: number | null; stdout?: string; stderr?: string; error?: Error };
   if (r.status !== 0) return { error: `${launcher} bundled-skill --json failed: ${(r.error?.message ?? r.stderr ?? '').trim().split('\n')[0] || `exit ${r.status}`}` };
   try {
@@ -105,9 +116,12 @@ export interface SkillLoadingLedgerEntry {
   catalog?: string;
   launcher?: string;
   audience?: SkillAudience;
-  /** Claude Code: the permissions.allow rule that lets sessions run the loader, and whether gbrain added it. */
+  /** Claude Code: the permissions.allow rule that lets sessions run the loader, the settings file it is in, and whether gbrain added it. */
   allow_rule?: string;
+  allow_settings?: string;
   allow_owned?: boolean;
+  /** The user removed the rule gbrain added; it is not added again until an explicit --skill-loading spring. */
+  allow_declined?: boolean;
   writer: string;
   created_file: boolean;
   updated_at: string;
@@ -161,32 +175,66 @@ export function priorSkillLoading(harness: string, path: string): SkillLoadingLe
  * runs deny it, so a spring index on Claude Code comes with one narrow rule
  * in the user settings: the recorded launcher's `bundled-skill` subcommand
  * only, written exactly as the index writes the command. Ownership lives in
- * the ledger (allow_owned): gbrain removes the rule only when it added it and
- * no other recorded index still uses it.
+ * the ledger (allow_owned): every index that uses a rule gbrain added shares
+ * that ownership, and gbrain removes the rule only when the last of them goes.
  */
 export function loaderAllowRule(launcher: string): string {
-  return `Bash(${shellWord(launcher)} bundled-skill:*)`;
+  return `Bash(${shellQuote(launcher)} bundled-skill:*)`;
 }
 
-type Grant = Pick<SkillLoadingLedgerEntry, 'allow_rule' | 'allow_owned'>;
+type Grant = Pick<SkillLoadingLedgerEntry, 'allow_rule' | 'allow_settings' | 'allow_owned' | 'allow_declined'>;
 
-/** Add the rule after the block is in place; returns the ownership to record. Throws when settings cannot be updated. */
-function grantLoader(harness: string, launcher: string, prior: SkillLoadingLedgerEntry | undefined): Grant {
-  if (harness !== 'claude-code') return {};
+const ruleSettings = (e: Grant) => e.allow_settings ?? claudeUserSettingsPath();
+
+/** Whether the settings file lists the rule; undefined when the file cannot be read as JSON. */
+function loaderRulePresent(settings: string, rule: string): boolean | undefined {
+  if (!existsSync(settings)) return false;
+  try {
+    const allow = (JSON.parse(readFileSync(settings, 'utf8')) as { permissions?: { allow?: unknown } })?.permissions?.allow;
+    return Array.isArray(allow) && allow.includes(rule);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Add the rule after the block is in place; returns the ownership to record,
+ * whether this call added it, and whether it stayed out because the user
+ * removed the rule gbrain added (only an explicit --skill-loading spring adds
+ * it back). Throws when settings cannot be updated.
+ */
+function grantLoader(harness: string, launcher: string, settings: string, prior: SkillLoadingLedgerEntry | undefined, regrant: boolean): { grant: Grant; added: boolean; declined: boolean } {
+  if (harness !== 'claude-code') return { grant: {}, added: false, declined: false };
   const rule = loaderAllowRule(launcher);
-  const added = addPermissionsAllowEntry(claudeUserSettingsPath(), rule).added === true;
-  return { allow_rule: rule, allow_owned: added || (prior?.allow_rule === rule && prior.allow_owned === true) };
+  const same = prior?.allow_rule === rule && ruleSettings(prior) === settings;
+  const userRemoved = same && (prior.allow_declined === true || (prior.allow_owned === true && loaderRulePresent(settings, rule) === false));
+  if (userRemoved && !regrant) return { grant: { allow_rule: rule, allow_settings: settings, allow_owned: false, allow_declined: true }, added: false, declined: true };
+  const added = addPermissionsAllowEntry(settings, rule).added === true;
+  const shared = readSkillLoadingLedger().some((e) => e.allow_rule === rule && ruleSettings(e) === settings && e.allow_owned === true);
+  return { grant: { allow_rule: rule, allow_settings: settings, allow_owned: added || shared }, added, declined: false };
 }
 
-/** Remove a rule gbrain owns once nothing else uses it. Returns why it could not, or undefined when done (or nothing to do). */
-function revokeLoader(entry: SkillLoadingLedgerEntry | undefined, keepRule?: string): string | undefined {
-  if (!entry?.allow_rule || entry.allow_owned !== true || entry.allow_rule === keepRule) return undefined;
-  const stillUsed = readSkillLoadingLedger().some((e) => e.mode === 'spring' && e.allow_rule === entry.allow_rule && !(e.harness === entry.harness && e.path === entry.path));
-  if (stillUsed) return undefined;
-  const settings = claudeUserSettingsPath();
-  const r = removePermissionsAllowEntry(settings, entry.allow_rule);
-  const warning = r.notes.find((n) => n.startsWith('WARNING'));
-  return warning ? `the Claude Code permission rule ${entry.allow_rule} that gbrain added is still in ${settings}: ${warning}` : undefined;
+/**
+ * Remove a rule gbrain owns once no other recorded index uses it. Never
+ * throws: `problem` says why the rule is still there, `removed` names the
+ * rule when this call took it out of the settings.
+ */
+function revokeLoader(entry: SkillLoadingLedgerEntry | undefined, keep?: { rule?: string; settings: string }): { removed?: { rule: string; settings: string }; problem?: string } {
+  if (!entry?.allow_rule || entry.allow_owned !== true) return {};
+  const rule = entry.allow_rule;
+  const settings = ruleSettings(entry);
+  if (keep && rule === keep.rule && settings === keep.settings) return {};
+  const stuck = (why: string) => ({ problem: `the Claude Code permission rule ${rule} that gbrain added is still in ${settings}: ${why}` });
+  try {
+    const stillUsed = readSkillLoadingLedger().some((e) => e.mode === 'spring' && e.allow_rule === rule && ruleSettings(e) === settings && !(e.harness === entry.harness && e.path === entry.path));
+    if (stillUsed) return {};
+    const r = removePermissionsAllowEntry(settings, rule);
+    const warning = r.notes.find((n) => n.startsWith('WARNING'));
+    if (warning) return stuck(warning);
+    return (r.removed ?? 0) > 0 ? { removed: { rule, settings } } : {};
+  } catch (e) {
+    return stuck(message(e));
+  }
 }
 
 // ── Decision, inspection, sync, removal ───────────────────────────────────
@@ -273,8 +321,9 @@ const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
  * outcome with a reason, and the file is left as it was unless the detail
  * says otherwise.
  */
-export function syncSkillsBlock(opts: { target: BrainFirstTarget; launcher: string; decision: SkillLoadingDecision; writer: string; dryRun: boolean; audience?: SkillAudience; verifyLauncher?: boolean }): SkillsBlockOutcome {
+export function syncSkillsBlock(opts: { target: BrainFirstTarget; launcher: string; decision: SkillLoadingDecision; writer: string; dryRun: boolean; audience?: SkillAudience; verifyLauncher?: boolean; settingsPath?: string }): SkillsBlockOutcome {
   const { target, launcher, decision } = opts;
+  const settings = opts.settingsPath ?? claudeUserSettingsPath();
   const audience = opts.audience ?? 'owner';
   let body: string | undefined;
   let tooLarge: SkillIndexTooLarge | undefined;
@@ -298,21 +347,17 @@ export function syncSkillsBlock(opts: { target: BrainFirstTarget; launcher: stri
     if (mode === 'off' && decision.source === 'default' && !prior) return;
     upsertLedger({ harness: target.harness, path: target.path, mode, block_version: SKILL_INDEX_VERSION, ...(mode === 'spring' ? { catalog: bundledCatalogId(), launcher, audience, ...grant } : {}), writer: opts.writer, created_file: created, updated_at: new Date().toISOString() });
   };
-  const revoked = (rule: string | undefined): Partial<SkillsBlockOutcome> =>
-    rule ? { permission: { rule, settings: claudeUserSettingsPath(), change: 'removed' } } : {};
 
   if (before.state === 'damaged') {
     return out('preserve', `the skills markers in ${target.path} were hand-edited (duplicate, orphan or out of order); fix or delete them, then re-run`, { reason: 'damaged_markers' });
   }
   if (decision.value === 'off') {
-    if (!opts.dryRun) {
-      const stuck = revokeLoader(prior);
-      if (stuck) return out('preserve', `${stuck}; remove it by hand, then re-run. ${target.path} was left as it was`, { reason: 'permission_update_failed' });
-    }
-    const ownedRule = prior?.allow_owned ? prior.allow_rule : undefined;
+    const revocation = opts.dryRun ? {} : revokeLoader(prior);
+    if (revocation.problem) return out('preserve', `${revocation.problem}; fix that, then re-run. ${target.path} was left as it was`, { reason: 'permission_update_failed' });
+    const revoked: Partial<SkillsBlockOutcome> = revocation.removed ? { permission: { ...revocation.removed, change: 'removed' } } : {};
     if (before.state === 'no_file' || before.state === 'absent') {
       try { record('off', false); } catch (e) { return out('preserve', `recording the opt-out failed: ${message(e)}`, { reason: 'write_failed' }); }
-      return out('skip', `skill loading off: no skills index in ${target.path}`, revoked(ownedRule));
+      return out('skip', `skill loading off: no skills index in ${target.path}`, revoked);
     }
     try {
       const existing = readFileSync(target.path, 'utf8');
@@ -327,7 +372,7 @@ export function syncSkillsBlock(opts: { target: BrainFirstTarget; launcher: stri
     try { record('off', false); } catch (e) {
       return out('preserve', `the skills index was removed from ${target.path}, but recording the opt-out in ${skillLoadingLedgerPath()} failed (${message(e)}); re-run to record it`, { reason: 'recorded_partially' });
     }
-    return out('remove', `skills index from ${target.path}`, revoked(ownedRule));
+    return out('remove', `skills index from ${target.path}`, revoked);
   }
 
   if (body === undefined) return out('preserve', `${tooLarge!.message}; ${target.path} was left as it was`, { reason: 'index_too_large' });
@@ -359,22 +404,31 @@ export function syncSkillsBlock(opts: { target: BrainFirstTarget; launcher: stri
     ? out('keep', `skills index in ${target.path} is current`)
     : out('write', `skills index ${before.state === 'stale' ? 'refreshed in' : created ? 'in new file' : 'added to'} ${target.path}`);
   if (opts.dryRun) return done;
-  let grant: Grant = {};
-  let permissionProblem: string | undefined;
-  try {
-    grant = grantLoader(target.harness, launcher, prior);
-    permissionProblem = revokeLoader(prior, grant.allow_rule);
-  } catch (e) {
-    permissionProblem = `the Claude Code permission rule ${loaderAllowRule(launcher)} could not be added to ${claudeUserSettingsPath()} (${message(e)}), so Claude Code will ask before each skill load`;
+  const priorGrant: Grant = prior?.allow_rule
+    ? { allow_rule: prior.allow_rule, allow_settings: prior.allow_settings, allow_owned: prior.allow_owned, ...(prior.allow_declined ? { allow_declined: true } : {}) }
+    : {};
+  const rule = target.harness === 'claude-code' ? loaderAllowRule(launcher) : undefined;
+  let grant: Grant = priorGrant;
+  const replaced = revokeLoader(prior, { rule, settings });
+  let permissionProblem = replaced.problem;
+  let added = false;
+  let declined = false;
+  if (!permissionProblem) {
+    try {
+      ({ grant, added, declined } = grantLoader(target.harness, launcher, settings, prior, decision.source === 'flag'));
+    } catch (e) {
+      grant = priorGrant.allow_rule === rule && ruleSettings(priorGrant) === settings ? priorGrant : {};
+      permissionProblem = `the Claude Code permission rule ${rule} could not be added to ${settings} (${message(e)}), so Claude Code will ask before each skill load`;
+    }
   }
   try {
     record('spring', createdFile, grant);
   } catch (e) {
-    return out('preserve', `the skills index is in ${target.path}, but recording it in ${skillLoadingLedgerPath()} failed (${message(e)}); re-run to record it${grant.allow_owned ? ` (gbrain also added ${grant.allow_rule} to ${claudeUserSettingsPath()})` : ''}`, { reason: 'recorded_partially' });
+    return out('preserve', `the skills index is in ${target.path}, but recording it in ${skillLoadingLedgerPath()} failed (${message(e)}); re-run to record it${added ? ` (gbrain also added ${grant.allow_rule} to ${settings})` : ''}`, { reason: 'recorded_partially' });
   }
   if (permissionProblem) return { ...done, action: 'preserve', detail: `${done.detail}; ${permissionProblem}`, reason: 'permission_update_failed' };
-  const added = grant.allow_rule && grant.allow_owned && prior?.allow_rule !== grant.allow_rule;
-  return added ? { ...done, detail: `${done.detail}; Claude Code may now run ${grant.allow_rule}`, permission: { rule: grant.allow_rule!, settings: claudeUserSettingsPath(), change: 'added' } } : done;
+  if (declined) return { ...done, detail: `${done.detail}; the Claude Code rule ${rule} was removed from ${settings} after gbrain added it, so gbrain left it out and Claude Code will ask before each skill load (re-run with --skill-loading spring to add it again)` };
+  return added && grant.allow_rule ? { ...done, detail: `${done.detail}; Claude Code may now run ${grant.allow_rule}`, permission: { rule: grant.allow_rule, settings, change: 'added' } } : done;
 }
 
 /** The uninstall path: strip the block, delete the file only when gbrain created it and nothing else is left, forget the record. */
@@ -391,9 +445,9 @@ export function removeSkillsBlock(opts: { harness: string; path: string; dryRun:
   }
   if (before.state === 'damaged') return out('preserve', `the skills markers in ${opts.path} were hand-edited; remove the block by hand`, { reason: 'damaged_markers' });
   if (opts.dryRun) return before.state === 'no_file' || before.state === 'absent' ? out('skip', `no skills index in ${opts.path}`) : out('remove', `skills index from ${opts.path}`);
-  const stuck = revokeLoader(prior);
-  if (stuck) return out('preserve', `${stuck}; remove it by hand, then re-run. ${opts.path} was left as it was`, { reason: 'permission_update_failed' });
-  const permission: Partial<SkillsBlockOutcome> = prior?.allow_owned && prior.allow_rule ? { permission: { rule: prior.allow_rule, settings: claudeUserSettingsPath(), change: 'removed' } } : {};
+  const revocation = revokeLoader(prior);
+  if (revocation.problem) return out('preserve', `${revocation.problem}; fix that, then re-run. ${opts.path} was left as it was`, { reason: 'permission_update_failed' });
+  const permission: Partial<SkillsBlockOutcome> = revocation.removed ? { permission: { ...revocation.removed, change: 'removed' } } : {};
   let deleteFile = false;
   if (before.state !== 'no_file' && before.state !== 'absent') {
     try {
@@ -428,7 +482,7 @@ export function describeSkillsBlockOutcome(o: SkillsBlockOutcome, dryRun: boolea
  */
 export function installerSkillsBlock(opts: {
   target: BrainFirstTarget; launcher: string; writer: string; brainFirstDeclined: boolean;
-  skillLoading?: SkillLoading; audience?: SkillAudience; remove?: boolean; dryRun?: boolean;
+  skillLoading?: SkillLoading; audience?: SkillAudience; remove?: boolean; dryRun?: boolean; settingsPath?: string;
 }): SkillsBlockOutcome {
   if (opts.remove) return removeSkillsBlock({ harness: opts.target.harness, path: opts.target.path, dryRun: opts.dryRun ?? false });
   let decision: SkillLoadingDecision;
@@ -440,7 +494,7 @@ export function installerSkillsBlock(opts: {
     const reason: SkillsBlockReason = e instanceof InvalidSkillLoadingEnv ? 'invalid_env' : 'ledger_unreadable';
     return { harness: opts.target.harness, path: opts.target.path, decision: { value: 'off', source: 'flag' }, action: 'preserve', state_before: inspectSkillsBlock(opts.target.path).state, detail: `${message(e)}; ${opts.target.path} was left as it was`, reason };
   }
-  return syncSkillsBlock({ target: opts.target, launcher: opts.launcher, decision, writer: opts.writer, dryRun: opts.dryRun ?? false, audience: opts.audience });
+  return syncSkillsBlock({ target: opts.target, launcher: opts.launcher, decision, writer: opts.writer, dryRun: opts.dryRun ?? false, audience: opts.audience, settingsPath: opts.settingsPath });
 }
 
 /** A preserve outcome when the ledger cannot be read, else undefined. */
@@ -453,14 +507,26 @@ function ledgerProblem(): SkillsBlockOutcome | undefined {
   }
 }
 
-/** Removal for a lane that records its writer: strip every index that writer wrote. */
-export function removeSkillsBlocksBy(writer: string, dryRun = false): SkillsBlockOutcome[] {
+/** Removal for a lane that records its writer: strip every index that writer wrote, except those `keep` claims. */
+export function removeSkillsBlocksBy(writer: string, opts: { dryRun?: boolean; keep?: (e: SkillLoadingLedgerEntry) => boolean } = {}): SkillsBlockOutcome[] {
   const unreadable = ledgerProblem();
   if (unreadable) return [unreadable];
-  return readSkillLoadingLedger().filter((e) => e.writer === writer && e.mode === 'spring').map((e) => removeSkillsBlock({ harness: e.harness, path: e.path, dryRun }));
+  const dryRun = opts.dryRun ?? false;
+  return readSkillLoadingLedger().filter((e) => e.writer === writer && e.mode === 'spring' && !opts.keep?.(e)).map((e) => removeSkillsBlock({ harness: e.harness, path: e.path, dryRun }));
 }
 
-export interface SkillsIndexView { harness: string; path: string; state: SkillsBlockState; refresh: string }
+/** launcher_missing: the block is in place but the gbrain it names is gone, so every load fails. */
+export type SkillsIndexState = SkillsBlockState | 'launcher_missing';
+export interface SkillsIndexView { harness: string; path: string; state: SkillsIndexState; refresh: string }
+
+function launcherRuns(launcher: string): boolean {
+  try {
+    accessSync(launcher, fsConstants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Doctor's read of every index the ledger says is on: current, stale (an
@@ -470,9 +536,13 @@ export interface SkillsIndexView { harness: string; path: string; state: SkillsB
  */
 export function skillsIndexViews(): SkillsIndexView[] {
   if (ledgerProblem()) return [{ harness: '*', path: skillLoadingLedgerPath(), state: 'damaged', refresh: `fix the JSON in ${skillLoadingLedgerPath()} or move it aside, then re-run gbrain setup <harness> --skill-loading spring` }];
-  return readSkillLoadingLedger().filter((e) => e.mode === 'spring').map((e) => ({
-    harness: e.harness, path: e.path, state: inspectSkillsBlock(e.path).state, refresh: skillsRefreshCommand(e.harness),
-  }));
+  return readSkillLoadingLedger().filter((e) => e.mode === 'spring').map((e) => {
+    const state = inspectSkillsBlock(e.path).state;
+    if (state === 'current' && e.launcher && isAbsolute(e.launcher) && !launcherRuns(e.launcher)) {
+      return { harness: e.harness, path: e.path, state: 'launcher_missing', refresh: `${skillsRefreshCommand(e.harness)} --gbrain-bin <absolute path of gbrain>` };
+    }
+    return { harness: e.harness, path: e.path, state, refresh: skillsRefreshCommand(e.harness) };
+  });
 }
 
 

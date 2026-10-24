@@ -17,6 +17,7 @@
  * does not fit, rendering refuses (SkillIndexTooLarge) and the caller leaves
  * the instruction file as it was.
  */
+import { shellQuote } from '../shell-quote.ts';
 import { bundledCatalogId, bundledSkillTriggers, type BundledSkill } from './bundled.ts';
 
 export const SKILL_INDEX_VERSION = 1;
@@ -53,13 +54,8 @@ function distinctTriggers(skill: BundledSkill): string[] {
 
 const line = (name: string, triggers: string[]) => (triggers.length ? `- ${name}: ${triggers.join('; ')}` : `- ${name}`);
 
-/** The launcher as one shell word: as-is when it is plain, else single-quoted. */
-export function shellWord(s: string): string {
-  return /^[A-Za-z0-9_\/.,:@%+=-]+$/.test(s) ? s : `'${s.replace(/'/g, "'\''")}'`;
-}
-
 export function skillIndexHeader(launcher: string, refresh: string, optOut: string): string[] {
-  const run = shellWord(launcher);
+  const run = shellQuote(launcher);
   return [
     `<!-- gbrain skills v${SKILL_INDEX_VERSION} catalog ${bundledCatalogId()}: managed by gbrain; edit outside these markers. Refresh: ${refresh}. Opt out: ${optOut} -->`,
     '## GBrain skills: load on demand',

@@ -205,7 +205,9 @@ gbrain. MCP `get_skill` is unchanged.
 | Which skills | Host installs (`setup`, `bootstrap harness`) list all bundled skills; hosted and thin-client connections leave out the host-maintenance ones. |
 | Opt out | `--skill-loading off`; `--no-instructions` removes both blocks; `--remove` takes both out and deletes a file only gbrain created once nothing else is in it. |
 | After an upgrade | The block records the skill catalog it indexes. `gbrain doctor` (`harness_wiring`) names a stale index and the refresh command (`gbrain setup <harness> --skills-index-only`, which rewrites only the skills block, keeping its recorded file, launcher and skill set). It never warns on a stale index alone, and nothing rewrites the file during an upgrade. |
-| Choice record | `~/.gbrain/skill-loading.json` (harness, file, mode, launcher, audience, catalog). |
+| Launcher check | Before writing, setup runs `<launcher> bundled-skill --json` and refuses (nothing written, exit 1) when the launcher is not an absolute path, does not run, or serves other skills than the ones indexed. Pass `--gbrain-bin <absolute path>` to name another gbrain. `gbrain doctor` reports an index whose recorded launcher is gone. |
+| Claude Code permission | Claude Code asks before each Bash command it has no rule for (and headless runs deny it), so on Claude Code spring also adds one rule, `Bash(<launcher> bundled-skill:*)`, to `~/.claude/settings.json`. gbrain records that it added it and takes it out with the last index that uses it; a rule you had before is left alone. If you delete the rule, gbrain doesn't add it back until you run with `--skill-loading spring` again. |
+| Choice record | `~/.gbrain/skill-loading.json` (harness, file, mode, launcher, audience, catalog, and the Claude Code rule and whether gbrain added it). |
 
 ## Harness capability table
 

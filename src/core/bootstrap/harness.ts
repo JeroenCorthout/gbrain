@@ -1995,7 +1995,7 @@ export async function applyHarness(flags: HarnessFlags, rawDeps: HarnessDeps): P
   const instructionHosts = hosts.filter((h) => targets.some((t) => t.host === h && t.kind === 'mcp' && t.state === 'confirmed'));
   writeHarnessBrainFirst({ hosts: instructionHosts, server: flags.name, optOut: flags.noInstructions === true, paths: d, log: d.log });
   writeHarnessSkillsIndex({ hosts: instructionHosts, launcher: flags.gbrainBin ?? d.gbrainBin ?? 'gbrain', optOut: flags.noInstructions === true,
-    skillLoading: flags.skillLoading, paths: d, log: d.log });
+    skillLoading: flags.skillLoading, paths: d, settingsPath: d.userSettingsPath, log: d.log });
 
   // 11. Degradation + skew honesty.
   if (health.engine === 'postgres') {
@@ -2273,7 +2273,7 @@ export async function removeHarness(flags: HarnessFlags, rawDeps: HarnessDeps): 
   }
 
   removeHarnessBrainFirst(flags.name, d.log);
-  removeHarnessSkillsIndex(d.log);
+  removeHarnessSkillsIndex(flags.name, d.log);
 
   if (remaining.length === 0 && tokenDone && skillsDone) {
     deleteHarnessReceipt(d.gbrainHome);

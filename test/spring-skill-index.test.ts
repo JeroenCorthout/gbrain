@@ -20,6 +20,8 @@ import { BUNDLED_SKILL_FILES } from '../src/core/skills/bundled-skills.generated
 import { bundledCatalogId, bundledSkills, bundledSkillTriggers } from '../src/core/skills/bundled.ts';
 import { renderSkillIndexBlock, SKILL_INDEX_BUDGET_BYTES, SkillIndexTooLarge, skillIndexCatalog } from '../src/core/skills/spring-index.ts';
 import { renderBundledSkillsModule } from '../scripts/generate-bundled-skills.ts';
+import { loaderAllowRule } from '../src/core/setup/skills-block.ts';
+import { spawnSync } from 'node:child_process';
 
 const OPTS = { refresh: 'gbrain setup claude-code --instructions-only', optOut: 'gbrain setup claude-code --instructions-only --skill-loading off' };
 const LAUNCHER = '/home/alice-example/.bun/bin/gbrain';
@@ -28,6 +30,17 @@ const entries = (block: string) => block.split('\n').filter(l => l.startsWith('-
 const SKILLS_DIR = join(import.meta.dir, '..', 'skills');
 
 describe('spring-loaded skill index', () => {
+  test('a launcher path with spaces, an apostrophe or shell characters prints as one shell word the index and the loader rule share', () => {
+    for (const launcher of ["/home/alice-example/o'brien dir/gbrain", '/opt/a b/$(x)/gbrain', '/opt/semi;colon/gbrain']) {
+      const block = renderSkillIndexBlock(bundledSkills('owner'), launcher, OPTS);
+      const word = /`(.+) bundled-skill <name>`/.exec(block)![1];
+      const echoed = spawnSync('sh', ['-c', `printf %s ${word}`], { encoding: 'utf8' });
+      expect(echoed.status).toBe(0);
+      expect(echoed.stdout).toBe(launcher);
+      expect(loaderAllowRule(launcher)).toBe(`Bash(${word} bundled-skill:*)`);
+    }
+  });
+
   for (const audience of ['owner', 'downstream'] as const) {
     test(`${audience}: under budget, every skill on its own line, loads through bundled-skill`, () => {
       const skills = bundledSkills(audience);

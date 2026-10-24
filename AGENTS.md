@@ -271,11 +271,6 @@ writing or reviewing an operation, consult `src/core/operations.ts` for the cont
   to opt out). Non-metric event rows (`meeting`, `job_change`,
   `location_change`) ride through the same pipeline via `facts.event_type`;
   pass `kind: 'event'` or `'all'` to `find_trajectory` to query them.
-- **Load gbrain's skills only when a task needs them (opt-in):**
-  `gbrain setup <harness> --skill-loading spring` adds a compact skills index
-  beside the brain-first block; the agent loads a matching skill with
-  `gbrain bundled-skill <name>` (no brain or MCP needed). Default off.
-  [Skill loading](docs/guides/setup.md#skill-loading-opt-in).
 - **Answer "who is waiting on me?":** connect the user's Google account once
   (`gbrain google setup` — two user interactions; relay the `[SHOW USER]`
   blocks verbatim), then `gbrain waiting --json` returns the ranked people

@@ -24,7 +24,7 @@
  * Doctor seeds nothing; the only file it removes is a status marker whose
  * process is gone.
  */
-import type { SkillsBlockState, SkillsIndexView } from '../../../core/setup/skills-block.ts';
+import type { SkillsIndexState, SkillsIndexView } from '../../../core/setup/skills-block.ts';
 import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, isAbsolute, join } from 'node:path';
@@ -410,7 +410,8 @@ export function withInstructionBlocks(check: Check, views: InstructionBlockView[
   return { name: check.name, status: 'warn', message, details, fix };
 }
 
-const SKILLS_INDEX_PROBLEM: Record<Exclude<SkillsBlockState, 'current'>, string> = {
+const SKILLS_INDEX_PROBLEM: Record<Exclude<SkillsIndexState, 'current'>, string> = {
+  launcher_missing: 'names a gbrain that is no longer there, so every skill load fails',
   stale: 'indexes an older set of bundled skills',
   absent: 'is gone from the file',
   no_file: 'is gone (the file was deleted)',
@@ -428,7 +429,7 @@ export function withSkillsIndex(check: Check, views: SkillsIndexView[]): Check {
   const details = { ...(check.details ?? {}), skills_index: views };
   const off = views.filter((v) => v.state !== 'current');
   if (off.length === 0) return { ...check, details };
-  const notes = off.map((v) => `the ${v.harness} skills index in ${v.path} ${SKILLS_INDEX_PROBLEM[v.state as Exclude<SkillsBlockState, 'current'>]}; refresh with \`${v.refresh}\``);
+  const notes = off.map((v) => `the ${v.harness} skills index in ${v.path} ${SKILLS_INDEX_PROBLEM[v.state as Exclude<SkillsIndexState, 'current'>]}; refresh with \`${v.refresh}\``);
   return { ...check, message: `${check.message} Skills index: ${notes.join('; ')}.`, details };
 }
 
