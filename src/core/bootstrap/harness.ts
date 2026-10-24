@@ -2020,7 +2020,7 @@ export async function applyHarness(flags: HarnessFlags, rawDeps: HarnessDeps): P
     emitJson(
       JSON.stringify(
         {
-          schema_version: 1, ...harnessOutcomeFields(pendingFix, allConfirmed && smokeOk),
+          schema_version: 1, ...harnessOutcomeFields(pendingFix, allConfirmed && smokeOk && !skillsIndexFailed),
           ...cleanupOutcomeFields(cleanup, !pendingFix && allConfirmed && smokeOk, flags.raw),
           url,
           engine: health.engine ?? null,

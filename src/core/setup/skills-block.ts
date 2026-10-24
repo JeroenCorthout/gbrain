@@ -177,6 +177,8 @@ function invalidLedgerField(e: SkillLoadingLedgerEntry): string | undefined {
   if (e.audience !== undefined && e.audience !== 'owner' && e.audience !== 'downstream') return 'audience';
   for (const k of ['catalog', 'launcher', 'allow_rule', 'allow_settings'] as const) if (optional(e[k], 'string')) return k;
   for (const k of ['allow_owned', 'allow_declined'] as const) if (optional(e[k], 'boolean')) return k;
+  if ((e.allow_owned === true || e.allow_declined === true) && e.allow_rule === undefined) return 'allow_rule (ownership recorded without the rule)';
+  if (e.allow_owned === true && e.allow_declined === true) return 'allow_declined (both owned and declined)';
   return undefined;
 }
 
@@ -233,10 +235,10 @@ function loaderRulePresent(settings: string, rule: string): boolean | undefined 
  * removed the rule gbrain added (only an explicit --skill-loading spring adds
  * it back). Throws when settings cannot be updated.
  */
-/** The recorded rule is this one and the user took it out after gbrain added it (or declined it before). */
+/** The recorded rule is this one and the user took it out since (whoever added it), or declined it before. */
 function userRemovedRule(prior: SkillLoadingLedgerEntry | undefined, rule: string, settings: string): boolean {
   if (prior?.allow_rule !== rule || ruleSettings(prior) !== settings) return false;
-  return prior.allow_declined === true || (prior.allow_owned === true && loaderRulePresent(settings, rule) === false);
+  return prior.allow_declined === true || loaderRulePresent(settings, rule) === false;
 }
 
 function grantLoader(harness: string, launcher: string, settings: string, prior: SkillLoadingLedgerEntry | undefined, regrant: boolean): { grant: Grant; added: boolean; declined: boolean } {
@@ -259,8 +261,8 @@ function revocableRule(entry: SkillLoadingLedgerEntry | undefined, keep?: { rule
   const rule = entry.allow_rule;
   const settings = ruleSettings(entry);
   if (keep && rule === keep.rule && settings === keep.settings) return undefined;
-  const stillUsed = readSkillLoadingLedger().some((e) => e.mode === 'spring' && e.allow_rule === rule && ruleSettings(e) === settings && !(e.harness === entry.harness && e.path === entry.path));
-  return stillUsed ? undefined : { rule, settings };
+  const stillOwned = readSkillLoadingLedger().some((e) => e.mode === 'spring' && e.allow_owned === true && e.allow_rule === rule && ruleSettings(e) === settings && !(e.harness === entry.harness && e.path === entry.path));
+  return stillOwned ? undefined : { rule, settings };
 }
 
 /** What --dry-run reports for the loader rule: the change a real run would make. */
@@ -342,6 +344,8 @@ export interface SkillsBlockOutcome {
   reason?: SkillsBlockReason;
   /** Claude Code: the loader rule this run added to (or removed from) the user settings. */
   permission?: { rule: string; settings: string; change: 'added' | 'removed' | 'would_add' | 'would_remove' };
+  /** Claude Code: the previous launcher's rule a launcher change took out (or would). */
+  replaced_permission?: { rule: string; settings: string; change: 'removed' | 'would_remove' };
 }
 
 /**
@@ -412,8 +416,10 @@ export function syncSkillsBlock(opts: { target: BrainFirstTarget; launcher: stri
     if (revocation.problem) return out('preserve', `${revocation.problem}; fix that, then re-run. ${target.path} was left as it was`, { reason: 'permission_update_failed' });
     const revoked: Partial<SkillsBlockOutcome> = revocation.removed ? { permission: { ...revocation.removed, change: 'removed' } }
       : opts.dryRun ? plannedPermission('would_remove', revocableRule(prior)) : {};
+    // The ledger still records the rule until the opt-out is recorded, so a failure puts it back and a re-run finishes cleanly.
+    const putBack = () => (revocation.removed && undoUnrecorded({ path: target.path, settings, restore: revocation.removed }).length ? `; gbrain also could not put back ${revocation.removed.rule} in ${revocation.removed.settings}, so add it back by hand before re-running` : '');
     if (before.state === 'no_file' || before.state === 'absent') {
-      try { record('off', false); } catch (e) { return out('preserve', `recording the opt-out failed: ${message(e)}`, { reason: 'write_failed' }); }
+      try { record('off', false); } catch (e) { return out('preserve', `recording the opt-out failed: ${message(e)}${putBack()}`, { reason: 'write_failed' }); }
       return out('skip', `skill loading off: no skills index in ${target.path}`, revoked);
     }
     try {
@@ -424,10 +430,10 @@ export function syncSkillsBlock(opts: { target: BrainFirstTarget; launcher: stri
         else writeUnlessChanged(target.path, existing, false, stripped);
       }
     } catch (e) {
-      return out('preserve', `${target.path} could not be updated (${message(e)}); the skills index is still there`, { reason: 'write_failed' });
+      return out('preserve', `${target.path} could not be updated (${message(e)}); the skills index is still there${putBack()}`, { reason: 'write_failed' });
     }
     try { record('off', false); } catch (e) {
-      return out('preserve', `the skills index was removed from ${target.path}, but recording the opt-out in ${skillLoadingLedgerPath()} failed (${message(e)}); re-run to record it`, { reason: 'recorded_partially' });
+      return out('preserve', `the skills index was removed from ${target.path}, but recording the opt-out in ${skillLoadingLedgerPath()} failed (${message(e)}); re-run to record it${putBack()}`, { reason: 'recorded_partially' });
     }
     return out('remove', `skills index from ${target.path}`, revoked);
   }
@@ -466,8 +472,10 @@ export function syncSkillsBlock(opts: { target: BrainFirstTarget; launcher: stri
   if (opts.dryRun) {
     if (target.harness !== 'claude-code') return done;
     const rule = loaderAllowRule(launcher);
-    if (userRemovedRule(prior, rule, settings) && decision.source !== 'flag') return done;
-    return { ...done, ...plannedPermission('would_add', { rule, settings }) };
+    const old = plannedPermission('would_remove', revocableRule(prior, { rule, settings })).permission;
+    const replacedPreview: Partial<SkillsBlockOutcome> = old ? { replaced_permission: { rule: old.rule, settings: old.settings, change: 'would_remove' } } : {};
+    if (userRemovedRule(prior, rule, settings) && decision.source !== 'flag') return { ...done, ...replacedPreview };
+    return { ...done, ...replacedPreview, ...plannedPermission('would_add', { rule, settings }) };
   }
   const priorGrant: Grant = prior?.allow_rule
     ? { allow_rule: prior.allow_rule, allow_settings: prior.allow_settings, allow_owned: prior.allow_owned, ...(prior.allow_declined ? { allow_declined: true } : {}) }
@@ -489,10 +497,11 @@ export function syncSkillsBlock(opts: { target: BrainFirstTarget; launcher: stri
   try {
     record('spring', createdFile, grant);
   } catch (e) {
-    const left = undoUnrecorded({ path: target.path, written, rule: added ? grant.allow_rule : undefined, settings });
+    const left = undoUnrecorded({ path: target.path, written, rule: added ? grant.allow_rule : undefined, settings, restore: replaced.removed });
     if (left.length === 0) return out('preserve', `recording the skills index in ${skillLoadingLedgerPath()} failed (${message(e)}), so this run's changes were undone and nothing changed; fix that, then re-run`, { reason: 'write_failed' });
     return out('preserve', `recording the skills index in ${skillLoadingLedgerPath()} failed (${message(e)}), and gbrain could not undo ${left.join(' and ')}; remove ${left.length > 1 ? 'them' : 'it'} by hand before re-running, because a re-run would take ${left.length > 1 ? 'them' : 'it'} for yours`, { reason: 'recorded_partially' });
   }
+  if (replaced.removed) done.replaced_permission = { ...replaced.removed, change: 'removed' };
   if (permissionProblem) return { ...done, action: 'preserve', detail: `${done.detail} (the index is in place; the permission step did not finish): ${permissionProblem}`, reason: 'permission_update_failed' };
   if (declined) return { ...done, detail: `${done.detail}; the Claude Code rule ${rule} was removed from ${settings} after gbrain added it, so gbrain left it out and Claude Code will ask before each skill load (re-run with --skill-loading spring to add it again)` };
   return added && grant.allow_rule ? { ...done, detail: `${done.detail}; Claude Code may now run ${grant.allow_rule}`, permission: { rule: grant.allow_rule, settings, change: 'added' } } : done;
@@ -503,8 +512,15 @@ export function syncSkillsBlock(opts: { target: BrainFirstTarget; launcher: stri
  * file is left that the ledger does not know gbrain wrote. Returns what could
  * not be undone.
  */
-function undoUnrecorded(opts: { path: string; written?: { before: string | null; after: string }; rule?: string; settings: string }): string[] {
+function undoUnrecorded(opts: { path: string; written?: { before: string | null; after: string }; rule?: string; settings: string; restore?: { rule: string; settings: string } }): string[] {
   const left: string[] = [];
+  if (opts.restore) {
+    try {
+      addPermissionsAllowEntry(opts.restore.settings, opts.restore.rule);
+    } catch {
+      left.push(`the removal of the rule ${opts.restore.rule} from ${opts.restore.settings} (add it back)`);
+    }
+  }
   if (opts.rule) {
     try {
       if (removePermissionsAllowEntry(opts.settings, opts.rule).notes.some((n) => n.startsWith('WARNING'))) left.push(`the rule ${opts.rule} in ${opts.settings}`);
@@ -571,7 +587,9 @@ export function removeSkillsBlock(opts: { harness: string; path: string; dryRun:
 export function describeSkillsBlockOutcome(o: SkillsBlockOutcome, dryRun: boolean): string {
   const how = o.decision.value === 'spring' ? 'turn off with --skill-loading off' : 'turn on with --skill-loading spring';
   const tag = o.decision.source === 'unresolved' ? '' : ` [${o.decision.source}; ${how}]`;
-  return `  ${(dryRun && o.action !== 'keep' && o.action !== 'skip' ? `would ${o.action}` : o.action).padEnd(8)} ${'skills'.padEnd(7)} ${o.detail}${tag}`;
+  const rule = (p: { rule: string; settings: string; change: string } | undefined) =>
+    p && p.change !== 'added' ? `; ${p.change.replace('_', ' ')} Claude Code permission ${p.rule} in ${p.settings}` : '';
+  return `  ${(dryRun && o.action !== 'keep' && o.action !== 'skip' ? `would ${o.action}` : o.action).padEnd(8)} ${'skills'.padEnd(7)} ${o.detail}${rule(o.replaced_permission)}${rule(o.permission)}${tag}`;
 }
 
 /**
@@ -682,7 +700,9 @@ export function refreshSkillsIndexes(harness: BrainFirstHarness, opts: { mode?: 
   const unreadable = ledgerProblem();
   if (unreadable) return [unreadable];
   const off = opts.mode === 'off';
-  return readSkillLoadingLedger().filter((e) => e.harness === harness && (off || e.mode === 'spring')).map((e) => syncSkillsBlock({
+  const ledger = readSkillLoadingLedger();
+  const batch = ledger.filter((e) => e.harness === harness && (off || e.mode === 'spring'));
+  const outcomes = batch.map((e) => syncSkillsBlock({
     target: brainFirstTargetAt(harness, e.path),
     launcher: opts.launcher ?? e.launcher ?? indexLauncher() ?? 'gbrain',
     audience: e.audience ?? 'owner',
@@ -690,4 +710,22 @@ export function refreshSkillsIndexes(harness: BrainFirstHarness, opts: { mode?: 
     writer: e.writer,
     dryRun: opts.dryRun,
   }));
+  if (!opts.dryRun || harness !== 'claude-code') return outcomes;
+  // Each row previewed alone sees the others still owning a shared rule. When the batch drops that rule from every
+  // row (an opt-out, or a launcher change), its last owner is the one that takes it out, so that row shows the removal.
+  const owners = (e: SkillLoadingLedgerEntry) => e.mode === 'spring' && e.allow_owned === true && e.allow_rule !== undefined;
+  const drops = (e: SkillLoadingLedgerEntry) => off || loaderAllowRule(opts.launcher ?? e.launcher ?? '') !== e.allow_rule;
+  const shown = (o: SkillsBlockOutcome, rule: string) => (off ? o.permission : o.replaced_permission)?.rule === rule;
+  batch.forEach((e, i) => {
+    if (!owners(e) || !drops(e) || outcomes.some((o) => shown(o, e.allow_rule!))) return;
+    const settings = ruleSettings(e);
+    const sameRule = (x: SkillLoadingLedgerEntry) => owners(x) && x.allow_rule === e.allow_rule && ruleSettings(x) === settings;
+    if (ledger.some((x) => sameRule(x) && (!batch.includes(x) || !drops(x)))) return;
+    if (batch.map((x, j) => (sameRule(x) ? j : -1)).filter((j) => j >= 0).pop() !== i) return;
+    const removal = plannedPermission('would_remove', { rule: e.allow_rule!, settings }).permission;
+    if (!removal) return;
+    if (off) outcomes[i]!.permission = removal;
+    else outcomes[i]!.replaced_permission = { rule: removal.rule, settings: removal.settings, change: 'would_remove' };
+  });
+  return outcomes;
 }

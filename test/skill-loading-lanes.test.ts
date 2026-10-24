@@ -18,7 +18,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { withEnv } from './helpers/with-env.ts';
 import { BRAIN_FIRST_END, brainFirstTargetAt } from '../src/core/setup/brain-first.ts';
-import { installerSkillsBlock, loaderAllowRule, readSkillLoadingLedger, refreshSkillsIndexes, skillsIndexViews, skillsOutcomeFailed, SKILLS_BLOCK_BEGIN, SKILLS_BLOCK_END, type SkillsBlockOutcome } from '../src/core/setup/skills-block.ts';
+import { describeSkillsBlockOutcome, installerSkillsBlock, loaderAllowRule, readSkillLoadingLedger, refreshSkillsIndexes, skillsIndexViews, skillsOutcomeFailed, SKILLS_BLOCK_BEGIN, SKILLS_BLOCK_END, type SkillsBlockOutcome } from '../src/core/setup/skills-block.ts';
 import { removeHarnessBrainFirst, writeHarnessBrainFirst } from '../src/core/bootstrap/harness-brain-first.ts';
 import { installHarnessConnection } from '../src/core/harness/install.ts';
 import { removeHarnessSkillsIndex, writeHarnessSkillsIndex } from '../src/core/bootstrap/harness-skills-index.ts';
@@ -286,6 +286,20 @@ describe('Claude Code loader rule', () => {
     });
   });
 
+  test('a rule the user had before gbrain and then deleted is not added back by a remembered choice', async () => {
+    const b = box();
+    await withEnv(b.env, async () => {
+      const s = setup(b);
+      mkdirSync(dirname(s.settings), { recursive: true });
+      writeFileSync(s.settings, JSON.stringify({ permissions: { allow: [s.rule] } }));
+      s.spring(s.user);
+      writeFileSync(s.settings, JSON.stringify({ permissions: { allow: [] } }));
+      expect(s.spring(s.user, {}).detail).toContain('--skill-loading spring');
+      expect(allowList(s.settings)).toEqual([]);
+      expect(readSkillLoadingLedger()[0]).toMatchObject({ allow_owned: false, allow_declined: true });
+    });
+  });
+
   test('a rule the user removed is not added back by a remembered choice, only by an explicit --skill-loading spring', async () => {
     const b = box();
     await withEnv(b.env, async () => {
@@ -436,6 +450,91 @@ describe('Claude Code loader rule: refresh, dry-run, ledger failures', () => {
       expect(c.run({ skillLoading: 'off' }).permission).toMatchObject({ change: 'removed' });
       expect(existsSync(c.target.path)).toBe(false);
       expect(allowList(c.settings)).toEqual([]);
+    });
+  });
+
+  for (const order of ['owner first', 'declined first'] as const) {
+    test(`decline on both indexes, explicit re-grant on one: the rule still comes out with the last removal (${order})`, async () => {
+      const b = box();
+      await withEnv(b.env, async () => {
+        const c = ctx(b);
+        const project = brainFirstTargetAt('claude-code', join(b.root, 'repo', 'CLAUDE.md'));
+        mkdirSync(dirname(project.path), { recursive: true });
+        const runProject = (extra: Record<string, unknown>) => installerSkillsBlock({ target: project, launcher: LAUNCHER, writer: 'test', brainFirstDeclined: false, ...extra });
+        c.run();
+        runProject({ skillLoading: 'spring' });
+        writeFileSync(c.settings, JSON.stringify({ permissions: { allow: [] } }));
+        c.run({});
+        runProject({});
+        expect(readSkillLoadingLedger().every(e => e.allow_declined === true)).toBe(true);
+        expect(c.run().permission).toMatchObject({ change: 'added' });
+        if (order === 'owner first') { c.run({ remove: true }); runProject({ remove: true }); } else { runProject({ remove: true }); c.run({ remove: true }); }
+        expect(readSkillLoadingLedger()).toEqual([]);
+        expect(allowList(c.settings)).toEqual([]);
+      });
+    });
+  }
+
+  test('a ledger write that fails during a launcher change puts the old rule back, so a plain retry keeps it', async () => {
+    const b = box();
+    const other = join(b.root, 'other-install', 'gbrain');
+    mkdirSync(dirname(other), { recursive: true });
+    copyFileSync(LAUNCHER, other);
+    chmodSync(other, 0o755);
+    await withEnv(b.env, async () => {
+      const c = ctx(b);
+      c.run();
+      const dir = join(b.home, '.gbrain');
+      chmodSync(dir, 0o500);
+      let failed: SkillsBlockOutcome;
+      try {
+        failed = installerSkillsBlock({ target: c.target, launcher: other, writer: 'test', brainFirstDeclined: false, skillLoading: 'spring' });
+      } finally {
+        chmodSync(dir, 0o755);
+      }
+      expect(failed).toMatchObject({ action: 'preserve', reason: 'write_failed' });
+      expect(allowList(c.settings)).toEqual([c.rule]);
+      const retry = c.run({});
+      expect(retry.action).toBe('keep');
+      expect(readSkillLoadingLedger()[0]).toMatchObject({ allow_owned: true });
+      expect(readSkillLoadingLedger()[0].allow_declined).toBeUndefined();
+    });
+  });
+
+  test('a ledger row that claims ownership without its rule is refused', async () => {
+    const b = box();
+    await withEnv(b.env, async () => {
+      const c = ctx(b);
+      c.run();
+      const ledger = join(b.home, '.gbrain', 'skill-loading.json');
+      const doc = JSON.parse(read(ledger));
+      delete doc.entries[0].allow_rule;
+      writeFileSync(ledger, JSON.stringify(doc));
+      expect(c.run({ skillLoading: 'off' })).toMatchObject({ action: 'preserve', reason: 'ledger_unreadable' });
+      expect(allowList(c.settings)).toEqual([c.rule]);
+    });
+  });
+
+  test('dry-run previews are complete: human lines name the rule, a batch opt-out removes a shared rule once, a launcher change shows both rules', async () => {
+    const b = box();
+    const other = join(b.root, 'other-install', 'gbrain');
+    mkdirSync(dirname(other), { recursive: true });
+    copyFileSync(LAUNCHER, other);
+    chmodSync(other, 0o755);
+    await withEnv(b.env, async () => {
+      const c = ctx(b);
+      const preview = c.run({ skillLoading: 'spring', dryRun: true });
+      expect(describeSkillsBlockOutcome(preview, true)).toContain(`would add Claude Code permission ${c.rule} in ${c.settings}`);
+      c.run();
+      const project = brainFirstTargetAt('claude-code', join(b.root, 'repo', 'CLAUDE.md'));
+      mkdirSync(dirname(project.path), { recursive: true });
+      installerSkillsBlock({ target: project, launcher: LAUNCHER, writer: 'test', brainFirstDeclined: false, skillLoading: 'spring' });
+      const batch = refreshSkillsIndexes('claude-code', { mode: 'off', dryRun: true });
+      expect(batch.filter(o => o.permission?.change === 'would_remove')).toHaveLength(1);
+      expect(allowList(c.settings)).toEqual([c.rule]);
+      const swap = refreshSkillsIndexes('claude-code', { launcher: other, dryRun: true });
+      expect(swap.some(o => o.permission?.change === 'would_add' && o.permission.rule === loaderAllowRule(other))).toBe(true);
+      expect(swap.filter(o => o.replaced_permission?.change === 'would_remove')).toHaveLength(1);
     });
   });
 

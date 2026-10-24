@@ -520,7 +520,8 @@ describe('skills index exit codes (GBRA-194)', () => {
       const code = await applyHarness(flags(['--harness', 'claude-code', '--skill-loading', 'spring', '--json']), f.deps);
       expect(code).toBe(1);
       expect(f.err.join('\n')).toContain('skills index was not written');
-      const doc = JSON.parse(f.out.filter(l => l.trim().startsWith('{')).join('\n') || '{}') as { skills_index?: Array<{ action: string; reason?: string }> };
+      const doc = JSON.parse(f.out.filter(l => l.trim().startsWith('{')).join('\n') || '{}') as { status?: string; skills_index?: Array<{ action: string; reason?: string }> };
+      expect(doc.status).toBe('failed');
       expect(doc.skills_index?.[0]).toMatchObject({ action: 'preserve', reason: 'launcher_unusable' });
     });
   });
