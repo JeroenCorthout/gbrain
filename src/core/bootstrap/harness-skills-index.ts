@@ -8,8 +8,7 @@
  * leaves one whose file still holds another connection's brain-first block.
  */
 import { brainFirstTargetAt, codexInstructionFile, readBrainFirstLedger } from '../setup/brain-first.ts';
-import { describeSkillsBlockOutcome, installerSkillsBlock, removeSkillsBlocksBy, skillsOutcomeFailed, type SkillLoading, type SkillsBlockOutcome } from '../setup/skills-block.ts';
-import { setCliExitVerdict } from '../cli-force-exit.ts';
+import { describeSkillsBlockOutcome, installerSkillsBlock, removeSkillsBlocksBy, type SkillLoading, type SkillsBlockOutcome } from '../setup/skills-block.ts';
 import type { BrainFirstHost, HarnessInstructionPaths } from './harness-brain-first.ts';
 
 const WRITER = 'gbrain bootstrap harness';
@@ -23,17 +22,15 @@ export function writeHarnessSkillsIndex(opts: { hosts: readonly BrainFirstHost[]
     const declined = opts.optOut || readBrainFirstLedger().find((e) => e.harness === host && e.path === path)?.status === 'declined';
     const o = installerSkillsBlock({ target: brainFirstTargetAt(host, path), launcher: opts.launcher, writer: WRITER, brainFirstDeclined: declined, skillLoading: opts.skillLoading, audience: 'owner', settingsPath: opts.settingsPath });
     if (o.decision.value === 'spring' || o.action !== 'skip') opts.log(describeSkillsBlockOutcome(o, false).trim());
-    if (skillsOutcomeFailed(o)) setCliExitVerdict(1);
     return o;
   });
 }
 
 /** Runs after brain-first removal: an index whose file still holds another connection's brain-first block stays with it. */
-export function removeHarnessSkillsIndex(server: string, log: (line: string) => void): void {
+export function removeHarnessSkillsIndex(server: string, log: (line: string) => void): SkillsBlockOutcome[] {
   const keptFor = (harness: string, path: string) => readBrainFirstLedger().some((b) => b.harness === harness && b.path === path && b.writer === WRITER
     && b.status === 'installed' && b.access.kind === 'mcp' && b.access.server !== server);
-  for (const o of removeSkillsBlocksBy(WRITER, { keep: (e) => keptFor(e.harness, e.path) })) {
-    log(describeSkillsBlockOutcome(o, false).trim());
-    if (skillsOutcomeFailed(o)) setCliExitVerdict(1);
-  }
+  const outcomes = removeSkillsBlocksBy(WRITER, { keep: (e) => keptFor(e.harness, e.path) });
+  for (const o of outcomes) log(describeSkillsBlockOutcome(o, false).trim());
+  return outcomes;
 }

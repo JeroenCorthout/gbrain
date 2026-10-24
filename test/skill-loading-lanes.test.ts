@@ -18,7 +18,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { withEnv } from './helpers/with-env.ts';
 import { BRAIN_FIRST_END, brainFirstTargetAt } from '../src/core/setup/brain-first.ts';
-import { installerSkillsBlock, loaderAllowRule, readSkillLoadingLedger, skillsIndexViews, SKILLS_BLOCK_BEGIN, SKILLS_BLOCK_END } from '../src/core/setup/skills-block.ts';
+import { installerSkillsBlock, loaderAllowRule, readSkillLoadingLedger, refreshSkillsIndexes, skillsIndexViews, skillsOutcomeFailed, SKILLS_BLOCK_BEGIN, SKILLS_BLOCK_END, type SkillsBlockOutcome } from '../src/core/setup/skills-block.ts';
 import { removeHarnessBrainFirst, writeHarnessBrainFirst } from '../src/core/bootstrap/harness-brain-first.ts';
 import { installHarnessConnection } from '../src/core/harness/install.ts';
 import { removeHarnessSkillsIndex, writeHarnessSkillsIndex } from '../src/core/bootstrap/harness-skills-index.ts';
@@ -88,6 +88,17 @@ describe('connect --harness --install', () => {
     });
   }
 
+  test('a requested index that is not written is flagged in the result and its next_action', async () => {
+    const b = box();
+    await withEnv(b.env, async () => {
+      const configPath = join(b.home, '.codex', 'config.toml');
+      const r = await installHarnessConnection(credentials, { harness: 'codex', configPath, skillLoading: 'spring', gbrainBin: join(b.root, 'missing', 'gbrain') }) as any;
+      expect(r.skills).toMatchObject({ action: 'preserve', reason: 'launcher_unusable' });
+      expect(r.skills_failed).toBe(true);
+      expect(r.next_action).toContain('skills index step did not finish');
+    });
+  });
+
   test('thin client: GBRAIN-INSTRUCTIONS.md carries the index after brain-first with the root launcher; the choice is kept', async () => {
     const b = box();
     const root = join(b.root, 'thin');
@@ -103,6 +114,10 @@ describe('connect --harness --install', () => {
       expect(indexed(text)).toEqual(bundledSkills('downstream').map(s => s.name));
       await installHarnessConnection(credentials, { harness: 'openclaw', root });
       expect(read(join(root, 'GBRAIN-INSTRUCTIONS.md'))).toBe(text);
+      await withEnv({ GBRAIN_HOME: root }, async () => {
+        expect(skillsIndexViews()).toMatchObject([{ harness: 'openclaw', path: join(root, 'GBRAIN-INSTRUCTIONS.md'), state: 'current' }]);
+        expect(skillsIndexViews()[0].refresh).toContain('gbrain connect');
+      });
       await installHarnessConnection(credentials, { harness: 'openclaw', root, instructions: false });
       expect(read(join(root, 'GBRAIN-INSTRUCTIONS.md'))).not.toContain(SKILLS_BLOCK_BEGIN);
     });
@@ -201,8 +216,21 @@ describe('doctor: skills index', () => {
       expect(views).toMatchObject([{ state: 'launcher_missing' }]);
       expect(views[0].refresh).toContain('--gbrain-bin');
       const out = withSkillsIndex(check, views);
-      expect(out.status).toBe('ok');
+      expect(out.status).toBe('warn');
       expect(out.message).toContain('no longer there');
+      expect((out as any).fix.user_message).toContain('--gbrain-bin');
+    });
+  });
+  test('an unreadable ledger warns with a fix that says to restore it, not to start over', async () => {
+    const b = box();
+    await withEnv(b.env, async () => {
+      mkdirSync(join(b.home, '.gbrain'), { recursive: true });
+      writeFileSync(join(b.home, '.gbrain', 'skill-loading.json'), '{not json');
+      const views = skillsIndexViews();
+      expect(views).toMatchObject([{ state: 'ledger_unreadable' }]);
+      const out = withSkillsIndex(check, views);
+      expect(out.status).toBe('warn');
+      expect((out as any).fix.user_message).toContain('Restore a valid copy');
     });
   });
   test('no index on: the check is returned unchanged; all current: only details are added', () => {
@@ -317,6 +345,107 @@ describe('Claude Code loader rule', () => {
       });
     });
   }
+});
+
+describe('Claude Code loader rule: refresh, dry-run, ledger failures', () => {
+  const allowList = (settings: string): string[] => (existsSync(settings) ? JSON.parse(read(settings)).permissions?.allow ?? [] : []);
+  const ctx = (b: ReturnType<typeof box>) => {
+    const settings = join(b.home, '.claude', 'settings.json');
+    const target = brainFirstTargetAt('claude-code', join(b.home, '.claude', 'CLAUDE.md'));
+    const run = (extra: Record<string, unknown> = { skillLoading: 'spring' }) => installerSkillsBlock({ target, launcher: LAUNCHER, writer: 'test', brainFirstDeclined: false, ...extra });
+    return { settings, target, run, rule: loaderAllowRule(LAUNCHER) };
+  };
+
+  test('--skills-index-only respects a deleted rule; with an explicit --skill-loading spring it adds it back', async () => {
+    const b = box();
+    await withEnv(b.env, async () => {
+      const c = ctx(b);
+      c.run();
+      writeFileSync(c.settings, JSON.stringify({ permissions: { allow: [] } }));
+      expect(refreshSkillsIndexes('claude-code', { dryRun: false })[0].permission).toBeUndefined();
+      expect(allowList(c.settings)).toEqual([]);
+      const explicit = refreshSkillsIndexes('claude-code', { mode: 'spring', dryRun: false })[0];
+      expect(explicit).toMatchObject({ decision: { source: 'flag' }, permission: { change: 'added', rule: c.rule } });
+      expect(allowList(c.settings)).toEqual([c.rule]);
+    });
+  });
+
+  test('--dry-run reports the rule a real run would add or remove, and nothing for a rule another index still uses', async () => {
+    const b = box();
+    await withEnv(b.env, async () => {
+      const c = ctx(b);
+      expect(c.run({ skillLoading: 'spring', dryRun: true }).permission).toMatchObject({ change: 'would_add', rule: c.rule, settings: c.settings });
+      expect(allowList(c.settings)).toEqual([]);
+      c.run();
+      expect(c.run({ skillLoading: 'off', dryRun: true }).permission).toMatchObject({ change: 'would_remove', rule: c.rule });
+      expect(c.run({ remove: true, dryRun: true }).permission).toMatchObject({ change: 'would_remove', rule: c.rule });
+      const project = brainFirstTargetAt('claude-code', join(b.root, 'repo', 'CLAUDE.md'));
+      mkdirSync(dirname(project.path), { recursive: true });
+      installerSkillsBlock({ target: project, launcher: LAUNCHER, writer: 'test', brainFirstDeclined: false, skillLoading: 'spring' });
+      expect(c.run({ skillLoading: 'off', dryRun: true }).permission).toBeUndefined();
+      expect(allowList(c.settings)).toEqual([c.rule]);
+    });
+  });
+
+  test('a ledger row with an invalid field refuses every change instead of being dropped', async () => {
+    const b = box();
+    await withEnv(b.env, async () => {
+      const c = ctx(b);
+      c.run();
+      const ledger = join(b.home, '.gbrain', 'skill-loading.json');
+      const bytes = read(ledger).replace('"mode": "spring"', '"mode": "sprng"');
+      writeFileSync(ledger, bytes);
+      const off = c.run({ skillLoading: 'off' });
+      expect(off).toMatchObject({ action: 'preserve', reason: 'ledger_unreadable' });
+      expect(off.detail).toContain('entry 0 has an invalid mode');
+      expect(off.detail).toContain(c.rule);
+      expect(read(ledger)).toBe(bytes);
+      expect(allowList(c.settings)).toEqual([c.rule]);
+      expect(read(c.target.path)).toContain(SKILLS_BLOCK_BEGIN);
+    });
+  });
+
+  test('a ledger written by a newer gbrain says to upgrade', async () => {
+    const b = box();
+    await withEnv(b.env, async () => {
+      mkdirSync(join(b.home, '.gbrain'), { recursive: true });
+      writeFileSync(join(b.home, '.gbrain', 'skill-loading.json'), JSON.stringify({ version: 2, entries: [] }));
+      expect(ctx(b).run().detail).toContain('newer gbrain');
+    });
+  });
+
+  test('a ledger write that fails undoes the block and the rule, so a retry and opt-out leave nothing behind', async () => {
+    const b = box();
+    await withEnv(b.env, async () => {
+      const c = ctx(b);
+      const dir = join(b.home, '.gbrain');
+      mkdirSync(dir, { recursive: true });
+      chmodSync(dir, 0o500);
+      let failed: SkillsBlockOutcome;
+      try {
+        failed = c.run();
+      } finally {
+        chmodSync(dir, 0o755);
+      }
+      expect(failed).toMatchObject({ action: 'preserve', reason: 'write_failed' });
+      expect(failed.detail).toContain('undone');
+      expect(existsSync(c.target.path)).toBe(false);
+      expect(allowList(c.settings)).toEqual([]);
+      expect(c.run().permission).toMatchObject({ change: 'added' });
+      expect(readSkillLoadingLedger()[0]).toMatchObject({ allow_owned: true, created_file: true });
+      expect(c.run({ skillLoading: 'off' }).permission).toMatchObject({ change: 'removed' });
+      expect(existsSync(c.target.path)).toBe(false);
+      expect(allowList(c.settings)).toEqual([]);
+    });
+  });
+
+  test('an explicit spring skipped for a reason the user must fix counts as failed; a remembered one does not', () => {
+    const base = { harness: 'hermes', path: '/home/alice-example/.hermes/SOUL.md', action: 'skip', state_before: 'no_file', detail: 'x', reason: 'hermes_soul_missing' } as const;
+    expect(skillsOutcomeFailed({ ...base, decision: { value: 'spring', source: 'flag' } })).toBe(true);
+    expect(skillsOutcomeFailed({ ...base, decision: { value: 'spring', source: 'env' } })).toBe(true);
+    expect(skillsOutcomeFailed({ ...base, decision: { value: 'spring', source: 'prior' } })).toBe(false);
+    expect(skillsOutcomeFailed({ ...base, reason: undefined, decision: { value: 'off', source: 'default' } })).toBe(false);
+  });
 });
 
 describe('refusals keep everything as it was', () => {

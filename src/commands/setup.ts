@@ -800,7 +800,7 @@ async function runSkillsIndexOnly(flags: SetupFlags, out: Out): Promise<number> 
   if (!isBrainFirstHarness(harness)) {
     return refuse(opError('invalid_params', `--skills-index-only needs a harness with an instruction file: ${BRAIN_FIRST_HARNESSES.join(', ')}`, 'Pass the harness whose skills index to refresh, e.g. gbrain setup claude-code --skills-index-only.'), out);
   }
-  const outcomes = refreshSkillsIndexes(harness, { off: flags.skillLoading === 'off', launcher: flags.gbrainBin, dryRun: flags.dryRun });
+  const outcomes = refreshSkillsIndexes(harness, { mode: flags.skillLoading, launcher: flags.gbrainBin, dryRun: flags.dryRun });
   const code = outcomes.some((o) => o.action === 'preserve') ? 1 : 0;
   if (out.json) {
     await writeJsonDocument(`${JSON.stringify({ harness, dry_run: flags.dryRun, skills_index_only: true, skills: outcomes }, null, 2)}\n`, (t) => process.stdout.write(t));

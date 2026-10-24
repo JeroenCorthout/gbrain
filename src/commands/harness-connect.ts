@@ -39,8 +39,11 @@ export async function runHarnessConnect(args: string[]): Promise<void> {
       console.error(`If it was exposed: ${token.if_exposed.steps.join(' Then: ')} See ${token.if_exposed.docs_url}.`);
       if (token.token_warning) console.error(`WARNING: ${token.token_warning}`);
     }
-    if (skillsOutcomeFailed((result as { skills?: SkillsBlockOutcome }).skills)) setCliExitVerdict(1);
-    else if (result.status === 'pending' || 'remote_membership_pending' in result && result.remote_membership_pending) setCliExitVerdict(2);
+    const skills = (result as { skills?: SkillsBlockOutcome }).skills;
+    if (skillsOutcomeFailed(skills)) {
+      console.error(`skills index: ${skills!.detail}${'remote_membership_pending' in result && result.remote_membership_pending ? ' (remote membership deactivation is also pending; exit 1 outranks its exit 2)' : ''}`);
+      setCliExitVerdict(1);
+    } else if (result.status === 'pending' || 'remote_membership_pending' in result && result.remote_membership_pending) setCliExitVerdict(2);
   } catch (error) {
     console.log(JSON.stringify({ status: 'error', reason: 'connection_setup_failed', message: error instanceof Error ? error.message : 'Connection setup failed' }));
     setCliExitVerdict(1);

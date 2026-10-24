@@ -131,8 +131,13 @@ export function skillLoadingLedgerPath(): string { return join(configDir(), LEDG
 
 /** A ledger gbrain cannot read: ownership is unknown, so nothing that depends on it is changed. */
 export class SkillLedgerUnreadable extends Error {
-  constructor(readonly path: string, why: string) {
-    super(`${path} is unreadable (${why}); gbrain will not guess which skills indexes and permission rules it owns. Fix the JSON or move the file aside, then re-run`);
+  constructor(readonly path: string, why: string, raw = '') {
+    const newer = /"version"\s*:\s*(\d+)/.exec(raw);
+    const rules = [...new Set([...raw.matchAll(/"allow_rule"\s*:\s*"((?:[^"\\]|\\.)*)"/g)].map((m) => m[1]!.replace(/\\(.)/g, '$1')))];
+    const rulesNote = rules.length ? ` and the Claude Code permission rule${rules.length > 1 ? 's' : ''} it names (${rules.join(', ')}, normally in ${claudeUserSettingsPath()})` : '';
+    super(newer && Number(newer[1]) > 1
+      ? `${path} was written by a newer gbrain (ledger version ${newer[1]}); upgrade gbrain, then re-run`
+      : `${path} is unreadable (${why}); ownership is unknown, so no skills index or permission rule was changed. Restore a valid copy or fix that entry, then re-run once. Starting over without it would leave whatever it recorded behind: if you must, first remove the gbrain:skills blocks${rulesNote} by hand`);
   }
 }
 
@@ -140,14 +145,39 @@ export class SkillLedgerUnreadable extends Error {
 export function readSkillLoadingLedger(): SkillLoadingLedgerEntry[] {
   const path = skillLoadingLedgerPath();
   if (!existsSync(path)) return [];
+  const text = readFileSync(path, 'utf8');
   let raw: { version?: unknown; entries?: unknown };
   try {
-    raw = JSON.parse(readFileSync(path, 'utf8')) as typeof raw;
+    raw = JSON.parse(text) as typeof raw;
   } catch (e) {
-    throw new SkillLedgerUnreadable(path, e instanceof Error ? e.message : String(e));
+    throw new SkillLedgerUnreadable(path, e instanceof Error ? e.message : String(e), text);
   }
-  if (raw?.version !== 1 || !Array.isArray(raw.entries)) throw new SkillLedgerUnreadable(path, 'not a version-1 ledger');
-  return (raw.entries as SkillLoadingLedgerEntry[]).filter((e) => e && typeof e.path === 'string' && typeof e.harness === 'string' && isSkillLoading(e.mode));
+  if (raw?.version !== 1 || !Array.isArray(raw.entries)) throw new SkillLedgerUnreadable(path, 'not a version-1 ledger', text);
+  const entries = raw.entries as SkillLoadingLedgerEntry[];
+  const seen = new Set<string>();
+  entries.forEach((e, i) => {
+    const bad = invalidLedgerField(e);
+    if (bad) throw new SkillLedgerUnreadable(path, `entry ${i} has an invalid ${bad}`, text);
+    const key = JSON.stringify([e.harness, e.path]);
+    if (seen.has(key)) throw new SkillLedgerUnreadable(path, `entry ${i} repeats ${e.harness} ${e.path}`, text);
+    seen.add(key);
+  });
+  return entries;
+}
+
+/** The first field of a ledger entry that is missing or of the wrong type, else undefined. */
+function invalidLedgerField(e: SkillLoadingLedgerEntry): string | undefined {
+  if (!e || typeof e !== 'object') return 'entry';
+  const optional = (v: unknown, type: string) => v !== undefined && typeof v !== type;
+  if (typeof e.harness !== 'string') return 'harness';
+  if (typeof e.path !== 'string') return 'path';
+  if (!isSkillLoading(e.mode)) return 'mode';
+  if (typeof e.writer !== 'string') return 'writer';
+  if (typeof e.created_file !== 'boolean') return 'created_file';
+  if (e.audience !== undefined && e.audience !== 'owner' && e.audience !== 'downstream') return 'audience';
+  for (const k of ['catalog', 'launcher', 'allow_rule', 'allow_settings'] as const) if (optional(e[k], 'string')) return k;
+  for (const k of ['allow_owned', 'allow_declined'] as const) if (optional(e[k], 'boolean')) return k;
+  return undefined;
 }
 
 function writeLedger(entries: SkillLoadingLedgerEntry[]): void {
@@ -203,12 +233,16 @@ function loaderRulePresent(settings: string, rule: string): boolean | undefined 
  * removed the rule gbrain added (only an explicit --skill-loading spring adds
  * it back). Throws when settings cannot be updated.
  */
+/** The recorded rule is this one and the user took it out after gbrain added it (or declined it before). */
+function userRemovedRule(prior: SkillLoadingLedgerEntry | undefined, rule: string, settings: string): boolean {
+  if (prior?.allow_rule !== rule || ruleSettings(prior) !== settings) return false;
+  return prior.allow_declined === true || (prior.allow_owned === true && loaderRulePresent(settings, rule) === false);
+}
+
 function grantLoader(harness: string, launcher: string, settings: string, prior: SkillLoadingLedgerEntry | undefined, regrant: boolean): { grant: Grant; added: boolean; declined: boolean } {
   if (harness !== 'claude-code') return { grant: {}, added: false, declined: false };
   const rule = loaderAllowRule(launcher);
-  const same = prior?.allow_rule === rule && ruleSettings(prior) === settings;
-  const userRemoved = same && (prior.allow_declined === true || (prior.allow_owned === true && loaderRulePresent(settings, rule) === false));
-  if (userRemoved && !regrant) return { grant: { allow_rule: rule, allow_settings: settings, allow_owned: false, allow_declined: true }, added: false, declined: true };
+  if (userRemovedRule(prior, rule, settings) && !regrant) return { grant: { allow_rule: rule, allow_settings: settings, allow_owned: false, allow_declined: true }, added: false, declined: true };
   const added = addPermissionsAllowEntry(settings, rule).added === true;
   const shared = readSkillLoadingLedger().some((e) => e.allow_rule === rule && ruleSettings(e) === settings && e.allow_owned === true);
   return { grant: { allow_rule: rule, allow_settings: settings, allow_owned: added || shared }, added, declined: false };
@@ -219,15 +253,29 @@ function grantLoader(harness: string, launcher: string, settings: string, prior:
  * throws: `problem` says why the rule is still there, `removed` names the
  * rule when this call took it out of the settings.
  */
+/** The owned rule revokeLoader would take out for this entry, or undefined when it has none to take or another index still uses it. Throws on an unreadable ledger. */
+function revocableRule(entry: SkillLoadingLedgerEntry | undefined, keep?: { rule?: string; settings: string }): { rule: string; settings: string } | undefined {
+  if (!entry?.allow_rule || entry.allow_owned !== true) return undefined;
+  const rule = entry.allow_rule;
+  const settings = ruleSettings(entry);
+  if (keep && rule === keep.rule && settings === keep.settings) return undefined;
+  const stillUsed = readSkillLoadingLedger().some((e) => e.mode === 'spring' && e.allow_rule === rule && ruleSettings(e) === settings && !(e.harness === entry.harness && e.path === entry.path));
+  return stillUsed ? undefined : { rule, settings };
+}
+
+/** What --dry-run reports for the loader rule: the change a real run would make. */
+function plannedPermission(change: 'would_add' | 'would_remove', target: { rule: string; settings: string } | undefined): Partial<SkillsBlockOutcome> {
+  if (!target || loaderRulePresent(target.settings, target.rule) === (change === 'would_add')) return {};
+  return { permission: { ...target, change } };
+}
+
 function revokeLoader(entry: SkillLoadingLedgerEntry | undefined, keep?: { rule?: string; settings: string }): { removed?: { rule: string; settings: string }; problem?: string } {
   if (!entry?.allow_rule || entry.allow_owned !== true) return {};
   const rule = entry.allow_rule;
   const settings = ruleSettings(entry);
-  if (keep && rule === keep.rule && settings === keep.settings) return {};
   const stuck = (why: string) => ({ problem: `the Claude Code permission rule ${rule} that gbrain added is still in ${settings}: ${why}` });
   try {
-    const stillUsed = readSkillLoadingLedger().some((e) => e.mode === 'spring' && e.allow_rule === rule && ruleSettings(e) === settings && !(e.harness === entry.harness && e.path === entry.path));
-    if (stillUsed) return {};
+    if (!revocableRule(entry, keep)) return {};
     const r = removePermissionsAllowEntry(settings, rule);
     const warning = r.notes.find((n) => n.startsWith('WARNING'));
     if (warning) return stuck(warning);
@@ -239,7 +287,8 @@ function revokeLoader(entry: SkillLoadingLedgerEntry | undefined, keep?: { rule?
 
 // ── Decision, inspection, sync, removal ───────────────────────────────────
 
-export type SkillLoadingSource = 'flag' | 'env' | 'prior' | 'default' | 'instructions_off';
+/** unresolved: the choice could not be read (an unreadable ledger, an invalid GBRAIN_SKILL_LOADING). */
+export type SkillLoadingSource = 'flag' | 'env' | 'prior' | 'default' | 'instructions_off' | 'unresolved';
 export interface SkillLoadingDecision { value: SkillLoading; source: SkillLoadingSource }
 
 /** GBRAIN_SKILL_LOADING holds something other than off or spring. */
@@ -292,12 +341,19 @@ export interface SkillsBlockOutcome {
   detail: string;
   reason?: SkillsBlockReason;
   /** Claude Code: the loader rule this run added to (or removed from) the user settings. */
-  permission?: { rule: string; settings: string; change: 'added' | 'removed' };
+  permission?: { rule: string; settings: string; change: 'added' | 'removed' | 'would_add' | 'would_remove' };
 }
 
-/** A spring request (or an explicit off) that left the surface unchanged: the install did not do what was asked. */
-export const skillsOutcomeFailed = (o: SkillsBlockOutcome | null | undefined): boolean =>
-  !!o && o.action === 'preserve' && (o.decision.value === 'spring' || o.decision.source !== 'default');
+/**
+ * The install did not do what was asked: a spring request (or an explicit
+ * off) left the surface unchanged, or an explicit spring was skipped for a
+ * reason the user has to fix (Hermes without SOUL.md).
+ */
+export const skillsOutcomeFailed = (o: SkillsBlockOutcome | null | undefined): boolean => {
+  if (!o) return false;
+  if (o.action === 'preserve') return o.decision.value === 'spring' || o.decision.source !== 'default';
+  return o.action === 'skip' && o.reason !== undefined && o.decision.value === 'spring' && (o.decision.source === 'flag' || o.decision.source === 'env');
+};
 
 function ownedEmptyFile(createdFile: boolean, path: string, stripped: string): boolean {
   return createdFile && !lstatSync(path).isSymbolicLink() && (stripped.trim() === '' || stripped === CURSOR_HEAD);
@@ -354,7 +410,8 @@ export function syncSkillsBlock(opts: { target: BrainFirstTarget; launcher: stri
   if (decision.value === 'off') {
     const revocation = opts.dryRun ? {} : revokeLoader(prior);
     if (revocation.problem) return out('preserve', `${revocation.problem}; fix that, then re-run. ${target.path} was left as it was`, { reason: 'permission_update_failed' });
-    const revoked: Partial<SkillsBlockOutcome> = revocation.removed ? { permission: { ...revocation.removed, change: 'removed' } } : {};
+    const revoked: Partial<SkillsBlockOutcome> = revocation.removed ? { permission: { ...revocation.removed, change: 'removed' } }
+      : opts.dryRun ? plannedPermission('would_remove', revocableRule(prior)) : {};
     if (before.state === 'no_file' || before.state === 'absent') {
       try { record('off', false); } catch (e) { return out('preserve', `recording the opt-out failed: ${message(e)}`, { reason: 'write_failed' }); }
       return out('skip', `skill loading off: no skills index in ${target.path}`, revoked);
@@ -389,10 +446,13 @@ export function syncSkillsBlock(opts: { target: BrainFirstTarget; launcher: stri
   const brainFirstCreated = readBrainFirstLedger().find((e) => e.harness === target.harness && e.path === target.path)?.created_file ?? false;
   const created = before.state === 'no_file' && !direntExists(target.path);
   const createdFile = created || (prior?.created_file ?? false) || brainFirstCreated;
+  let written: { before: string | null; after: string } | undefined;
   if (before.state !== 'current' && !opts.dryRun) {
     try {
       const existing = before.state === 'no_file' ? (created && target.harness === 'cursor' ? CURSOR_HEAD : '') : readFileSync(target.path, 'utf8');
-      writeUnlessChanged(target.path, existing, before.state === 'no_file', placeSkillsBlock(existing, body));
+      const next = placeSkillsBlock(existing, body);
+      writeUnlessChanged(target.path, existing, before.state === 'no_file', next);
+      written = { before: before.state === 'no_file' ? null : existing, after: next };
       if (created && target.project) {
         try { ensureGitExcluded(target.path); } catch { /* a project file outside git stays as written */ }
       }
@@ -403,7 +463,12 @@ export function syncSkillsBlock(opts: { target: BrainFirstTarget; launcher: stri
   const done = before.state === 'current'
     ? out('keep', `skills index in ${target.path} is current`)
     : out('write', `skills index ${before.state === 'stale' ? 'refreshed in' : created ? 'in new file' : 'added to'} ${target.path}`);
-  if (opts.dryRun) return done;
+  if (opts.dryRun) {
+    if (target.harness !== 'claude-code') return done;
+    const rule = loaderAllowRule(launcher);
+    if (userRemovedRule(prior, rule, settings) && decision.source !== 'flag') return done;
+    return { ...done, ...plannedPermission('would_add', { rule, settings }) };
+  }
   const priorGrant: Grant = prior?.allow_rule
     ? { allow_rule: prior.allow_rule, allow_settings: prior.allow_settings, allow_owned: prior.allow_owned, ...(prior.allow_declined ? { allow_declined: true } : {}) }
     : {};
@@ -424,11 +489,42 @@ export function syncSkillsBlock(opts: { target: BrainFirstTarget; launcher: stri
   try {
     record('spring', createdFile, grant);
   } catch (e) {
-    return out('preserve', `the skills index is in ${target.path}, but recording it in ${skillLoadingLedgerPath()} failed (${message(e)}); re-run to record it${added ? ` (gbrain also added ${grant.allow_rule} to ${settings})` : ''}`, { reason: 'recorded_partially' });
+    const left = undoUnrecorded({ path: target.path, written, rule: added ? grant.allow_rule : undefined, settings });
+    if (left.length === 0) return out('preserve', `recording the skills index in ${skillLoadingLedgerPath()} failed (${message(e)}), so this run's changes were undone and nothing changed; fix that, then re-run`, { reason: 'write_failed' });
+    return out('preserve', `recording the skills index in ${skillLoadingLedgerPath()} failed (${message(e)}), and gbrain could not undo ${left.join(' and ')}; remove ${left.length > 1 ? 'them' : 'it'} by hand before re-running, because a re-run would take ${left.length > 1 ? 'them' : 'it'} for yours`, { reason: 'recorded_partially' });
   }
-  if (permissionProblem) return { ...done, action: 'preserve', detail: `${done.detail}; ${permissionProblem}`, reason: 'permission_update_failed' };
+  if (permissionProblem) return { ...done, action: 'preserve', detail: `${done.detail} (the index is in place; the permission step did not finish): ${permissionProblem}`, reason: 'permission_update_failed' };
   if (declined) return { ...done, detail: `${done.detail}; the Claude Code rule ${rule} was removed from ${settings} after gbrain added it, so gbrain left it out and Claude Code will ask before each skill load (re-run with --skill-loading spring to add it again)` };
   return added && grant.allow_rule ? { ...done, detail: `${done.detail}; Claude Code may now run ${grant.allow_rule}`, permission: { rule: grant.allow_rule, settings, change: 'added' } } : done;
+}
+
+/**
+ * A run whose ledger write failed takes back what it changed, so no rule or
+ * file is left that the ledger does not know gbrain wrote. Returns what could
+ * not be undone.
+ */
+function undoUnrecorded(opts: { path: string; written?: { before: string | null; after: string }; rule?: string; settings: string }): string[] {
+  const left: string[] = [];
+  if (opts.rule) {
+    try {
+      if (removePermissionsAllowEntry(opts.settings, opts.rule).notes.some((n) => n.startsWith('WARNING'))) left.push(`the rule ${opts.rule} in ${opts.settings}`);
+    } catch {
+      left.push(`the rule ${opts.rule} in ${opts.settings}`);
+    }
+  }
+  if (opts.written) {
+    try {
+      if (opts.written.before === null) {
+        if (readFileSync(opts.path, 'utf8') !== opts.written.after) throw new Error('changed');
+        unlinkSync(opts.path);
+      } else {
+        writeUnlessChanged(opts.path, opts.written.after, false, opts.written.before);
+      }
+    } catch {
+      left.push(`the skills block in ${opts.path}`);
+    }
+  }
+  return left;
 }
 
 /** The uninstall path: strip the block, delete the file only when gbrain created it and nothing else is left, forget the record. */
@@ -444,7 +540,10 @@ export function removeSkillsBlock(opts: { harness: string; path: string; dryRun:
     return out('preserve', `${message(e)}; ${opts.path} was left as it was`, { reason: 'ledger_unreadable' });
   }
   if (before.state === 'damaged') return out('preserve', `the skills markers in ${opts.path} were hand-edited; remove the block by hand`, { reason: 'damaged_markers' });
-  if (opts.dryRun) return before.state === 'no_file' || before.state === 'absent' ? out('skip', `no skills index in ${opts.path}`) : out('remove', `skills index from ${opts.path}`);
+  if (opts.dryRun) {
+    const planned = plannedPermission('would_remove', revocableRule(prior));
+    return before.state === 'no_file' || before.state === 'absent' ? out('skip', `no skills index in ${opts.path}`, planned) : out('remove', `skills index from ${opts.path}`, planned);
+  }
   const revocation = revokeLoader(prior);
   if (revocation.problem) return out('preserve', `${revocation.problem}; fix that, then re-run. ${opts.path} was left as it was`, { reason: 'permission_update_failed' });
   const permission: Partial<SkillsBlockOutcome> = revocation.removed ? { permission: { ...revocation.removed, change: 'removed' } } : {};
@@ -471,7 +570,8 @@ export function removeSkillsBlock(opts: { harness: string; path: string; dryRun:
 /** One human line per outcome, matching setup's step lines. */
 export function describeSkillsBlockOutcome(o: SkillsBlockOutcome, dryRun: boolean): string {
   const how = o.decision.value === 'spring' ? 'turn off with --skill-loading off' : 'turn on with --skill-loading spring';
-  return `  ${(dryRun && o.action !== 'keep' && o.action !== 'skip' ? `would ${o.action}` : o.action).padEnd(8)} ${'skills'.padEnd(7)} ${o.detail} [${o.decision.source}; ${how}]`;
+  const tag = o.decision.source === 'unresolved' ? '' : ` [${o.decision.source}; ${how}]`;
+  return `  ${(dryRun && o.action !== 'keep' && o.action !== 'skip' ? `would ${o.action}` : o.action).padEnd(8)} ${'skills'.padEnd(7)} ${o.detail}${tag}`;
 }
 
 /**
@@ -492,7 +592,7 @@ export function installerSkillsBlock(opts: {
       : resolveSkillLoading(opts.skillLoading, priorSkillLoading(opts.target.harness, opts.target.path));
   } catch (e) {
     const reason: SkillsBlockReason = e instanceof InvalidSkillLoadingEnv ? 'invalid_env' : 'ledger_unreadable';
-    return { harness: opts.target.harness, path: opts.target.path, decision: { value: 'off', source: 'flag' }, action: 'preserve', state_before: inspectSkillsBlock(opts.target.path).state, detail: `${message(e)}; ${opts.target.path} was left as it was`, reason };
+    return { harness: opts.target.harness, path: opts.target.path, decision: { value: 'off', source: 'unresolved' }, action: 'preserve', state_before: inspectSkillsBlock(opts.target.path).state, detail: `${message(e)}; ${opts.target.path} was left as it was`, reason };
   }
   return syncSkillsBlock({ target: opts.target, launcher: opts.launcher, decision, writer: opts.writer, dryRun: opts.dryRun ?? false, audience: opts.audience, settingsPath: opts.settingsPath });
 }
@@ -503,7 +603,7 @@ function ledgerProblem(): SkillsBlockOutcome | undefined {
     readSkillLoadingLedger();
     return undefined;
   } catch (e) {
-    return { harness: '*', path: skillLoadingLedgerPath(), decision: { value: 'off', source: 'flag' }, action: 'preserve', state_before: 'damaged', detail: message(e), reason: 'ledger_unreadable' };
+    return { harness: '*', path: skillLoadingLedgerPath(), decision: { value: 'off', source: 'unresolved' }, action: 'preserve', state_before: 'damaged', detail: message(e), reason: 'ledger_unreadable' };
   }
 }
 
@@ -515,8 +615,8 @@ export function removeSkillsBlocksBy(writer: string, opts: { dryRun?: boolean; k
   return readSkillLoadingLedger().filter((e) => e.writer === writer && e.mode === 'spring' && !opts.keep?.(e)).map((e) => removeSkillsBlock({ harness: e.harness, path: e.path, dryRun }));
 }
 
-/** launcher_missing: the block is in place but the gbrain it names is gone, so every load fails. */
-export type SkillsIndexState = SkillsBlockState | 'launcher_missing';
+/** launcher_missing: the block is in place but the gbrain it names is gone, so every load fails. ledger_unreadable: gbrain cannot tell which indexes it wrote. */
+export type SkillsIndexState = SkillsBlockState | 'launcher_missing' | 'ledger_unreadable';
 export interface SkillsIndexView { harness: string; path: string; state: SkillsIndexState; refresh: string }
 
 function launcherRuns(launcher: string): boolean {
@@ -535,14 +635,37 @@ function launcherRuns(launcher: string): boolean {
  * by name, so doctor names the refresh command and never warns on it.
  */
 export function skillsIndexViews(): SkillsIndexView[] {
-  if (ledgerProblem()) return [{ harness: '*', path: skillLoadingLedgerPath(), state: 'damaged', refresh: `fix the JSON in ${skillLoadingLedgerPath()} or move it aside, then re-run gbrain setup <harness> --skill-loading spring` }];
-  return readSkillLoadingLedger().filter((e) => e.mode === 'spring').map((e) => {
+  const unreadable = ledgerProblem();
+  if (unreadable) return [{ harness: '*', path: skillLoadingLedgerPath(), state: 'ledger_unreadable', refresh: unreadable.detail }];
+  return [...readSkillLoadingLedger().filter((e) => e.mode === 'spring').map((e): SkillsIndexView => {
     const state = inspectSkillsBlock(e.path).state;
     if (state === 'current' && e.launcher && isAbsolute(e.launcher) && !launcherRuns(e.launcher)) {
       return { harness: e.harness, path: e.path, state: 'launcher_missing', refresh: `${skillsRefreshCommand(e.harness)} --gbrain-bin <absolute path of gbrain>` };
     }
     return { harness: e.harness, path: e.path, state, refresh: skillsRefreshCommand(e.harness) };
-  });
+  }), ...thinClientIndexView()];
+}
+
+/**
+ * A thin-client install (`gbrain connect --harness … --root`) writes its index
+ * into GBRAIN-INSTRUCTIONS.md, a file the connection owns whole, so it is
+ * recorded in the connection receipt rather than the ledger, and refreshed by
+ * re-running that install.
+ */
+function thinClientIndexView(): SkillsIndexView[] {
+  const receiptPath = join(configDir(), 'harness-connection.json');
+  if (!existsSync(receiptPath)) return [];
+  let receipt: { status?: unknown; skill_loading?: unknown; root?: unknown; mcp_url?: unknown; harness?: unknown };
+  try {
+    receipt = JSON.parse(readFileSync(receiptPath, 'utf8')) as typeof receipt;
+  } catch {
+    return [];
+  }
+  if (receipt.status !== 'installed' || receipt.skill_loading !== 'spring' || typeof receipt.root !== 'string') return [];
+  const harness = typeof receipt.harness === 'string' ? receipt.harness : 'generic';
+  const path = join(receipt.root, 'GBRAIN-INSTRUCTIONS.md');
+  const rerun = `gbrain connect ${shellQuote(String(receipt.mcp_url ?? '<mcp-url>'))} --harness ${shellQuote(harness)} --credentials-file <private-handoff-file> --root ${shellQuote(receipt.root)} --install`;
+  return [{ harness, path, state: inspectSkillsBlock(path).state, refresh: rerun }];
 }
 
 
@@ -551,16 +674,19 @@ export function skillsIndexViews(): SkillsIndexView[] {
  * and doctor name): re-render every index the ledger records for the
  * harness, in its recorded file, with its recorded launcher (or
  * --gbrain-bin), audience and writer. Brain-first and every other file are
- * left alone. `off` strips them all and records the opt-out.
+ * left alone. `off` strips them all and records the opt-out; an explicit
+ * `spring` is a flag-sourced choice, so it adds back a loader rule the user
+ * removed, which a plain refresh does not.
  */
-export function refreshSkillsIndexes(harness: BrainFirstHarness, opts: { off: boolean; launcher?: string; dryRun: boolean }): SkillsBlockOutcome[] {
+export function refreshSkillsIndexes(harness: BrainFirstHarness, opts: { mode?: SkillLoading; launcher?: string; dryRun: boolean }): SkillsBlockOutcome[] {
   const unreadable = ledgerProblem();
   if (unreadable) return [unreadable];
-  return readSkillLoadingLedger().filter((e) => e.harness === harness && (opts.off || e.mode === 'spring')).map((e) => syncSkillsBlock({
+  const off = opts.mode === 'off';
+  return readSkillLoadingLedger().filter((e) => e.harness === harness && (off || e.mode === 'spring')).map((e) => syncSkillsBlock({
     target: brainFirstTargetAt(harness, e.path),
     launcher: opts.launcher ?? e.launcher ?? indexLauncher() ?? 'gbrain',
     audience: e.audience ?? 'owner',
-    decision: opts.off ? { value: 'off', source: 'flag' } : { value: 'spring', source: 'prior' },
+    decision: off ? { value: 'off', source: 'flag' } : { value: 'spring', source: opts.mode === 'spring' ? 'flag' : 'prior' },
     writer: e.writer,
     dryRun: opts.dryRun,
   }));

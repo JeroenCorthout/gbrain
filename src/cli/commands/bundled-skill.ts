@@ -76,7 +76,7 @@ export async function run(args: string[]): Promise<void> {
   if (!skill) {
     const nearest = suggestNearest(name, bundledSkills(audience).map(s => s.name));
     exitCliError(opError('skill_not_found', `gbrain ${VERSION} has no bundled skill named ${name}${audience === 'downstream' ? ' for this thin-client install' : ''}.${nearest ? ` Did you mean "${nearest}"?` : ''}`,
-      'Run the same command with no name to list them. A skills index from another gbrain version may name a renamed skill; refresh it with `gbrain setup <harness> --skills-index-only`.'), 'bundled-skill');
+      `Run the same command with no name to list them. A skills index from another gbrain version may name a renamed skill; refresh it with ${audience === 'downstream' ? 'the gbrain connect … --install command in the index header (it rewrites GBRAIN-INSTRUCTIONS.md)' : '`gbrain setup <harness> --skills-index-only`'}.`), 'bundled-skill');
   }
 
   if (asset !== undefined) {

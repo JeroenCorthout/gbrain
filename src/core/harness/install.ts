@@ -20,7 +20,7 @@ import type { SharedSkillsToolCaller } from '../shared-skills/adapter.ts';
 import { harnessSharedSkillsRoot } from './status.ts';
 import { gitChildEnv } from '../git-env.ts';
 import { brainFirstTargetAt, codexInstructionFile, installerBrainFirst, renderBrainFirstSnippet, resolveBrainFirstDecision, type BrainFirstHarness } from '../setup/brain-first.ts';
-import { indexLauncher, installerSkillsBlock, isSkillLoading, renderSkillsSnippet, resolveSkillLoading, type SkillLoading } from '../setup/skills-block.ts';
+import { indexLauncher, installerSkillsBlock, isSkillLoading, renderSkillsSnippet, resolveSkillLoading, skillsOutcomeFailed, type SkillLoading } from '../setup/skills-block.ts';
 
 export interface InstallOptions { harness: string; name?: string; root?: string; configPath?: string; remove?: boolean;
   sharedSkills?: HarnessCredentials['shared_skills']; toolCaller?: SharedSkillsToolCaller; nativeSkillsDir?: string; credentialsFile?: string; freshToken?: boolean;
@@ -182,19 +182,22 @@ export async function installHarnessConnection(c: HarnessCredentials, opts: Inst
       writer: `gbrain connect --harness ${adapter.id} --install`, instructions: opts.instructions, remove: opts.remove });
     const skills = installerSkillsBlock({ target: brainFirstTargetAt(beside.harness, beside.path), launcher: opts.gbrainBin ?? indexLauncher() ?? 'gbrain',
       writer: `gbrain connect --harness ${adapter.id} --install`, brainFirstDeclined: instructions.decision.value === 'declined', skillLoading: opts.skillLoading, audience: 'downstream', remove: opts.remove });
+    const skillsProblem = skillsOutcomeFailed(skills) ? `The skills index step did not finish: ${skills.detail}. Fix that, then re-run this command (the skills record is kept, so a re-run finishes it).` : undefined;
     if (opts.remove) {
       if (existsSync(receiptPath)) unlinkSync(receiptPath);
       const shared_skills = deactivated ?? await installSharedSkillsConnection(c, { ...opts, root: join(dirname(configPath), `.gbrain-${adapter.id}-${name}`) });
       const pending = 'remote_membership_pending' in shared_skills && shared_skills.remote_membership_pending === true;
+      const next = pending ? 'Local configuration and unchanged owned skills were removed. Remote membership deactivation remains pending; retry when host authority is available.'
+        : 'The client configuration was removed. Revoke the grant on the brain host if access should end.';
       return { ...common, status: 'removed', config_path: configPath, shared_skills, remote_membership_pending: pending, instructions, skills,
-        next_action: pending ? 'Local configuration and unchanged owned skills were removed. Remote membership deactivation remains pending; retry when host authority is available.'
-          : 'The client configuration was removed. Revoke the grant on the brain host if access should end.' };
+        ...(skillsProblem ? { skills_failed: true } : {}), next_action: skillsProblem ? `${skillsProblem} ${next}` : next };
     }
     const nextReceipt = { ...common, entry_hash: ownedEntryHash(nativeEntry(configPath, adapter.connection, name), adapter.connection), status: 'installed',
       ...inlineTokenReceipt(c, adapter.id, name, configPath, adapter.reload, opts.credentialsFile) };
     atomicWriteTextFile(receiptPath, `${JSON.stringify(nextReceipt, null, 2)}\n`, { forceMode: 0o600 });
     const shared_skills = deactivated ?? await installSharedSkillsConnection(c, { ...opts, root: join(dirname(configPath), `.gbrain-${adapter.id}-${name}`) });
-    return { ...nextReceipt, shared_skills, instructions, skills, remote_membership_pending: 'remote_membership_pending' in shared_skills && shared_skills.remote_membership_pending === true };
+    return { ...nextReceipt, shared_skills, instructions, skills, remote_membership_pending: 'remote_membership_pending' in shared_skills && shared_skills.remote_membership_pending === true,
+      ...(skillsProblem ? { skills_failed: true, next_action: `${skillsProblem} ${nextReceipt.next_action}` } : {}) };
   } finally { lock.release(); }
 }
 
