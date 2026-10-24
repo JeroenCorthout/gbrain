@@ -54,6 +54,10 @@ import { createPageVersion } from '../page-state/versions.ts';
 import { clearRebuildableCache } from '../persistence/rebuildable-cache.ts';
 import { appendDerivedHidden, bumpPurgeEpoch, derivedBeliefTargets, derivedStreamSlugs, redactCarryingFields, redactPurgedKeys, registerLiveCarriers, registerVersionCarriers, sourceHasBeliefEvents,
   type LedgerPurgeReport } from '../belief/purge.ts';
+import { databaseModeEffectRouting } from '../persistence/canonical-mode.ts';
+
+/** Database-canonical wave 4: a database-mode source's withdrawal effects carry no worktree and no checkout kinds. */
+const route = databaseModeEffectRouting('s');
 
 export const PURGE_OPERATION = 'purge_fact';
 const PURGE_TERMINAL_RESERVATION = 64 * 1024;
@@ -534,10 +538,10 @@ export async function submitPurgeFactMutation(ctx: OperationContext, params: Rec
       const pages = pageIds.length ? await tx.executeRaw<{ id: number; slug: string; knowledge_revision: string }>(
         'SELECT id,slug,knowledge_revision::text AS knowledge_revision FROM pages WHERE source_id=$1 AND id=ANY($2::int[]) ORDER BY slug', [p.sourceId, pageIds]) : [];
       await tx.executeRaw(`INSERT INTO persistence_effects(request_id,kind,data,source_id,source_incarnation,worktree_id)
-        SELECT $1::uuid,k.kind,$3::text::jsonb,s.id,s.incarnation,b.worktree_id
-        FROM sources s LEFT JOIN persistence_source_bindings b ON b.source_id=s.id AND b.source_incarnation=s.incarnation
+        SELECT $1::uuid,k.kind,$3::text::jsonb,s.id,s.incarnation,${route.worktree('b.worktree_id')}
+        FROM sources s LEFT JOIN persistence_source_bindings b ON b.source_id=s.id AND b.source_incarnation=s.incarnation ${route.join}
         CROSS JOIN (VALUES ('withdrawal-mirror'),('git'),('embedding')) AS k(kind)
-        WHERE s.id=$2 ON CONFLICT(request_id,kind) DO NOTHING`, [admitted.id, p.sourceId, JSON.stringify({ version: 2, mode: 'purge',
+        WHERE s.id=$2 ${route.filter('k.kind')} ON CONFLICT(request_id,kind) DO NOTHING`, [admitted.id, p.sourceId, JSON.stringify({ version: 2, mode: 'purge',
         commit_subject: `gbrain: purge fact ${token}`, commit_line: `purge fact ${token}`,
         targets: pages.map(page => ({ slug: page.slug, page_id: Number(page.id), revision: page.knowledge_revision })) })]);
       counts = { facts, takes, chunks, page_versions: versions.redacted, pages: rewritten.length, persistence_requests: intents,

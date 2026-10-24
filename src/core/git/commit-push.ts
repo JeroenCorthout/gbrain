@@ -34,6 +34,9 @@ import { GIT_ENV, GIT_ENV_AUTH, GIT_SSRF_SUBCOMMAND_FLAGS, durableSsrfFlags } fr
 import { assertManagedFilesystemWrite, hasFilesystemPublication, managedFilesystemRootFor, type ManagedFilesystemRoot } from '../persistence/filesystem-guard.ts';
 import { acquireNativeLock, acquireNativeLockSync, type NativeLockSyncHandle } from '../persistence/native-lock.ts';
 import { OperationError, opError } from '../ops/contract.ts';
+import { canonicalFilesystemPath, registeredDatabaseModeRoots } from '../persistence/root-registry.ts';
+import { sourceDatabaseModeError } from '../persistence/canonical-mode.ts';
+import { isSyncable } from '../sync.ts';
 
 export const COMMIT_LOCK_NAME = 'brain-commit.lock';
 /** Taken by pre-#6530 helpers and hooks; held too so they still exclude us during the mixed-version window. */
@@ -1010,6 +1013,12 @@ function commitManagedPaths(root: string, opts: CommitPushOptions, managed: Mana
   if (!opts.message?.trim()) throw opError('commit_paths_invalid', 'A commit message is required.', 'Pass the commit message with -m.');
   const rel = scopePaths(root, opts.paths ?? [], opts.cwd ?? process.cwd());
   if (!rel.length) throw opError('commit_paths_invalid', `${where}: name the paths to commit.`, 'Pass -- <paths> after the message.');
+  // Database-canonical wave 4: a database-mode source's pages are written through put_page; its other files commit as before.
+  const databaseMode = registeredDatabaseModeRoots().filter(entry => entry.root === canonicalFilesystemPath(root));
+  for (const entry of databaseMode) {
+    const pages = rel.filter(path => covers(entry.source_root, path) && isSyncable(entry.source_root ? path.slice(entry.source_root.length + 1) : path));
+    if (pages.length) throw sourceDatabaseModeError(entry.source_id, `committing its page paths (${pages.slice(0, 10).join(', ')}${pages.length > 10 ? ', ...' : ''})`);
+  }
   const branch = git(root, ['symbolic-ref', '--quiet', '--short', 'HEAD']).stdout.trim();
   if (!branch) throw opError('git_detached_head', `${root} is on a detached HEAD, so there is no branch to commit to.`, 'Leave the checkout to its owner; gbrain sources writer status names its state.');
   assertNoOperationInProgress(root);

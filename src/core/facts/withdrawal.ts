@@ -9,6 +9,10 @@ import { privateProvenanceFilterFragment } from '../search/private-visibility.ts
 import { coverageActive, noteBelief, readLedgerSource, withBeliefBatch } from '../belief/ledger.ts';
 import { createPageVersion } from '../page-state/versions.ts';
 import { validateSlug } from '../utils.ts';
+import { databaseModeEffectRouting } from '../persistence/canonical-mode.ts';
+
+/** Database-canonical wave 4: a database-mode source's withdrawal effects carry no worktree and no checkout kinds. */
+const route = databaseModeEffectRouting('s');
 
 export interface WithdrawalCommit {
   withdrawn: boolean;
@@ -124,10 +128,10 @@ export async function recordFactWithdrawal(
         'SELECT id,slug,knowledge_revision FROM pages WHERE id=ANY($1::int[])', [segmented.map(page => page.id)]) : []];
       if (opts.requestId) {
         await tx.executeRaw(`INSERT INTO persistence_effects(request_id,kind,data,source_id,source_incarnation,worktree_id)
-          SELECT $1::uuid,k.kind,$3::text::jsonb,s.id,s.incarnation,b.worktree_id
-          FROM sources s LEFT JOIN persistence_source_bindings b ON b.source_id=s.id AND b.source_incarnation=s.incarnation
+          SELECT $1::uuid,k.kind,$3::text::jsonb,s.id,s.incarnation,${route.worktree('b.worktree_id')}
+          FROM sources s LEFT JOIN persistence_source_bindings b ON b.source_id=s.id AND b.source_incarnation=s.incarnation ${route.join}
           CROSS JOIN (VALUES ('withdrawal-mirror'),('git'),('embedding')) AS k(kind)
-          WHERE s.id=$2 ON CONFLICT(request_id,kind) DO NOTHING`, [opts.requestId, sourceId, JSON.stringify({ version: 2, targets: pages.map(page => ({ slug: page.slug, page_id: page.id, revision: page.knowledge_revision })).sort((a, b) => a.slug < b.slug ? -1 : a.slug > b.slug ? 1 : 0) })]);
+          WHERE s.id=$2 ${route.filter('k.kind')} ON CONFLICT(request_id,kind) DO NOTHING`, [opts.requestId, sourceId, JSON.stringify({ version: 2, targets: pages.map(page => ({ slug: page.slug, page_id: page.id, revision: page.knowledge_revision })).sort((a, b) => a.slug < b.slug ? -1 : a.slug > b.slug ? 1 : 0) })]);
       }
       const committed = pages.map(page => ({ sourceId, slug: page.slug, revision: page.knowledge_revision }));
       for (const invalidate of withdrawalInvalidations) await invalidate(tx, { sourceId, factId: id, subject: row.subject, pages: committed });

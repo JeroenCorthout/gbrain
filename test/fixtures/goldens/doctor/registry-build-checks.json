@@ -995,6 +995,10 @@
       },
       {
         "category": "ops",
+        "name": "database_canonical_fence"
+      },
+      {
+        "category": "ops",
         "name": "search_mode"
       },
       {

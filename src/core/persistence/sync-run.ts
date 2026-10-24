@@ -76,6 +76,7 @@ import { runSyncPass } from './sync-pass-run.ts';
 import { serr } from '../console-prefix.ts';
 import { noteIdentityDowngrades } from '../sync-identity-downgrades.ts';
 import { isContentRefusal } from '../import-screen.ts';
+import { sourceDatabaseModeError, sourceInDatabaseMode } from './canonical-mode.ts';
 
 export interface ManagedSyncWriteDiagnostic {
   source_id: string;
@@ -1251,6 +1252,7 @@ export interface RetryWait { request_id: string; kind: string | null; slug: stri
  * returns `sync_drain_lease_held` (resumable). A dry run takes no lease.
  */
 export async function performManagedSync(engine: BrainEngine, opts: SyncOpts, slice?: { maxPages: number; maxMs: number }): Promise<SyncResult> {
+  if (await sourceInDatabaseMode(engine, opts.sourceId ?? 'default')) throw sourceDatabaseModeError(opts.sourceId ?? 'default', 'gbrain sync');
   if (opts.dryRun || currentDrainLease(opts.sourceId ?? 'default')) return performManagedPass(engine, opts, slice);
   const sourceId = opts.sourceId ?? 'default';
   const remote = currentSubmissionAuthority()?.kind === 'remote_generic';

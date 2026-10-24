@@ -46,11 +46,12 @@ import { assertPhysicalRoot, assertPhysicalRootReservation, PHYSICAL_ROOT_MARKER
 import { preActivationClaims, releasePreActivationClaims, type PreActivationClaim } from './pre-activation-release.ts';
 import { PARK_AFTER_FAILURES } from './effect-model.ts';
 import { EMBEDDING_ZERO_NORM } from '../ai/embedding-guard.ts';
+import { listDatabaseModeSources } from './canonical-mode.ts';
 
 export const DEACTIVATE_DOCS = 'docs/architecture/topologies.md#deactivate-runbook';
 
 export interface DeactivationBlocker {
-  kind: 'writer_admin_lock' | 'request' | 'topology_recovery' | 'effect' | 'lease' | 'connector_holds' | 'physical_root';
+  kind: 'writer_admin_lock' | 'request' | 'topology_recovery' | 'effect' | 'lease' | 'connector_holds' | 'physical_root' | 'database_canonical_mode';
   id: string;
   source_id?: string;
   detail: string;
@@ -104,6 +105,9 @@ export async function deactivationBlockers(engine: BrainEngine): Promise<Deactiv
   const lock = await readWriterAdminLock(engine);
   if (lock.locked) blockers.push({ kind: 'writer_admin_lock', id: 'persistence.writer_admin_lock', detail: `set at ${lock.set_at ?? 'unknown'}`,
     exit: 'gbrain sources writer unlock' });
+  // Database-canonical wave 4: a database-mode source's pages live only in the database, so it returns to files first.
+  for (const id of await listDatabaseModeSources(engine)) blockers.push({ kind: 'database_canonical_mode', id, source_id: id,
+    detail: 'the source is in database mode', exit: `gbrain sources canonical ${id} --to files --dry-run` });
   const requests = await engine.executeRaw<{ request_id: string; source_id: string; slug: string; operation: string; state: string; recovering: boolean }>(
     `SELECT request_id::text AS request_id, source_id, slug, operation, state, recovery IS NOT NULL AS recovering FROM persistence_requests
      WHERE state IN ('queued','running','recovering') OR recovery IS NOT NULL ORDER BY sequence LIMIT 50`);

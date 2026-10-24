@@ -479,6 +479,96 @@ More: [docs/guides/google-connect.md#unreadable-calendar](../../docs/guides/goog
 |---|---|---|---|---|---|---|
 | The write was cancelled before it committed. | The request itself was wrong or no longer matches the brain; nothing was changed. | Correct the request using the message above, then retry. | agent | `repeat the read that failed` | 1 | no |
 
+### canonical_inflight_work
+
+<a id="canonical_inflight_work"></a>
+
+| Meaning | Why | Next step | Who acts · consent | Verify | Exit | Retryable |
+|---|---|---|---|---|---|---|
+| The source has unfinished writes, effects or recovery, or a live process without the canonical protocol, so its mode did not change. | A temporary condition (a lock, a pending write, a rate limit); the same request can succeed later. | Wait briefly, then retry the same request (writes: reuse the same request_id). | agent | `repeat the read that failed` | 1 | yes |
+
+More: [docs/designs/database-canonical-w4-contract.md](../../docs/designs/database-canonical-w4-contract.md)
+
+### canonical_mixed_group
+
+<a id="canonical_mixed_group"></a>
+
+| Meaning | Why | Next step | Who acts · consent | Verify | Exit | Retryable |
+|---|---|---|---|---|---|---|
+| A grouped admission mixed checkout operations with page writes for a source in database mode; the group is refused whole, not split. | The request itself was wrong or no longer matches the brain; nothing was changed. | Correct the request using the message above, then retry. | agent | `repeat the read that failed` | 1 | no |
+
+More: [docs/designs/database-canonical-w4-contract.md](../../docs/designs/database-canonical-w4-contract.md)
+
+### canonical_mode_changed
+
+<a id="canonical_mode_changed"></a>
+
+| Meaning | Why | Next step | Who acts · consent | Verify | Exit | Retryable |
+|---|---|---|---|---|---|---|
+| The source changed mode after the request was admitted, so it was not published; submit it again with a new request_id. | The request itself was wrong or no longer matches the brain; nothing was changed. | Correct the request using the message above, then retry. | agent | `repeat the read that failed` | 1 | no |
+
+More: [docs/designs/database-canonical-w4-contract.md](../../docs/designs/database-canonical-w4-contract.md)
+
+### canonical_mode_requires_shadow
+
+<a id="canonical_mode_requires_shadow"></a>
+
+| Meaning | Why | Next step | Who acts · consent | Verify | Exit | Retryable |
+|---|---|---|---|---|---|---|
+| A source in database mode keeps its shadow flag on; return it to files mode first. | The request itself was wrong or no longer matches the brain; nothing was changed. | Correct the request using the message above, then retry. | agent | `repeat the read that failed` | 1 | no |
+
+More: [docs/designs/database-canonical-w4-contract.md](../../docs/designs/database-canonical-w4-contract.md)
+
+### canonical_mode_unchanged
+
+<a id="canonical_mode_unchanged"></a>
+
+| Meaning | Why | Next step | Who acts · consent | Verify | Exit | Retryable |
+|---|---|---|---|---|---|---|
+| The source is already in the requested canonical mode; nothing changed. | The request itself was wrong or no longer matches the brain; nothing was changed. | Correct the request using the message above, then retry. | agent | `repeat the read that failed` | 1 | no |
+
+More: [docs/designs/database-canonical-w4-contract.md](../../docs/designs/database-canonical-w4-contract.md)
+
+### canonical_protocol_required
+
+<a id="canonical_protocol_required"></a>
+
+| Meaning | Why | Next step | Who acts · consent | Verify | Exit | Retryable |
+|---|---|---|---|---|---|---|
+| A write reached a source in database mode from a process that does not declare the canonical protocol (an older gbrain, or gbrain.write_sources set by hand); nothing was written. | Only the operator of the brain host can change what blocks this. | Only the brain host's operator can resolve this. Tell the user the message and run `gbrain doctor --json` on the brain host. | host_admin | `gbrain doctor --json` | 1 | no |
+
+More: [docs/designs/database-canonical-w4-contract.md](../../docs/designs/database-canonical-w4-contract.md)
+
+### canonical_publication_required
+
+<a id="canonical_publication_required"></a>
+
+| Meaning | Why | Next step | Who acts · consent | Verify | Exit | Retryable |
+|---|---|---|---|---|---|---|
+| A files-mode publication (a worktree-bound request or a git or withdrawal-mirror effect) reached a source in database mode; nothing was written. | The server failed; this is not a caller mistake. | Server-side failure, not a caller mistake. Run `gbrain doctor --json` on the brain host; if it repeats, report it to the user. | host_admin | `gbrain doctor --json` | 1 | no |
+
+More: [docs/designs/database-canonical-w4-contract.md](../../docs/designs/database-canonical-w4-contract.md)
+
+### canonical_requires_managed
+
+<a id="canonical_requires_managed"></a>
+
+| Meaning | Why | Next step | Who acts · consent | Verify | Exit | Retryable |
+|---|---|---|---|---|---|---|
+| Database mode needs managed persistence; activate it before flipping a source. | The request itself was wrong or no longer matches the brain; nothing was changed. | Correct the request using the message above, then retry. | agent | `repeat the read that failed` | 1 | no |
+
+More: [docs/designs/database-canonical-w4-contract.md](../../docs/designs/database-canonical-w4-contract.md)
+
+### canonical_source_not_empty
+
+<a id="canonical_source_not_empty"></a>
+
+| Meaning | Why | Next step | Who acts · consent | Verify | Exit | Retryable |
+|---|---|---|---|---|---|---|
+| Only a provably empty source can move to database mode in this release (no live pages, holds, tracked page files or prepared transfer); converting a non-empty source is Phase 3b. | The request itself was wrong or no longer matches the brain; nothing was changed. | Correct the request using the message above, then retry. | agent | `repeat the read that failed` | 1 | no |
+
+More: [docs/designs/database-canonical-w4-contract.md](../../docs/designs/database-canonical-w4-contract.md)
+
 ### capacity_paused
 
 <a id="capacity_paused"></a>
@@ -3938,6 +4028,16 @@ More: [docs/guides/write-refusals.md#slug_page_mismatch](../../docs/guides/write
 | Meaning | Why | Next step | Who acts · consent | Verify | Exit | Retryable |
 |---|---|---|---|---|---|---|
 | The source changed during the operation; nothing was committed. | Covers a replaced, archived or re-bound source and a canonical file that differs from the page's database copy (detail file_database_drift). When that file is a committed Git change sync has not imported yet, the reason is pending_import: a refused remember is replayed once by the sync that imports it, any other write is resubmitted after that sync (docs/guides/write-refusals.md#pending_import). A page that records no file of its own reconciles against the file at its slug path only with gbrain sources reconcile <source> <slug> --preview --adopt-slug-path. A canonical file that is gone while its page is live (reason canonical_file_missing, a ghost page) never clears by retrying or syncing: a person restores the file and syncs, or removes the page (docs/guides/write-refusals.md#canonical_file_missing). | Correct the request using the message above, then retry. | agent | `repeat the read that failed` | 1 | no |
+
+### source_database_mode
+
+<a id="source_database_mode"></a>
+
+| Meaning | Why | Next step | Who acts · consent | Verify | Exit | Retryable |
+|---|---|---|---|---|---|---|
+| The source is in database mode, so a file-lane operation (sync import, file repair, reconcile, a checkout commit or refresh) does not run for it. | The request itself was wrong or no longer matches the brain; nothing was changed. | Correct the request using the message above, then retry. | agent | `repeat the read that failed` | 1 | no |
+
+More: [docs/designs/database-canonical-w4-contract.md](../../docs/designs/database-canonical-w4-contract.md)
 
 ### source_id_taken
 

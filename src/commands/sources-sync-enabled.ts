@@ -13,12 +13,13 @@ import { setCliExitVerdict } from '../core/cli-force-exit.ts';
 import { OperationError, opError } from '../core/ops/contract.ts';
 import { cliRenderContext, toAgentError } from '../core/agent-output.ts';
 import { isSyncDisabledConfig } from '../core/sync-policy.ts';
+import { sourceInDatabaseMode } from '../core/persistence/canonical-mode.ts';
 
 const USAGE = 'gbrain sources set-sync <id> <on|off> [--dry-run] [--expect <on|off>] [--json]';
 type SyncSwitch = 'on' | 'off';
 const isSwitch = (value: unknown): value is SyncSwitch => value === 'on' || value === 'off';
 
-export interface SetSyncResult { source_id: string; dry_run: boolean; current: SyncSwitch; target: SyncSwitch; changed: boolean; apply?: string[] }
+export interface SetSyncResult { source_id: string; dry_run: boolean; current: SyncSwitch; target: SyncSwitch; changed: boolean; apply?: string[]; database_mode?: true }
 
 export function parseSetSyncArgs(args: string[]): { sourceId: string; target: SyncSwitch; dryRun: boolean; expect?: SyncSwitch } {
   const positional: string[] = [];
@@ -52,14 +53,16 @@ export async function setSourceSync(engine: BrainEngine, opts: ReturnType<typeof
   }
   const changed = current !== opts.target;
   if (opts.dryRun) return { source_id: opts.sourceId, dry_run: true, current, target: opts.target, changed,
-    apply: ['gbrain', 'sources', 'set-sync', opts.sourceId, opts.target, '--expect', current] };
+    apply: ['gbrain', 'sources', 'set-sync', opts.sourceId, opts.target, '--expect', current],
+    ...(await sourceInDatabaseMode(engine, opts.sourceId) ? { database_mode: true as const } : {}) };
   if (changed) await engine.updateSourceConfig(opts.sourceId, { syncEnabled: opts.target === 'on' });
   return { source_id: opts.sourceId, dry_run: false, current, target: opts.target, changed };
 }
 
 function describe(result: SetSyncResult): string {
   const what = result.target === 'on' ? 'included in automatic sync' : 'excluded from automatic sync (an explicit gbrain sync --source still runs)';
-  if (result.dry_run) return `Source "${result.source_id}": automatic sync is ${result.current}; ${result.changed ? `it would be ${what}` : 'nothing would change'}.\nApply: ${result.apply!.join(' ')}`;
+  const databaseMode = result.database_mode ? ' The source is in database mode, so sync skips it either way: the database holds its pages.' : '';
+  if (result.dry_run) return `Source "${result.source_id}": automatic sync is ${result.current}; ${result.changed ? `it would be ${what}` : 'nothing would change'}.${databaseMode}\nApply: ${result.apply!.join(' ')}`;
   return result.changed ? `Source "${result.source_id}" is now ${what} (was ${result.current}).` : `Source "${result.source_id}": automatic sync is already ${result.current}; nothing changed.`;
 }
 

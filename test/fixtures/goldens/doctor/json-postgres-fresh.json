@@ -1015,7 +1015,7 @@
         {
           "category": "meta",
           "elapsed_ms": "<volatile>",
-          "message": "1461 column(s) verified against live schema",
+          "message": "1468 column(s) verified against live schema",
           "name": "schema_columns",
           "status": "ok"
         },
@@ -3341,6 +3341,18 @@
           "elapsed_ms": "<volatile>",
           "message": "Database-canonical mode is off for this brain, so the import lane does not run and no writer census is kept.",
           "name": "database_canonical_census",
+          "status": "ok"
+        },
+        {
+          "category": "ops",
+          "details": {
+            "database_sources": [],
+            "docs": "docs/designs/database-canonical-w4-contract.md",
+            "findings": []
+          },
+          "elapsed_ms": "<volatile>",
+          "message": "No source is in database mode, so the canonical fence is inert.",
+          "name": "database_canonical_fence",
           "status": "ok"
         },
         {

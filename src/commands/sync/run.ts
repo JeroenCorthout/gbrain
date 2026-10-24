@@ -407,11 +407,13 @@ async function runSyncAll(
   //   - stable JSON envelope {schema_version:1, sources, ...} when --json
   // v0.41.31: v2Enabled resolved once above (cost gate). Reused here.
   // P4.2: the same predicate the autopilot dispatchers use decides which sources this bulk run skips.
-  const notApplicable: string[] = [];
+  const notApplicable: string[] = [], databaseMode: string[] = [];
   for (const s of sources) {
-    if ((await automaticSyncSkip(engine, s))?.reason === 'sync_not_applicable') notApplicable.push(s.id);
+    const skip = (await automaticSyncSkip(engine, s))?.reason;
+    if (skip === 'sync_not_applicable') notApplicable.push(s.id);
+    if (skip === 'database_canonical') databaseMode.push(s.id);
   }
-  const activeSources = sources.filter((s) => !isSyncDisabledConfig(s.config) && !notApplicable.includes(s.id));
+  const activeSources = sources.filter((s) => !isSyncDisabledConfig(s.config) && !notApplicable.includes(s.id) && !databaseMode.includes(s.id));
   const disabledCount = sources.filter((s) => isSyncDisabledConfig(s.config)).length;
   const humanSink: NodeJS.WriteStream = jsonOut ? process.stderr : process.stdout;
   const writeHuman = (line: string) => humanSink.write(line + '\n');
@@ -419,6 +421,7 @@ async function runSyncAll(
   if (disabledCount > 0) {
     writeHuman(`Skipping ${disabledCount} disabled source(s).`);
   }
+  if (databaseMode.length > 0) writeHuman(`Skipping ${databaseMode.length} source(s) in database mode (the database holds their pages): ${databaseMode.join(', ')}.`);
   if (notApplicable.length > 0) {
     writeHuman(`Skipping ${notApplicable.length} source(s) where sync does not apply (gbrain-owned content directory, not a Git checkout): ${notApplicable.join(', ')}. Add markdown files with \`gbrain import <dir> --source <id>\`.`);
   }

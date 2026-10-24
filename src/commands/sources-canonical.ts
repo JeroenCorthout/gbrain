@@ -164,6 +164,7 @@ function describe(census: CanonicalCensus): string {
 
 export async function runSourcesCanonical(engine: BrainEngine, args: string[]): Promise<void> {
   if (args.includes('--census') || args.includes('--observe')) return (await import('./sources-canonical-census.ts')).runSourcesCanonicalCensus(engine, args);
+  if (args.includes('--to')) return (await import('./sources-canonical-mode.ts')).runSourcesCanonicalMode(engine, args);
   const json = args.includes('--json');
   try {
     const parsed = parseCanonicalArgs(args);

@@ -20,12 +20,15 @@ import { listBlockingEffects } from './blocking-effects.ts';
 import { listWriterVersions } from './writer-versions.ts';
 import { readFix, trustedCliRequired } from '../ops/op-fix.ts';
 import type { Action } from '../agent-output.ts';
+import { listDatabaseModeSources } from './canonical-mode.ts';
 
-async function writerStatusCheckouts(bindings: Array<{ source_id: string; local_path: string | null }>) {
+async function writerStatusCheckouts(bindings: Array<{ source_id: string; local_path: string | null }>, databaseMode: readonly string[]) {
   const { readCheckoutState } = await import('./checkout-state.ts');
   const roots = new Map<string, string[]>();
   for (const { source_id, local_path } of bindings) if (local_path) roots.set(local_path, [...roots.get(local_path) ?? [], source_id]);
-  return [...roots].map(([root, source_ids]) => ({ source_ids, ...readCheckoutState(root) }));
+  // Database-canonical wave 4: a database-mode checkout belongs to the exporter, so its porcelain and unpushed commits are no finding.
+  return [...roots].map(([root, source_ids]) => ({ source_ids, ...readCheckoutState(root),
+    ...(source_ids.every(id => databaseMode.includes(id)) ? { database_mode: true, note: 'database mode: checkout owned by the exporter' } : {}) }));
 }
 
 export const invalid = (message: string, suggestion: string, fix?: Action) =>
@@ -302,7 +305,7 @@ export async function runPersistenceAdministration(engine: BrainEngine, operatio
       host: { host_id: existingLocalHostId(), ...await (await import('./consumer-diagnostics.ts')).hostConsumersReport(engine, existingLocalHostId()) },
       worktree_refreshes: await (await import('./worktree-refresh.ts')).activeWorktreeRefreshes(engine, params.source_id as string | undefined),
       // Q1: each canonical checkout on this host against its last fetched upstream: commits it holds that the upstream lacks, and its porcelain.
-      checkouts: await writerStatusCheckouts(bindings as Array<{ source_id: string; local_path: string | null }>),
+      checkouts: await writerStatusCheckouts(bindings as Array<{ source_id: string; local_path: string | null }>, await listDatabaseModeSources(engine)),
       // #6317 (B4): per managed source, whether sync data moves (shares the reader of sources status, doctor and writer movement).
       movement: await writerStatusMovement(engine, params.source_id === undefined ? undefined : source(params.source_id)) };
   }

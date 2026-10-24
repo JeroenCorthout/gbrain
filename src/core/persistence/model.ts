@@ -9,7 +9,7 @@ export interface WriteAuthority {
   remote: boolean;
   /** Original page-visibility ceiling; current policy can only narrow it. */
   excludePrivate?: boolean;
-  databaseOnlyReason?: 'subagent_sandbox' | 'disabled_by_config' | 'no_repo_configured' | 'connector_database' | 'unbound_source' | 'overwrite_restore' | 'detached';
+  databaseOnlyReason?: 'subagent_sandbox' | 'disabled_by_config' | 'no_repo_configured' | 'connector_database' | 'unbound_source' | 'overwrite_restore' | 'detached' | 'database_canonical';
   autoLinkTrusted?: boolean;
   restrictedNamespace?: boolean;
   sourceId: string;
@@ -79,6 +79,8 @@ export interface WriteRequest {
   slug: string;
   worktree_id: string | null;
   topology_generation: string | number | null;
+  /** Database-canonical wave 4: the source's mode epoch when the request was admitted in database mode (the fence stamps it). */
+  canonical_epoch?: string | number | null;
   digest: string;
   intent: Record<string, unknown> | null;
   authority: WriteAuthority;
