@@ -365,6 +365,7 @@ export const CODES = {
   held_out_overlaps_benchmark: { class: 'caller', summary: "Held out overlaps benchmark." },
   held_out_required_for_bundled: { class: 'caller', summary: "Held out required for bundled." },
   idempotency_conflict: { class: 'caller', summary: "The request_id already belongs to a different accepted operation." },
+  import_lane_shadow_off: { class: 'caller', summary: "The database-canonical import lane runs only for a source whose shadow flag is on; nothing was observed.", docs: 'docs/designs/DATABASE_CANONICAL_MEMORY.md' },
   independent_principal_required: { class: 'consent', summary: "This local CLI principal already owns another source/destination for this harness." },
   insufficient_scope: { class: 'host_only', summary: "The connection lacks the OAuth scope the operation requires.", legacy_error: 'permission_denied' },
   integrate_conflict: { class: 'consent', summary: "Local and remote commits changed the same file; nothing was merged and the checkout is unchanged.", docs: 'docs/guides/shared-checkout-git.md#conflicts', actor: 'user' },

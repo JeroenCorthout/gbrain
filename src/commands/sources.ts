@@ -21,6 +21,7 @@
  *   gbrain sources mirror-readonly|mirror-writable <id> — sources.config.mirror_read_only (#5409)
  *   gbrain sources refresh <id> — drained worktree-wide ff-only refresh on a managed brain (F0)
  *   gbrain sources canonical <id> --dry-run — read-only database-canonical census (sources-canonical.ts)
+ *   gbrain sources canonical <id> --census | --observe — import lane census and observe pass (sources-canonical-census.ts)
  *   gbrain sources push [<id>|--path <dir>] — scan-gated add→commit→pull→push
  *                               (agent-bootstrap; core in src/core/workspace-push.ts)
  *
@@ -2014,6 +2015,12 @@ Subcommands:
   canonical <id> --dry-run [--sample <n>] [--json]
                                     Read-only census for database-canonical mode: which pages
                                     could be exported and whether their files match.
+  canonical <id> --census [--sample <n>] [--json]
+                                    Read-only import lane census: would-be conflicts and the
+                                    writers still committing page files.
+  canonical <id> --observe [--watch] [--json]
+                                    One observe-mode import lane pass (writes only its own
+                                    tables; needs shadow on for the source).
   set-cr-mode <id> <none|title|per_chunk_synopsis>
                                     Per-source contextual retrieval mode
                                     override (v0.40.3.0). Pass "unset" or

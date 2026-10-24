@@ -2035,6 +2035,16 @@ More: [docs/guides/troubleshooting.md#host-identity-mismatch](../../docs/guides/
 |---|---|---|---|---|---|---|
 | The request_id already belongs to a different accepted operation. | The request itself was wrong or no longer matches the brain; nothing was changed. | Correct the request using the message above, then retry. | agent | `repeat the read that failed` | 1 | no |
 
+### import_lane_shadow_off
+
+<a id="import_lane_shadow_off"></a>
+
+| Meaning | Why | Next step | Who acts · consent | Verify | Exit | Retryable |
+|---|---|---|---|---|---|---|
+| The database-canonical import lane runs only for a source whose shadow flag is on; nothing was observed. | The request itself was wrong or no longer matches the brain; nothing was changed. | Correct the request using the message above, then retry. | agent | `repeat the read that failed` | 1 | no |
+
+More: [docs/designs/DATABASE_CANONICAL_MEMORY.md](../../docs/designs/DATABASE_CANONICAL_MEMORY.md)
+
 ### independent_principal_required
 
 <a id="independent_principal_required"></a>

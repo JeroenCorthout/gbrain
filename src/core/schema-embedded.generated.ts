@@ -3647,4 +3647,88 @@ END \$rls\$;
 CREATE INDEX IF NOT EXISTS export_shadow_diffs_unexpected_idx ON export_shadow_diffs(source_id, kind) WHERE NOT expected;
 CREATE INDEX IF NOT EXISTS export_shadow_diffs_batch_idx ON export_shadow_diffs(batch_id);
 -- END GENERATED from src/core/persistence/canonical-schema.ts (DATABASE_CANONICAL_SCHEMA_SQL)
+
+-- BEGIN GENERATED from src/core/persistence/import-conflicts-schema.ts (IMPORT_CONFLICTS_SCHEMA_SQL). Edit that file, then run: bun run build:schema
+CREATE TABLE IF NOT EXISTS import_conflicts (
+  id                BIGSERIAL PRIMARY KEY,
+  source_id         TEXT NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
+  path              TEXT NOT NULL,
+  path_folded       TEXT NOT NULL,
+  page_id           INTEGER,
+  mode              TEXT NOT NULL DEFAULT 'observe' CHECK (mode IN ('observe')),
+  outcome           TEXT NOT NULL CHECK (outcome IN ('adopt','import','streamed_import','create','delete','conflict','none')),
+  kind              TEXT CHECK (kind IN ('both_changed','protected_metadata','deleted_vs_edited','deleted_uncommitted','bulk_delete','too_large_for_lane','unexported_collision','unparseable','never_exported','identity')),
+  state             TEXT NOT NULL DEFAULT 'open' CHECK (state IN ('open','resolved')),
+  shadow_epoch      BIGINT NOT NULL,
+  base_revision     UUID,
+  db_revision       UUID,
+  base_sha256       TEXT,
+  file_sha256       TEXT,
+  file_size         BIGINT,
+  file_bytes        BYTEA,
+  file_ref          TEXT,
+  commit_sha        TEXT,
+  merge             JSONB,
+  detail            JSONB NOT NULL DEFAULT '{}'::jsonb,
+  first_observed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  observed_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+  resolved_at       TIMESTAMPTZ,
+  resolution        TEXT CHECK (resolution IN ('superseded','cleared','epoch_changed')),
+  CHECK ((outcome = 'conflict') = (kind IS NOT NULL)),
+  CHECK ((state = 'resolved') = (resolved_at IS NOT NULL AND resolution IS NOT NULL)),
+  CHECK (file_bytes IS NULL OR octet_length(file_bytes) <= 25165824)
+);
+DO \$rls\$ BEGIN
+  IF EXISTS (SELECT 1 FROM pg_roles r WHERE pg_has_role(current_user, r.oid, 'USAGE') AND (r.rolbypassrls OR r.rolsuper)) THEN
+    ALTER TABLE import_conflicts ENABLE ROW LEVEL SECURITY;
+  END IF;
+END \$rls\$;
+CREATE UNIQUE INDEX IF NOT EXISTS import_conflicts_open_path_idx ON import_conflicts(source_id, path_folded) WHERE state = 'open';
+CREATE INDEX IF NOT EXISTS import_conflicts_open_kind_idx ON import_conflicts(source_id, kind) WHERE state = 'open';
+CREATE TABLE IF NOT EXISTS import_foreign_writes (
+  id              BIGSERIAL PRIMARY KEY,
+  source_id       TEXT NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
+  path            TEXT NOT NULL,
+  path_folded     TEXT NOT NULL,
+  change_key      TEXT NOT NULL,
+  commit_sha      TEXT,
+  author_name     TEXT,
+  author_email    TEXT,
+  committer_name  TEXT,
+  committer_email TEXT,
+  committed_at    TIMESTAMPTZ,
+  message_prefix  TEXT,
+  process_hint    TEXT,
+  writer_key      TEXT NOT NULL,
+  shadow_epoch    BIGINT NOT NULL,
+  observed_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+DO \$rls\$ BEGIN
+  IF EXISTS (SELECT 1 FROM pg_roles r WHERE pg_has_role(current_user, r.oid, 'USAGE') AND (r.rolbypassrls OR r.rolsuper)) THEN
+    ALTER TABLE import_foreign_writes ENABLE ROW LEVEL SECURITY;
+  END IF;
+END \$rls\$;
+CREATE UNIQUE INDEX IF NOT EXISTS import_foreign_writes_change_idx ON import_foreign_writes(source_id, path_folded, change_key);
+CREATE INDEX IF NOT EXISTS import_foreign_writes_writer_idx ON import_foreign_writes(source_id, committed_at);
+CREATE TABLE IF NOT EXISTS import_lane_passes (
+  id           BIGSERIAL PRIMARY KEY,
+  source_id    TEXT NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
+  shadow_epoch BIGINT NOT NULL,
+  mode         TEXT NOT NULL DEFAULT 'observe' CHECK (mode IN ('observe')),
+  head_commit  TEXT,
+  commits      INTEGER NOT NULL DEFAULT 0,
+  scanned      INTEGER NOT NULL DEFAULT 0,
+  unstable     INTEGER NOT NULL DEFAULT 0,
+  outcomes     JSONB NOT NULL DEFAULT '{}'::jsonb,
+  kinds        JSONB NOT NULL DEFAULT '{}'::jsonb,
+  started_at   TIMESTAMPTZ NOT NULL,
+  finished_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+DO \$rls\$ BEGIN
+  IF EXISTS (SELECT 1 FROM pg_roles r WHERE pg_has_role(current_user, r.oid, 'USAGE') AND (r.rolbypassrls OR r.rolsuper)) THEN
+    ALTER TABLE import_lane_passes ENABLE ROW LEVEL SECURITY;
+  END IF;
+END \$rls\$;
+CREATE INDEX IF NOT EXISTS import_lane_passes_source_idx ON import_lane_passes(source_id, finished_at);
+-- END GENERATED from src/core/persistence/import-conflicts-schema.ts (IMPORT_CONFLICTS_SCHEMA_SQL)
 `;

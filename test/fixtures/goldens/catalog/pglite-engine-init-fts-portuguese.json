@@ -142,6 +142,21 @@
       "files.files_source_id_fkey": "f FOREIGN KEY (source_id) REFERENCES sources(id) ON DELETE CASCADE",
       "files.files_storage_path_key": "u UNIQUE (storage_path)",
       "gbrain_cycle_locks.gbrain_cycle_locks_pkey": "p PRIMARY KEY (id)",
+      "import_conflicts.import_conflicts_check": "c CHECK (((outcome = 'conflict'::text) = (kind IS NOT NULL)))",
+      "import_conflicts.import_conflicts_check1": "c CHECK (((state = 'resolved'::text) = ((resolved_at IS NOT NULL) AND (resolution IS NOT NULL))))",
+      "import_conflicts.import_conflicts_file_bytes_check": "c CHECK (((file_bytes IS NULL) OR (octet_length(file_bytes) <= 25165824)))",
+      "import_conflicts.import_conflicts_kind_check": "c CHECK ((kind = ANY (ARRAY['both_changed'::text, 'protected_metadata'::text, 'deleted_vs_edited'::text, 'deleted_uncommitted'::text, 'bulk_delete'::text, 'too_large_for_lane'::text, 'unexported_collision'::text, 'unparseable'::text, 'never_exported'::text, 'identity'::text])))",
+      "import_conflicts.import_conflicts_mode_check": "c CHECK ((mode = 'observe'::text))",
+      "import_conflicts.import_conflicts_outcome_check": "c CHECK ((outcome = ANY (ARRAY['adopt'::text, 'import'::text, 'streamed_import'::text, 'create'::text, 'delete'::text, 'conflict'::text, 'none'::text])))",
+      "import_conflicts.import_conflicts_pkey": "p PRIMARY KEY (id)",
+      "import_conflicts.import_conflicts_resolution_check": "c CHECK ((resolution = ANY (ARRAY['superseded'::text, 'cleared'::text, 'epoch_changed'::text])))",
+      "import_conflicts.import_conflicts_source_id_fkey": "f FOREIGN KEY (source_id) REFERENCES sources(id) ON DELETE CASCADE",
+      "import_conflicts.import_conflicts_state_check": "c CHECK ((state = ANY (ARRAY['open'::text, 'resolved'::text])))",
+      "import_foreign_writes.import_foreign_writes_pkey": "p PRIMARY KEY (id)",
+      "import_foreign_writes.import_foreign_writes_source_id_fkey": "f FOREIGN KEY (source_id) REFERENCES sources(id) ON DELETE CASCADE",
+      "import_lane_passes.import_lane_passes_mode_check": "c CHECK ((mode = 'observe'::text))",
+      "import_lane_passes.import_lane_passes_pkey": "p PRIMARY KEY (id)",
+      "import_lane_passes.import_lane_passes_source_id_fkey": "f FOREIGN KEY (source_id) REFERENCES sources(id) ON DELETE CASCADE",
       "ingest_log.ingest_log_pkey": "p PRIMARY KEY (id)",
       "link_edge_proposals.link_edge_proposals_a_to_page_id_fkey": "f FOREIGN KEY (a_to_page_id) REFERENCES pages(id) ON DELETE CASCADE",
       "link_edge_proposals.link_edge_proposals_b_to_page_id_fkey": "f FOREIGN KEY (b_to_page_id) REFERENCES pages(id) ON DELETE CASCADE",
@@ -745,6 +760,15 @@
       "gbrain_cycle_locks": [
         "<current_role> -> <current_role> WITH GRANT OPTION: DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE"
       ],
+      "import_conflicts": [
+        "<current_role> -> <current_role> WITH GRANT OPTION: DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE"
+      ],
+      "import_foreign_writes": [
+        "<current_role> -> <current_role> WITH GRANT OPTION: DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE"
+      ],
+      "import_lane_passes": [
+        "<current_role> -> <current_role> WITH GRANT OPTION: DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE"
+      ],
       "ingest_log": [
         "<current_role> -> <current_role> WITH GRANT OPTION: DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE"
       ],
@@ -1314,6 +1338,14 @@
       "idx_timeline_event_page": "CREATE INDEX idx_timeline_event_page ON public.timeline_entries USING btree (event_page_id) WHERE (event_page_id IS NOT NULL)",
       "idx_timeline_page": "CREATE INDEX idx_timeline_page ON public.timeline_entries USING btree (page_id)",
       "idx_versions_page": "CREATE INDEX idx_versions_page ON public.page_versions USING btree (page_id)",
+      "import_conflicts_open_kind_idx": "CREATE INDEX import_conflicts_open_kind_idx ON public.import_conflicts USING btree (source_id, kind) WHERE (state = 'open'::text)",
+      "import_conflicts_open_path_idx": "CREATE UNIQUE INDEX import_conflicts_open_path_idx ON public.import_conflicts USING btree (source_id, path_folded) WHERE (state = 'open'::text)",
+      "import_conflicts_pkey": "CREATE UNIQUE INDEX import_conflicts_pkey ON public.import_conflicts USING btree (id)",
+      "import_foreign_writes_change_idx": "CREATE UNIQUE INDEX import_foreign_writes_change_idx ON public.import_foreign_writes USING btree (source_id, path_folded, change_key)",
+      "import_foreign_writes_pkey": "CREATE UNIQUE INDEX import_foreign_writes_pkey ON public.import_foreign_writes USING btree (id)",
+      "import_foreign_writes_writer_idx": "CREATE INDEX import_foreign_writes_writer_idx ON public.import_foreign_writes USING btree (source_id, committed_at)",
+      "import_lane_passes_pkey": "CREATE UNIQUE INDEX import_lane_passes_pkey ON public.import_lane_passes USING btree (id)",
+      "import_lane_passes_source_idx": "CREATE INDEX import_lane_passes_source_idx ON public.import_lane_passes USING btree (source_id, finished_at)",
       "ingest_log_marked_idx": "CREATE INDEX ingest_log_marked_idx ON public.ingest_log USING btree (created_at) WHERE (writer_segment_reader IS TRUE)",
       "ingest_log_pkey": "CREATE UNIQUE INDEX ingest_log_pkey ON public.ingest_log USING btree (id)",
       "ingest_log_unmarked_idx": "CREATE INDEX ingest_log_unmarked_idx ON public.ingest_log USING btree (created_at) WHERE (writer_segment_reader IS NOT TRUE)",
@@ -1579,6 +1611,9 @@
       "facts_id_seq": "bigint start=1 min=1 max=9223372036854775807 increment=1 cycle=false cache=1 owned_by=facts.id",
       "files_id_seq": "integer start=1 min=1 max=2147483647 increment=1 cycle=false cache=1 owned_by=files.id",
       "graph_generation_seq": "bigint start=1 min=1 max=9223372036854775807 increment=1 cycle=false cache=1 owned_by=-",
+      "import_conflicts_id_seq": "bigint start=1 min=1 max=9223372036854775807 increment=1 cycle=false cache=1 owned_by=import_conflicts.id",
+      "import_foreign_writes_id_seq": "bigint start=1 min=1 max=9223372036854775807 increment=1 cycle=false cache=1 owned_by=import_foreign_writes.id",
+      "import_lane_passes_id_seq": "bigint start=1 min=1 max=9223372036854775807 increment=1 cycle=false cache=1 owned_by=import_lane_passes.id",
       "ingest_log_id_seq": "integer start=1 min=1 max=2147483647 increment=1 cycle=false cache=1 owned_by=ingest_log.id",
       "link_edge_proposals_id_seq": "bigint start=1 min=1 max=9223372036854775807 increment=1 cycle=false cache=1 owned_by=link_edge_proposals.id",
       "link_transitions_id_seq": "bigint start=1 min=1 max=9223372036854775807 increment=1 cycle=false cache=1 owned_by=link_transitions.id",
@@ -2578,6 +2613,73 @@
           "7 acquisition_token uuid/uuid NOT NULL DEFAULT gen_random_uuid()"
         ],
         "flags": "relkind=r rls=false force_rls=false"
+      },
+      "import_conflicts": {
+        "columns": [
+          "1 id bigint/int8 NOT NULL DEFAULT nextval('import_conflicts_id_seq'::regclass)",
+          "2 source_id text/text NOT NULL",
+          "3 path text/text NOT NULL",
+          "4 path_folded text/text NOT NULL",
+          "5 page_id integer/int4 NULL",
+          "6 mode text/text NOT NULL DEFAULT 'observe'::text",
+          "7 outcome text/text NOT NULL",
+          "8 kind text/text NULL",
+          "9 state text/text NOT NULL DEFAULT 'open'::text",
+          "10 shadow_epoch bigint/int8 NOT NULL",
+          "11 base_revision uuid/uuid NULL",
+          "12 db_revision uuid/uuid NULL",
+          "13 base_sha256 text/text NULL",
+          "14 file_sha256 text/text NULL",
+          "15 file_size bigint/int8 NULL",
+          "16 file_bytes bytea/bytea NULL",
+          "17 file_ref text/text NULL",
+          "18 commit_sha text/text NULL",
+          "19 merge jsonb/jsonb NULL",
+          "20 detail jsonb/jsonb NOT NULL DEFAULT '{}'::jsonb",
+          "21 first_observed_at timestamp with time zone/timestamptz NOT NULL DEFAULT now()",
+          "22 observed_at timestamp with time zone/timestamptz NOT NULL DEFAULT now()",
+          "23 resolved_at timestamp with time zone/timestamptz NULL",
+          "24 resolution text/text NULL"
+        ],
+        "flags": "relkind=r rls=true force_rls=false"
+      },
+      "import_foreign_writes": {
+        "columns": [
+          "1 id bigint/int8 NOT NULL DEFAULT nextval('import_foreign_writes_id_seq'::regclass)",
+          "2 source_id text/text NOT NULL",
+          "3 path text/text NOT NULL",
+          "4 path_folded text/text NOT NULL",
+          "5 change_key text/text NOT NULL",
+          "6 commit_sha text/text NULL",
+          "7 author_name text/text NULL",
+          "8 author_email text/text NULL",
+          "9 committer_name text/text NULL",
+          "10 committer_email text/text NULL",
+          "11 committed_at timestamp with time zone/timestamptz NULL",
+          "12 message_prefix text/text NULL",
+          "13 process_hint text/text NULL",
+          "14 writer_key text/text NOT NULL",
+          "15 shadow_epoch bigint/int8 NOT NULL",
+          "16 observed_at timestamp with time zone/timestamptz NOT NULL DEFAULT now()"
+        ],
+        "flags": "relkind=r rls=true force_rls=false"
+      },
+      "import_lane_passes": {
+        "columns": [
+          "1 id bigint/int8 NOT NULL DEFAULT nextval('import_lane_passes_id_seq'::regclass)",
+          "2 source_id text/text NOT NULL",
+          "3 shadow_epoch bigint/int8 NOT NULL",
+          "4 mode text/text NOT NULL DEFAULT 'observe'::text",
+          "5 head_commit text/text NULL",
+          "6 commits integer/int4 NOT NULL DEFAULT 0",
+          "7 scanned integer/int4 NOT NULL DEFAULT 0",
+          "8 unstable integer/int4 NOT NULL DEFAULT 0",
+          "9 outcomes jsonb/jsonb NOT NULL DEFAULT '{}'::jsonb",
+          "10 kinds jsonb/jsonb NOT NULL DEFAULT '{}'::jsonb",
+          "11 started_at timestamp with time zone/timestamptz NOT NULL",
+          "12 finished_at timestamp with time zone/timestamptz NOT NULL DEFAULT now()"
+        ],
+        "flags": "relkind=r rls=true force_rls=false"
       },
       "ingest_log": {
         "columns": [
