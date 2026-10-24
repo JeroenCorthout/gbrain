@@ -50,7 +50,7 @@ export const GRADUATION_INVENTORY: Inventory = {
     carry('context_volunteer_events', 'operational', 'Push-context telemetry.'),
     carry('conversation_parser_llm_cache', 'operational', 'Paid LLM parse cache; rebuilding spends money.'),
     carry('database_canonical_brain', 'operational', 'How many sources have database-canonical shadow on; the export outbox triggers return at once while it is zero.'),
-    carry('database_canonical_sources', 'user_data', 'Per-source database-canonical shadow flag and epoch an operator set with gbrain sources canonical --shadow; dropping it would silently stop the shadow.'),
+    carry('database_canonical_sources', 'user_data', 'Per-source database-canonical shadow flag, canonical mode and their epochs an operator set with gbrain sources canonical --shadow and --to; dropping it would silently stop the shadow and return a database-mode source to files with unexported pages.'),
     carry('decide_calibrations', 'user_data', 'System One slot qualifications (paid calibration results).'),
     carry('decide_proposals', 'user_data', 'Supersession proposals and the user\'s decisions on them.'),
     carry('decide_review_proposals', 'user_data', 'Review-lane proposals (withdraw and duplicate kinds) and the owner\'s decisions on them.'),

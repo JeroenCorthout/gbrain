@@ -51,7 +51,7 @@ write). The fence is checked at three points.
 | 1b | Effect inserts | trigger `database_canonical_effect_fence`, BEFORE INSERT ON `persistence_effects` (fragment) | refuse without the declaration; refuse kinds `git` and `withdrawal-mirror` and any row that names a worktree | `canonical_protocol_required`, `canonical_publication_required` |
 | 2 | Canonical mutations (direct coordinated writes) | trigger `database_canonical_fence`, BEFORE INSERT OR UPDATE OR DELETE on every table in `GUARDED_TABLES` (`writer-guard-schema.ts`), beside `managed_writer_guard` | refuse a row change of the source without the declaration. It resolves the row's source the way the managed guard does (the `source_id` column, or the page's for `tags`, `timeline_entries`, `takes`), and for an UPDATE checks the old source too | `canonical_protocol_required` |
 | 3a | Publication | trigger `database_canonical_publication_fence`, BEFORE UPDATE ON `persistence_requests` `WHEN` the row reaches `committed` or clears its `recovery` | refuse when `canonical_epoch` differs from `gbrain_source_publication_epoch(source_id)`: a files-mode request on a database-mode source, a database-mode request after the flip back, or a request from an older database epoch. The publication transaction rolls back and the request fails with a typed receipt; nothing was published under the wrong mode | `canonical_mode_changed` |
-| 3b | Claims of checkout effects | the `git` and `withdrawal-mirror` claim predicates in `src/core/persistence/effect-journal.ts` (the generic effect claim near line 150 and `claimCoalescedGitEffects`) gain `AND gbrain_source_publication_epoch(e.source_id) IS NULL` | a checkout effect of a database-mode source is never claimed. It stays queued and resumes after a flip back to files, the mode it was prepared under | none (held, listed by doctor) |
+| 3b | Claims of checkout effects | the `git` and `withdrawal-mirror` claim predicates in `src/core/persistence/effect-journal.ts` (`claimPersistenceEffect` and `claimCoalescedGitEffects`) gain `checkoutEffectClaimable('e')`, which is `gbrain_source_publication_epoch(e.source_id) IS NULL` | a checkout effect of a database-mode source is never claimed. It stays queued and resumes after a flip back to files, the mode it was prepared under. A flip refuses while one is unfinished (`canonical_inflight_work`), so this holds only an effect a crash or a stray writer left | none (held, listed by doctor) |
 | 3c | Recovery | covered by 3a: a request recovery that would clear its record under a database-mode source is refused and the record is left as it is | | `canonical_mode_changed` |
 
 Point 2 is a sibling trigger instead of a branch inside `gbrain_require_managed_writer`, so the managed guard function
@@ -61,6 +61,23 @@ before `managed_writer_guard` and the refusal names the fence. 3a uses a `WHEN` 
 and state changes never call it, and the function returns at once when `database_sources` is zero and the row has no
 `canonical_epoch`. Claims of requests are not fenced in SQL: a refusal inside a claim statement would stall every row
 that statement claims, so a request from the wrong epoch is claimed normally and fails alone at 3a.
+
+Point 1b has no exemption. Wave 5's export batches run as their own queue (`export_batches`, with its own claim columns)
+and insert no `persistence_requests` or `persistence_effects` rows, so on a database-mode source every `git` and
+`withdrawal-mirror` effect insert is refused, whoever makes it, and the exporter is the only checkout writer by
+construction rather than by an allowlist.
+
+**The race at the flip.** A writer that read `database_sources = 0` just before the flip committed must not land a
+files-mode row after it. The flip takes the source row `FOR UPDATE` and then `lockCanonicalWriters`: `LOCK TABLE ... IN
+SHARE MODE` on every table the fence covers. A writer whose statements already ran holds a `ROW EXCLUSIVE` lock on its
+table until it commits, so the flip waits for it, and its rows are part of what the flip's preview recomputes; a writer
+that moved anything the fingerprint covers makes the apply refuse `preview_changed`. A writer that starts after the
+lock waits behind the flip, and its fence trigger runs after the flip commits (a trigger function is volatile, so each of
+its statements takes a fresh snapshot) and refuses. Both orders are tested on one Postgres connection each
+(`test/database-canonical-mode.test.ts`, the `on one Postgres connection` block), and the declaration's transaction
+scope is tested directly and through a transaction-mode PgBouncer
+(`test/e2e/database-canonical-fence-pooled-postgres.test.ts`): a session-level `set_config(..., false)` in a forced probe
+makes that test fail.
 
 The fast path of every fence trigger is one primary-key read of `database_canonical_brain`. It is not taken `FOR SHARE`:
 a flip and an admission already serialize on the source row (admission reads it `FOR SHARE`, the flip locks it
@@ -79,12 +96,13 @@ message prefix and constraint `database_canonical_fence:<point>`; `databaseRefus
 | `canonical_protocol_required` | a write to a database-mode source from a process that does not declare the mode: an older gbrain, or a session that set `gbrain.write_sources` by hand | upgrade that process (`gbrain upgrade` on its host) or stop it; nothing was written |
 | `canonical_publication_required` | a files-mode publication reached a database-mode source: a worktree-bound request, or a `git` or `withdrawal-mirror` effect | report; the write path routes these by mode, so this is a missed writer |
 | `canonical_mode_changed` | a request admitted under one mode epoch reached publication or recovery under another (the source flipped in between) | resubmit with a new request id; it is routed under the current mode |
-| `source_database_mode` | a file-lane operation (managed or classic sync import, file import, file repair, rename identity, sync hold repair) targeted a database-mode source | none: the import lane owns outside edits for this source |
+| `source_database_mode` | a file-lane operation targeted a database-mode source: a managed or classic sync import, a file import or repair, a quarantine clear, a canonical reconcile, a segmented mirror repair, `gbrain sources refresh`, or a commit-push that names page paths under the source root | none: the import lane owns outside edits for this source |
+| `canonical_mixed_group` | one grouped admission mixed file-lane operations with page writes for a database-mode source | split the group; it is refused whole, never split silently |
 | `canonical_source_not_empty` | `--to database` on a source that fails the emptiness test; `detail` names each failed condition. Converting a non-empty source is Phase 3b | empty the source, or wait for the conversion state machine |
 | `canonical_inflight_work` | a flip while the source has unfinished requests or effects, a recovery record, or a live process without the canonical protocol | wait for the work to drain or stop the old process, then preview again |
 | `canonical_requires_managed` | `--to database` on a brain whose managed persistence is not active (design precondition 1) | activate managed persistence first |
 | `canonical_mode_unchanged` | the source is already in the requested mode | none |
-| `canonical_mode_requires_shadow` | shadow off for a database-mode source (raised by the constraint, mapped for wave 2's verb) | flip the source back to files first |
+| `canonical_mode_requires_shadow` | `--shadow off` for a database-mode source: wave 2's verb calls `assertShadowOffAllowed` at the preview and inside the apply transaction; the `database_canonical_mode_shadow` constraint is the backstop for a raw update | flip the source back to files first |
 | `preview_changed` (existing) | the fingerprint moved between `--dry-run` and apply | preview again |
 | `database_canonical_disabled` (existing) | the brain gate is off | turn the gate on |
 
@@ -104,8 +122,10 @@ so the mode costs no round trip and is read under the lock the flip waits on. Fo
    repair and rename operations listed in `canonical-mode.ts`), because they read the checkout and in this mode the
    import lane owns outside edits.
 
-`assertBackgroundOwner` (the pre-transaction owner check for background producers) is skipped for a database-mode
-source; it reads the mode only when a background producer named a worktree, so other writes pay nothing.
+`assertWorktreeAdmission` and `assertBackgroundOwner` keep running unchanged; `databaseModeWaives` in `journal.ts`
+wraps both and waives only an `OperationError` for a source the `FOR SHARE` read found in database mode, so a files-mode
+source takes exactly the old path and pays nothing more. A grouped admission that mixes a file-lane operation with page
+writes for a database-mode source refuses `canonical_mixed_group` instead of being split.
 
 Everything after admission already follows from a null worktree:
 
@@ -126,8 +146,8 @@ Three small follow-ons make the branch explicit instead of incidental:
 - `decideUnboundWrite` (`unbound-source.ts`) returns `{ kind: 'database_only', reason: 'database_canonical' }` for a
   database-mode source, so a database-mode source without an owner binding is never refused as unbound nor stamped
   `unbound_source`; `database_canonical` joins the `databaseOnlyReason` union and is never written to a page;
-- connector publication (`connector-sync.ts`, the worktree/authority consistency check near line 1070) accepts a
-  worktree-free row that carries `canonical_epoch`.
+- connector sources never enter database mode in this wave: the verb refuses a connector source kind
+  (`canonical_requires_managed`, condition `connector`), so `connector-sync.ts` is not edited.
 
 The unbound-source refusals and stamps are not relaxed for files-mode sources; the branch is reached only through the
 durable mode.
@@ -145,17 +165,23 @@ database-mode source.
 | Memory and fact fence writes (`remember`, `forget`, fence edits through `fact-write-target.ts`) | as page writes | as page writes |
 | Withdrawal (`forget`, `forget_fact`; `src/core/facts/withdrawal.ts`) | `withdrawal-mirror`, `git` and `embedding` effects bound to the worktree | `embedding` only, worktree-free; the withdrawal trigger records every affected page in the outbox |
 | Purge (`purge_fact`; `src/core/facts/purge.ts`) | `withdrawal-mirror`, `git`, `embedding` | `embedding` only; the pages' revisions move, so the outbox records them |
-| Segmented repair (`gbrain repair segmented-mirror`; `src/core/repair/segmented-mirror.ts`) | `withdrawal-mirror` and `git` for the stale page | none: its candidate scan skips database-mode sources, and the routing fragment would insert nothing for them; the exporter renders from the overlay |
+| Segmented repair (`gbrain repair segmented-mirror`; `src/core/repair/segmented-mirror.ts`) | `withdrawal-mirror` and `git` for the stale page | refused at admission (`segmented_mirror` is a file-lane kind, `source_database_mode`); a direct effect insert would be refused by point 1b. The module is not edited; the exporter renders from the overlay |
 | Visibility changes (a page write that changes `visibility`, `access`, `confidentiality`, `derived_from`, `type` or `database_only_reason`) | request with a file and `git` effect | worktree-free request; trigger `database_canonical_eligibility` on `pages` advances `eligibility_generation` in the same transaction |
-| Rename (managed sync rename pairs, `file-repair.ts`, `gbrain repair rename-identity`, sync hold renames) | file-driven slug moves through sync or repair requests | refused with `source_database_mode` at admission; renames from outside edits belong to the import lane |
-| Connector checkpoints (`connector-sync.ts`) | page requests bound to the worktree; checkpoint rows on `sources` through the coordinated write | worktree-free page requests; checkpoint rows as today (the coordinated write declares the protocol, so the fence passes them); the wait for pending `withdrawal-mirror` effects finds none |
-| Managed and classic sync (`syncOneSource` in `src/commands/sync.ts`) | imports files | skips the source with `skipped: 'database_mode'` before it reads the checkout; admission refuses a sync request as a backstop |
+| Rename (managed sync rename pairs, `file-repair.ts`, `gbrain repair rename-identity`, sync hold renames) | file-driven slug moves through sync or repair requests | sync renames never start (sync refuses the source) and the file-lane kinds refuse at admission; any other path that would insert a checkout effect is refused by point 1b. Renames from outside edits belong to the import lane |
+| Connector checkpoints (`connector-sync.ts`) | page requests bound to the worktree | not reachable: a connector source cannot enter database mode in this wave |
+| Managed and classic sync | imports files | `automaticSyncSkip` (`sync-policy.ts`) skips the source with reason `database_canonical`; `gbrain sync` prints the skipped sources; an explicit `gbrain sync --source <id>` (`commands/sync/perform.ts`) and `performManagedSync` (`persistence/sync-run.ts`) refuse `source_database_mode` before reading the checkout; admission refuses a sync request as a backstop |
+| Worktree refresh (`gbrain sources refresh`; `worktree-refresh.ts`) | the one sanctioned managed Git writer | refused `source_database_mode` when any source of the worktree is in database mode |
+| Commit-push (`gbrain git commit-push`; `src/core/git/commit-push.ts`) | commits the named paths under the commit lock | refuses `source_database_mode` only for named paths under a database-mode source's root that sync would import as pages (`isSyncable`); non-page files on that checkout (an `AGENTS.md`, scripts) commit as before under the normal lock. The database-mode roots are recorded beside the managed filesystem roots (`root-registry.ts`), so the check reads no database |
 | Maintenance writers (atoms, facts, loop retirement, relink, proposal supersede, generation retire, grandfather) | worktree-bound requests | worktree-free requests through admission; no code change |
 | Direct coordinated writers (about thirty, no request) | rows under `withCoordinatedWrite` | unchanged; the declaration passes the fence and the outbox trigger records the page |
 | An old binary or a bare coordinated write | n/a | refused by the fence (points 1 and 2) with `canonical_protocol_required` |
 
-In database mode no writer inserts a `withdrawal-mirror` row or a per-request `git` row; tests count both after forget,
-purge and a refused rename.
+In database mode no writer inserts a `withdrawal-mirror` row or a per-request `git` row; the tests count both after a
+put and a forget, and point 1b refuses a direct insert of either.
+
+Operator surfaces say the mode: `gbrain sources set-sync` previews carry a `database_mode` note,
+`gbrain sources writer status` marks the checkout `database_mode: true` (owned by the exporter), and source deactivation
+refuses with blocker kind `database_canonical_mode`, whose exit is the flip back.
 
 ## `gbrain sources canonical <id> --to database|files`
 
@@ -169,10 +195,15 @@ gbrain sources canonical <id> --to files --dry-run [--json]
 gbrain sources canonical <id> --to files --admin-intent source_canonical --expected-state <fingerprint> [--json]
 ```
 
-**Fingerprint** (`admin_state`): SHA-256 over the source id and incarnation, mode, mode epoch, shadow flag and epoch,
-eligibility generation, the emptiness evidence (each count below), the outbox's highest `seq`, and, for `--to files`, a
-digest of the live pages' ids and revisions. Apply reuses wave 2's `requireSourceCanonicalIntent` and fingerprint helper
-when its Phase B lands; until then this module defines them with the same signature, and the two are merged at the slot.
+**Fingerprint**: SHA-256 over the source id and incarnation, the target mode, mode, mode epoch, shadow flag and epoch,
+eligibility generation, the emptiness evidence (each count below), the in-flight counts, and a digest of the source's
+own rows whose change enqueues an export outbox row: each page's id, revision, slug, live or deleted state and
+database-only reason, and every withdrawal and purge row. It reads the rows, not the outbox, because `export_outbox_seq`
+is one sequence for the whole brain: a high-water mark (its `last_value`, or `max(seq)`) would move on every other
+source's write and refuse a correct apply `preview_changed`, and `max(seq)` over the remaining rows also moves when the
+exporter drains them. A test drains the outbox and advances the sequence after a preview and checks the fingerprint does
+not move; a write to the source after the preview does. Apply binds the intent with wave 2's
+`requireSourceCanonicalIntent` (`--admin-intent source_canonical`).
 
 **`--to database` emptiness test**, each a named condition in `canonical_source_not_empty`'s detail:
 
@@ -183,18 +214,20 @@ when its Phase B lands; until then this module defines them with the same signat
 - no prepared transfer (the bound worktree is `active`).
 
 Plus the drain preconditions, refused as `canonical_inflight_work`: no unfinished request or effect for the source, no
-recovery record on its worktree, and no live resident process (`persistence_consumers` renewed within its lease) whose
-`canonical_protocol` is null. And `canonical_requires_managed` unless managed persistence is active. An owner binding is
+recovery record on its requests or effects, and no live resident process (`persistence_consumers` renewed within its
+lease) whose `canonical_protocol` is null. The request part is `UNSETTLED_REQUEST_SQL`, the same predicate fence 3a
+reads, so a request the flip waits for is exactly one 3a would judge. `inflightWork` in `canonical-mode.ts` owns this
+check; wave 5 adds the count of unfinished export batches to it there. And `canonical_requires_managed` unless managed persistence is active. An owner binding is
 not required in this wave (the publication branch needs none); the committing exporter will need one before its first
 commit and its wave adds that check.
 
 **Apply** runs in one transaction: declare durable persistence; lock the source row `FOR UPDATE` (admission waits behind
-it); `lockExportWriters`; recompute the fingerprint (`preview_changed` when it moved) and the emptiness test; upsert
+it); `lockCanonicalWriters` (every table the fence covers that exists); recompute the fingerprint (`preview_changed` when it moved) and the emptiness test; upsert
 `database_canonical_sources` with `mode='database'`, `mode_epoch + 1`, `shadow = true` (advancing `shadow_epoch` when it
 was off, as `writeSourceShadow` does), `eligibility_generation + 1`. The output prints the new epoch.
 
 **`--to files` and the flip-back barrier.** Agent writes made while in database mode exist only in the database. Apply, in
-one transaction under the source lock and `lockExportWriters`, bound to the fingerprint (so a write after the preview is
+one transaction under the source lock and `lockCanonicalWriters`, bound to the fingerprint (so a write after the preview is
 `preview_changed`):
 
 1. require the drain preconditions (`canonical_inflight_work` otherwise);
@@ -209,7 +242,7 @@ one transaction under the source lock and `lockExportWriters`, bound to the fing
    files-mode source. The shadow flag stays as it is (turning it off is wave 2's verb).
 
 The alternative the design names, materializing through one export batch, needs the committing exporter and arrives with
-it; the barrier then offers it first and keeps the hold for paths it cannot write. A test makes agent writes (create,
+wave 5; the barrier then offers it first and keeps the hold for paths it cannot write. A test makes agent writes (create,
 edit, delete) in database mode, flips back, checks one hold per unmaterialized live page and none for the deleted one,
 then that a write injected after the preview refuses `preview_changed`.
 
@@ -231,87 +264,102 @@ then that a write injected after the preview refuses `preview_changed`.
 `src/core/persistence/canonical-mode.ts`, plain SQL over `SqlEngine` like wave 2's store:
 
 ```ts
-readSourceMode(exec, sourceId): Promise<SourceModeState>   // { mode, mode_epoch, eligibility_generation }; files at 0 without a row
+CANONICAL_PROTOCOL_DECLARATION            // "set_config('gbrain.canonical_protocol','1',true)": transaction-scoped only
+readSourceMode(exec, sourceId): Promise<SourceModeState>   // mode, epochs, shadow; files at 0 without a row
 sourceInDatabaseMode(exec, sourceId): Promise<boolean>
 listDatabaseModeSources(exec): Promise<string[]>
-writeSourceMode(tx, sourceId, mode): Promise<SourceModeState>   // callers hold the source lock and lockExportWriters
-databaseModeEffectRouting(sourceAlias): { join: string; worktree: string; filter: string }
-FILE_LANE_OPERATIONS, isFileLaneAdmission(input): boolean
-canonicalFenceRefusal(error): PublicationFailure | null   // used by databaseRefusal
+databaseModeEffectRouting(alias): { join; worktree(expr); filter(kind) }   // withdrawal and purge effect inserts
+checkoutEffectClaimable(alias): string                                    // claim predicate, point 3b
+isFileLaneAdmission(input): boolean; sourceDatabaseModeError(sourceId, what): OperationError
+canonicalFenceRefusal(error) / canonicalFenceError(error)                 // used by databaseRefusal
+inflightWork(exec, sourceId): Promise<{ requests; effects; old_processes }>   // wave 5 adds unfinished batches
+lockCanonicalWriters(tx): Promise<void>
+assertShadowOffAllowed(exec, sourceId): Promise<void>                     // wave 2's --shadow off calls it
 ```
+
+The flip itself (the mode upsert and the flip-back holds) lives in `src/commands/sources-canonical-mode.ts`, the only
+writer of `mode`.
 
 ## Files
 
 New (this lane): `docs/designs/database-canonical-w4-contract.md`, `src/core/persistence/canonical-mode-schema.ts`,
 `src/core/persistence/canonical-mode.ts`, `src/core/schema-migrations/v272-database-canonical-mode.ts`,
 `src/commands/sources-canonical-mode.ts`, `src/commands/doctor/checks/database-canonical-fence.ts`,
-`test/database-canonical-mode.test.ts` (verb, emptiness, `preview_changed`, gate off, flip back) and
-`test/database-canonical-fence.test.ts` (fence points, routing, owner down, 10,000 writes against a files-mode control).
+`test/database-canonical-mode.test.ts`, `test/database-canonical-checkout.test.ts` and
+`test/e2e/database-canonical-fence-pooled-postgres.test.ts`.
 
 Existing files, **persistence/sync lane (GBRA-133)**, each edit behind the mode check:
 
 | File | Edit |
 |---|---|
-| `src/core/persistence/journal.ts` | the publication branch at admission (single and group): the mode column on the source `FOR SHARE` read, skipping the worktree fence, the null worktree, the file-lane refusal, skipping `assertBackgroundOwner` |
-| `src/core/persistence/protocol.ts` | the canonical protocol declaration in `declarePersistenceProtocol` and `declareDurablePersistence` |
+| `src/core/persistence/journal.ts` | the publication branch at admission (single and group): the mode on the source `FOR SHARE` read, `databaseModeWaives` around the worktree and background-owner checks, the null worktree, the file-lane refusal, the mixed-group refusal |
+| `src/core/persistence/protocol.ts` | the declaration in `declarePersistenceProtocol` and `declareDurablePersistence` |
 | `src/core/persistence/context.ts` | the declaration in `withCoordinatedWrite` (set and restore) |
-| `src/core/persistence/effect-journal.ts` | claim predicates of `git` and `withdrawal-mirror` effects skip database-mode sources (point 3b) |
-| `src/core/persistence/coordinator.ts` | `decoratePublicationOutcome` reports `database_canonical` and receipt mode `database` |
-| `src/core/persistence/publication-failure.ts` | `databaseRefusal` maps `database_canonical_fence:*` to the typed codes |
-| `src/core/persistence/types.ts` | four codes in `WRITE_ERROR_CODES` |
+| `src/core/persistence/effect-journal.ts` | `checkoutEffectClaimable` in the `git` and `withdrawal-mirror` claims (point 3b) |
+| `src/core/persistence/coordinator.ts` | `decoratePublicationOutcome` reports `database_canonical` |
+| `src/core/persistence/publication-failure.ts` | `databaseRefusal` maps the fence refusals to the typed codes |
+| `src/core/persistence/types.ts` | the canonical codes in `WRITE_ERROR_CODES` |
 | `src/core/persistence/model.ts` | `database_canonical` in the `databaseOnlyReason` union; `canonical_epoch` on `WriteRequest` |
 | `src/core/persistence/unbound-source.ts` | `decideUnboundWrite` returns the database-canonical decision |
-| `src/core/persistence/connector-sync.ts` | the worktree/authority consistency check accepts a row with `canonical_epoch` |
-| `src/core/persistence/consumer-heartbeat.ts` | writes `canonical_protocol = 1` in the heartbeat upsert |
-| `src/core/persistence/deactivation.ts` | refuses deactivation while a source is in database mode (the refusal names the flip back) |
-| `src/core/facts/withdrawal.ts` | effect insert uses `databaseModeEffectRouting` |
-| `src/core/facts/purge.ts` | effect insert uses `databaseModeEffectRouting` |
-| `src/core/repair/segmented-mirror.ts` | effect insert uses `databaseModeEffectRouting`; candidate scan skips database-mode sources |
-| `src/commands/sync.ts` | `syncOneSource` skips a database-mode source (`skipped: 'database_mode'`) |
+| `src/core/persistence/consumer-heartbeat.ts` | writes `canonical_protocol` in the heartbeat upsert |
+| `src/core/persistence/deactivation.ts` | the `database_canonical_mode` blocker, whose exit is the flip back |
+| `src/core/persistence/sync-run.ts`, `src/core/sync-policy.ts`, `src/commands/sync/perform.ts`, `src/commands/sync/run.ts` | sync skips or refuses a database-mode source |
+| `src/core/persistence/worktree-refresh.ts` | refresh refuses a worktree with a database-mode source |
+| `src/core/persistence/root-registry.ts`, `src/core/persistence/filesystem-guard.ts`, `src/core/git/commit-push.ts` | the recorded database-mode roots and the page-path commit-push refusal |
+| `src/core/persistence/administration.ts`, `src/commands/sources-sync-enabled.ts` | the writer-status mark and the set-sync preview note |
+| `src/core/facts/withdrawal.ts`, `src/core/facts/purge.ts` | effect inserts use `databaseModeEffectRouting` |
 | `src/core/belief/purge-mirror.ts` | the declaration beside its hand-set `gbrain.write_sources` |
 
 Existing files, **other lanes or shared registries**:
 
 | File | Edit |
 |---|---|
-| `src/commands/sources-canonical.ts` (database-canonical, waves 1 to 3) | route `--to` to `sources-canonical-mode.ts` |
-| `scripts/build-schema.ts` | the `FRAGMENTS` entry |
-| `src/schema.sql` | the generated region |
-| `src/core/migrate.ts` (migration registry) | register v272 |
-| `src/core/persistence/graduation-inventory.ts` | column-set rows for the new columns |
-| `src/commands/doctor/registry.ts`, `src/commands/doctor/doctor-categories.ts` | register `database_canonical_fence` |
+| `src/commands/sources-canonical.ts` (waves 1 to 3) | route `--to` to `sources-canonical-mode.ts` |
+| `src/commands/sources-canonical-shadow.ts` (wave 2) | `--shadow off` calls `assertShadowOffAllowed` at the preview and in the apply transaction |
+| `scripts/build-schema.ts`, `src/schema.sql` | the `FRAGMENTS` entry and its generated region |
+| `src/core/persistence/graduation-inventory.ts` | the `database_canonical_sources` note names the mode |
+| `src/commands/doctor/registry.ts`, `src/core/doctor-categories.ts` | register `database_canonical_fence` |
 | `src/core/error-registry.ts` | the new codes |
-| `test/postgres-unit-arms.txt` | the two new test files |
-| `docs/architecture/KEY_FILES.md`, `docs/architecture/canonical-writers.tsv` (if the census counts a new site) | entries for the new modules |
-| generated artifacts | `bun run regen:all`, schema catalog, migration and doctor JSON goldens, error-codes doc, key-files, baselines |
+| `test/postgres-unit-arms.txt`, `scripts/e2e-backend-matrix.txt` | the new test files |
+| `docs/architecture/key-files/core-persistence-continued.md` | the wave 4 entry |
+| `scripts/module-size-limits.tsv`, `scripts/page-body-readers-baseline.tsv` | `sync-run.ts` +2; the fence's in-row tuple, the managed-writer guard's own |
+| generated artifacts | `bun run regen:all`, schema catalog, migration, export-surface and doctor goldens, error-codes doc |
 
 ## Tests
 
-Each on real PGLite and real Postgres (both test files are listed in `test/postgres-unit-arms.txt`):
+On real PGLite and real Postgres (both unit files are listed in `test/postgres-unit-arms.txt`):
 
-- after `--to database`: an old-protocol writer (a session without the declaration inserting a request, an effect and a
-  page row) and a bare coordinated write (`gbrain.write_sources` set by hand) are refused with
-  `canonical_protocol_required`; nothing is written;
-- forget, purge and a refused rename on a database-mode source leave zero `withdrawal-mirror` rows and zero per-request
-  `git` rows, while the files-mode control has both;
-- an agent `put_page` commits and returns a receipt while the export owner is stopped (no consumer on the owner host, the
-  checkout missing, and the worktree lock held by another process);
-- 10,000 writes with the exporter stopped: outstanding counters, reserved receipt bytes and compaction match a files-mode
-  control whose Git effects run; the outbox holds one row per page;
-- flip back after agent writes (create, edit, delete): one database-ahead hold per unmaterialized live page, epoch
-  advanced, fence down, files-mode writes publish files again;
-- emptiness refusals: a live page, a hold, a tracked file, a prepared transfer, in-flight work, an old-protocol consumer;
-- `preview_changed` when a page is written between `--dry-run` and apply, in both directions;
-- gate off: the verb refuses, every files-mode test above behaves as before, and the fence triggers never reach the
-  per-source lookup (`database_sources = 0`);
-- the doctor check green, red (old-protocol consumer, stray checkout effect, epoch mismatch) and yellow.
+- the fence: an undeclared write (a request, an effect, a page row) and a bare coordinated write refuse
+  `canonical_protocol_required`; a `git` or `withdrawal-mirror` effect refuses `canonical_publication_required`; a
+  declared write passes; files mode is untouched;
+- an agent `put_page` publishes database-only (no worktree, file or checkout effect) and forget inserts no
+  `withdrawal-mirror` or `git` row;
+- an agent write commits and returns its receipt with no consumer and the checkout removed;
+- 100 writes over 10 pages with the exporter stopped: every request settles, no checkout effect exists, the outbox holds
+  one row per page; the files-mode control queues at least one `git` effect per write;
+- a checkout effect left from files mode is never claimed once the source is in database mode;
+- file-lane admissions refuse `source_database_mode`, a mixed group refuses `canonical_mixed_group`;
+- the verb: gate off refuses; a live page refuses `canonical_source_not_empty`; a write after the preview refuses
+  `preview_changed`; the flip; `--shadow off` refuses at preview and apply;
+- the flip back: one `file_drift` hold (side `database`) per unmaterialized live page, none for a deleted page; the
+  fingerprint survives an outbox drain and another source's sequence use; a write after the preview refuses;
+- a recovery record blocks the flip through the shared predicate;
+- the doctor check green, red (an unfinished checkout effect) and yellow (gate off);
+- Postgres only: `set_config(..., true)` ends with its transaction; a writer past its fence before the flip commits
+  first and the apply refuses `preview_changed`; a writer waiting behind the flip is refused;
+- `test/database-canonical-checkout.test.ts`: commit-push refuses page paths and commits a non-page file; refresh and
+  managed sync refuse; writer status marks the checkout;
+- `test/e2e/database-canonical-fence-pooled-postgres.test.ts`: the declaration through transaction-mode PgBouncer.
 
 ## What wave 5 may rely on
 
 - `database_canonical_sources.mode`, `mode_epoch`, `eligibility_generation`, `database_canonical_brain.database_sources`,
   `persistence_requests.canonical_epoch`, `persistence_consumers.canonical_protocol` and
   `gbrain_source_publication_epoch(text)`; the store functions above keep their signatures.
-- A database-mode source has no worktree-bound requests and no `git` or `withdrawal-mirror` effects, so the exporter's one
-  Git effect per batch is the only checkout writer; it binds the batch to `mode_epoch` and `eligibility_generation`.
-- The flip back keeps unmaterialized pages as `file_drift` holds; the committing exporter adds the one-batch
-  materialization in front of that step.
+- A database-mode source has no worktree-bound requests and no `git` or `withdrawal-mirror` effects, with no exemption:
+  the exporter's batches are their own queue and never `persistence_effects` rows, so the exporter is the only checkout
+  writer. It binds each batch to `mode_epoch` and `eligibility_generation`.
+- Commit-push refuses only page paths of a database-mode source; the exporter's own commits go through its batch queue.
+- `inflightWork` is the flip's in-flight check; wave 5 adds the unfinished-batch count there.
+- The flip back keeps unmaterialized pages as `file_drift` holds; single-batch materialization in front of that step
+  comes with wave 5's committing exporter.

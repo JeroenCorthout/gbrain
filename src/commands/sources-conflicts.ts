@@ -6,6 +6,7 @@
  * file so the exporter replaces the file with the render; `--take file` writes the stored bytes into the page (or deletes it)
  * with a revision check under the page row lock.
  */
+import { CANONICAL_PROTOCOL_DECLARATION } from '../core/persistence/canonical-mode.ts';
 import type { BrainEngine } from '../core/engine.ts';
 import { setCliExitVerdict } from '../core/cli-force-exit.ts';
 import { OperationError, opError } from '../core/ops/contract.ts';
@@ -92,6 +93,7 @@ export async function resolveConflict(engine: BrainEngine, o: ConflictsArgs): Pr
   const bytes = take === 'file' && c.kind !== 'deleted_vs_edited' ? await storedBytes(engine, c) : null;
   await engine.transaction(async txEngine => {
     const tx = txEngine as BrainEngine;
+    await tx.executeRaw(`SELECT ${CANONICAL_PROTOCOL_DECLARATION}`);
     const [row] = await tx.executeRaw<{ state: string; file_sha256: string | null }>('SELECT state, file_sha256 FROM import_conflicts WHERE id=$1 FOR UPDATE', [c.id]);
     if (!row || row.state !== 'open' || row.file_sha256 !== c.file_sha256) throw stale(o);
     if (take === 'database') {

@@ -4,7 +4,7 @@ import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { OperationError } from '../ops/contract.ts';
 import type { SqlEngine } from './model.ts';
 import { readManagedMode, readPersistenceBrain } from './managed-mode.ts';
-import { canonicalFilesystemPath, managedRootMarkerFor, recordManagedRoots, registeredManagedRootRecords, type ManagedRootRecord } from './root-registry.ts';
+import { canonicalFilesystemPath, managedRootMarkerFor, recordDatabaseModeRoots, recordManagedRoots, registeredManagedRootRecords, type ManagedRootRecord } from './root-registry.ts';
 
 interface FileCapability { roots: string[]; active: boolean; }
 const active = new AsyncLocalStorage<FileCapability>();
@@ -34,6 +34,13 @@ export async function refreshManagedFilesystemRoots(engine: SqlEngine, databaseP
   if (databasePath) rows.push({ local_path: databasePath, datastore: true });
   const roots = recordManagedRoots(brain.brain_id, rows, brain.mode_epoch == null ? undefined : Number(brain.mode_epoch));
   managedRoots.set(brain.brain_id, new Map(roots.map(row => [row.local_path, row.source_id])));
+  // Database-canonical wave 4: the DB-free commit-push reads which of these roots hold database-mode sources.
+  const [modes] = await engine.executeRaw<{ present: boolean }>("SELECT to_regprocedure('gbrain_source_publication_epoch(text)') IS NOT NULL AS present", [], { signal });
+  if (!modes?.present) return;
+  const database = await engine.executeRaw<{ local_path: string; relative_path: string; source_id: string }>(`SELECT h.local_path,s.relative_path,s.source_id
+      FROM persistence_host_bindings h JOIN persistence_source_bindings s ON s.worktree_id=h.worktree_id
+      WHERE h.host_id=$1::uuid AND gbrain_source_publication_epoch(s.source_id) IS NOT NULL`, [localHostId()], { signal });
+  recordDatabaseModeRoots(brain.brain_id, database.map(row => ({ root: canonicalFilesystemPath(row.local_path), source_root: row.relative_path, source_id: row.source_id })));
 }
 export function hasFilesystemPublication(path: string): boolean {
   const held = active.getStore();

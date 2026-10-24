@@ -26,12 +26,14 @@ import type { SyncOpts, SyncResult } from '../sync.ts';
 import type { IdleSkip } from '../../core/persistence/sync-idle-skips.ts';
 import { runConnectorSync } from './connector.ts';
 import { performSyncInner } from './incremental.ts';
+import { sourceDatabaseModeError, sourceInDatabaseMode } from '../../core/persistence/canonical-mode.ts';
 
 export async function performSync(engine: BrainEngine, opts: SyncOpts): Promise<SyncResult> {
   assertSyncDispatchActive();
   const inheritedSignal = currentSourceFilesystemSignal();
   if (inheritedSignal) opts = { ...opts, signal: opts.signal ? AbortSignal.any([opts.signal, inheritedSignal]) : inheritedSignal };
   await assertSyncApplicable(engine, opts);
+  if (opts.sourceId && await sourceInDatabaseMode(engine, opts.sourceId)) throw sourceDatabaseModeError(opts.sourceId, 'gbrain sync');
   const managed = await resolveSyncPersistenceMode(engine, opts);
   const finish = async (result: SyncResult, refresh = false): Promise<SyncResult> => {
     assertSyncDispatchActive();

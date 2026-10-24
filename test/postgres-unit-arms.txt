@@ -46,9 +46,12 @@ test/consolidate-same-instant-6023.test.ts
 test/conversation-facts-oversized-sidecar.test.ts
 test/cycle/synthesize-concepts-merge.test.ts
 test/database-canonical-census.test.ts
+test/database-canonical-checkout.test.ts
 test/database-canonical-conflicts.test.ts
 test/database-canonical-exporter.test.ts
 test/database-canonical-import-lane.test.ts
+test/database-canonical-mode.test.ts
+test/database-canonical-shadow-verb.test.ts
 test/database-canonical-shadow.test.ts
 test/database-canonical-surfaces.test.ts
 test/db-lock-reconnect.test.ts

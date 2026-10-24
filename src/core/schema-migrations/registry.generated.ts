@@ -272,6 +272,7 @@ import { v268 } from './v268-effect-claim-owner.ts';
 import { v269 } from './v269-links-supersedes-index.ts';
 import { v270 } from './v270-database-canonical-shadow.ts';
 import { v271 } from './v271-database-canonical-import-lane.ts';
+import { v272 } from './v272-database-canonical-mode.ts';
 import { v273 } from './v273-database-canonical-export.ts';
 
 // Array order is historical (see HISTORICAL_ARRAY_ORDER in the generator); the
@@ -543,5 +544,6 @@ export const MIGRATIONS: Migration[] = [
   v269,
   v270,
   v271,
+  v272,
   v273,
 ];

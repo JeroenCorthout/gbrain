@@ -21,6 +21,8 @@ import { installFaultHook, type ExportFaultStep } from '../src/core/persistence/
 import { deactivationBlockers } from '../src/core/persistence/deactivation.ts';
 import { graduationBlockers } from '../src/core/persistence/graduation-drain.ts';
 import { OperationError } from '../src/core/ops/contract.ts';
+import { CANONICAL_PROTOCOL_DECLARATION, inflightWork } from '../src/core/persistence/canonical-mode.ts';
+import { flipSourceMode } from '../src/commands/sources-canonical-mode.ts';
 import { requirePostgresTestDatabase, testBackends } from './helpers/test-backends.ts';
 import { parseExportArgs, retryExport, setExportCommits } from '../src/commands/sources-canonical-export.ts';
 import { runOneShotExport } from '../src/core/persistence/export-runner.ts';
@@ -68,8 +70,11 @@ for (const backend of testBackends()) describe(`database-canonical wave 5a expor
   });
   afterEach(() => { installFaultHook(undefined); rmSync(home, { recursive: true, force: true }); });
 
-  const put = (slug: string, body: string, frontmatter: Record<string, unknown> = {}) =>
-    engine.putPage(slug, { type: 'note', title: slug.split('/').pop()!, compiled_truth: body, timeline: '', frontmatter });
+  /** A page write as a canonical-protocol writer makes it (wave 4's fence refuses an undeclared write to a database-mode source). */
+  const put = (slug: string, body: string, frontmatter: Record<string, unknown> = {}) => engine.transaction(async tx => {
+    await tx.executeRaw(`SELECT ${CANONICAL_PROTOCOL_DECLARATION}`);
+    return (tx as BrainEngine).putPage(slug, { type: 'note', title: slug.split('/').pop()!, compiled_truth: body, timeline: '', frontmatter });
+  });
   const tick = (opts: ExportTickOptions = {}) => runExportTick(engine, 'default', { hostId: host, lockWaitMs: 5000, ...opts });
   /** A crashed owner's lease has expired and its backoff has run out (what time passing does in production). */
   const leaseExpired = () => engine.executeRaw("UPDATE export_batches SET claim_expires_at=now() - interval '1 second', next_attempt_at=now() WHERE state IN ('prepared','built','committed','pushed')");
@@ -283,7 +288,20 @@ for (const backend of testBackends()) describe(`database-canonical wave 5a expor
     expect(await tick()).toMatchObject({ status: 'exported', pushed: true });
   });
 
-  test('deactivation and graduation drain refuse while an export batch is unfinished', async () => {
+  test('a flip back to files exports pending pages through a batch first and keeps holds only for the rest', async () => {
+    await put('notes/alpha', 'Alpha body.');
+    await put('notes/secret', 'Secret body.', { visibility: 'private' });
+    const shown = (await flipSourceMode(engine, { sourceId: 'default', to: 'files', dryRun: true, json: true })).preview!;
+    expect(shown.export_drain).toEqual({ export_commits: true, pending: 2 });
+    expect(shown.holds_to_write).toBe(2);
+    expect(shown.refusals).toEqual([]);
+    const flipped = await flipSourceMode(engine, { sourceId: 'default', to: 'files', dryRun: false, json: true, expectedState: shown.fingerprint }, { exportHostId: host });
+    expect(flipped).toMatchObject({ status: 'flipped', mode: 'files', holds_written: 1 });
+    expect(git(remote, 'show', 'main:notes/alpha.md')).toContain('Alpha body.');
+    expect(tryGit(remote, 'show', 'main:notes/secret.md')).toBeNull();
+  });
+
+  test('deactivation, graduation drain and the mode flip refuse while an export batch is unfinished', async () => {
     await put('notes/alpha', 'Alpha body.');
     installFaultHook(point => { if (point === 'export:committed') throw new Error('crash'); });
     await tick().catch(() => undefined);
@@ -294,7 +312,14 @@ for (const backend of testBackends()) describe(`database-canonical wave 5a expor
     const graduation = (await graduationBlockers(engine, host)).filter(b => b.kind === 'export_batch');
     expect(graduation).toHaveLength(1);
     expect(graduation[0]!.needsUser).toBe(false);
+    expect((await inflightWork(engine, 'default')).export_batches).toBe(1);
+    const flip = await flipSourceMode(engine, { sourceId: 'default', to: 'files', dryRun: true, json: true });
+    expect(flip.preview!.refusals).toContainEqual(expect.objectContaining({ code: 'canonical_inflight_work', condition: 'export_batches' }));
+    expect(flip.preview!.apply).toBeNull();
     await drain();
+    expect((await inflightWork(engine, 'default')).export_batches).toBe(0);
+    expect((await flipSourceMode(engine, { sourceId: 'default', to: 'files', dryRun: true, json: true })).preview!.refusals
+      .filter(r => r.condition === 'export_batches')).toEqual([]);
     expect((await deactivationBlockers(engine)).filter(b => b.kind === 'export_batch')).toEqual([]);
     expect((await graduationBlockers(engine, host)).filter(b => b.kind === 'export_batch')).toEqual([]);
   });

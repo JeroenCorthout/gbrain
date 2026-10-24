@@ -242,8 +242,12 @@ PGLite without a resident, export lag is expected until the next command.
 
 ### Flip-back materialization
 
-**Status at W5a:** deferred. Wave 4's `--to files` apply does not exist on the wave 4 branch yet, so there is nothing to put
-the batch in front of; the exporter and its claim are ready for it, and this section is what W5a adds once wave 4 lands.
+**Status:** built at the wave 4 merge into W5a (`drainExportBeforeFlipBack` in `src/commands/sources-canonical-mode.ts`). The
+deadline is the constant `EXPORT_FLIPBACK_DEADLINE_MS` (120 s, `export-runner.ts`), not a config key. The preview shows
+`export_drain: { export_commits, pending }` beside wave 4's `holds_to_write`, outside the fingerprint. Wave 4's fingerprint
+digests the source's own page and withdrawal rows, not an outbox watermark, so the drain cannot cause `preview_changed`.
+Unfinished export batches count in wave 4's `inflightWork` (`export_batches`), so a flip in either direction refuses
+`canonical_inflight_work` while one is open.
 
 Wave 4's `--to files` apply keeps every unmaterialized live page as a `file_drift` hold. W5a puts one export batch in
 front of that step: the preview reports how many pages one batch would materialize and how many would stay holds; when
@@ -383,13 +387,20 @@ server field outside the replay digest like `timeline_section`. Publication (`pa
 prepared `apply`, so a no-op write settles too) runs the compare-and-set and the ledger base update and enqueues the page
 for export, the same way `--take database` does. `journal.ts`, `page-input.ts` and `coordinator.ts` are unchanged. The
 lifetime binding is the page id: a recreated page gets a new id, so a conflict bound to the old page no longer matches.
-The commit-push `put_page` hint is **deferred**: it extends wave 4's `source_database_mode` refusal, which is not on wave
-4's branch yet, so commit-push is unchanged in W5b. `list_source_conflicts` is registered after `sourcesOperations`;
-the doctor entries follow `database_canonical_census`, because wave 4's `database_canonical_fence` does not exist yet.
+The commit-push `put_page` hint needs no W5b edit: wave 4's `sourceDatabaseModeError` already names `put_page` in its
+suggestion, and wave 4's `test/database-canonical-checkout.test.ts` pins the page-path refusal and the non-page commit.
+`list_source_conflicts` is registered after `sourcesOperations`; the doctor entries follow wave 4's
+`database_canonical_fence`. `gbrain sources conflicts ... --take file` declares `gbrain.canonical_protocol` in its
+transaction, because wave 4's fence refuses an undeclared page write to a database-mode source.
 
-## Wave 4 dependency (fallback in W5a)
+## Wave 4 dependency (fallback in W5a, retired)
 
-Wave 4's branch carries its contract only. The exporter reads the source's mode, so W5a's migration adds wave 4's mode
+**Retired at the wave 4 merge:** wave 4's v272 (`canonical-mode-schema.ts`) now owns the mode columns, and W5a's v273 fragment
+no longer adds them. The exporter's live lane and the conflict takes declare `gbrain.canonical_protocol` in their page-writing
+transactions, because wave 4's fence refuses an undeclared content change to a database-mode source. What follows is the
+history.
+
+Wave 4's branch carried its contract only. The exporter reads the source's mode, so W5a's migration adds wave 4's mode
 columns to `database_canonical_sources` (`mode`, `mode_epoch`, `mode_changed_at`, `eligibility_generation`) with wave 4's
 exact definitions and `ADD COLUMN IF NOT EXISTS`, so whichever wave lands first creates them and the other is a no-op.
 W5a adds no constraint, trigger, fence or flip verb: those stay wave 4's. Until wave 4 lands, nothing sets `mode='database'`,
@@ -451,7 +462,7 @@ Existing files, **persistence/sync lane (GBRA-133)**, each edit behind the mode 
 | `src/core/persistence/page-prepare.ts` | 5b | the conflict compare-and-set close wrapped around the prepared `apply`, inside the publication transaction (as built; `coordinator.ts` unchanged) |
 | `src/core/persistence/types.ts` | 5b | `import_conflict_not_found`, `import_conflict_not_writable` and `import_conflict_stale` in `WRITE_ERROR_CODES` |
 | `src/commands/sources-refresh.ts` | 5b | the `source_export_owned` refusal before delegation |
-| `src/commands/git.ts`, `src/core/git/commit-push.ts` | 5b | deferred: the `put_page` hint on wave 4's `source_database_mode` page-path refusal, which wave 4 has not landed |
+| `src/commands/git.ts`, `src/core/git/commit-push.ts` | 5b | no edit: wave 4's `source_database_mode` page-path refusal already names `put_page` |
 | `src/commands/doctor/checks/git-convergence.ts` | 5b | the database-mode branch (also edited by wave 4 and by #7487) |
 
 Existing files, **database-canonical lane (waves 1 to 4)**:

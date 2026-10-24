@@ -982,16 +982,20 @@
         "name": "person_title_duplicates"
       },
       {
-        "category": "brain",
-        "name": "fence_integrity"
-      },
-      {
         "category": "ops",
         "name": "database_canonical"
       },
       {
         "category": "ops",
+        "name": "database_canonical_shadow"
+      },
+      {
+        "category": "ops",
         "name": "database_canonical_census"
+      },
+      {
+        "category": "ops",
+        "name": "database_canonical_fence"
       },
       {
         "category": "ops",
@@ -1004,6 +1008,10 @@
       {
         "category": "ops",
         "name": "import_conflicts"
+      },
+      {
+        "category": "brain",
+        "name": "fence_integrity"
       },
       {
         "category": "ops",

@@ -1,6 +1,7 @@
 import type { SqlEngine, WriteRequest } from './model.ts';
 import { opError, OperationError } from '../ops/contract.ts';
 import { readPersistenceBrain } from './managed-mode.ts';
+import { CANONICAL_PROTOCOL_DECLARATION } from './canonical-mode.ts';
 
 const declared = new WeakSet<object>();
 /**
@@ -22,7 +23,7 @@ const BRAIN_SHARE = '(SELECT brain_id::text FROM persistence_brain WHERE singlet
 export async function declarePersistenceProtocol(tx: SqlEngine): Promise<void> {
   const inTransaction = (tx as { _pageTransaction?: boolean })._pageTransaction === true;
   if (inTransaction && declared.has(tx)) return;
-  await tx.executeRaw(`SELECT set_config('gbrain.persistence_protocol','2',true),${BRAIN_SHARE}`);
+  await tx.executeRaw(`SELECT set_config('gbrain.persistence_protocol','2',true),${CANONICAL_PROTOCOL_DECLARATION},${BRAIN_SHARE}`);
   if (inTransaction) declared.add(tx);
 }
 
@@ -38,7 +39,7 @@ export async function declarePersistenceProtocol(tx: SqlEngine): Promise<void> {
  */
 export async function declareDurablePersistence(tx: SqlEngine, lockTimeout = '1s', statementTimeout = '5s', idleInTransaction?: string): Promise<string | null> {
   const idle = idleInTransaction === undefined ? '' : "set_config('idle_in_transaction_session_timeout',$3,true),";
-  const [row] = await tx.executeRaw<{ brain: string | null }>(`SELECT ${idle}set_config('gbrain.persistence_protocol','2',true),set_config('synchronous_commit','on',true),
+  const [row] = await tx.executeRaw<{ brain: string | null }>(`SELECT ${idle}set_config('gbrain.persistence_protocol','2',true),${CANONICAL_PROTOCOL_DECLARATION},set_config('synchronous_commit','on',true),
     set_config('lock_timeout',$1,true),set_config('statement_timeout',$2,true),${BRAIN_SHARE}`,
     idleInTransaction === undefined ? [lockTimeout, statementTimeout] : [lockTimeout, statementTimeout, idleInTransaction]);
   if ((tx as { _pageTransaction?: boolean })._pageTransaction === true) declared.add(tx);

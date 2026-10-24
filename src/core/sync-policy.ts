@@ -16,6 +16,7 @@ import type { BrainEngine } from './engine.ts';
 import { parseSourceConfig } from './sources-load.ts';
 import { readManagedMode } from './persistence/managed-mode.ts';
 import { syncContentDirectory } from './sync-applicability.ts';
+import { sourceInDatabaseMode } from './persistence/canonical-mode.ts';
 
 /**
  * True iff `config` explicitly sets `syncEnabled: false`. parseSourceConfig
@@ -93,7 +94,7 @@ export function activationPendingSkipMessage(sourceId: string): string {
     'automatic sync resumes after activation.';
 }
 
-export type AutomaticSyncSkipReason = 'sync_disabled' | 'activation_pending' | 'sync_not_applicable';
+export type AutomaticSyncSkipReason = 'sync_disabled' | 'activation_pending' | 'sync_not_applicable' | 'database_canonical';
 export interface AutomaticSyncSkip { reason: AutomaticSyncSkipReason; message: string }
 /** Per-source latch for `reportAutomaticSyncSkip`: the last reason written for each source. */
 export type AutomaticSyncSkipLatch = Map<string, AutomaticSyncSkipReason>;
@@ -115,6 +116,7 @@ export async function automaticSyncSkip(
 ): Promise<AutomaticSyncSkip | null> {
   if (isSyncDisabledConfig(src.config)) return { reason: 'sync_disabled', message: `[sync] skipping automatic sync for source=${src.id}: config.syncEnabled is false.` };
   if (activationPending?.has(src.id)) return { reason: 'activation_pending', message: activationPendingSkipMessage(src.id) };
+  if (await sourceInDatabaseMode(engine, src.id)) return { reason: 'database_canonical', message: `[sync] skipping automatic sync for source=${src.id}: it is in database mode, so the database holds its pages and the exporter owns its checkout.` };
   const dir = await syncContentDirectory(engine, { sourceId: src.id, repoPath: src.local_path ?? undefined });
   if (dir) {
     return { reason: 'sync_not_applicable', message: `[sync] skipping automatic sync for source=${src.id}: ${dir.root} is a gbrain-owned content directory, not a Git checkout. ` +

@@ -39,6 +39,7 @@ import { lockTopologyPrincipal, lockTopologyRows, topologyPrincipal, withTopolog
 import { ACTIVE_REFRESH_STATES_SQL, CHECKOUT_EFFECT_KINDS_SQL, type WorktreeRefreshState } from './worktree-refresh-schema.ts';
 import { gitChildEnv } from '../git-env.ts';
 import { classifyOriginUniqueViolation } from './origin-guard.ts';
+import { sourceDatabaseModeError } from './canonical-mode.ts';
 
 export interface WorktreeRefreshRow {
   id: string; worktree_id: string; source_ids: string[]; principal_id: string; owner_epoch: string | number;
@@ -403,6 +404,11 @@ function finished(row: WorktreeRefreshRow, sync: { synced: RefreshMemberSync[]; 
  */
 export async function refreshWorktree(engine: BrainEngine, sourceId: string, opts: RefreshOptions = {}): Promise<WorktreeRefreshResult> {
   if (opts.resume || opts.abandon) return resumeOrAbandon(engine, sourceId, opts);
+  // Database-canonical wave 4: a refresh syncs every source of the worktree, so one in database mode refuses it.
+  const [database] = await engine.executeRaw<{ source_id: string }>(`SELECT m.source_id FROM persistence_source_bindings t
+    JOIN persistence_source_bindings m ON m.worktree_id=t.worktree_id WHERE t.source_id=$1 AND gbrain_source_publication_epoch(m.source_id) IS NOT NULL
+    UNION ALL SELECT $1 WHERE gbrain_source_publication_epoch($1) IS NOT NULL ORDER BY 1 LIMIT 1`, [sourceId]);
+  if (database) throw sourceDatabaseModeError(database.source_id, 'gbrain sources refresh');
   const fetchTimeoutMs = await configuredMs(engine, opts.fetchTimeoutMs, 'GBRAIN_REFRESH_FETCH_TIMEOUT_MS', 'sources.refresh_fetch_timeout_ms', 120_000, 2 ** 31 - 1);
   const waitDrainMs = await configuredMs(engine, opts.waitDrainMs, 'GBRAIN_REFRESH_DRAIN_WAIT_MS', 'sources.refresh_drain_wait_ms', 60_000);
   return withGit(async git => {

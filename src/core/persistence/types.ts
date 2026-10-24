@@ -21,6 +21,7 @@ export const WRITE_ERROR_CODES = [
   'timeline_rows_would_be_removed', 'purged_content', 'preparation_stalled',
   'fence_unrenderable', 'page_body_segmented', 'revision_changed', 'tail_changed',
   'write_outcome_unknown', 'write_interrupted', 'connection_inherited_read_only',
+  'canonical_protocol_required', 'canonical_publication_required', 'canonical_mode_changed', 'source_database_mode', 'canonical_mixed_group',
   'import_conflict_not_found', 'import_conflict_not_writable', 'import_conflict_stale',
 ] as const;
 

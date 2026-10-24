@@ -21,6 +21,7 @@ import { runSourcesRefresh } from '../src/commands/sources-refresh.ts';
 import { assertWorktreeNotExportOwned } from '../src/core/persistence/canonical-export-store.ts';
 import { OperationError } from '../src/core/ops/contract.ts';
 import { randomUUID } from 'node:crypto';
+import { CANONICAL_PROTOCOL_DECLARATION } from '../src/core/persistence/canonical-mode.ts';
 
 for (const backend of testBackends()) describe(`database-canonical wave 5b surfaces: ${backend}`, () => {
   let engine: BrainEngine;
@@ -46,6 +47,11 @@ for (const backend of testBackends()) describe(`database-canonical wave 5b surfa
     await engine.executeRaw("UPDATE database_canonical_sources SET mode='database', mode_epoch=1 WHERE source_id=$1", [sourceId]);
     await engine.transaction(tx => writeExportSwitch(tx, sourceId, true));
   };
+  /** A page write as a canonical-protocol writer makes it (wave 4's fence refuses an undeclared write to a database-mode source). */
+  const put = (slug: string, title: string) => engine.transaction(async tx => {
+    await tx.executeRaw(`SELECT ${CANONICAL_PROTOCOL_DECLARATION}`);
+    return (tx as BrainEngine).putPage(slug, { type: 'note', title, compiled_truth: `${title}.`, timeline: '' }, { sourceId: 'default' });
+  });
   const captured = async (run: () => Promise<unknown>): Promise<string> => {
     const lines: string[] = [];
     const log = spyOn(console, 'log').mockImplementation((...args: unknown[]) => { lines.push(args.map(String).join(' ')); });
@@ -56,7 +62,7 @@ for (const backend of testBackends()) describe(`database-canonical wave 5b surfa
   test('sync status carries the database-canonical block: lag, coverage, a parked batch with its retry command, conflicts', async () => {
     expect(await readDatabaseCanonicalStatus(engine)).toEqual([]);
     await databaseMode('default');
-    await engine.putPage('notes/alpha-example', { type: 'note', title: 'Alpha', compiled_truth: 'Alpha.', timeline: '' }, { sourceId: 'default' });
+    await put('notes/alpha-example', 'Alpha');
     await engine.executeRaw("UPDATE export_outbox SET first_enqueued_at=now() - interval '400 seconds' WHERE source_id='default'");
     await engine.executeRaw(`INSERT INTO export_batches(source_id, source_incarnation, mode_epoch, export_epoch, eligibility_generation, state, attempts, parked_at, error_code)
       SELECT id, incarnation, 1, 1, 0, 'committed', 8, now(), 'export_push_contended' FROM sources WHERE id='default'`);
@@ -82,7 +88,7 @@ for (const backend of testBackends()) describe(`database-canonical wave 5b surfa
     const quiet = await readBrainHealthBands(engine, { sourceIds: ['default'] }, t);
     expect(quiet.database_canonical).toEqual({ sources: 'none', export_behind: 'none', export_stalled: 'none', open_conflicts: 'none' });
     await databaseMode('default');
-    await engine.putPage('notes/beta-example', { type: 'note', title: 'Beta', compiled_truth: 'Beta.', timeline: '' }, { sourceId: 'default' });
+    await put('notes/beta-example', 'Beta');
     await engine.executeRaw("UPDATE export_outbox SET first_enqueued_at=now() - interval '4000 seconds' WHERE source_id='default'");
     await engine.executeRaw(`INSERT INTO import_conflicts(source_id, path, path_folded, mode, outcome, kind, shadow_epoch) VALUES ('default', 'notes/beta-example.md', 'notes/beta-example.md', 'live', 'conflict', 'both_changed', 1)`);
     const bands = await readBrainHealthBands(engine, { sourceIds: ['default'] }, t + 2 * 60_000);

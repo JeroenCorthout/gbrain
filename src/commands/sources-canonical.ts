@@ -64,7 +64,7 @@ export function parseCanonicalArgs(args: string[]): { sourceId: string; json: bo
   if (positional.length !== 1) throw new OperationError('invalid_params', 'sources canonical needs exactly one source id.', USAGE);
   if (!args.includes('--dry-run')) {
     throw new OperationError('invalid_params', 'sources canonical only previews in this release; pass --dry-run.',
-      `Run gbrain sources canonical ${positional[0]} --dry-run for the read-only census. Changing a source's mode arrives in a later release (${DOCS}).`);
+      `Run gbrain sources canonical ${positional[0]} --dry-run for the read-only census, or --shadow on --dry-run to preview a shadow export. Changing a source's mode arrives in a later release (${DOCS}).`);
   }
   return { sourceId: positional[0]!, json: args.includes('--json'), sample };
 }
@@ -162,18 +162,27 @@ function describe(census: CanonicalCensus): string {
   return lines.join('\n');
 }
 
+/** The wave 2 shadow actions (sources-canonical-shadow.ts); any other invocation is the census. */
+const SHADOW_FLAGS = ['--shadow', '--purge-shadow', '--shadow-drain', '--shadow-status'];
+
 export async function runSourcesCanonical(engine: BrainEngine, args: string[]): Promise<void> {
   if (args.includes('--census') || args.includes('--observe')) return (await import('./sources-canonical-census.ts')).runSourcesCanonicalCensus(engine, args);
+  if (args.includes('--to')) return (await import('./sources-canonical-mode.ts')).runSourcesCanonicalMode(engine, args);
   if (args.includes('--export-commits') || args.includes('--export-retry')) return (await import('./sources-canonical-export.ts')).runSourcesCanonicalExport(engine, args);
   const json = args.includes('--json');
   try {
+    if (SHADOW_FLAGS.some(flag => args.includes(flag))) {
+      const shadow = await (await import('./sources-canonical-shadow.ts')).runSourcesCanonicalShadow(engine, args);
+      console.log(json ? JSON.stringify(shadow.json) : shadow.text);
+      return;
+    }
     const parsed = parseCanonicalArgs(args);
     const census = await censusSource(engine, parsed.sourceId, parsed.sample);
     console.log(json ? JSON.stringify(census) : describe(census));
   } catch (error) {
     if (!(error instanceof OperationError)) throw error;
     const env = toAgentError(error, { transport: 'cli', command: 'sources canonical', render: cliRenderContext() });
-    console.log(json ? JSON.stringify({ status: 'refused', ...env }) : `Census refused (${error.code}): ${error.message}\nFix: ${error.suggestion ?? USAGE}`);
+    console.log(json ? JSON.stringify({ status: 'refused', ...env }) : `sources canonical refused (${error.code}): ${error.message}\nFix: ${error.suggestion ?? USAGE}`);
     setCliExitVerdict(1);
   }
 }
