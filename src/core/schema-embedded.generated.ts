@@ -3501,7 +3501,7 @@ BEGIN
   RETURN NULL;
 END \$fn\$;
 DROP TRIGGER IF EXISTS database_canonical_sources_count ON database_canonical_sources;
-CREATE TRIGGER database_canonical_sources_count AFTER INSERT OR UPDATE OR DELETE OR TRUNCATE ON database_canonical_sources
+CREATE TRIGGER database_canonical_sources_count AFTER INSERT OR UPDATE OR DELETE ON database_canonical_sources
   FOR EACH STATEMENT EXECUTE FUNCTION gbrain_count_canonical_sources();
 CREATE SEQUENCE IF NOT EXISTS export_outbox_seq;
 CREATE TABLE IF NOT EXISTS export_outbox (
@@ -3532,6 +3532,10 @@ BEGIN
 END \$fn\$;
 CREATE OR REPLACE FUNCTION gbrain_enqueue_page_export() RETURNS trigger LANGUAGE plpgsql SET search_path = pg_catalog, public AS \$fn\$
 BEGIN
+  IF TG_OP = 'UPDATE' AND (OLD.knowledge_revision, OLD.slug, OLD.source_id, OLD.deleted_at, OLD.database_only_reason)
+    IS NOT DISTINCT FROM (NEW.knowledge_revision, NEW.slug, NEW.source_id, NEW.deleted_at, NEW.database_only_reason) THEN
+    RETURN NULL;
+  END IF;
   PERFORM 1 FROM database_canonical_brain WHERE singleton = 1 AND active_sources > 0;
   IF NOT FOUND THEN RETURN NULL; END IF;
   IF TG_OP = 'DELETE' THEN
@@ -3550,10 +3554,7 @@ CREATE TRIGGER pages_export_outbox_insert AFTER INSERT ON pages
   FOR EACH ROW EXECUTE FUNCTION gbrain_enqueue_page_export();
 DROP TRIGGER IF EXISTS pages_export_outbox_update ON pages;
 CREATE TRIGGER pages_export_outbox_update AFTER UPDATE ON pages
-  FOR EACH ROW WHEN (OLD.knowledge_revision IS DISTINCT FROM NEW.knowledge_revision OR OLD.slug IS DISTINCT FROM NEW.slug
-    OR OLD.source_id IS DISTINCT FROM NEW.source_id OR OLD.deleted_at IS DISTINCT FROM NEW.deleted_at
-    OR OLD.database_only_reason IS DISTINCT FROM NEW.database_only_reason)
-  EXECUTE FUNCTION gbrain_enqueue_page_export();
+  FOR EACH ROW EXECUTE FUNCTION gbrain_enqueue_page_export();
 DROP TRIGGER IF EXISTS pages_export_outbox_delete ON pages;
 CREATE TRIGGER pages_export_outbox_delete AFTER DELETE ON pages
   FOR EACH ROW EXECUTE FUNCTION gbrain_enqueue_page_export();

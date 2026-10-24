@@ -287,9 +287,9 @@ export const DOCTOR_CHECK_REGISTRY: readonly DoctorEntry[] = [
   managedSyncConvergenceEntry,
   // #7160: title-prefixed person pages next to the unprefixed page (read-only, preview-first).
   personTitleDuplicatesEntry,
-  fenceIntegrityEntry,
   databaseCanonicalEntry,
   databaseCanonicalShadowEntry,
+  fenceIntegrityEntry,
   searchModeEntry,
 ];
 

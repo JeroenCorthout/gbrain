@@ -49,6 +49,17 @@ for (const backend of testBackends()) describe(`database-canonical wave 2 outbox
     expect(Number(brain!.active)).toBe(0);
   });
 
+  test('the export triggers depend on no table column and the recount trigger has no TRUNCATE event', async () => {
+    const columnDeps = await engine.executeRaw<{ tgname: string }>(`SELECT t.tgname FROM pg_trigger t
+      JOIN pg_depend d ON d.classid = 'pg_trigger'::regclass AND d.objid = t.oid AND d.refobjsubid > 0
+      WHERE t.tgname IN ('pages_export_outbox_insert','pages_export_outbox_update','pages_export_outbox_delete',
+        'fact_withdrawals_export_outbox','fact_purges_export_outbox','database_canonical_sources_count')`);
+    expect(columnDeps).toEqual([]);
+    const [count] = await engine.executeRaw<{ truncate: boolean }>(
+      "SELECT (tgtype::int & 32) <> 0 AS truncate FROM pg_trigger WHERE tgname = 'database_canonical_sources_count'");
+    expect(count).toEqual({ truncate: false });
+  });
+
   test('a shadowed source gets one coalesced row per page at its newest revision; other sources get none', async () => {
     await engine.executeRaw("INSERT INTO sources(id,name) VALUES ('source-b','source-b')");
     const state = await shadow('default', true);

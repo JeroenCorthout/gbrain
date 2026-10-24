@@ -982,16 +982,16 @@
         "name": "person_title_duplicates"
       },
       {
-        "category": "brain",
-        "name": "fence_integrity"
-      },
-      {
         "category": "ops",
         "name": "database_canonical"
       },
       {
         "category": "ops",
         "name": "database_canonical_shadow"
+      },
+      {
+        "category": "brain",
+        "name": "fence_integrity"
       },
       {
         "category": "ops",

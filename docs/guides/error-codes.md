@@ -1031,7 +1031,7 @@ More: [docs/guides/repair.md#managed-sync-orphans](../../docs/guides/repair.md#m
 |---|---|---|---|---|---|---|
 | Database-canonical mode is off for this brain (persistence.database_canonical.enabled). | The request itself was wrong or no longer matches the brain; nothing was changed. | Correct the request using the message above, then retry. | agent | `repeat the read that failed` | 1 | no |
 
-More: [docs/designs/DATABASE_CANONICAL_MEMORY.md](../../docs/designs/DATABASE_CANONICAL_MEMORY.md)
+More: [docs/designs/DATABASE_CANONICAL_MEMORY.md#phased-rollout](../../docs/designs/DATABASE_CANONICAL_MEMORY.md#phased-rollout)
 
 ### database_canonical_intent_required
 
@@ -1041,7 +1041,7 @@ More: [docs/designs/DATABASE_CANONICAL_MEMORY.md](../../docs/designs/DATABASE_CA
 |---|---|---|---|---|---|---|
 | Changing a source's database-canonical state needs --admin-intent source_canonical and the --expected-state its preview printed; nothing was changed. | The request itself was wrong or no longer matches the brain; nothing was changed. | Correct the request using the message above, then retry. | agent | `repeat the read that failed` | 1 | no |
 
-More: [docs/designs/database-canonical-w2-contract.md](../../docs/designs/database-canonical-w2-contract.md)
+More: [docs/designs/database-canonical-w2-contract.md#the-shadow-verb](../../docs/designs/database-canonical-w2-contract.md#the-shadow-verb)
 
 ### database_canonical_shadow_active
 
@@ -1051,7 +1051,7 @@ More: [docs/designs/database-canonical-w2-contract.md](../../docs/designs/databa
 |---|---|---|---|---|---|---|
 | The source still has its database-canonical shadow on, so its shadow rows cannot be purged; turn shadow off first. | The request itself was wrong or no longer matches the brain; nothing was changed. | Correct the request using the message above, then retry. | agent | `repeat the read that failed` | 1 | no |
 
-More: [docs/designs/database-canonical-w2-contract.md](../../docs/designs/database-canonical-w2-contract.md)
+More: [docs/designs/database-canonical-w2-contract.md#the-shadow-verb](../../docs/designs/database-canonical-w2-contract.md#the-shadow-verb)
 
 ### database_error
 

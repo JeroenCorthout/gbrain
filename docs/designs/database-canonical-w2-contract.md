@@ -15,7 +15,7 @@ enabled where the role allows it, cascade with their source, and carry verbatim 
 | Table | Key | What it holds |
 |---|---|---|
 | `database_canonical_sources` | `source_id` | The durable per-source flag: `source_incarnation`, `shadow` (bool), `shadow_epoch` (bumped on every flip), `shadow_changed_at`. One row per source that ever had shadow turned on. W4 adds `mode` and `mode_epoch` columns here. |
-| `database_canonical_brain` | singleton | `active_sources`: how many rows have `shadow` true. A statement trigger on `database_canonical_sources` recounts it, so it cannot drift from the flags. W4 counts database-mode sources here too. |
+| `database_canonical_brain` | singleton | `active_sources`: how many rows have `shadow` true. A statement trigger on `database_canonical_sources` recounts it on insert, update and delete. It has no TRUNCATE event (fixture resets keep their DELETE path), so only a TRUNCATE can leave it high, which costs a lookup and never skips a row. W4 counts database-mode sources here too. |
 | `export_outbox` | `(source_id, page_id)` | One coalesced row per page with unprocessed changes: `slug`, `revision` (the page's `knowledge_revision`, null when the page left the source), `cause`, `seq` (from `export_outbox_seq`, bumped on every upsert), `first_enqueued_at` (kept across upserts, so its minimum is export lag), `enqueued_at`. |
 | `export_ledger` | `id`; live unique on `(source_id, path_folded)` and `(source_id, page_id)`; unique `(source_id, page_id, lifetime)` | What each exported path holds: `page_id`, `lifetime`, `path` (checkout-relative POSIX), `path_folded` (`exportPathKey`: the export stage's NFC plus case fold), `revision`, `disk_sha256` (raw bytes on disk), `blob_oid`, `renderer_fp` (null for bytes gbrain did not render), `commit_sha`, `seeded_from`, `exported_at`, `retired_at` (null = live). |
 | `export_shadow_batches` | `id` | One row per consumer batch: `shadow_epoch`, `outbox_rows`, `counts` (diff kind to count), `unexpected`, `renderer_fp`, `started_at`, `finished_at`. |
@@ -27,9 +27,10 @@ enabled where the role allows it, cascade with their source, and carry verbatim 
 
 ## Trigger semantics
 
-- `pages`: three row-level AFTER triggers. INSERT and DELETE always call the function; UPDATE calls it only when
-  `knowledge_revision`, `slug`, `source_id`, `deleted_at` or `database_only_reason` changes, so embedding,
-  telemetry and extraction stamps never reach it. Tag, body and frontmatter changes all move `knowledge_revision`.
+- `pages`: three row-level AFTER triggers with no WHEN clause, so they depend on no pages column and replaying the
+  schema blob on an old brain cannot fail. On UPDATE the function returns at once unless `knowledge_revision`, `slug`,
+  `source_id`, `deleted_at` or `database_only_reason` changed, so embedding, telemetry and extraction stamps never
+  reach the outbox. Tag, body and frontmatter changes all move `knowledge_revision`.
 - `fact_withdrawals` and `fact_purges` (what `readExportWithdrawals` overlays): a row-level AFTER trigger on insert,
   update and delete enqueues the live pages of the source the withdrawal can change without reading any page body:
   the page whose slug is the withdrawal's subject, and every page whose fence holds a matching claim
@@ -76,6 +77,8 @@ sourceCanonicalAdminState(exec, sourceId, action: string): Promise<string>
 requireSourceCanonicalIntent({ admin_intent, expected_state }, previewCommand): string
 assertSourceCanonicalState(exec, sourceId, action, expected, previewCommand): Promise<void>
 ```
+
+## The shadow verb
 
 The verb is `src/commands/sources-canonical-shadow.ts`: `--shadow on|off` and `--purge-shadow` with `--dry-run` or
 `--admin-intent source_canonical --expected-state <fingerprint>`, plus `--shadow-drain [--limit n]` and
