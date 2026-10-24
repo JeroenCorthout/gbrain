@@ -655,7 +655,12 @@ vars — incident-time escape hatches, not everyday knobs.
    `sources.refresh_fetch_timeout_ms`, `GBRAIN_REFRESH_FETCH_TIMEOUT_MS`).
    A refresh interrupted by a crash is finished by the restarted owner or by
    `gbrain sources refresh <source-id> --resume`. A cron that keeps a managed
-   brain current runs the refresh instead of `git pull`.
+   brain current runs the refresh instead of `git pull`, through the same
+   [wrapper](cron-schedule.md#calling-gbrain-unattended) as every other
+   scheduled gbrain call (so it runs as the owner host). `refresh_diverged`
+   means something commits into the checkout outside gbrain: fix that writer
+   instead of forcing the checkout
+   ([scripts and the managed checkout](shared-checkout-git.md#scripts-and-the-managed-checkout)).
 
    **Say to your agent:** *"Bring my notes source up to date with its remote."*
 

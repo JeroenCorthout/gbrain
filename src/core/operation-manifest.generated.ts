@@ -3413,6 +3413,39 @@ export const OPERATION_MANIFEST: OperationMeta[] = [
     "area": "pages"
   },
   {
+    "name": "whois",
+    "mutating": false,
+    "idempotent": true,
+    "outputRedaction": "retrieval",
+    "scope": "read",
+    "description": "Exact identity lookup: entity pages whose email, title or declared alias equals an email address or name, ignoring case, accents and quotes. Never fuzzy: empty matches means no exact match; ambiguous means several.",
+    "params": {
+      "query": {
+        "type": "string",
+        "required": true,
+        "description": "Email address or name, e.g. 'alice@acme-example.com'."
+      },
+      "types": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "Page types; default: the schema pack's entity types."
+      },
+      "source_id": {
+        "type": "string",
+        "description": "One source; '__all__' spans your sources."
+      }
+    },
+    "cliHints": {
+      "name": "whois",
+      "positional": [
+        "query"
+      ]
+    },
+    "area": "pages"
+  },
+  {
     "name": "log_ingest",
     "idempotent": false,
     "outputRedaction": "no_stored_text",

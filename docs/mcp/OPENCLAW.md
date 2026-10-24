@@ -88,6 +88,19 @@ a re-run upgrades the block in place, `--no-instructions` opts out and is
 remembered, and `--remove` takes it out. A thin-client install puts the same
 block at the top of `GBRAIN-INSTRUCTIONS.md`.
 
+## Scheduled jobs and workspace scripts
+
+OpenClaw cron jobs, workspace scripts and hooks run with another `HOME` and
+environment than the gateway's MCP server. Route every one of them through a
+single wrapper that sets `GBRAIN_HOME`, loads the brain's env file and runs the
+installed `gbrain` by absolute path; log its stderr and check its exit code
+([the wrapper and its rules](../guides/cron-schedule.md#calling-gbrain-unattended)).
+On a managed brain, scripts commit the files they write with
+`gbrain git commit-push -- <paths>` (never plain `git commit`); a scheduled
+`gbrain sources refresh <id>`
+keeps it current
+([scripts and the managed checkout](../guides/shared-checkout-git.md#scripts-and-the-managed-checkout)).
+
 ## Verify
 
 `openclaw mcp list` should show `gbrain`. Then start an agent turn and ask it

@@ -2,8 +2,8 @@
   "golden": {
     "exitCode": 0,
     "stderr": "",
-    "stdoutBytes": 262702,
-    "stdoutSha256": "bfd962a82f16847c7969963ab23410170196491231dcdef214ab3863873b495e",
+    "stdoutBytes": 263785,
+    "stdoutSha256": "88d8d8cd845c772508f60bcbf8048bb0f92e046ee544617d0789b86742dee497",
     "toolNames": [
       "remember",
       "entity",
@@ -83,6 +83,7 @@
       "get_raw_data",
       "resolve_slugs",
       "get_chunks",
+      "whois",
       "log_ingest",
       "get_ingest_log",
       "get_usage",
@@ -4050,6 +4051,43 @@
           },
           "required": [
             "slug"
+          ],
+          "type": "object"
+        },
+        "scope": "read"
+      },
+      {
+        "description": "Exact identity lookup: entity pages whose email, title or declared alias equals an email address or name, ignoring case, accents and quotes. Never fuzzy: empty matches means no exact match; ambiguous means several.",
+        "idempotent": true,
+        "local_only": false,
+        "mutating": false,
+        "name": "whois",
+        "parameters": {
+          "query": "string",
+          "source_id": "string?",
+          "types": "array?"
+        },
+        "required_scopes": [],
+        "schema": {
+          "properties": {
+            "query": {
+              "description": "Email address or name, e.g. 'alice@acme-example.com'.",
+              "type": "string"
+            },
+            "source_id": {
+              "description": "One source; '__all__' spans your sources.",
+              "type": "string"
+            },
+            "types": {
+              "description": "Page types; default: the schema pack's entity types.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "query"
           ],
           "type": "object"
         },
