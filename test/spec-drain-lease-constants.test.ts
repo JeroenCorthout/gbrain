@@ -25,6 +25,7 @@ function constants(cfg: string): Record<string, string> {
 
 /** withRefreshingLock's renewal deadline: min(heartbeatTimeoutMs ?? default, ttl / 3). The default is read from the source. */
 function renewalTimeoutMs(ttlMs: number): number {
+  // test-reads-source-ok[structural]: the renewal timeout is a local expression inside withRefreshingLock with no export; the model's RenewTimeoutMs must track it
   const source = readFileSync(join(ROOT, 'src/core/db-lock.ts'), 'utf8');
   const m = source.match(/const heartbeatTimeoutMs = Math\.min\(opts\.heartbeatTimeoutMs \?\? ([\d_]+), ttlMs \/ 3\);/);
   expect(m, 'withRefreshingLock no longer computes its renewal timeout as min(opts.heartbeatTimeoutMs ?? <default>, ttlMs / 3); update this test and RenewTimeoutMs in spec/tla/drain-lease/*.cfg to the new rule').not.toBeNull();
