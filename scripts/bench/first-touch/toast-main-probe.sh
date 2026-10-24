@@ -12,7 +12,7 @@ P="docker exec -i soak-pg psql -h 127.0.0.1 -p 5434 -U postgres -d soak_brain -A
 while IFS= read -r q; do
   for t in cc_ext cc_main; do
     bash scripts/bench/first-touch/env.sh pg cold >/dev/null
-    res=$(printf "SET track_io_timing=on; SET jit=off; SET work_mem='32MB';\nEXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) SELECT count(*), max(ts_rank(search_vector, websearch_to_tsquery('english', \$\$%s\$\$))) FROM (SELECT search_vector FROM %s WHERE search_vector @@ websearch_to_tsquery('english', \$\$%s\$\$) AND modality = 'text' LIMIT 50000) s;\n" "$q" "$t" "$q" | $P | tail -n +3 | tr -d '\n')
+    res=$(printf "SET track_io_timing=on; SET jit=off; SET work_mem='32MB';\nEXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) SELECT count(*), max(ts_rank(search_vector, websearch_to_tsquery('english', \$\$%s\$\$))) FROM (SELECT search_vector FROM %s WHERE search_vector @@ websearch_to_tsquery('english', \$\$%s\$\$) AND modality = 'text' LIMIT 50000) s;\n" "$q" "$t" "$q" | $P | grep -v "^SET$" | tr -d '\n')
     echo "$res" | python3 -c "import json,sys; p=json.load(sys.stdin)[0]; pl=p['Plan']; print(json.dumps({'table':'$t','q':sys.argv[1],'ms':p['Execution Time'],'read':pl['Shared Read Blocks'],'hit':pl['Shared Hit Blocks'],'read_ms':pl.get('I/O Read Time')}))" "$q" >> "$OUT"
   done
 done < "$Q"
