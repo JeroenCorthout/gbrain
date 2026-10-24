@@ -218,6 +218,8 @@ export const CODES = {
   cycle_failed: { class: 'server', summary: "The maintenance (dream) cycle failed, or a phase threw and was contained so later phases could run." },
   d_sel_too_small: { class: 'caller', summary: "The selection split has too few tasks for meaningful validation." },
   database_canonical_disabled: { class: 'caller', summary: "Database-canonical mode is off for this brain (persistence.database_canonical.enabled).", docs: 'docs/designs/DATABASE_CANONICAL_MEMORY.md' },
+  database_canonical_intent_required: { class: 'caller', summary: "Changing a source's database-canonical state needs --admin-intent source_canonical and the --expected-state its preview printed; nothing was changed.", docs: 'docs/designs/database-canonical-w2-contract.md' },
+  database_canonical_shadow_active: { class: 'caller', summary: "The source still has its database-canonical shadow on, so its shadow rows cannot be purged; turn shadow off first.", docs: 'docs/designs/database-canonical-w2-contract.md' },
   database_error: { class: 'server', summary: "The brain database could not be reached or refused the operation." },
   delta_cursor_upgrade_required: {
     class: 'caller',

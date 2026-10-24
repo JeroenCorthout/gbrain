@@ -983,6 +983,14 @@
       },
       {
         "category": "ops",
+        "name": "database_canonical"
+      },
+      {
+        "category": "ops",
+        "name": "database_canonical_shadow"
+      },
+      {
+        "category": "ops",
         "name": "search_mode"
       },
       {

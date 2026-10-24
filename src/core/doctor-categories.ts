@@ -348,6 +348,8 @@ export const OPS_CHECK_NAMES: ReadonlySet<string> = new Set([
   'cli_socket_refusals',
   // Database-canonical memory wave 1: the brain gate's state (doctor/checks/database-canonical.ts).
   'database_canonical',
+  // Database-canonical memory wave 2: shadow export outbox, batches and unexpected diffs (doctor/checks/database-canonical-shadow.ts).
+  'database_canonical_shadow',
   'stale_embedding_effects',
   'vector_plan',
   'keyword_plan',

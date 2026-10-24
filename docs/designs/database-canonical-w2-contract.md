@@ -65,10 +65,31 @@ exportOutboxStats(exec, sourceId): Promise<{ depth; oldest_age_seconds }>
 readLiveLedgerRows(exec, sourceId, pageIds): Promise<Map<number, ExportLedgerRow>>
 ```
 
-Phase B adds, in the same module family: the ledger seed from `SyncImportProvenance`, the shadow consumer
-(`drainExportShadow(engine, sourceId, { limit })`, which writes batches, diffs and `shadow_adopt` ledger rows), the
-shadow status read the doctor check and the verb share, and the preview-bound verb in
-`src/commands/sources-canonical-shadow.ts`.
+The seed, the consumer and the status read live in `src/core/persistence/canonical-shadow-consumer.ts`, and the
+admin-intent binding in `src/core/persistence/canonical-admin.ts`:
+
+```ts
+seedExportLedger(engine, sourceId, { apply }): Promise<LedgerSeedReport>
+drainExportShadow(engine, sourceId, { limit }): Promise<ShadowBatchReport>
+readShadowStatus(exec, sourceId): Promise<ShadowStatus>
+sourceCanonicalAdminState(exec, sourceId, action: string): Promise<string>
+requireSourceCanonicalIntent({ admin_intent, expected_state }, previewCommand): string
+assertSourceCanonicalState(exec, sourceId, action, expected, previewCommand): Promise<void>
+```
+
+The verb is `src/commands/sources-canonical-shadow.ts`: `--shadow on|off` and `--purge-shadow` with `--dry-run` or
+`--admin-intent source_canonical --expected-state <fingerprint>`, plus `--shadow-drain [--limit n]` and
+`--shadow-status`. Shadow on needs the brain gate; off, purge and status work with it off, so an operator can always
+stop a shadow. The purge needs shadow off and keeps the ledger.
+
+## Seed rules
+
+A `SyncImportProvenance` record of the source's current incarnation with a UUID `revision` and a `disk_sha256` becomes
+a live `sync_provenance` row: `path` is the page's current file target, `blob_oid` its `disk_blob_oid`,
+`renderer_fp` NULL. A record without a revision counts as `no_base.no_revision`, one without a disk hash as
+`no_base.no_disk_hash`; a record for a gone page, an unsafe path or a folded-path clash is skipped and counted. A page
+that already has a live row keeps it, so the seed is idempotent. Shadow on runs the seed before the flip, in batches of
+500 records with a commit each; a flip refused by `preview_changed` after that leaves seeded rows, which are inert.
 
 ## Diff kinds
 
@@ -112,9 +133,9 @@ contract (`compareInlineExportFile`, `compareSegmentedExportFile`).
   two waves merge without conflicts.
 - **Your doctor check.** A new topic file `src/commands/doctor/checks/database-canonical-import.ts`, registered right
   after `databaseCanonicalShadowEntry` in `src/commands/doctor/registry.ts` and named in `doctor-categories.ts`.
-- **Your verb.** `src/commands/sources-canonical.ts` keeps parsing and routes each action to its own module
-  (`--dry-run` census, `--shadow`, `--purge-shadow`, `--shadow-drain`, `--shadow-status`). Add your action as one more
-  route to a module of your own; reuse `requireSourceCanonicalIntent` and the fingerprint helper wave 2 adds for any
-  state change.
+- **Your verb.** `runSourcesCanonical` (`src/commands/sources-canonical.ts`) routes by flag: the wave 2 flags
+  (`SHADOW_FLAGS`) go to `sources-canonical-shadow.ts`, anything else is the census. Add your flags as one more route
+  to a module of your own; for a state change reuse `sourceCanonicalAdminState` (pass your own action name, which is
+  part of the digest), `requireSourceCanonicalIntent` and `assertSourceCanonicalState`.
 - **Stable names.** The table and column names above, the diff kind and cause lists, and the store function
   signatures do not change without a note in the wave 2 PR.

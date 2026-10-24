@@ -46,6 +46,7 @@ test/consolidate-same-instant-6023.test.ts
 test/conversation-facts-oversized-sidecar.test.ts
 test/cycle/synthesize-concepts-merge.test.ts
 test/database-canonical-census.test.ts
+test/database-canonical-shadow-verb.test.ts
 test/database-canonical-shadow.test.ts
 test/db-lock-reconnect.test.ts
 test/decide/conflict-proposals-managed.test.ts
