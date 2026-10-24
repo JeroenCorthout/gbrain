@@ -77,14 +77,18 @@ import {
   describeSkillsBlockOutcome,
   isSkillLoading,
   priorSkillLoading,
+  indexLauncher,
   readSkillLoadingLedger,
+  refreshSkillsIndexes,
   removeSkillsBlock,
   resolveSkillLoading,
-  syncSkillsBlock,
+  installerSkillsBlock,
+  skillsOutcomeFailed,
   type SkillLoading,
   type SkillsBlockOutcome,
 } from '../core/setup/skills-block.ts';
 import {
+  BRAIN_FIRST_HARNESSES,
   brainFirstTarget,
   describeBrainFirstOutcome,
   isBrainFirstHarness,
@@ -146,6 +150,9 @@ Flags:
                        matches (gbrain bundled-skill <name>, from this gbrain).
                        off removes an index an earlier run wrote. The
                        choice is remembered; GBRAIN_SKILL_LOADING sets it too.
+  --skills-index-only  Refresh every skills index recorded for this harness (its
+                       file, launcher and skill set as recorded) and change
+                       nothing else; with --skill-loading off, remove them.
 
 Brain-first instructions: registering MCP is not enough; agents use a brain they
 are told about. By default setup also writes one short marked block into the
@@ -196,6 +203,7 @@ interface SetupFlags {
   gbrainBin?: string;
   instructions?: boolean;
   instructionsOnly: boolean;
+  skillsIndexOnly: boolean;
   workspace?: string;
   skillLoading?: SkillLoading;
 }
@@ -223,6 +231,8 @@ function parseFlags(args: string[]): SetupFlags | string {
   if (workspace !== undefined && !workspace.startsWith('/') && !workspace.startsWith('~')) return '--workspace needs an absolute path';
   const skillLoading = value('--skill-loading');
   if (skillLoading !== undefined && !isSkillLoading(skillLoading)) return `unknown --skill-loading '${skillLoading}'; pass off or spring`;
+  const envLoading = process.env.GBRAIN_SKILL_LOADING?.trim();
+  if (skillLoading === undefined && envLoading && !isSkillLoading(envLoading)) return `GBRAIN_SKILL_LOADING='${envLoading}' is not a skill-loading mode; set it to off or spring, or unset it`;
   return {
     harness: positionals[0],
     dryRun: args.includes('--dry-run'),
@@ -238,6 +248,7 @@ function parseFlags(args: string[]): SetupFlags | string {
     gbrainBin: value('--gbrain-bin'),
     instructions: args.includes('--instructions') ? true : args.includes('--no-instructions') ? false : undefined,
     instructionsOnly: args.includes('--instructions-only'),
+    skillsIndexOnly: args.includes('--skills-index-only'),
     workspace,
     skillLoading: skillLoading as SkillLoading | undefined,
   };
@@ -347,6 +358,7 @@ export async function runSetup(args: string[]): Promise<number> {
   const flags = parsed;
   const adapter = HARNESS_ADAPTERS.find((a) => a.id === flags.harness);
   const mcpWired = flags.harness === 'claude-code' || flags.harness === 'codex';
+  if (flags.skillsIndexOnly) return runSkillsIndexOnly(flags, out);
   if ((flags.instructionsOnly && (isBrainFirstHarness(flags.harness) || adapter)) || (isBrainFirstHarness(flags.harness) && !mcpWired)) {
     return runInstructionsOnly(flags, out);
   }
@@ -704,15 +716,17 @@ function removeBrainFirstFor(harness: BrainFirstHarness, where: { scope?: Wiring
 function skillsFor(harness: BrainFirstHarness, flags: SetupFlags, launcher: string, where: { scope?: WiringScope; projectDir?: string }, brainFirst: BrainFirstOutcome | null): SkillsBlockOutcome | null {
   const target = brainFirstTarget(harness, { ...where, workspace: flags.workspace });
   if ('error' in target) return null;
-  const decision = brainFirst?.decision.value === 'declined'
-    ? { value: 'off' as const, source: 'instructions_off' as const }
-    : resolveSkillLoading(flags.skillLoading, priorSkillLoading(harness, target.path));
-  return syncSkillsBlock({ target, launcher, decision, writer: `gbrain setup ${harness}`, dryRun: flags.dryRun });
+  return installerSkillsBlock({ target, launcher, writer: `gbrain setup ${harness}`, brainFirstDeclined: brainFirst?.decision.value === 'declined', skillLoading: flags.skillLoading, dryRun: flags.dryRun });
 }
 
 function removeSkillsFor(harness: BrainFirstHarness, where: { scope?: WiringScope; projectDir?: string }, flags: SetupFlags): SkillsBlockOutcome | null {
   const target = brainFirstTarget(harness, { ...where, workspace: flags.workspace });
-  const path = 'error' in target ? readSkillLoadingLedger().find((e) => e.harness === harness)?.path : target.path;
+  let path: string | undefined;
+  try {
+    path = 'error' in target ? readSkillLoadingLedger().find((e) => e.harness === harness)?.path : target.path;
+  } catch {
+    path = 'error' in target ? undefined : target.path;
+  }
   return path ? removeSkillsBlock({ harness, path, dryRun: flags.dryRun }) : null;
 }
 
@@ -766,7 +780,7 @@ async function runInstructionsOnly(flags: SetupFlags, out: Out): Promise<number>
     say(out, `Target (${adapter.label}): ${target.path} (${target.role})`);
     const decision = resolveBrainFirstDecision(flags.instructions, priorBrainFirst(harness, target.path));
     instructions = syncBrainFirst({ target, access, decision, writer: `gbrain setup ${harness}`, dryRun: flags.dryRun });
-    skills = skillsFor(harness, flags, flags.gbrainBin ?? resolveGbrainBin() ?? 'gbrain', where, instructions);
+    skills = skillsFor(harness, flags, flags.gbrainBin ?? indexLauncher() ?? 'gbrain', where, instructions);
   }
   const code = instructions?.action === 'preserve' || skillsFailed(skills) ? 1 : 0;
   if (out.json) {
@@ -777,6 +791,23 @@ async function runInstructionsOnly(flags: SetupFlags, out: Out): Promise<number>
   if (skills && (skills.decision.value === 'spring' || skills.action !== 'skip')) say(out, describeSkillsBlockOutcome(skills, flags.dryRun));
   if (mcp.setup === 'manual' && !flags.remove) say(out, `MCP: setup does not register ${adapter.label}'s MCP server. Follow ${adapter.guide} (one command), then start a new session.`);
   if (!flags.remove && instructions?.decision.value === 'accepted') say(out, 'Next: start a new session; the harness reads its instruction file at session start.');
+  return code;
+}
+
+/** --skills-index-only: refresh (or, with --skill-loading off, remove) the recorded skills indexes for one harness; nothing else is touched. */
+async function runSkillsIndexOnly(flags: SetupFlags, out: Out): Promise<number> {
+  const harness = flags.harness;
+  if (!isBrainFirstHarness(harness)) {
+    return refuse(opError('invalid_params', `--skills-index-only needs a harness with an instruction file: ${BRAIN_FIRST_HARNESSES.join(', ')}`, 'Pass the harness whose skills index to refresh, e.g. gbrain setup claude-code --skills-index-only.'), out);
+  }
+  const outcomes = refreshSkillsIndexes(harness, { off: flags.skillLoading === 'off', launcher: flags.gbrainBin, dryRun: flags.dryRun });
+  const code = outcomes.some((o) => o.action === 'preserve') ? 1 : 0;
+  if (out.json) {
+    await writeJsonDocument(`${JSON.stringify({ harness, dry_run: flags.dryRun, skills_index_only: true, skills: outcomes }, null, 2)}\n`, (t) => process.stdout.write(t));
+    return code;
+  }
+  if (outcomes.length === 0) say(out, `No skills index is recorded for ${harness}. Add one with: gbrain setup ${harness} --skill-loading spring`);
+  for (const o of outcomes) say(out, describeSkillsBlockOutcome(o, flags.dryRun));
   return code;
 }
 
@@ -814,4 +845,4 @@ async function finish(out: Out, doc: {
 }
 
 /** An index the user asked for by flag that could not be written fails the run (the rest of the install still finished). */
-const skillsFailed = (o: SkillsBlockOutcome | null): boolean => o?.action === 'preserve' && (o.decision.value === 'spring' || o.decision.source !== 'default');
+const skillsFailed = (o: SkillsBlockOutcome | null): boolean => skillsOutcomeFailed(o);

@@ -97,3 +97,15 @@ describe('gbrain bundled-skill', () => {
     expect((await cli(home, ['meeting-ingestion'])).exitCode).toBe(0);
   });
 });
+
+describe('gbrain bundled-skill: argument order', () => {
+  test('--asset=<path> before the name, and a second name or unknown flag is refused', async () => {
+    const home = emptyHome();
+    const r = await cli(home, ['--asset=_brain-filing-rules.md', 'meeting-ingestion']);
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe(readFileSync(join(SKILLS, '_brain-filing-rules.md'), 'utf8'));
+    expect((await cli(home, ['meeting-ingestion', 'data-loss-gate'])).exitCode).not.toBe(0);
+    expect((await cli(home, ['meeting-ingestion', '--bogus'])).exitCode).not.toBe(0);
+    expect((await cli(home, ['meeting-ingestion', '--asset', 'a', '--asset', 'b'])).exitCode).not.toBe(0);
+  });
+});

@@ -68,8 +68,11 @@ describe('spring-loaded skill index', () => {
     expect(entries(a).some(l => /["`]/.test(l))).toBe(false);
   });
 
-  test('the embedded bundled-skills module is fresh', () => {
-    expect(readFileSync(join(import.meta.dir, '../src/core/skills/bundled-skills.generated.ts'), 'utf8')).toBe(renderBundledSkillsModule());
+  test('the embedded bundled-skills module is fresh and imports no .json as text (a compiled binary hands it back parsed)', () => {
+    const mod = readFileSync(join(import.meta.dir, '../src/core/skills/bundled-skills.generated.ts'), 'utf8');
+    expect(mod).toBe(renderBundledSkillsModule());
+    expect(mod).not.toMatch(/\.json' with \{ type: 'text' \}/);
+    for (const [path, text] of Object.entries(BUNDLED_SKILL_FILES)) expect(typeof text, path).toBe('string');
   });
 
   test('each skill carries every file under skills/ that its files link to, transitively (a linked bundled skill loads by name)', () => {

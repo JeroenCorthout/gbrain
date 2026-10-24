@@ -55,9 +55,14 @@ export function bundledSkillAsset(skill: BundledSkill, asset: string): string | 
   return skill.assets.includes(asset) ? BUNDLED_SKILL_FILES[asset] : undefined;
 }
 
-/** Content identity of the embedded catalog (metadata and every file); the skills index records it so doctor can tell a stale index. */
+/**
+ * Identity of what the skills index shows and what `bundled-skill` accepts:
+ * each skill's name, audience, triggers and file list. A body-only edit keeps
+ * it, so it does not mark installed indexes stale; a renamed, added or removed
+ * skill, a trigger change or a new file changes it.
+ */
 export function bundledCatalogId(): string {
-  const h = createHash('sha256').update(JSON.stringify(BUNDLED_SKILLS));
-  for (const key of Object.keys(BUNDLED_SKILL_FILES).sort()) h.update(`\0${key}\0${BUNDLED_SKILL_FILES[key]}`);
+  const h = createHash('sha256');
+  for (const s of BUNDLED_SKILLS) h.update(JSON.stringify([s.name, s.audience, bundledSkillTriggers(s), s.assets]));
   return h.digest('hex').slice(0, 12);
 }

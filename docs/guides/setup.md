@@ -179,6 +179,34 @@ install, and the thin-client `GBRAIN-INSTRUCTIONS.md` starts with it.
 `gbrain doctor` (`harness_wiring`) warns when a registered harness's block is
 missing, stale or damaged, with a fix that rewrites only the block.
 
+## Skill loading (opt-in)
+
+GBrain ships step-by-step skills (meeting ingestion, fact-checking, the
+bulk-delete gate, filing rules, …). By default no install lane hands them to
+the agent. `--skill-loading spring` adds a second marked block
+(`<!-- gbrain:skills:begin -->` … `<!-- gbrain:skills:end -->`) right after
+the brain-first block in the same file: a compact index of the bundled skills,
+one line per skill with its trigger phrases (about 1.5k tokens, capped at
+6,144 bytes). The full skill is loaded only when a task matches, with
+
+    <launcher> bundled-skill <name>                 # the SKILL.md, then the files it names
+    <launcher> bundled-skill <name> --asset <path>  # one of those files
+
+`gbrain bundled-skill` reads the skills built into gbrain itself: it opens no
+brain and needs no MCP server or skill publication, so it works on a thin
+client and from a compiled binary. The index names the absolute launcher the
+install recorded, so the index and the skills it loads come from the same
+gbrain. MCP `get_skill` is unchanged.
+
+| | |
+|---|---|
+| Select | `--skill-loading off\|spring` on `gbrain setup <harness>`, `gbrain connect --install`, `gbrain connect --harness … --install` and `gbrain bootstrap harness`; or `GBRAIN_SKILL_LOADING`. Flag, then env, then the recorded choice, then `off`. |
+| Default | `off`: no index is written, and `off` removes one an earlier run wrote. |
+| Which skills | Host installs (`setup`, `bootstrap harness`) list all bundled skills; hosted and thin-client connections leave out the host-maintenance ones. |
+| Opt out | `--skill-loading off`; `--no-instructions` removes both blocks; `--remove` takes both out and deletes a file only gbrain created once nothing else is in it. |
+| After an upgrade | The block records the skill catalog it indexes. `gbrain doctor` (`harness_wiring`) names a stale index and the refresh command (`gbrain setup <harness> --skills-index-only`, which rewrites only the skills block, keeping its recorded file, launcher and skill set). It never warns on a stale index alone, and nothing rewrites the file during an upgrade. |
+| Choice record | `~/.gbrain/skill-loading.json` (harness, file, mode, launcher, audience, catalog). |
+
 ## Harness capability table
 
 The table is data (`src/core/setup/capabilities.ts`, version 2). Push is never

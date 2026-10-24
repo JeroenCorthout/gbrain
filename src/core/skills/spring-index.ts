@@ -53,12 +53,18 @@ function distinctTriggers(skill: BundledSkill): string[] {
 
 const line = (name: string, triggers: string[]) => (triggers.length ? `- ${name}: ${triggers.join('; ')}` : `- ${name}`);
 
+/** The launcher as one shell word: as-is when it is plain, else single-quoted. */
+export function shellWord(s: string): string {
+  return /^[A-Za-z0-9_\/.,:@%+=-]+$/.test(s) ? s : `'${s.replace(/'/g, "'\''")}'`;
+}
+
 export function skillIndexHeader(launcher: string, refresh: string, optOut: string): string[] {
+  const run = shellWord(launcher);
   return [
     `<!-- gbrain skills v${SKILL_INDEX_VERSION} catalog ${bundledCatalogId()}: managed by gbrain; edit outside these markers. Refresh: ${refresh}. Opt out: ${optOut} -->`,
     '## GBrain skills: load on demand',
     '',
-    `GBrain ships step-by-step procedures for brain work. When a task matches a line below, run \`${launcher} bundled-skill <name>\` and follow the procedure it prints before acting. Print a file the skill names with \`${launcher} bundled-skill <name> --asset <path>\`. Load nothing for a task no line matches.`,
+    `GBrain ships step-by-step procedures for brain work. When a task matches a line below, run \`${run} bundled-skill <name>\` and follow the procedure it prints before acting. Print a file the skill names with \`${run} bundled-skill <name> --asset <path>\`. Load nothing for a task no line matches.`,
     '',
   ];
 }

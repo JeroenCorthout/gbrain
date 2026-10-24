@@ -20,15 +20,16 @@ import type { SharedSkillsToolCaller } from '../shared-skills/adapter.ts';
 import { harnessSharedSkillsRoot } from './status.ts';
 import { gitChildEnv } from '../git-env.ts';
 import { brainFirstTargetAt, codexInstructionFile, installerBrainFirst, renderBrainFirstSnippet, resolveBrainFirstDecision, type BrainFirstHarness } from '../setup/brain-first.ts';
-import { installerSkillsBlock, isSkillLoading, renderSkillsSnippet, resolveSkillLoading, type SkillLoading } from '../setup/skills-block.ts';
-import { resolveGbrainBin } from '../gbrain-bin.ts';
+import { indexLauncher, installerSkillsBlock, isSkillLoading, renderSkillsSnippet, resolveSkillLoading, type SkillLoading } from '../setup/skills-block.ts';
 
 export interface InstallOptions { harness: string; name?: string; root?: string; configPath?: string; remove?: boolean;
   sharedSkills?: HarnessCredentials['shared_skills']; toolCaller?: SharedSkillsToolCaller; nativeSkillsDir?: string; credentialsFile?: string; freshToken?: boolean;
   /** false: opt out of the brain-first instruction block (removes an existing one); true: opt back in. */
   instructions?: boolean;
   /** The spring-loaded skills index beside the brain-first block (off by default; GBRAIN_SKILL_LOADING and the recorded choice apply). */
-  skillLoading?: SkillLoading }
+  skillLoading?: SkillLoading;
+  /** The absolute gbrain the native-config index names (default: this gbrain, else the one on PATH). */
+  gbrainBin?: string }
 const hash = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const readJson = (path: string): Record<string, any> => {
   assertNoSymlinks(path);
@@ -179,7 +180,7 @@ export async function installHarnessConnection(c: HarnessCredentials, opts: Inst
     const beside = instructionFileBeside(adapter.connection, configPath);
     const instructions = installerBrainFirst({ target: brainFirstTargetAt(beside.harness, beside.path), access: { kind: 'mcp', server: name },
       writer: `gbrain connect --harness ${adapter.id} --install`, instructions: opts.instructions, remove: opts.remove });
-    const skills = installerSkillsBlock({ target: brainFirstTargetAt(beside.harness, beside.path), launcher: resolveGbrainBin() ?? 'gbrain',
+    const skills = installerSkillsBlock({ target: brainFirstTargetAt(beside.harness, beside.path), launcher: opts.gbrainBin ?? indexLauncher() ?? 'gbrain',
       writer: `gbrain connect --harness ${adapter.id} --install`, brainFirstDeclined: instructions.decision.value === 'declined', skillLoading: opts.skillLoading, audience: 'downstream', remove: opts.remove });
     if (opts.remove) {
       if (existsSync(receiptPath)) unlinkSync(receiptPath);
@@ -224,11 +225,12 @@ async function installThinClient(c: HarnessCredentials, opts: InstallOptions, co
     const skillLoading = brainFirst === 'declined' ? 'off' : resolveSkillLoading(opts.skillLoading, isSkillLoading(prior.skill_loading) ? { mode: prior.skill_loading } : undefined).value;
     const rerun = `gbrain connect ${shellQuote(c.mcp_url)} --harness ${shellQuote(opts.harness)} --credentials-file <private-handoff-file> --root ${shellQuote(root)} --install`;
     const skillsIndex = skillLoading === 'spring' ? renderSkillsSnippet(opts.harness, launcher, 'downstream', { refresh: rerun, optOut: `${rerun} --skill-loading off` }) : '';
+    const instructionsHead = `${brainFirst === 'declined' ? '' : renderBrainFirstSnippet(opts.harness, { kind: 'cli', launcher }, 're-run gbrain connect with --no-instructions')}${skillsIndex}`;
     const files = [
       { path: '.gbrain/config.json', text: `${JSON.stringify(config, null, 2)}\n`, mode: 0o600 },
       { path: 'bin/gbrain', text: renderAgentLauncher({ root, bunPath: process.execPath, cliPath: sourceCli.includes('$bunfs') ? undefined : sourceCli, mode: 'thin-client',
         repairHint: `Reinstall GBrain in this environment, then repeat: gbrain connect ${shellQuote(c.mcp_url)} --harness ${shellQuote(opts.harness)} --credentials-file <private-handoff-file> --root ${shellQuote(root)} --install` }), mode: 0o700 },
-      { path: 'GBRAIN-INSTRUCTIONS.md', text: `${brainFirst === 'declined' ? '' : `${renderBrainFirstSnippet(opts.harness, { kind: 'cli', launcher }, 're-run gbrain connect with --no-instructions')}\n`}${skillsIndex}${GBRAIN_MCP_INSTRUCTIONS}\n\nRun commands with the absolute launcher: ${launcher}\nThis is a hosted connection. The host grant controls sources and permissions.\n`, mode: 0o600 },
+      { path: 'GBRAIN-INSTRUCTIONS.md', text: `${instructionsHead ? `${instructionsHead}\n` : ''}${GBRAIN_MCP_INSTRUCTIONS}\n\nRun commands with the absolute launcher: ${launcher}\nThis is a hosted connection. The host grant controls sources and permissions.\n`, mode: 0o600 },
     ];
     const owned: Record<string, string> = prior.owned_files ?? {};
     const pending: Record<string, { before: string | null; after: string }> = prior.pending_files ?? {};

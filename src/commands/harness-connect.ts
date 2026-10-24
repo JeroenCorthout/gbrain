@@ -5,16 +5,16 @@ import { installHarnessConnection, type inlineTokenReceipt } from '../core/harne
 import { normalizeMcpUrl } from '../core/mcp-registration.ts';
 import { validateHarnessArguments } from '../core/harness/arguments.ts';
 import { readHarnessConnectionStatus } from '../core/harness/status.ts';
-import { isSkillLoading } from '../core/setup/skills-block.ts';
+import { isSkillLoading, skillsOutcomeFailed, type SkillsBlockOutcome } from '../core/setup/skills-block.ts';
 
 export async function runHarnessConnect(args: string[]): Promise<void> {
   if (args.includes('--help') || args.includes('-h')) {
-    console.log('gbrain connect <endpoint> --harness <id> --credentials-file <private-file> [--install [--fresh-token] [--no-instructions] [--skill-loading off|spring] | --remove] [--root <persistent-root>] [--name <name>] [--json]\ngbrain connect --harness <id> --status [--root <persistent-root>] [--name <name>] [--json]');
+    console.log('gbrain connect <endpoint> --harness <id> --credentials-file <private-file> [--install [--fresh-token] [--no-instructions] [--skill-loading off|spring [--gbrain-bin <path>]] | --remove] [--root <persistent-root>] [--name <name>] [--json]\ngbrain connect --harness <id> --status [--root <persistent-root>] [--name <name>] [--json]');
     return;
   }
   const value = (flag: string) => { const i = args.indexOf(flag); return i < 0 ? undefined : args[i + 1]; };
   try {
-    validateHarnessArguments(args[0]?.startsWith('--') ? args : args.slice(1), { values: ['--harness', '--credentials-file', '--root', '--name', '--skill-loading'], flags: ['--install', '--remove', '--status', '--json', '--fresh-token', '--no-instructions'], aliases: { '--agent': '--harness' }, exclusive: [['--install', '--remove', '--status']] });
+    validateHarnessArguments(args[0]?.startsWith('--') ? args : args.slice(1), { values: ['--harness', '--credentials-file', '--root', '--name', '--skill-loading', '--gbrain-bin'], flags: ['--install', '--remove', '--status', '--json', '--fresh-token', '--no-instructions'], aliases: { '--agent': '--harness' }, exclusive: [['--install', '--remove', '--status']] });
     if (args.includes('--status')) {
       const harness = value('--harness') ?? value('--agent');
       if (!harness) throw new Error('--harness is required for local status; no credentials or live connection are needed');
@@ -30,7 +30,7 @@ export async function runHarnessConnect(args: string[]): Promise<void> {
     const endpoint = normalizeMcpUrl(args[0] ?? '');
     if (!endpoint.ok || endpoint.url !== c.mcp_url) throw new Error('Endpoint does not match the private credential handoff');
     const result = args.includes('--install') || args.includes('--remove')
-      ? await installHarnessConnection(c, { harness: harness.id, name: value('--name'), root: value('--root'), remove: args.includes('--remove'), credentialsFile: path, freshToken: args.includes('--fresh-token'), ...(args.includes('--no-instructions') ? { instructions: false } : {}), ...(skillLoading ? { skillLoading } : {}) })
+      ? await installHarnessConnection(c, { harness: harness.id, name: value('--name'), root: value('--root'), remove: args.includes('--remove'), credentialsFile: path, freshToken: args.includes('--fresh-token'), ...(args.includes('--no-instructions') ? { instructions: false } : {}), ...(skillLoading ? { skillLoading } : {}), ...(value('--gbrain-bin') ? { gbrainBin: value('--gbrain-bin') } : {}) })
       : { ...credentialReceipt(c), status: 'prepared', harness: harness.id, documentation: harness.guide, next_action: 'Run this command with --install inside the intended harness environment. Keep the credential file private.' };
     console.log(JSON.stringify(result, null, args.includes('--json') ? undefined : 2));
     const token = result as Partial<ReturnType<typeof inlineTokenReceipt>>;
@@ -39,8 +39,7 @@ export async function runHarnessConnect(args: string[]): Promise<void> {
       console.error(`If it was exposed: ${token.if_exposed.steps.join(' Then: ')} See ${token.if_exposed.docs_url}.`);
       if (token.token_warning) console.error(`WARNING: ${token.token_warning}`);
     }
-    const skills = (result as { skills?: { action: string; decision: { value: string } } }).skills;
-    if (skills?.action === 'preserve' && skills.decision.value === 'spring') setCliExitVerdict(1);
+    if (skillsOutcomeFailed((result as { skills?: SkillsBlockOutcome }).skills)) setCliExitVerdict(1);
     else if (result.status === 'pending' || 'remote_membership_pending' in result && result.remote_membership_pending) setCliExitVerdict(2);
   } catch (error) {
     console.log(JSON.stringify({ status: 'error', reason: 'connection_setup_failed', message: error instanceof Error ? error.message : 'Connection setup failed' }));

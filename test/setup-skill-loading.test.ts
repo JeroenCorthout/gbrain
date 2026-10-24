@@ -16,17 +16,26 @@
  * Spawns `bun src/cli.ts setup` against a temp HOME / GBRAIN_HOME.
  */
 import { afterAll, describe, expect, test } from 'bun:test';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { runCli } from './helpers/cli-spawn.ts';
+import { withEnv } from './helpers/with-env.ts';
 import { BRAIN_FIRST_BEGIN, BRAIN_FIRST_END } from '../src/core/setup/brain-first.ts';
-import { inspectSkillsBlock, renderSkillsBlock, SKILLS_BLOCK_BEGIN, SKILLS_BLOCK_END } from '../src/core/setup/skills-block.ts';
+import { inspectSkillsBlock, loaderAllowRule, renderSkillsBlock, SKILLS_BLOCK_BEGIN, SKILLS_BLOCK_END } from '../src/core/setup/skills-block.ts';
 import { bundledCatalogId } from '../src/core/skills/bundled.ts';
 
-const LAUNCHER = '/opt/alice-example/bin/gbrain';
+const CLI = join(import.meta.dir, '..', 'src', 'cli.ts');
+const BIN_DIR = mkdtempSync(join(tmpdir(), 'gbrain-skill-bin-'));
+const LAUNCHER = join(BIN_DIR, 'gbrain');
+writeFileSync(LAUNCHER, `#!/bin/sh\nexec '${process.execPath}' --no-env-file '${CLI}' "$@"\n`);
+chmodSync(LAUNCHER, 0o755);
+/** A gbrain that serves another skill catalog (a different install on PATH, a stale --gbrain-bin). */
+const OTHER = join(BIN_DIR, 'gbrain-other');
+writeFileSync(OTHER, '#!/bin/sh\necho \'{"schema_version":1,"catalog":"000000000000","skills":[]}\'\n');
+chmodSync(OTHER, 0o755);
 const roots: string[] = [];
-afterAll(() => { for (const r of roots) rmSync(r, { recursive: true, force: true }); });
+afterAll(() => { for (const r of [...roots, BIN_DIR]) rmSync(r, { recursive: true, force: true }); });
 
 interface Box { home: string; project: string; env: Record<string, string | undefined> }
 function box(): Box {
@@ -179,5 +188,74 @@ describe('skill loading: selection', () => {
     expect(r.doc.skills).toMatchObject({ action: 'write', state_before: 'stale', decision: { value: 'spring', source: 'prior' } });
     expect(read(file)).toBe(current);
     expect(inspectSkillsBlock(file).state).toBe('current');
+  });
+});
+
+describe('skill loading: launcher, permission and refresh', () => {
+  test('an index is never written naming a gbrain that serves another catalog, or a bare name', async () => {
+    const b = box();
+    const other = await setup(b, ['claude-code', '--instructions-only', '--gbrain-bin', OTHER, '--skill-loading', 'spring']);
+    expect(other.exitCode).toBe(1);
+    expect(other.doc.skills.action).toBe('preserve');
+    expect(other.doc.skills.detail).toContain('000000000000');
+    expect(read(join(b.home, '.claude', 'CLAUDE.md'))).not.toContain(SKILLS_BLOCK_BEGIN);
+    const bare = await setup(b, ['claude-code', '--instructions-only', '--gbrain-bin', 'gbrain', '--skill-loading', 'spring']);
+    expect(bare.exitCode).toBe(1);
+    expect(bare.doc.skills.detail).toContain('not an absolute path');
+  });
+
+  test('Claude Code: spring adds one narrow allow rule for the loader; off removes it; a rule the user had stays', async () => {
+    const b = box();
+    const settings = join(b.home, '.claude', 'settings.json');
+    const rule = loaderAllowRule(LAUNCHER);
+    await setup(b, ['claude-code', '--instructions-only', '--gbrain-bin', LAUNCHER, '--skill-loading', 'spring']);
+    expect(JSON.parse(read(settings)).permissions.allow).toEqual([rule]);
+    await setup(b, ['claude-code', '--instructions-only', '--gbrain-bin', LAUNCHER, '--skill-loading', 'off']);
+    expect(JSON.parse(read(settings)).permissions?.allow ?? []).not.toContain(rule);
+
+    const c = box();
+    const cSettings = join(c.home, '.claude', 'settings.json');
+    mkdirSync(dirname(cSettings), { recursive: true });
+    writeFileSync(cSettings, JSON.stringify({ permissions: { allow: [rule, 'Read'] } }));
+    await setup(c, ['claude-code', '--instructions-only', '--gbrain-bin', LAUNCHER, '--skill-loading', 'spring']);
+    await setup(c, ['claude-code', '--instructions-only', '--gbrain-bin', LAUNCHER, '--remove']);
+    expect(JSON.parse(read(cSettings)).permissions.allow).toEqual([rule, 'Read']);
+  });
+
+  test('codex gets no permission edit (its sandbox runs the read-only loader)', async () => {
+    const b = box();
+    await setup(b, ['codex', '--instructions-only', '--gbrain-bin', LAUNCHER, '--skill-loading', 'spring']);
+    expect(existsSync(join(b.home, '.claude', 'settings.json'))).toBe(false);
+  });
+
+  test('--skills-index-only refreshes only the skills block, keeping the recorded file, launcher, audience and the brain-first block', async () => {
+    const b = box();
+    const file = join(b.home, '.codex', 'AGENTS.md');
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, '# house rules\n');
+    const team = await withEnv(b.env, async () => {
+      const { installerBrainFirst, brainFirstTargetAt } = await import('../src/core/setup/brain-first.ts');
+      const { installerSkillsBlock } = await import('../src/core/setup/skills-block.ts');
+      const target = brainFirstTargetAt('codex', file);
+      installerBrainFirst({ target, access: { kind: 'mcp', server: 'team-a' }, writer: 'gbrain connect --agent codex --install' });
+      return installerSkillsBlock({ target, launcher: LAUNCHER, writer: 'gbrain connect --agent codex --install', brainFirstDeclined: false, skillLoading: 'spring', audience: 'downstream' });
+    });
+    expect(team.action).toBe('write');
+    const written = read(file);
+    const stale = written.replace(/catalog [0-9a-f]{12}/, 'catalog 000000000000');
+    writeFileSync(file, stale);
+    const r = await setup(b, ['codex', '--skills-index-only']);
+    expect(r.exitCode).toBe(0);
+    expect(r.doc.skills).toHaveLength(1);
+    expect(r.doc.skills[0]).toMatchObject({ action: 'write', state_before: 'stale' });
+    expect(read(file)).toBe(written);
+    expect(read(file)).toContain('team-a');
+    const off = await setup(b, ['codex', '--skills-index-only', '--skill-loading', 'off']);
+    expect(off.doc.skills[0].action).toBe('remove');
+    expect(read(file)).not.toContain(SKILLS_BLOCK_BEGIN);
+    expect(read(file)).toContain('team-a');
+    const none = await setup(box(), ['codex', '--skills-index-only']);
+    expect(none.exitCode).toBe(0);
+    expect(none.doc.skills).toEqual([]);
   });
 });

@@ -24,7 +24,7 @@
  * Doctor seeds nothing; the only file it removes is a status marker whose
  * process is gone.
  */
-import { skillsIndexViews, type SkillsBlockState, type SkillsIndexView } from '../../../core/setup/skills-block.ts';
+import type { SkillsBlockState, SkillsIndexView } from '../../../core/setup/skills-block.ts';
 import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, isAbsolute, join } from 'node:path';
@@ -453,6 +453,7 @@ function repairArgv(v: InstructionBlockView): Action {
 /** Registration read (full run) or registration read + smoke (`--only harness_wiring`), plus the brain-first block. */
 export async function harnessWiringCheck(opts: { smoke: boolean }): Promise<Check> {
   const regs = readHarnessRegistrations();
+  const { skillsIndexViews } = await import('../../../core/setup/skills-block.ts');
   return withSkillsIndex(withInstructionBlocks(await registrationCheck(opts, regs), instructionBlockViews(regs)), skillsIndexViews());
 }
 

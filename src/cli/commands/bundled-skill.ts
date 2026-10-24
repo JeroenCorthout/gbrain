@@ -43,12 +43,24 @@ export async function run(args: string[]): Promise<void> {
     return;
   }
   const json = args.includes('--json');
-  const assetAt = args.findIndex(a => a === '--asset' || a.startsWith('--asset='));
-  const asset = assetAt < 0 ? undefined : args[assetAt].startsWith('--asset=') ? args[assetAt].slice('--asset='.length) : args[assetAt + 1];
-  if (assetAt >= 0 && (asset === undefined || asset === '' || asset.startsWith('--'))) {
-    exitCliError(usageError('--asset requires a file path the skill lists.', 'Run `gbrain bundled-skill <name>` to see the files it names.'), 'bundled-skill');
+  let asset: string | undefined;
+  const names: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === '--json') continue;
+    if (a === '--asset' || a.startsWith('--asset=')) {
+      const v = a === '--asset' ? args[++i] : a.slice('--asset='.length);
+      if (asset !== undefined) exitCliError(usageError('--asset was given twice.', 'Pass one file per call.'), 'bundled-skill');
+      if (v === undefined || v === '' || v.startsWith('--')) exitCliError(usageError('--asset requires a file path the skill lists.', 'Run the same command without --asset to see the files the skill names.'), 'bundled-skill');
+      asset = v;
+    } else if (a.startsWith('-')) {
+      exitCliError(usageError(`unknown flag ${a} for gbrain bundled-skill.`, 'Usage: gbrain bundled-skill [<name>] [--asset <path>] [--json]', { code: 'unknown_flag' }), 'bundled-skill');
+    } else {
+      names.push(a);
+    }
   }
-  const name = args.filter((a, i) => !a.startsWith('-') && !(assetAt >= 0 && i === assetAt + 1))[0];
+  if (names.length > 1) exitCliError(usageError(`gbrain bundled-skill takes one skill name, got ${names.length}.`, 'Usage: gbrain bundled-skill [<name>] [--asset <path>] [--json]'), 'bundled-skill');
+  const name = names[0];
   const audience = bundledSkillAudience();
 
   if (name === undefined) {
@@ -64,7 +76,7 @@ export async function run(args: string[]): Promise<void> {
   if (!skill) {
     const nearest = suggestNearest(name, bundledSkills(audience).map(s => s.name));
     exitCliError(opError('skill_not_found', `gbrain ${VERSION} has no bundled skill named ${name}${audience === 'downstream' ? ' for this thin-client install' : ''}.${nearest ? ` Did you mean "${nearest}"?` : ''}`,
-      'Run `gbrain bundled-skill` to list them. A skills index from another gbrain version may name a renamed skill; refresh it with `gbrain setup <harness> --instructions-only`.'), 'bundled-skill');
+      'Run the same command with no name to list them. A skills index from another gbrain version may name a renamed skill; refresh it with `gbrain setup <harness> --skills-index-only`.'), 'bundled-skill');
   }
 
   if (asset !== undefined) {
@@ -83,7 +95,7 @@ export async function run(args: string[]): Promise<void> {
     return;
   }
   const files = skill.assets.length
-    ? `\n---\nFiles this skill names (print one with \`gbrain bundled-skill ${name} --asset <path>\`):\n${skill.assets.map(a => `- ${a}`).join('\n')}\n`
+    ? `\n---\nFiles this skill names (print one by re-running this command with --asset <path>):\n${skill.assets.map(a => `- ${a}`).join('\n')}\n`
     : '';
   await writeStdoutFinal(`${content.endsWith('\n') ? content : `${content}\n`}${files}`);
 }

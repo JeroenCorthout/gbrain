@@ -7,7 +7,8 @@
  * bundled skill. Removal strips only the indexes this lane recorded.
  */
 import { brainFirstTargetAt, codexInstructionFile, readBrainFirstLedger } from '../setup/brain-first.ts';
-import { describeSkillsBlockOutcome, installerSkillsBlock, removeSkillsBlocksBy, type SkillLoading, type SkillsBlockOutcome } from '../setup/skills-block.ts';
+import { describeSkillsBlockOutcome, installerSkillsBlock, removeSkillsBlocksBy, skillsOutcomeFailed, type SkillLoading, type SkillsBlockOutcome } from '../setup/skills-block.ts';
+import { setCliExitVerdict } from '../cli-force-exit.ts';
 import type { BrainFirstHost, HarnessInstructionPaths } from './harness-brain-first.ts';
 
 const WRITER = 'gbrain bootstrap harness';
@@ -21,10 +22,14 @@ export function writeHarnessSkillsIndex(opts: { hosts: readonly BrainFirstHost[]
     const declined = opts.optOut || readBrainFirstLedger().find((e) => e.harness === host && e.path === path)?.status === 'declined';
     const o = installerSkillsBlock({ target: brainFirstTargetAt(host, path), launcher: opts.launcher, writer: WRITER, brainFirstDeclined: declined, skillLoading: opts.skillLoading, audience: 'owner' });
     if (o.decision.value === 'spring' || o.action !== 'skip') opts.log(describeSkillsBlockOutcome(o, false).trim());
+    if (skillsOutcomeFailed(o)) setCliExitVerdict(1);
     return o;
   });
 }
 
 export function removeHarnessSkillsIndex(log: (line: string) => void): void {
-  for (const o of removeSkillsBlocksBy(WRITER)) log(describeSkillsBlockOutcome(o, false).trim());
+  for (const o of removeSkillsBlocksBy(WRITER)) {
+    log(describeSkillsBlockOutcome(o, false).trim());
+    if (skillsOutcomeFailed(o)) setCliExitVerdict(1);
+  }
 }
