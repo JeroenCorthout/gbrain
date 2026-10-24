@@ -307,6 +307,8 @@ export const OPS_CHECK_NAMES: ReadonlySet<string> = new Set([
   'google_api_access',
   'google_oauth',
   'home_dir_in_worktree',
+  // GBRA-108: cron commands that run gbrain without GBRAIN_HOME (doctor/checks/cron-gbrain-home.ts).
+  'cron_gbrain_home',
   'index_audit',
   'npm_squat',
   'oauth_client_scope_health',
@@ -348,6 +350,8 @@ export const OPS_CHECK_NAMES: ReadonlySet<string> = new Set([
   'cli_socket_refusals',
   // Database-canonical memory wave 1: the brain gate's state (doctor/checks/database-canonical.ts).
   'database_canonical',
+  // Database-canonical memory wave 2: shadow export outbox, batches and unexpected diffs (doctor/checks/database-canonical-shadow.ts).
+  'database_canonical_shadow',
   // Database-canonical memory wave 3: writers still committing page files of shadowed sources (doctor/checks/database-canonical-import.ts).
   'database_canonical_census',
   'stale_embedding_effects',

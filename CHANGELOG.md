@@ -10,6 +10,32 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.430.0] - 2026-10-24
+
+**On a managed brain, a script or cron can now commit the files it wrote with `gbrain git commit-push -m <msg> -- <paths>`. It commits only those paths and never fetches, pushes or moves the checkout. A checkout whose local commits diverged from the remote now has a supported fix: one ask-user command publishes them merged, after which `gbrain sources refresh` fast-forwards. `sources writer status` and doctor list each unpushed commit (sha, author, date, paths) with the porcelain counts. `gbrain sources set-sync` turns a source's automatic sync off and on, and doctor `cron_gbrain_home` flags cron commands that would act on `~/.gbrain` instead of this brain.**
+
+### What changed
+
+| Situation | Before | Now |
+|---|---|---|
+| A cron or script commits files it wrote into a managed canonical worktree | `gbrain git commit-push` refused `writer_coordinator_required`, so scripts fell back to bare `git commit` | `gbrain git commit-push -m <msg> -- <paths>` commits only the named paths under the checkout's commit lock (`committed_local`, exit 0), with no fetch, merge, push or checkout move; the owner's next Git publish, or `--push-only --keep-checkout`, pushes it |
+| `gbrain sources refresh` on a checkout whose local commits diverged from the remote | `refresh_diverged` suggested reconciling in a separate clone or recloning (which drops the commits) | the refusal counts the local commits, and its fix (ask the user first) is `gbrain git commit-push --push-only --keep-checkout --path <root> --json`: an in-memory merge that refuses on a conflict and never moves the checkout; the refresh then fast-forwards |
+| Seeing what a managed checkout holds that its remote lacks | doctor `git_convergence` gave counts and ages | `sources writer status --json` has a `checkouts` block (ahead/behind, `diverged`, each unpushed commit's sha, author, date, subject and paths, and porcelain counts; no fetch); `git_convergence` lists the same for a managed checkout and warns at once on a diverged one, with the publish as an ask-user fix |
+| Turning a source's automatic sync off or on | a raw write to `sources.config` | `gbrain sources set-sync <id> <on\|off>`; `--dry-run` prints the apply command with `--expect <current>`, and an apply whose expectation no longer holds refuses `preview_changed` |
+| A cron line (or a script it runs) calls `bun run src/cli.ts`, or `gbrain` while this brain uses a non-default GBRAIN_HOME, without GBRAIN_HOME | it silently used `~/.gbrain`, a second brain state | doctor `cron_gbrain_home` warns and names each line; the fix asks the user to set GBRAIN_HOME on the line or in the script |
+
+### What to watch for after you upgrade
+
+- A managed commit is not on the remote until the owner's next Git publish. `gbrain sources writer status --json` (`checkouts`) shows it as ahead until then.
+- `--pending`, `--branch`, `--resolve`, `--expect-remote` and `--allow-outside-source-root` are refused in a managed worktree (`commit_paths_invalid`), and `--push-only` without `--keep-checkout` still refuses `writer_coordinator_required`.
+- doctor now runs `crontab -l` once (read-only, 5 s). A host whose crontab never mentions gbrain gets no `cron_gbrain_home` result.
+- Nothing is rewritten on upgrade, and there is no schema migration.
+
+### For contributors
+
+- `src/core/persistence/checkout-state.ts` is the one reader of a checkout's unpushed commits and porcelain, shared by writer status and `git_convergence`.
+- The `persistence:interruption_charged` and `persistence:recovery_interruption_charged` fault points now carry `interruption` (cause, SQLSTATE, error). `test/pathological/lp-c-publication-ceiling-retry.test.ts` prints every charge and the row when a claim or charge count is off, so its load-only double charge names its cause the next time it appears.
+
 ## [0.60.429.0] - 2026-10-24
 
 **A design for an opt-in, per-source mode in which the database is the only copy of record for agent-written memory and page files become a one-way export. This release adds the design document only; nothing in gbrain's behavior changes.**

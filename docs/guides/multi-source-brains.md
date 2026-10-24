@@ -240,6 +240,11 @@ gbrain sources mirror-readonly <id>
 gbrain sources mirror-writable <id>
 gbrain sources refresh <id> [--dry-run] [--resume|--abandon]   Managed brains: fast-forward the checkout and sync.
 gbrain sources set-strategy <id> <markdown|code|auto>
+gbrain sources set-sync <id> <on|off> [--dry-run] [--expect <on|off>]
+                               Include or exclude the source from automatic sync
+                               (config.syncEnabled; an explicit gbrain sync --source
+                               still runs). --dry-run prints the apply command, which
+                               carries --expect; a moved state refuses preview_changed.
 ```
 
 ### Read-only mirror sources

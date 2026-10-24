@@ -21,6 +21,7 @@
  *   gbrain sources mirror-readonly|mirror-writable <id> — sources.config.mirror_read_only (#5409)
  *   gbrain sources refresh <id> — drained worktree-wide ff-only refresh on a managed brain (F0)
  *   gbrain sources canonical <id> --dry-run — read-only database-canonical census (sources-canonical.ts)
+ *   gbrain sources canonical <id> --shadow on|off|--purge-shadow|--shadow-drain|--shadow-status — shadow export (sources-canonical-shadow.ts)
  *   gbrain sources canonical <id> --census | --observe — import lane census and observe pass (sources-canonical-census.ts)
  *   gbrain sources push [<id>|--path <dir>] — scan-gated add→commit→pull→push
  *                               (agent-bootstrap; core in src/core/workspace-push.ts)
@@ -1907,6 +1908,7 @@ export async function runSources(engine: BrainEngine, args: string[]): Promise<v
     case 'mirror-readonly': case 'mirror-writable': return (await import('./sources-mirror.ts')).runMirrorMode(engine, rest, sub === 'mirror-readonly');
     case 'set-strategy': return (await import('./sources-strategy.ts')).runSetStrategy(engine, rest);
     case 'set-pull-strategy': return (await import('./sources-pull-strategy.ts')).runSetPullStrategy(engine, rest);
+    case 'set-sync':   return (await import('./sources-sync-enabled.ts')).runSetSync(engine, rest);
     case 'refresh':    return (await import('./sources-refresh.ts')).runSourcesRefresh(engine, rest);
     case 'canonical':  return (await import('./sources-canonical.ts')).runSourcesCanonical(engine, rest);
     case 'archive':    return runArchive(engine, rest);
@@ -2008,6 +2010,7 @@ Subcommands:
   mirror-writable <id> [--dry-run]  Undo mirror-readonly. --dry-run previews either and writes nothing.
   set-strategy <id> <markdown|code|auto>  Persist the sync strategy every sync of the source uses (PR #5955).
   set-pull-strategy <id> <rebase|merge>   How pulls reconcile local commits with origin (#5429); default rebase.
+  set-sync <id> <on|off> [--dry-run] [--expect <on|off>]   Include or exclude the source from automatic sync (config.syncEnabled).
   refresh <id> [--dry-run] [--wait-drain <s>] [--fetch-timeout-ms <ms>] [--resume|--abandon] [--json]
                                     Managed brains: drain writes to the source's worktree, fast-forward
                                     it to its upstream (git merge --ff-only) and sync every source bound
@@ -2015,6 +2018,11 @@ Subcommands:
   canonical <id> --dry-run [--sample <n>] [--json]
                                     Read-only census for database-canonical mode: which pages
                                     could be exported and whether their files match.
+  canonical <id> --shadow on|off | --purge-shadow  (--dry-run | --admin-intent source_canonical --expected-state <fp>)
+                                    Start or stop the shadow export outbox of a source (writes no file);
+                                    --purge-shadow deletes its shadow rows once shadow is off.
+  canonical <id> --shadow-drain [--limit <n>] | --shadow-status [--json]
+                                    Record would-be export batches and their diffs, or show shadow health.
   canonical <id> --census [--sample <n>] [--json]
                                     Read-only import lane census: would-be conflicts and the
                                     writers still committing page files.

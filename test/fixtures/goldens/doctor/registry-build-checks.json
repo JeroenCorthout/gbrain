@@ -191,6 +191,10 @@
       },
       {
         "category": "ops",
+        "name": "cron_gbrain_home"
+      },
+      {
+        "category": "ops",
         "name": "graduation_interrupted"
       },
       {
@@ -978,16 +982,20 @@
         "name": "person_title_duplicates"
       },
       {
-        "category": "brain",
-        "name": "fence_integrity"
-      },
-      {
         "category": "ops",
         "name": "database_canonical"
       },
       {
         "category": "ops",
+        "name": "database_canonical_shadow"
+      },
+      {
+        "category": "ops",
         "name": "database_canonical_census"
+      },
+      {
+        "category": "brain",
+        "name": "fence_integrity"
       },
       {
         "category": "ops",

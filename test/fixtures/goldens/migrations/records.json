@@ -4306,8 +4306,8 @@
         "idempotent": true,
         "name": "database_canonical_shadow",
         "sql": {
-          "length": 10160,
-          "sha256": "edb448b31b72d5fe212704d9bb10019f926e0b87848542cae1d1d1c02d1563d0"
+          "length": 10129,
+          "sha256": "c3b2575de1464bbb4012b6231b36f6e52e7f7660a22a2442a531ec63e804f1b7"
         },
         "sqlFor": "absent",
         "transaction": "absent",
@@ -4319,8 +4319,8 @@
         "idempotent": true,
         "name": "database_canonical_import_lane",
         "sql": {
-          "length": 4024,
-          "sha256": "ce7e78ce673082edf430964af5bce9a8f81b9503bb072beab34aa1ff12cf13cb"
+          "length": 4078,
+          "sha256": "f0cd10ea5f588c0a50269965f483bfdf7a4ff99b0916402718cb93260898a451"
         },
         "sqlFor": "absent",
         "transaction": "absent",
