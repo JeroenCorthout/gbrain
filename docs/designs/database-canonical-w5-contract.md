@@ -5,7 +5,7 @@ table): the exporter that commits and pushes, the live import lane it needs, con
 MCP surfaces. It builds on the [wave 2](database-canonical-w2-contract.md), [wave 3](database-canonical-w3-contract.md) and
 [wave 4](database-canonical-w4-contract.md) contracts and ships as two stacked pull requests:
 
-- **W5a, the exporter** (`capy/db-canonical-w5a`): the export batch manifest, the batch Git effect and its owner-only claim,
+- **W5a, the exporter** (`capy/db-canonical-w5a`): the export batch manifest and queue with its owner-only claim,
   the split-index commit, the push and integrate loop, the live import lane the loop needs, the bare-repository export core,
   the PGLite one-shot attempt, the flip-back materialization, and `gbrain sources canonical <id> --export-commits on|off`.
 - **W5b, surfaces and integration** (`capy/db-canonical-w5b`, on W5a): lag and coverage in `gbrain sync status` and
@@ -27,12 +27,12 @@ durable mode first, and every new SQL predicate is either keyed on an export bat
 DDL: `src/core/persistence/canonical-export-schema.ts` (`DATABASE_CANONICAL_EXPORT_SCHEMA_SQL`), applied by migration v273
 (renumbered at merge) and generated into its own `src/schema.sql` region after wave 4's, with its own `FRAGMENTS` entry. No
 earlier wave's fragment is edited. RLS is enabled where the role allows it, every table cascades with its source, and
-engine graduation carries all three tables verbatim (inventory rows added).
+engine graduation carries all three tables verbatim (a `carry` row for each in `graduation-inventory.ts`, which the inventory completeness test requires).
 
 | Table | Key | What it holds |
 |---|---|---|
-| `canonical_export_sources` | `source_id` | The per-source export switch and watermarks: `export_commits` (bool, default false), `export_epoch` (bumped by every `--export-commits` flip; a batch carries it), `export_changed_at`; `committed_commit`, `committed_at` (newest batch commit in the checkout), `pushed_commit`, `pushed_at` (newest commit the remote acknowledged); `remote_tip`, `remote_tip_seen_at` (the fetched tip and when a fetch first saw it unlaned), `laned_through` (the newest fetched commit the live lane classified), `import_pending_since` (the oldest outside change the lane saw but has not classified: an unstable path or an unlaned fetched tip; null when none); `checkout_state` (`current`, `lagging`, `unbound`) with `checkout_reason`; `last_error_code`, `last_error_at`. One row per source that ever had export commits turned on. |
-| `export_batches` | `id` (uuid); partial unique `(source_id)` over unfinished states | The durable batch manifest. Binding: `source_incarnation`, `mode_epoch`, `export_epoch`, `eligibility_generation` (the one the render saw), `target` (`worktree` or `bare`), `worktree_id`, `topology_generation` (the source binding's generation), `owner_epoch`, `host_id`. Carrier: `request_id` (the carrier request row) and `effect_id` (its one Git effect). Git facts: `parent_commit`, `tree_oid`, `commit_sha` (recorded before the commit lock is taken), `pushed_commit` (the commit the remote accepted; differs from `commit_sha` after integration), `remote_tip` (the tip the last push was pinned to), `push_attempts` (at most 8 per claim). Lag: `oldest_enqueued_at` (the minimum outbox `first_enqueued_at` it consumed). `state`: `prepared`, `built`, `committed`, `pushed`, `completed`, `abandoned`. `renderer_fp`, `error_code`, `detail`, timestamps per state. |
+| `canonical_export_sources` | `source_id` | The per-source export switch and watermarks: `export_commits` (bool, default false), `export_epoch` (bumped by every `--export-commits` flip; a batch carries it), `export_changed_at`; `committed_commit`, `committed_at` (newest batch commit in the checkout), `pushed_commit`, `pushed_at` (newest commit the remote acknowledged); `remote_tip`, `remote_tip_seen_at` (the fetched tip and when a fetch first saw it unlaned), `laned_through` (the newest fetched commit the live lane classified), `import_pending_since` (the oldest outside change the lane saw but has not classified: an unstable path or an unlaned fetched tip; null when none); `checkout_state` (`current`, `lagging`, `unbound`) with `checkout_reason`; `oneshot_outcome`, `oneshot_at` (the PGLite one-shot attempt's typed result); `last_error_code`, `last_error_at`. One row per source that ever had export commits turned on. |
+| `export_batches` | `id` (uuid); partial unique `(source_id)` over unfinished states | The durable batch manifest. Binding: `source_incarnation`, `mode_epoch`, `export_epoch`, `eligibility_generation` (the one the render saw), `target` (`worktree` or `bare`), `worktree_id`, `topology_generation` (the source binding's generation), `owner_epoch`, `host_id`. Claim: `claim_token`, `claim_owner` (the `claimOwner()` stamp of the holder), `claim_expires_at` (a 2-minute lease renewed between steps), `attempts`, `next_attempt_at` (backoff), `parked_at` (set after repeated failures; a parked batch is claimed again only after `--export-retry`). Git facts: `parent_commit`, `tree_oid`, `commit_sha` (recorded before the commit lock is taken), `pushed_commit` (the commit the remote accepted; differs from `commit_sha` after integration), `remote_tip` (the tip the last push was pinned to), `push_attempts` (at most 8 per claim). Lag: `oldest_enqueued_at` (the minimum outbox `first_enqueued_at` it consumed). `state`: `prepared`, `built`, `committed`, `pushed`, `completed`, `abandoned`. `renderer_fp`, `error_code`, `detail`, timestamps per state. |
 | `export_batch_entries` | `(batch_id, path_folded)` | One row per path in a batch: `path`, `page_id`, `lifetime`, `op` (`write`, `remove`, `adopt`), `revision` (pinned `knowledge_revision`), `prior_disk_sha256` and `prior_blob_oid` (what the ledger said the path held; null for a path with no ledger row and no file), `disk_sha256` and `blob_oid` (the rendered bytes; null for a removal), `outbox_seq` and `first_enqueued_at` (the outbox row it consumed), `state` (`pending`, `committed`, `skipped`), `skip_reason` (`outside_edit`, `parked`, `ineligible`, `remote_imported`, `remote_conflict`, `filter_driver`). |
 
 Unfinished states are `prepared`, `built`, `committed` and `pushed`; one unfinished batch per source keeps the ordering
@@ -44,62 +44,61 @@ values to its own lists before it merges, so no later migration touches its cons
 migration v273 replaces each of the two unnamed column CHECKs with a superset (`DROP CONSTRAINT IF EXISTS` on the
 generated name, `ADD CONSTRAINT ... NOT VALID`, then `VALIDATE`), which changes no row.
 
-## The batch Git effect and its claim
+## The batch queue and its claim
 
-The design picks "one Git effect per batch" so every checkout consumer that already knows the Git effect (refresh drains,
-convergence, parking, retry) sees export work without learning a new kind. `persistence_effects.request_id` is a non-null
-foreign key, so each batch has one **carrier request**:
+### Why a queue of its own, not a Git effect
 
-- `persistence_requests` row: `principal_kind='application'`, `principal_id='gbrain-exporter'`, `request_id` = the batch id,
-  `operation='export_batch'`, `slug='export-batch:<batch id>'`, `worktree_id` null, `state='committed'` at insert,
-  `intent` null, `intent_bytes=0`, `terminal_reservation=0`, `outcome={"export_batch":"<id>"}`, `digest` = the manifest
-  digest. Wave 4's request fence passes it (the exporter declares the protocol, the row names no worktree) and stamps its
-  `canonical_epoch`. It never passes through admission, so it reserves no capacity; receipt compaction and true-up treat it
-  as a committed request with no reservation (a test pins both, beside wave 4's 10,000-write capacity test).
-- `persistence_effects` row: `kind='git'`, `worktree_id` = the source binding's worktree,
-  `data={"export_batch":"<id>","source_id","mode_epoch","export_epoch","topology_generation","owner_epoch"}`, inserted
-  `running` with the exporter's token and claim stamp, so it is claimed in the transaction that creates it.
+The design's big decision 9 picks "one Git effect per batch" so every checkout consumer that already knows the Git effect
+sees export work, and names its own fallback: "flips if batching cannot fit the Git effect's model; then a new kind ships".
+Batching does not fit. `persistence_effects.request_id` is a non-null foreign key, so each batch would need a carrier row in
+`persistence_requests`, and about 100 modules read that table (464 references, mostly in the persistence and sync lane) with
+no shared predicate to exclude it; a committed carrier looks like a real write to capacity, watermarks, diagnostics,
+terminal-failure counters, `gbrain write-request`, receipt listing, retention and compaction. The carrier would also need a
+wave 4 effect-fence exemption, a claim exclusion in `effect-journal.ts` and settle rules. So `export_batches` is its own work
+queue with its own claim columns, and no export row is ever written to `persistence_requests` or `persistence_effects`.
+Wave 4's fence keeps refusing every `git` and `withdrawal-mirror` effect on a database-mode source without exception, and
+the exporter inserts none.
 
-**Wave 4 hook (requested before wave 4 merges).** Wave 4's effect fence (point 1b) refuses `git` effects and rows naming a
-worktree for a database-mode source. It must admit exactly one shape: `kind='git'`, `data ? 'export_batch'`,
-`(data->>'mode_epoch')::bigint` equal to the source's `mode_epoch`, `worktree_id` equal to the source binding's worktree,
-and the transaction-local declaration `set_config('gbrain.canonical_exporter','1',true)` that only the exporter's batch
-transaction sets. Wave 4's claim predicate 3b (`gbrain_source_publication_epoch(e.source_id) IS NULL` on generic `git`
-claims) stays as written: it is what keeps every generic effect worker away from a database-mode source's batch effect.
-If wave 4 has merged without the hook, migration v273 replaces its effect-fence function with the same body plus that one
-admitted shape.
+The consumers the Git effect would have reached are told directly instead:
 
-**Claims.**
+| Consumer | How it learns about export work |
+|---|---|
+| `gbrain sources refresh` | refuses a database-mode source's worktree (`source_export_owned`, W5b): the exporter owns its fetches and fast-forwards |
+| doctor `git_convergence` | mode-aware (W5b): a database-mode checkout points at `gbrain sync status` |
+| wave 4's flip back (`--to files`) | its in-flight check counts unfinished batches (W5a edit in `sources-canonical-mode.ts`) |
+| engine graduation | `graduation-drain.ts` refuses while a batch is unfinished (one predicate; the persistence lane is told) |
+| persistence deactivation | `deactivation.ts` refuses while a batch is unfinished, beside wave 4's database-mode refusal, so no batch is stranded without an owner |
+| `retry-effects` and the parked-effects listing | not reached. Their place is taken by the exporter's own backoff and parking, shown with the batch's error code and the retry command in `gbrain sync status` and doctor `export_lag`, and by `gbrain sources canonical <id> --export-retry` |
 
-- Generic claims never take a batch effect, in either mode: `claimPersistenceEffect` gains
-  `AND NOT (e.data ? 'export_batch')` (after a flip back to files, point 3b no longer excludes the source, and a batch
-  effect left from database mode must not be run as a page commit). `claimCoalescedGitEffects` already requires
-  `e.data ? 'relative_path'`, which a batch effect never has.
-- `claimExportBatch(engine, hostId, sourceId, deadOwners)` (`export-claim.ts`) is the only claim. It requires: this host is
-  `persistence_worktrees.owner_host_id` of the effect's worktree; a host binding with a `local_path` exists for this host;
-  the effect's `topology_generation` equals the source binding's and its `mode_epoch` equals
-  `gbrain_source_publication_epoch(source_id)`; `export_commits` is on at the batch's `export_epoch`; the refresh fence is
-  clear (`refreshFenceClear`); no recovery record blocks the worktree; the row is not settled (`NOT (e.data ? 'settled')`,
-  matching #7487's readers); and the usual lease rules (queued, expired, or a proven-dead owner). The claim rewrites
-  `data.owner_epoch` to the worktree's current `owner_epoch`: an owner transfer re-binds the batch at its next claim
-  instead of failing it.
-- A missing owner, host binding or checkout leaves the effect queued: it is never completed as
-  `skipped: no_repo_configured`. Status reports the source `checkout_state='unbound'` with the reason.
-- A batch effect is never settleable. #7487's `settle-effects` refuses it already (it has no exact target: no `slug`, no
-  `relative_path`); a test pins the refusal once #7487 is in the base, and W5a adds a one-line guard there only if it is
-  not.
+### Claims
+
+`claimExportBatch(engine, hostId, sourceId, deadOwners)` (`export-claim.ts`) is the only way to hold a batch. It claims the
+source's unfinished batch, or lets the exporter create the next one, only when: this host is
+`persistence_worktrees.owner_host_id` of the source binding's worktree; a host binding with a `local_path` exists for this
+host; the batch's `topology_generation` equals the binding's and its `mode_epoch` equals
+`gbrain_source_publication_epoch(source_id)`; `export_commits` is on at the batch's `export_epoch`; the refresh fence is
+clear (`refreshFenceClear`); no recovery record blocks the worktree; the batch is not parked; and the lease rules hold
+(unclaimed, expired, or held by an owner the consumer proved dead, the rule effects use). The claim mints a new
+`claim_token` and rewrites `owner_epoch` to the worktree's current one: an owner transfer re-binds the batch at its next
+claim instead of failing it.
+
+- A missing owner, host binding or checkout leaves the batch unclaimed and pending; there is no skipped outcome. Status
+  reports `checkout_state='unbound'` with the reason.
+- Failures back off (`next_attempt_at`) and, after `export_max_attempts` (default 8) consecutive failed claims, park the
+  batch (`parked_at`, `error_code`). A parked batch is claimed again only after
+  `gbrain sources canonical <id> --export-retry` (preview-bound; it clears `parked_at` and `attempts`).
 - After a bound mode or binding change (the batch's `mode_epoch`, `topology_generation` or `export_epoch` no longer
   current) the exporter or the `--export-commits off` apply closes the batch: an uncommitted batch is `abandoned` (its
-  entries' pages go back into the outbox, its effect completes with `{"export":"abandoned","reason":...}`); a committed,
-  unpushed one keeps its effect queued and blocks wave 4's flip back as in-flight work until an owner pushes it.
+  entries' pages go back into the outbox); a committed, unpushed one stays unfinished and blocks the flip back, graduation
+  and deactivation until an owner pushes it.
 
-**Completing.** Every state transition is one short transaction that compare-and-sets the effect's `execution_token`, the
-batch `state`, and the binding (`owner_epoch` of the worktree, `topology_generation` of the binding, the source's
-`mode_epoch` and `export_epoch`). A stale claimant gets `write_claim_lost` at its next transition and stops. A non-owner
-effect worker therefore never completes an export: it cannot claim the effect, and a former owner whose claim moved cannot
-pass a transition. The push is the one step outside a transaction; the exporter re-reads its token and binding immediately
-before it, so a transfer that committed earlier stops the push, and a transfer that commits during it linearizes after a
-push the old owner was entitled to make. The new owner's recovery then finds the commit on the remote and finishes forward.
+**Completing.** Every state transition is one short transaction that compare-and-sets the batch's `claim_token` and `state`
+and the binding (`owner_epoch` of the worktree, `topology_generation` of the binding, the source's `mode_epoch` and
+`export_epoch`). A stale claimant gets `write_claim_lost` at its next transition and stops. A non-owner effect worker never
+touches an export: no effect row exists for it to claim, and a former owner whose claim moved cannot pass a transition. The
+push is the one step outside a transaction; the exporter re-reads its token and binding immediately before it, so a
+transfer that committed earlier stops the push, and a transfer that commits during it linearizes after a push the old
+owner was entitled to make. The new owner's recovery then finds the commit on the remote and finishes forward.
 
 ## The batch
 
@@ -118,8 +117,8 @@ targets start at 200 paths or 30 s (design open question 5), configurable as
    names a `filter` driver is skipped (`filter_driver`) and reported; its bytes are never smudged or cleaned. Rendered bytes
    become blobs with `git hash-object -w --no-filters --stdin` (object writes need no lock).
 2. **Manifest, one transaction.** Lock the source's `database_canonical_sources` row `FOR SHARE`; require the mode, epoch,
-   export switch and binding the render started under, and the same `eligibility_generation` (else re-render). Insert the
-   carrier request, the batch Git effect (claimed), `export_batches` (`prepared`) and its entries. Consume the outbox rows
+   export switch and binding the render started under, and the same `eligibility_generation` (else re-render). Insert
+   `export_batches` (`prepared`, claimed by this exporter) and its entries. Consume the outbox rows
    with wave 2's seq compare (`consumeExportOutbox`); a row whose seq moved is dropped from the batch and stays for the
    next. Fault point `export:prepared`.
 3. **Build, no lock.** In a private index file (`GIT_INDEX_FILE` under the persistence home): `read-tree` the parent (HEAD),
@@ -154,8 +153,8 @@ targets start at 200 paths or 30 s (design open question 5), configurable as
    its file is removed in the next batch (earlier commits keep the old copy, as the design states).
 6. **Push, under the publish lock.** `brain-publish.lock`, taken only after the commit lock is released (commit-push's own
    order). Plain `git push <remote> <candidate>:<merge ref>`. Accepted: one transaction records `pushed` and then
-   `completed`, `canonical_export_sources.pushed_commit`, and completes the effect. A remote that refuses for another reason
-   is `git_push_unavailable` (the effect retries and parks like any Git effect). No tracking remote: the batch completes with
+   `completed` and `canonical_export_sources.pushed_commit`. A remote that refuses for another reason is
+   `git_push_unavailable` (the batch backs off and parks after repeated failures). No tracking remote: the batch completes with
    committed coverage only (`push: skipped, reason: no_tracking_remote`). Fault points `export:before_push`,
    `export:pushed`. Publishers that left a publish request while the exporter held the lock are honored by pushing HEAD
    once more, as commit-push does.
@@ -167,9 +166,11 @@ targets start at 200 paths or 30 s (design open question 5), configurable as
    and the lane did not park it. A path the lane imported or adopted at the tip's blob is re-rendered at its new revision
    (equal to the tip, so nothing changes); a path the lane parked keeps the tip's blob. Then steps 5 and 6 again, at most 8
    rejected pushes per claim; the 9th releases the claim with `export_push_contended` and the next tick resumes from the
-   manifest. After an accepted push, the branch and worktree fast-forward to the pushed commit under the commit lock
-   (`read-tree -m -u HEAD <pushed>`, `update-ref` compare-and-set from the HEAD it merged); if HEAD moved meanwhile or a
-   local edit blocks the update, the checkout is recorded `lagging` and the next tick merges again. This is how non-page
+   manifest. After an accepted push, the branch and worktree fast-forward to the pushed commit under the commit lock. Inside
+   the lock the exporter reads HEAD and the branch ref again and compares both with the commit the merge was built from;
+   if either moved (an operator commit, another clone's fast-forward), it drops this fast-forward and the next tick merges
+   again from the new HEAD. Otherwise `read-tree -m -u HEAD <pushed>` and `update-ref refs/heads/<branch> <pushed> <built
+   from>` (compare-and-set). A local edit that blocks the update records the checkout `lagging`. This is how non-page
    commits from other clones (an `AGENTS.md` edit) reach the owner checkout and why an imported page edit never surfaces as
    `integrate_conflict`. Fault points `export:fetched`, `export:laned`, `export:fast_forwarded`.
 8. **Idle ticks.** Without outbox rows the exporter still fetches on its schedule (`export_fetch_interval_ms`, default 60 s),
@@ -233,8 +234,11 @@ bytes match that batch's entry.
 On PGLite with no resident owner, the one-shot command whose write committed makes one bounded, best-effort attempt after
 the write is acknowledged (the one-shot consumer's shutdown tick, `export_oneshot_deadline_ms`, default 15 s): one batch and
 one push try for each exporting source this process can own. Any failure (no checkout, no remote, a lock held, the
-deadline) is recorded in `canonical_export_sources.last_error_code` and swallowed; it never fails the write or holds the
-datastore, and the outbox keeps the rows for the next command or resident.
+deadline) is swallowed; it never fails the write or holds the datastore, and the outbox keeps the rows for the next command or
+resident. The attempt records a typed outcome in `canonical_export_sources` (`oneshot_outcome` with `oneshot_at`:
+`exported`, `skipped_no_checkout`, `skipped_no_remote` (committed, not pushed), `skipped_lock_busy`,
+`skipped_deadline`, `skipped_not_owner`), and status shows it as a skip with its reason, never as an exporter stall: on
+PGLite without a resident, export lag is expected until the next command.
 
 ### Flip-back materialization
 
@@ -265,7 +269,12 @@ without a ledger row at their revision. The fingerprint covers the source id and
 switch and epoch, binding (worktree, topology generation, owner epoch), and the refusal evidence. Apply locks the source row
 `FOR UPDATE`, recomputes the fingerprint (`preview_changed`), and upserts `canonical_export_sources` with the new switch
 and `export_epoch + 1`. `off` stops new batches; the apply abandons an uncommitted batch directly when no owner is running,
-and a committed, unpushed batch keeps its effect for the owner to push.
+and a committed, unpushed batch stays for the owner to push.
+
+`gbrain sources canonical <id> --export-retry --dry-run` lists the source's parked batch with its error code, attempts and
+age; `--export-retry --admin-intent source_canonical --expected-state <fingerprint>` clears `parked_at` and `attempts` so the
+owner claims it again. The fingerprint covers the batch id, state, error code and `parked_at`. It refuses
+`export_retry_nothing_parked` when no batch is parked.
 
 ## Surfaces (W5b)
 
@@ -275,7 +284,9 @@ rows and unfinished batch entries of eligible, unparked pages; null when none) a
 (from `import_pending_since`); coverage `processed` (live eligible pages whose ledger revision or unfinished batch entry is
 at the page's revision), `committed` (ledger revision current and its batch at least `committed`), `pushed` (current and
 pushed), each with the eligible total; `checkout_state`; parked paths whose newest revision exists only in the database,
-with age (detail mode, bounded); open conflicts by kind with count and oldest age.
+with age (detail mode, bounded); open conflicts by kind with count and oldest age; the unfinished batch with its state,
+attempts, `error_code` and, when parked, `parked_at` and the retry command
+(`gbrain sources canonical <id> --export-retry --dry-run`); the one-shot outcome.
 
 - **`gbrain sync status`** (`src/commands/sync/operator.ts`): a `database_canonical` block per database-mode source in text
   and `--json`, with parked paths under `--detail` (the `*_read: not_read` convention for the bounded read).
@@ -338,12 +349,16 @@ published. Remote callers obey the same rules plus the visibility above; the op 
   `persistence.database_canonical.backup_max_age_days` (default 7), or an operator attestation
   `persistence.database_canonical.backup_attestation` (`{ kind: 'pitr', provider, expires_at }`) that has not expired.
   Yellow when the newest is older or the attestation expired, red when neither exists; names `gbrain backup check`.
-- `export_lag`: yellow above 300 s, red above 3600 s or when export commits are on with outbox rows and no owner exporting;
-  names `gbrain sync status --source <id>`.
+- `export_lag`: yellow above 300 s, red above 3600 s, red for a parked batch (its error code and the retry command
+  `gbrain sources canonical <id> --export-retry --dry-run`), and red when export commits are on with outbox rows and no
+  owner exporting. On PGLite, lag whose newest one-shot outcome is a typed skip is yellow with that reason, never red; names
+  `gbrain sync status --source <id>`.
 - `import_conflicts`: yellow while a source has open live conflicts, by kind with oldest age; names
   `gbrain sources conflicts <id> list`.
 - `git_convergence` learns the mode: for a database-mode checkout it stops advising plain-git commits and the
-  `--keep-checkout` push and points at `gbrain sync status --source <id>`; files-mode output is unchanged (golden-pinned).
+  `--keep-checkout` push and points at `gbrain sync status --source <id>`. A database-mode checkout that diverges from its
+  upstream while export commits are off is expected (nothing exports it) and is not a finding. Files-mode output is
+  unchanged (golden-pinned).
 
 **`gbrain sources refresh`** for a worktree bound to a database-mode source refuses `source_export_owned` (the exporter
 owns fetches and fast-forwards there) with a read-only fix naming `gbrain sync status --source <id>`, before anything is
@@ -366,6 +381,7 @@ Registered in `src/core/error-registry.ts` and the generated error-codes doc. On
 | `export_target_missing` | 5a | `--export-commits on` for a source with no worktree binding | bind the source's checkout (`gbrain sources writer status`) |
 | `export_filter_driver` | 5a | a page root has a Git `filter` driver: refused at enable time; one added later skips the path | remove the attribute for page paths |
 | `export_worktree_shared` | 5a | another source shares the worktree (Phase 3a exports a worktree that holds one source) | give the source its own checkout |
+| `export_retry_nothing_parked` | 5a | `--export-retry` with no parked batch | none |
 | `export_push_contended` | 5a | 8 rejected pushes in one claim while the remote kept moving | none; the next tick resumes |
 | `source_export_owned` | 5b | `gbrain sources refresh` on a database-mode source's worktree | none; read `gbrain sync status --source <id>` |
 | `import_conflict_not_found` | 5b | unknown or out-of-scope conflict id | list the conflicts again |
@@ -391,16 +407,17 @@ New in W5b: `src/core/persistence/canonical-status.ts`, `src/commands/sources-co
 `test/database-canonical-surfaces.test.ts`, `test/database-canonical-conflicts.test.ts` (verb, MCP op with `remote=true`,
 `put_page resolves_conflict`) and `test/doctor-database-canonical-export.test.ts`.
 
-Existing files, **persistence/sync lane (GBRA-133)**, each edit behind the export marker or the mode check:
+No file reading `persistence_requests` or `persistence_effects` changes: no export row is written to either table.
+
+Existing files, **persistence/sync lane (GBRA-133)**, each edit behind the mode check or keyed on export tables:
 
 | File | Wave | Edit |
 |---|---|---|
-| `src/core/persistence/effect-journal.ts` | 5a | `claimPersistenceEffect` gains `AND NOT (e.data ? 'export_batch')` |
 | `src/core/persistence/consumer.ts` | 5a | the resident owner starts and stops the export runner for exporting sources whose worktree it owns; the one-shot shutdown tick makes the PGLite attempt (both return at once while no source exports) |
 | `src/core/git/commit-push.ts` | 5a | export the in-memory non-page merge (`integrate` / `mergeTrees`) and the publish-request helpers for the exporter; no behavior change for commit-push |
 | `src/core/persistence/fault-points.ts` | 5a | the `export:*` fault point names |
-| `src/core/persistence/effect-retry.ts`, `parked-groups.ts`, `git-push-holds.ts`, `receipt-true-up.ts`, `compaction-pass.ts` | 5a | audited for the batch effect and the carrier request; edited only where a reader assumes a page-shaped Git effect (`slug`, `relative_path`) or a reserved receipt, each edit with a test |
-| `src/core/persistence/effect-settle.ts` (#7487, once in the base) | 5a | only if its existing refusal does not already cover a batch effect |
+| `src/core/persistence/graduation-drain.ts` | 5a | refuse while an export batch is unfinished (one predicate) |
+| `src/core/persistence/deactivation.ts` | 5a | refuse while an export batch is unfinished, beside wave 4's database-mode refusal |
 | `src/commands/sync/operator.ts` | 5b | the `database_canonical` block in `gbrain sync status` |
 | `src/core/persistence/page-mutations.ts`, `page-input.ts`, `journal.ts` | 5b | `resolves_conflict` carried in the intent and checked at admission |
 | `src/core/persistence/coordinator.ts` | 5b | the conflict compare-and-set close in the publication transaction |
@@ -415,7 +432,6 @@ Existing files, **database-canonical lane (waves 1 to 4)**:
 |---|---|---|
 | `src/core/persistence/import-conflicts-schema.ts` (wave 3) | 5a | `live` mode and the three resolutions, preferably made by wave 3 before it merges |
 | `src/core/persistence/import-lane.ts`, `import-lane-watch.ts` (wave 3) | 5a | export the scan pieces the live lane reuses; the watch runs live for exporting sources |
-| `src/core/persistence/canonical-mode-schema.ts` (wave 4) | 5a | the export-batch shape admitted by the effect fence, preferably made by wave 4 before it merges |
 | `src/commands/sources-canonical.ts` | 5a | route `--export-commits` |
 | `src/commands/sources-canonical-mode.ts` (wave 4) | 5a | the export batch in front of the flip-back holds; preview counts |
 
@@ -440,9 +456,13 @@ Existing files, **shared registries and other lanes**:
 Each on real PGLite and real Postgres (every new test file is in `test/postgres-unit-arms.txt`), with real Git
 repositories:
 
-- W5a: a non-owner's generic effect worker never claims or completes a batch effect, before and after a flip back; across
-  an owner transfer the former owner's transition fails `write_claim_lost` and the new owner finishes the batch forward; a
-  missing binding leaves the effect queued, never `skipped`; in two real clones a remote commit to page Q and `AGENTS.md`
+- W5a: a non-owner's effect worker and a non-owner exporter never claim or complete a batch, before and after a flip back;
+  no export row ever appears in `persistence_requests` or `persistence_effects`; across an owner transfer the former
+  owner's transition fails `write_claim_lost` and the new owner finishes the batch forward; a
+  missing binding leaves the batch pending, never skipped; repeated failures park the batch and `--export-retry` releases it;
+  graduation drain and deactivation refuse while a batch is unfinished; every new table has a graduation-inventory row;
+  the fast-forward drops itself when HEAD or the branch moves between building the merge and taking the commit lock (a
+  forced ref move in that window); the PGLite one-shot attempt records each typed skip; in two real clones a remote commit to page Q and `AGENTS.md`
   races a database write to page P (no `integrate_conflict`, the remote holds P's render and Q's edit, the database holds
   Q's edit, `AGENTS.md` reaches the owner checkout), and the same race on one page records one `both_changed` conflict and
   leaves the remote's bytes; `git diff-index --cached HEAD` is empty after a batch; a page turned private after render,
@@ -455,7 +475,8 @@ repositories:
 - W5b: lag and coverage numbers in `gbrain sync status` and `get_brain_health` (bands, no slugs); conflicts list, show and
   resolve per kind with plan hashes; `list_source_conflicts` with `remote=true` never shows a private page's conflict, a
   conflict outside the grant or fence, or bytes; `put_page resolves_conflict` for the three kinds, refused for deletion
-  kinds, stale on a moved conflict; the doctor checks green, yellow and red; `gbrain sources refresh` refuses
+  kinds, stale on a moved conflict; the doctor checks green, yellow and red, including a parked batch with its retry command and a database-mode
+  checkout diverged with export commits off reporting nothing; `gbrain sources refresh` refuses
   `source_export_owned` for a database-mode source and is unchanged for files mode; commit-push names `put_page` for a page
   path and commits a non-page path.
 
