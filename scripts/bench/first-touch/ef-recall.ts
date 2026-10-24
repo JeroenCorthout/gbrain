@@ -17,6 +17,7 @@ const argv = process.argv.slice(2);
 const flag = (n: string, f = '') => { const i = argv.indexOf('--' + n); return i >= 0 ? argv[i + 1]! : f; };
 const WORK = resolve(flag('work')), N = Number(flag('n', '30'));
 const EFS = flag('efs', '40,100,200,300,500').split(',').map(Number);
+const K = Number(flag('k', '10'));
 const ready = JSON.parse(readFileSync(join(WORK, 'ready.json'), 'utf8'));
 const manifest = JSON.parse(readFileSync(join(WORK, '..', 'fixture', 'manifest.json'), 'utf8'));
 const qs = (JSON.parse(readFileSync(resolve(flag('queries')), 'utf8'))[flag('set', 'A')] as Array<{ q: string }>).slice(0, N);
@@ -30,7 +31,7 @@ for (let i = 0; i < qs.length; i++) {
   const v = '[' + emb.data[i].embedding.join(',') + ']';
   const exact = await sql.begin(async tx => {
     await tx.unsafe("SET LOCAL enable_indexscan = off; SET LOCAL jit = off; SET LOCAL max_parallel_workers_per_gather = 4");
-    return (await tx.unsafe(`SELECT id FROM content_chunks WHERE ${WHERE} ORDER BY embedding <=> $1::vector LIMIT 10`, [v])).map((r: any) => Number(r.id));
+    return (await tx.unsafe(`SELECT id FROM content_chunks WHERE ${WHERE} ORDER BY embedding <=> $1::vector LIMIT ${K}`, [v])).map((r: any) => Number(r.id));
   });
   const row: any = { q: qs[i]!.q, exact, ef: {} };
   for (const ef of EFS) {
@@ -40,8 +41,8 @@ for (let i = 0; i < qs.length; i++) {
       const ids = (await tx.unsafe(`SELECT id FROM content_chunks WHERE ${WHERE} ORDER BY embedding <=> $1::vector LIMIT ${Math.max(ef, 10)}`, [v])).map((x: any) => Number(x.id));
       return { touched: plan.Plan['Shared Hit Blocks'] + plan.Plan['Shared Read Blocks'], ms: plan['Execution Time'], ids };
     });
-    const top = new Set(r.ids.slice(0, 10));
-    row.ef[ef] = { recall10: exact.filter((id: number) => top.has(id)).length / 10, touched: r.touched, ms: Math.round(r.ms * 10) / 10 };
+    const top = new Set(r.ids.slice(0, K));
+    row.ef[ef] = { recall10: exact.filter((id: number) => top.has(id)).length / K, touched: r.touched, ms: Math.round(r.ms * 10) / 10 };
   }
   out.push(row);
   console.log(i, Object.entries(row.ef).map(([ef, x]: any) => ef + ':' + x.recall10 + '/' + x.touched).join(' '));
