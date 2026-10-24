@@ -2,7 +2,7 @@
 /**
  * Generate src/core/skills/bundled-skills.generated.ts: gbrain's bundled
  * skills (the plugin lane, skills/plugin-lanes.json) embedded as text imports,
- * so the spring-loaded skill index and `get_skill bundled:true` work from a
+ * so the spring-loaded skill index and `gbrain bundled-skill` work from a
  * compiled binary with no skills/ directory beside it.
  *
  *   bun run scripts/generate-bundled-skills.ts           write

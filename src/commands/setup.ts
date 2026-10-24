@@ -75,14 +75,14 @@ import {
 import type { CodexSetupEvent } from '../core/bootstrap/codex-hooks.ts';
 import {
   describeSkillsBlockOutcome,
+  InvalidSkillLoadingEnv,
   isSkillLoading,
-  priorSkillLoading,
   indexLauncher,
   readSkillLoadingLedger,
   refreshSkillsIndexes,
   removeSkillsBlock,
-  resolveSkillLoading,
   installerSkillsBlock,
+  SKILL_LOADING_ENV,
   skillsOutcomeFailed,
   type SkillLoading,
   type SkillsBlockOutcome,
@@ -231,8 +231,8 @@ function parseFlags(args: string[]): SetupFlags | string {
   if (workspace !== undefined && !workspace.startsWith('/') && !workspace.startsWith('~')) return '--workspace needs an absolute path';
   const skillLoading = value('--skill-loading');
   if (skillLoading !== undefined && !isSkillLoading(skillLoading)) return `unknown --skill-loading '${skillLoading}'; pass off or spring`;
-  const envLoading = process.env.GBRAIN_SKILL_LOADING?.trim();
-  if (skillLoading === undefined && envLoading && !isSkillLoading(envLoading)) return `GBRAIN_SKILL_LOADING='${envLoading}' is not a skill-loading mode; set it to off or spring, or unset it`;
+  const envLoading = process.env[SKILL_LOADING_ENV]?.trim();
+  if (skillLoading === undefined && envLoading && !isSkillLoading(envLoading)) return new InvalidSkillLoadingEnv(envLoading).message;
   return {
     harness: positionals[0],
     dryRun: args.includes('--dry-run'),

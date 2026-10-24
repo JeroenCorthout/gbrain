@@ -229,18 +229,20 @@ function loaderRulePresent(settings: string, rule: string): boolean | undefined 
   }
 }
 
+/** The recorded rule is this one and the user took it out since (whoever added it), or declined it before. */
+function userRemovedRule(prior: SkillLoadingLedgerEntry | undefined, rule: string, settings: string): boolean {
+  if (prior?.allow_rule !== rule || ruleSettings(prior) !== settings || !existsSync(settings)) return false;
+  const present = loaderRulePresent(settings, rule);
+  if (present !== false) return false;
+  return true;
+}
+
 /**
  * Add the rule after the block is in place; returns the ownership to record,
  * whether this call added it, and whether it stayed out because the user
  * removed the rule gbrain added (only an explicit --skill-loading spring adds
  * it back). Throws when settings cannot be updated.
  */
-/** The recorded rule is this one and the user took it out since (whoever added it), or declined it before. */
-function userRemovedRule(prior: SkillLoadingLedgerEntry | undefined, rule: string, settings: string): boolean {
-  if (prior?.allow_rule !== rule || ruleSettings(prior) !== settings) return false;
-  return prior.allow_declined === true || loaderRulePresent(settings, rule) === false;
-}
-
 function grantLoader(harness: string, launcher: string, settings: string, prior: SkillLoadingLedgerEntry | undefined, regrant: boolean): { grant: Grant; added: boolean; declined: boolean } {
   if (harness !== 'claude-code') return { grant: {}, added: false, declined: false };
   const rule = loaderAllowRule(launcher);
@@ -250,11 +252,6 @@ function grantLoader(harness: string, launcher: string, settings: string, prior:
   return { grant: { allow_rule: rule, allow_settings: settings, allow_owned: added || shared }, added, declined: false };
 }
 
-/**
- * Remove a rule gbrain owns once no other recorded index uses it. Never
- * throws: `problem` says why the rule is still there, `removed` names the
- * rule when this call took it out of the settings.
- */
 /** The owned rule revokeLoader would take out for this entry, or undefined when it has none to take or another index still uses it. Throws on an unreadable ledger. */
 function revocableRule(entry: SkillLoadingLedgerEntry | undefined, keep?: { rule?: string; settings: string }): { rule: string; settings: string } | undefined {
   if (!entry?.allow_rule || entry.allow_owned !== true) return undefined;
@@ -271,6 +268,11 @@ function plannedPermission(change: 'would_add' | 'would_remove', target: { rule:
   return { permission: { ...target, change } };
 }
 
+/**
+ * Remove a rule gbrain owns once no other recorded index uses it. Never
+ * throws: `problem` says why the rule is still there, `removed` names the
+ * rule when this call took it out of the settings.
+ */
 function revokeLoader(entry: SkillLoadingLedgerEntry | undefined, keep?: { rule?: string; settings: string }): { removed?: { rule: string; settings: string }; problem?: string } {
   if (!entry?.allow_rule || entry.allow_owned !== true) return {};
   const rule = entry.allow_rule;
@@ -321,7 +323,13 @@ export type SkillsBlockState = 'no_file' | 'absent' | 'current' | 'stale' | 'dam
  */
 export function inspectSkillsBlock(path: string, expected?: string): { state: SkillsBlockState; version?: number; catalog?: string } {
   if (!existsSync(path)) return { state: 'no_file' };
-  const probe = probeBlock(MARKERS, readFileSync(path, 'utf8'));
+  let text: string;
+  try {
+    text = readFileSync(path, 'utf8');
+  } catch {
+    return { state: 'damaged' };
+  }
+  const probe = probeBlock(MARKERS, text);
   if (probe.state !== 'present') return { state: probe.state };
   const interior = probe.interior ?? '';
   const version = Number(/gbrain skills v(\d+)/.exec(interior)?.[1] ?? 0);
@@ -381,7 +389,7 @@ const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
  * outcome with a reason, and the file is left as it was unless the detail
  * says otherwise.
  */
-export function syncSkillsBlock(opts: { target: BrainFirstTarget; launcher: string; decision: SkillLoadingDecision; writer: string; dryRun: boolean; audience?: SkillAudience; verifyLauncher?: boolean; settingsPath?: string }): SkillsBlockOutcome {
+export function syncSkillsBlock(opts: { target: BrainFirstTarget; launcher: string; decision: SkillLoadingDecision; writer: string; dryRun: boolean; audience?: SkillAudience; settingsPath?: string }): SkillsBlockOutcome {
   const { target, launcher, decision } = opts;
   const settings = opts.settingsPath ?? claudeUserSettingsPath();
   const audience = opts.audience ?? 'owner';
@@ -412,6 +420,9 @@ export function syncSkillsBlock(opts: { target: BrainFirstTarget; launcher: stri
     return out('preserve', `the skills markers in ${target.path} were hand-edited (duplicate, orphan or out of order); fix or delete them, then re-run`, { reason: 'damaged_markers' });
   }
   if (decision.value === 'off') {
+    if (decision.source === 'default' && !prior && (before.state === 'current' || before.state === 'stale')) {
+      return out('skip', `the skills index in ${target.path} is not in this gbrain's record (${skillLoadingLedgerPath()}); another gbrain home or install probably wrote it, so it is left as it is. Pass --skill-loading off to remove it from here`);
+    }
     const revocation = opts.dryRun ? {} : revokeLoader(prior);
     if (revocation.problem) return out('preserve', `${revocation.problem}; fix that, then re-run. ${target.path} was left as it was`, { reason: 'permission_update_failed' });
     const revoked: Partial<SkillsBlockOutcome> = revocation.removed ? { permission: { ...revocation.removed, change: 'removed' } }
@@ -439,14 +450,12 @@ export function syncSkillsBlock(opts: { target: BrainFirstTarget; launcher: stri
   }
 
   if (body === undefined) return out('preserve', `${tooLarge!.message}; ${target.path} was left as it was`, { reason: 'index_too_large' });
-  if (opts.verifyLauncher !== false) {
-    const served = launcherCatalog(launcher);
-    if ('error' in served) return out('preserve', `${served.error}; ${target.path} was left as it was. Pass --gbrain-bin <absolute path of this gbrain>`, { reason: 'launcher_unusable' });
-    if (served.catalog !== bundledCatalogId()) {
-      return out('preserve', `${launcher} serves skill catalog ${served.catalog}, not this gbrain's ${bundledCatalogId()}, so the index would load other text than it lists; ${target.path} was left as it was. Pass --gbrain-bin <absolute path of this gbrain>, or upgrade that install`, { reason: 'launcher_catalog_mismatch' });
-    }
+  const served = launcherCatalog(launcher);
+  if ('error' in served) return out('preserve', `${served.error}; ${target.path} was left as it was. Pass --gbrain-bin <absolute path of this gbrain>`, { reason: 'launcher_unusable' });
+  if (served.catalog !== bundledCatalogId()) {
+    return out('preserve', `${launcher} serves skill catalog ${served.catalog}, not this gbrain's ${bundledCatalogId()}, so the index would load other text than it lists; ${target.path} was left as it was. Pass --gbrain-bin <absolute path of this gbrain>, or upgrade that install`, { reason: 'launcher_catalog_mismatch' });
   }
-  if (target.harness === 'hermes' && (before.state === 'no_file' || readFileSync(target.path, 'utf8').trim() === '')) {
+  if (target.harness === 'hermes' && (before.state === 'no_file' || (() => { try { return readFileSync(target.path, 'utf8').trim() === ''; } catch { return true; } })())) {
     return out('skip', `${target.path} is missing or empty, and Hermes uses a non-empty SOUL.md instead of its default identity; start Hermes once (it seeds SOUL.md) or write your identity there, then re-run`, { reason: 'hermes_soul_missing' });
   }
   const brainFirstCreated = readBrainFirstLedger().find((e) => e.harness === target.harness && e.path === target.path)?.created_file ?? false;
@@ -572,7 +581,8 @@ export function removeSkillsBlock(opts: { harness: string; path: string; dryRun:
       if (deleteFile) unlinkSync(opts.path);
       else writeUnlessChanged(opts.path, existing, false, stripped);
     } catch (e) {
-      return out('preserve', `${opts.path} could not be updated (${message(e)}); the skills index is still there`, { reason: 'write_failed' });
+      const left = revocation.removed ? undoUnrecorded({ path: opts.path, settings: revocation.removed.settings, restore: revocation.removed }) : [];
+      return out('preserve', `${opts.path} could not be updated (${message(e)}); the skills index is still there${left.length ? `, and gbrain could not put back ${revocation.removed!.rule} in ${revocation.removed!.settings}; add it back by hand` : ''}`, { reason: 'write_failed' });
     }
   }
   try { dropLedger(opts.harness, opts.path); } catch (e) {
@@ -657,7 +667,7 @@ export function skillsIndexViews(): SkillsIndexView[] {
   if (unreadable) return [{ harness: '*', path: skillLoadingLedgerPath(), state: 'ledger_unreadable', refresh: unreadable.detail }];
   return [...readSkillLoadingLedger().filter((e) => e.mode === 'spring').map((e): SkillsIndexView => {
     const state = inspectSkillsBlock(e.path).state;
-    if (state === 'current' && e.launcher && isAbsolute(e.launcher) && !launcherRuns(e.launcher)) {
+    if ((state === 'current' || state === 'stale') && e.launcher && isAbsolute(e.launcher) && !launcherRuns(e.launcher)) {
       return { harness: e.harness, path: e.path, state: 'launcher_missing', refresh: `${skillsRefreshCommand(e.harness)} --gbrain-bin <absolute path of gbrain>` };
     }
     return { harness: e.harness, path: e.path, state, refresh: skillsRefreshCommand(e.harness) };
