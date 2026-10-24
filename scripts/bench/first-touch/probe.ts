@@ -33,7 +33,7 @@ const PGSS = argv.includes('--pgss'), TRACE = argv.includes('--trace'), RESTART_
 const EXTRA_ENV = Object.fromEntries(argv.flatMap((a, i) => a === '--env' ? [argv[i + 1]!.split(/=(.*)/s).slice(0, 2)] : []));
 const ready = JSON.parse(readFileSync(join(WORK, 'ready.json'), 'utf8'));
 const manifest = JSON.parse(readFileSync(join(WORK, '..', 'fixture', 'manifest.json'), 'utf8'));
-const queries = (JSON.parse(readFileSync(resolve(flag('queries')), 'utf8'))[SET] as Array<{ cls: string; q: string }>).slice(0, LIMIT);
+const queries = (JSON.parse(readFileSync(resolve(flag('queries')), 'utf8'))[SET] as Array<{ cls: string; q: string }>).slice(Number(flag('offset', '0'))).slice(0, LIMIT);
 const HOME = join(WORK, 'home'), CLI = join(REPO, 'src', 'cli.ts');
 mkdirSync(OUT, { recursive: true });
 
@@ -58,7 +58,7 @@ async function pgssReset() { if (PGSS) await direct.unsafe('SELECT pg_stat_state
 async function pgssRead() {
   if (!PGSS) return undefined;
   const rows = await direct.unsafe(`SELECT left(regexp_replace(query, '\\s+', ' ', 'g'), 160) AS q, calls::int, round(total_exec_time::numeric, 1)::float AS exec_ms, round(total_plan_time::numeric, 1)::float AS plan_ms,
-    shared_blks_hit::int AS hit, shared_blks_read::int AS read, round(shared_blk_read_time::numeric, 1)::float AS read_ms, temp_blks_written::int AS temp
+    shared_blks_hit::int AS hit, shared_blks_read::int AS read, round(blk_read_time::numeric, 1)::float AS read_ms, temp_blks_written::int AS temp
     FROM pg_stat_statements WHERE query NOT ILIKE '%pg_stat_statements%' ORDER BY total_exec_time DESC`) as any[];
   const sum = (k: string) => Math.round(rows.reduce((a, r) => a + Number(r[k] ?? 0), 0) * 10) / 10;
   return { statements: rows.reduce((a, r) => a + r.calls, 0), exec_ms: sum('exec_ms'), plan_ms: sum('plan_ms'), hit: sum('hit'), read: sum('read'), read_ms: sum('read_ms'), top: rows.slice(0, 12) };

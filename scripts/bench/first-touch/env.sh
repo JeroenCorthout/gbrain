@@ -10,7 +10,7 @@
 #   env.sh disk READ_MS                         # read latency of the Postgres data disk (vm-disk.sh delay)
 set -euo pipefail
 DB=${SOAK_DB:-soak_brain}
-psqlc() { docker exec -i soak-pg psql -U postgres -d "${2:-postgres}" -Atc "$1"; }
+psqlc() { docker exec -i soak-pg psql -h 127.0.0.1 -p 5434 -U postgres -d "${2:-postgres}" -Atc "$1"; }
 case "${1:-} ${2:-}" in
   "net on")
     d=${3:-0.75}
