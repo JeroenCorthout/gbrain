@@ -49,6 +49,7 @@ test/database-canonical-census.test.ts
 test/database-canonical-checkout.test.ts
 test/database-canonical-import-lane.test.ts
 test/database-canonical-mode.test.ts
+test/database-canonical-shadow-verb.test.ts
 test/database-canonical-shadow.test.ts
 test/db-lock-reconnect.test.ts
 test/decide/conflict-proposals-managed.test.ts

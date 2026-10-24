@@ -24,6 +24,8 @@ import { managedBrain } from './helpers/managed-brain.ts';
 import { requirePostgresTestDatabase, testBackends } from './helpers/test-backends.ts';
 import type { Check } from '../src/commands/doctor.ts';
 import { consumeExportOutbox, exportOutboxStats, readExportOutbox } from '../src/core/persistence/canonical-shadow.ts';
+import { applyShadowChange, previewShadowChange } from '../src/commands/sources-canonical-shadow.ts';
+import { sourceCanonicalAdminState } from '../src/core/persistence/canonical-admin.ts';
 
 const op = (ctx: OperationContext, name: string, params: Record<string, unknown>) => operationsByName[name]!.handler(ctx, params) as Promise<any>;
 const note = (title: string, body = 'A synthetic note.') => `---\ntitle: ${title}\ntype: note\n---\n${body}\n`;
@@ -195,7 +197,13 @@ for (const backend of testBackends()) describe(`database-canonical wave 4 mode a
       expect(await readSourceMode(engine, 'default')).toMatchObject({ mode: 'database', mode_epoch: 1, shadow: true, eligibility_generation: 1 });
       const unchanged = await flipSourceMode(engine, args('database'));
       expect(unchanged.preview!.refusals.map(r => r.code)).toEqual(['canonical_mode_unchanged']);
-      // Wave 2's shadow-off is refused while the source is in database mode (the constraint is the backstop).
+      // Wave 2's shadow-off is refused while the source is in database mode, at the preview and at the apply; the
+      // constraint is the backstop for a raw update.
+      expect((await refusal(() => previewShadowChange(engine, 'default', 'shadow_off', 0))).code).toBe('canonical_mode_requires_shadow');
+      const offState = await sourceCanonicalAdminState(engine, 'default', 'shadow_off');
+      expect((await refusal(() => applyShadowChange(engine, 'default', 'shadow_off', { admin_intent: 'source_canonical', expected_state: offState }))).code)
+        .toBe('canonical_mode_requires_shadow');
+      expect(await readSourceMode(engine, 'default')).toMatchObject({ mode: 'database', shadow: true });
       expect((await refusal(() => engine.executeRaw("UPDATE database_canonical_sources SET shadow=false WHERE source_id='default'")))).toBeDefined();
     });
   }, 120_000);

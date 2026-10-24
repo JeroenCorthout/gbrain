@@ -22,6 +22,7 @@
  *   gbrain sources refresh <id> — drained worktree-wide ff-only refresh on a managed brain (F0)
  *   gbrain sources canonical <id> --dry-run — read-only database-canonical census (sources-canonical.ts)
  *   gbrain sources canonical <id> --census | --observe — import lane census and observe pass (sources-canonical-census.ts)
+ *   gbrain sources canonical <id> --shadow on|off|--purge-shadow|--shadow-drain|--shadow-status — shadow export (sources-canonical-shadow.ts)
  *   gbrain sources push [<id>|--path <dir>] — scan-gated add→commit→pull→push
  *                               (agent-bootstrap; core in src/core/workspace-push.ts)
  *
@@ -2023,6 +2024,11 @@ Subcommands:
   canonical <id> --observe [--watch] [--json]
                                     One observe-mode import lane pass (writes only its own
                                     tables; needs shadow on for the source).
+  canonical <id> --shadow on|off | --purge-shadow  (--dry-run | --admin-intent source_canonical --expected-state <fp>)
+                                    Start or stop the shadow export outbox of a source (writes no file);
+                                    --purge-shadow deletes its shadow rows once shadow is off.
+  canonical <id> --shadow-drain [--limit <n>] | --shadow-status [--json]
+                                    Record would-be export batches and their diffs, or show shadow health.
   set-cr-mode <id> <none|title|per_chunk_synopsis>
                                     Per-source contextual retrieval mode
                                     override (v0.40.3.0). Pass "unset" or

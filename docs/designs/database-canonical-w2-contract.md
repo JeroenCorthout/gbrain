@@ -15,7 +15,7 @@ enabled where the role allows it, cascade with their source, and carry verbatim 
 | Table | Key | What it holds |
 |---|---|---|
 | `database_canonical_sources` | `source_id` | The durable per-source flag: `source_incarnation`, `shadow` (bool), `shadow_epoch` (bumped on every flip), `shadow_changed_at`. One row per source that ever had shadow turned on. W4 adds `mode` and `mode_epoch` columns here. |
-| `database_canonical_brain` | singleton | `active_sources`: how many rows have `shadow` true. A statement trigger on `database_canonical_sources` recounts it, so it cannot drift from the flags. W4 counts database-mode sources here too. |
+| `database_canonical_brain` | singleton | `active_sources`: how many rows have `shadow` true. A statement trigger on `database_canonical_sources` recounts it on insert, update and delete. It has no TRUNCATE event (fixture resets keep their DELETE path), so only a TRUNCATE can leave it high, which costs a lookup and never skips a row. W4 counts database-mode sources here too. |
 | `export_outbox` | `(source_id, page_id)` | One coalesced row per page with unprocessed changes: `slug`, `revision` (the page's `knowledge_revision`, null when the page left the source), `cause`, `seq` (from `export_outbox_seq`, bumped on every upsert), `first_enqueued_at` (kept across upserts, so its minimum is export lag), `enqueued_at`. |
 | `export_ledger` | `id`; live unique on `(source_id, path_folded)` and `(source_id, page_id)`; unique `(source_id, page_id, lifetime)` | What each exported path holds: `page_id`, `lifetime`, `path` (checkout-relative POSIX), `path_folded` (`exportPathKey`: the export stage's NFC plus case fold), `revision`, `disk_sha256` (raw bytes on disk), `blob_oid`, `renderer_fp` (null for bytes gbrain did not render), `commit_sha`, `seeded_from`, `exported_at`, `retired_at` (null = live). |
 | `export_shadow_batches` | `id` | One row per consumer batch: `shadow_epoch`, `outbox_rows`, `counts` (diff kind to count), `unexpected`, `renderer_fp`, `started_at`, `finished_at`. |
@@ -27,9 +27,10 @@ enabled where the role allows it, cascade with their source, and carry verbatim 
 
 ## Trigger semantics
 
-- `pages`: three row-level AFTER triggers. INSERT and DELETE always call the function; UPDATE calls it only when
-  `knowledge_revision`, `slug`, `source_id`, `deleted_at` or `database_only_reason` changes, so embedding,
-  telemetry and extraction stamps never reach it. Tag, body and frontmatter changes all move `knowledge_revision`.
+- `pages`: three row-level AFTER triggers with no WHEN clause, so they depend on no pages column and replaying the
+  schema blob on an old brain cannot fail. On UPDATE the function returns at once unless `knowledge_revision`, `slug`,
+  `source_id`, `deleted_at` or `database_only_reason` changed, so embedding, telemetry and extraction stamps never
+  reach the outbox. Tag, body and frontmatter changes all move `knowledge_revision`.
 - `fact_withdrawals` and `fact_purges` (what `readExportWithdrawals` overlays): a row-level AFTER trigger on insert,
   update and delete enqueues the live pages of the source the withdrawal can change without reading any page body:
   the page whose slug is the withdrawal's subject, and every page whose fence holds a matching claim
@@ -65,10 +66,33 @@ exportOutboxStats(exec, sourceId): Promise<{ depth; oldest_age_seconds }>
 readLiveLedgerRows(exec, sourceId, pageIds): Promise<Map<number, ExportLedgerRow>>
 ```
 
-Phase B adds, in the same module family: the ledger seed from `SyncImportProvenance`, the shadow consumer
-(`drainExportShadow(engine, sourceId, { limit })`, which writes batches, diffs and `shadow_adopt` ledger rows), the
-shadow status read the doctor check and the verb share, and the preview-bound verb in
-`src/commands/sources-canonical-shadow.ts`.
+The seed, the consumer and the status read live in `src/core/persistence/canonical-shadow-consumer.ts`, and the
+admin-intent binding in `src/core/persistence/canonical-admin.ts`:
+
+```ts
+seedExportLedger(engine, sourceId, { apply }): Promise<LedgerSeedReport>
+drainExportShadow(engine, sourceId, { limit }): Promise<ShadowBatchReport>
+readShadowStatus(exec, sourceId): Promise<ShadowStatus>
+sourceCanonicalAdminState(exec, sourceId, action: string): Promise<string>
+requireSourceCanonicalIntent({ admin_intent, expected_state }, previewCommand): string
+assertSourceCanonicalState(exec, sourceId, action, expected, previewCommand): Promise<void>
+```
+
+## The shadow verb
+
+The verb is `src/commands/sources-canonical-shadow.ts`: `--shadow on|off` and `--purge-shadow` with `--dry-run` or
+`--admin-intent source_canonical --expected-state <fingerprint>`, plus `--shadow-drain [--limit n]` and
+`--shadow-status`. Shadow on needs the brain gate; off, purge and status work with it off, so an operator can always
+stop a shadow. The purge needs shadow off and keeps the ledger.
+
+## Seed rules
+
+A `SyncImportProvenance` record of the source's current incarnation with a UUID `revision` and a `disk_sha256` becomes
+a live `sync_provenance` row: `path` is the page's current file target, `blob_oid` its `disk_blob_oid`,
+`renderer_fp` NULL. A record without a revision counts as `no_base.no_revision`, one without a disk hash as
+`no_base.no_disk_hash`; a record for a gone page, an unsafe path or a folded-path clash is skipped and counted. A page
+that already has a live row keeps it, so the seed is idempotent. Shadow on runs the seed before the flip, in batches of
+500 records with a commit each; a flip refused by `preview_changed` after that leaves seeded rows, which are inert.
 
 ## Diff kinds
 
@@ -112,9 +136,9 @@ contract (`compareInlineExportFile`, `compareSegmentedExportFile`).
   two waves merge without conflicts.
 - **Your doctor check.** A new topic file `src/commands/doctor/checks/database-canonical-import.ts`, registered right
   after `databaseCanonicalShadowEntry` in `src/commands/doctor/registry.ts` and named in `doctor-categories.ts`.
-- **Your verb.** `src/commands/sources-canonical.ts` keeps parsing and routes each action to its own module
-  (`--dry-run` census, `--shadow`, `--purge-shadow`, `--shadow-drain`, `--shadow-status`). Add your action as one more
-  route to a module of your own; reuse `requireSourceCanonicalIntent` and the fingerprint helper wave 2 adds for any
-  state change.
+- **Your verb.** `runSourcesCanonical` (`src/commands/sources-canonical.ts`) routes by flag: the wave 2 flags
+  (`SHADOW_FLAGS`) go to `sources-canonical-shadow.ts`, anything else is the census. Add your flags as one more route
+  to a module of your own; for a state change reuse `sourceCanonicalAdminState` (pass your own action name, which is
+  part of the digest), `requireSourceCanonicalIntent` and `assertSourceCanonicalState`.
 - **Stable names.** The table and column names above, the diff kind and cause lists, and the store function
   signatures do not change without a note in the wave 2 PR.

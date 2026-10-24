@@ -29,9 +29,9 @@ import { RECOVERY_VERSION } from '../core/markdown.ts';
 import { isConnectorSourceKind } from '../core/persistence/connector-identity.ts';
 import { refreshManagedFilesystemRoots } from '../core/persistence/filesystem-guard.ts';
 import type { SqlEngine } from '../core/persistence/model.ts';
+import { requireSourceCanonicalIntent, SOURCE_CANONICAL_INTENT } from '../core/persistence/canonical-admin.ts';
 
 const USAGE = 'Usage: gbrain sources canonical <source-id> --to database|files (--dry-run | --admin-intent source_canonical --expected-state <fingerprint>) [--json]';
-export const SOURCE_CANONICAL_INTENT = 'source_canonical';
 
 export interface ModeFlipArgs { sourceId: string; to: CanonicalMode; dryRun: boolean; expectedState?: string; json: boolean }
 
@@ -50,11 +50,9 @@ export function parseModeFlipArgs(args: string[]): ModeFlipArgs {
   if (positional.length !== 1) throw new OperationError('invalid_params', 'sources canonical needs exactly one source id.', USAGE);
   if (to !== 'database' && to !== 'files') throw new OperationError('invalid_params', `--to needs database or files; got ${to ?? 'nothing'}.`, USAGE);
   const dryRun = args.includes('--dry-run');
-  if (!dryRun && (intent !== SOURCE_CANONICAL_INTENT || !expectedState || !/^[a-f0-9]{64}$/.test(expectedState))) {
-    throw new OperationError('writer_admin_intent_required', 'A mode flip applies only with --admin-intent source_canonical and the --expected-state fingerprint a preview printed.',
-      `Preview first: gbrain sources canonical ${positional[0]} --to ${to} --dry-run, then run the apply command it prints.`);
-  }
-  return { sourceId: positional[0]!, to, dryRun, ...(dryRun ? {} : { expectedState }), json: args.includes('--json') };
+  if (dryRun) return { sourceId: positional[0]!, to, dryRun, json: args.includes('--json') };
+  const expected = requireSourceCanonicalIntent({ admin_intent: intent, expected_state: expectedState }, `gbrain sources canonical ${positional[0]} --to ${to} --dry-run`);
+  return { sourceId: positional[0]!, to, dryRun, expectedState: expected, json: args.includes('--json') };
 }
 
 /** What the preview shows; the fingerprint is SHA-256 over all of it. */

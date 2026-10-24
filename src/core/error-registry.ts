@@ -228,6 +228,8 @@ export const CODES = {
   canonical_source_not_empty: { class: 'caller', summary: "Only a provably empty source can move to database mode in this release (no live pages, holds, tracked page files or prepared transfer); converting a non-empty source is Phase 3b.", docs: 'docs/designs/database-canonical-w4-contract.md' },
   source_database_mode: { class: 'caller', summary: "The source is in database mode, so a file-lane operation (sync import, file repair, reconcile, a checkout commit or refresh) does not run for it.", docs: 'docs/designs/database-canonical-w4-contract.md' },
   canonical_mixed_group: { class: 'caller', summary: "A grouped admission mixed checkout operations with page writes for a source in database mode; the group is refused whole, not split.", docs: 'docs/designs/database-canonical-w4-contract.md' },
+  database_canonical_intent_required: { class: 'caller', summary: "Changing a source's database-canonical state needs --admin-intent source_canonical and the --expected-state its preview printed; nothing was changed.", docs: 'docs/designs/database-canonical-w2-contract.md#the-shadow-verb' },
+  database_canonical_shadow_active: { class: 'caller', summary: "The source still has its database-canonical shadow on, so its shadow rows cannot be purged; turn shadow off first.", docs: 'docs/designs/database-canonical-w2-contract.md#the-shadow-verb' },
   database_error: { class: 'server', summary: "The brain database could not be reached or refused the operation." },
   delta_cursor_upgrade_required: {
     class: 'caller',

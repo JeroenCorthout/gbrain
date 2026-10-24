@@ -1123,6 +1123,26 @@ More: [docs/guides/repair.md#managed-sync-orphans](../../docs/guides/repair.md#m
 
 More: [docs/designs/DATABASE_CANONICAL_MEMORY.md](../../docs/designs/DATABASE_CANONICAL_MEMORY.md)
 
+### database_canonical_intent_required
+
+<a id="database_canonical_intent_required"></a>
+
+| Meaning | Why | Next step | Who acts · consent | Verify | Exit | Retryable |
+|---|---|---|---|---|---|---|
+| Changing a source's database-canonical state needs --admin-intent source_canonical and the --expected-state its preview printed; nothing was changed. | The request itself was wrong or no longer matches the brain; nothing was changed. | Correct the request using the message above, then retry. | agent | `repeat the read that failed` | 1 | no |
+
+More: [docs/designs/database-canonical-w2-contract.md#the-shadow-verb](../../docs/designs/database-canonical-w2-contract.md#the-shadow-verb)
+
+### database_canonical_shadow_active
+
+<a id="database_canonical_shadow_active"></a>
+
+| Meaning | Why | Next step | Who acts · consent | Verify | Exit | Retryable |
+|---|---|---|---|---|---|---|
+| The source still has its database-canonical shadow on, so its shadow rows cannot be purged; turn shadow off first. | The request itself was wrong or no longer matches the brain; nothing was changed. | Correct the request using the message above, then retry. | agent | `repeat the read that failed` | 1 | no |
+
+More: [docs/designs/database-canonical-w2-contract.md#the-shadow-verb](../../docs/designs/database-canonical-w2-contract.md#the-shadow-verb)
+
 ### database_error
 
 <a id="database_error"></a>
