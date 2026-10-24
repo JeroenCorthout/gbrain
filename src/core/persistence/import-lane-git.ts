@@ -136,19 +136,19 @@ export async function walkCommits(checkout: GitCheckout, opts: { stopAt: string 
  * marks the managed Git effect, whose page commits the exporter replaces in database mode, so it is never a writer to move.
  * The first matching row wins; a commit no row matches has no hint (a person, as far as Git can tell).
  */
-export const PROCESS_HINTS: ReadonlyArray<{ hint: string; gbrain_owned: boolean; matches: (commit: Pick<GitCommitInfo, 'subject' | 'author' | 'committer' | 'trailers'>) => boolean }> = [
-  { hint: 'gbrain_git_effect', gbrain_owned: true, matches: c => /^gbrain: persist (?:\d+ )?canonical memory update/.test(c.subject) },
-  { hint: 'gbrain_commit_push', gbrain_owned: false, matches: c => /^gbrain: (?:merge|replay)\b/.test(c.subject) },
-  { hint: 'gbrain_sources_push', gbrain_owned: false, matches: c => c.subject.startsWith('gbrain: workspace push') },
-  { hint: 'agent_session', gbrain_owned: false, matches: c => c.trailers.some(line => /^(?:Co-authored-by|Co-Authored-By): .*\b(?:agent|assistant|bot)\b/i.test(line)) },
-  { hint: 'automation', gbrain_owned: false, matches: c => [c.author, c.committer].some(p => !!p && (/\[bot\]|\bbot\b|\bcron\b|auto-?commit|automation/i.test(p.name) || /\[bot\]|\bbot\b|cron|noreply\+?auto/i.test(p.email))) },
-  { hint: 'auto_commit_message', gbrain_owned: false, matches: c => /^(?:auto(?:matic)?[- ]?commit|autosave|wip: auto|sync:)/i.test(c.subject) },
+export const PROCESS_HINTS: ReadonlyArray<{ process: string; gbrain_owned: boolean; matches: (commit: Pick<GitCommitInfo, 'subject' | 'author' | 'committer' | 'trailers'>) => boolean }> = [
+  { process: 'gbrain_git_effect', gbrain_owned: true, matches: c => /^gbrain: persist (?:\d+ )?canonical memory update/.test(c.subject) },
+  { process: 'gbrain_commit_push', gbrain_owned: false, matches: c => /^gbrain: (?:merge|replay)\b/.test(c.subject) },
+  { process: 'gbrain_sources_push', gbrain_owned: false, matches: c => c.subject.startsWith('gbrain: workspace push') },
+  { process: 'agent_session', gbrain_owned: false, matches: c => c.trailers.some(line => /^(?:Co-authored-by|Co-Authored-By): .*\b(?:agent|assistant|bot)\b/i.test(line)) },
+  { process: 'automation', gbrain_owned: false, matches: c => [c.author, c.committer].some(p => !!p && (/\[bot\]|\bbot\b|\bcron\b|auto-?commit|automation/i.test(p.name) || /\[bot\]|\bbot\b|cron|noreply\+?auto/i.test(p.email))) },
+  { process: 'auto_commit_message', gbrain_owned: false, matches: c => /^(?:auto(?:matic)?[- ]?commit|autosave|wip: auto|sync:)/i.test(c.subject) },
 ];
 
-export const GBRAIN_OWNED_HINTS: ReadonlySet<string> = new Set(PROCESS_HINTS.filter(h => h.gbrain_owned).map(h => h.hint));
+export const GBRAIN_OWNED_HINTS: ReadonlySet<string> = new Set(PROCESS_HINTS.filter(h => h.gbrain_owned).map(h => h.process));
 
 export function processHint(commit: Pick<GitCommitInfo, 'subject' | 'author' | 'committer' | 'trailers'>): string | null {
-  return PROCESS_HINTS.find(row => row.matches(commit))?.hint ?? null;
+  return PROCESS_HINTS.find(row => row.matches(commit))?.process ?? null;
 }
 
 /** The census groups changes by this: the author's address (or name), plus the process hint. */

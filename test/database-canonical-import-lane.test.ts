@@ -23,6 +23,7 @@ import { readImportCensus } from '../src/core/persistence/import-census.ts';
 import { censusImportLane, observeOnce, parseCensusArgs } from '../src/commands/sources-canonical-census.ts';
 import { databaseCanonicalCensusEntry } from '../src/commands/doctor/checks/database-canonical-import.ts';
 import { OperationError } from '../src/core/ops/contract.ts';
+import type { Check } from '../src/commands/doctor.ts';
 import { createSegmentedPage } from './helpers/segmented-page.ts';
 import { requirePostgresTestDatabase, testBackends } from './helpers/test-backends.ts';
 
@@ -330,7 +331,7 @@ for (const backend of testBackends()) describe(`database-canonical wave 3 import
     expect(census.writers.filter(w => !w.gbrain_owned).map(w => [w.author_email, w.commits, w.commits_7d, w.paths]).sort()).toEqual([
       ['alice@example.com', 2, 2, 1], ['cron@example.com', 1, 1, 1]]);
     expect(census.next).toContain('2 writer(s) still commit page files');
-    const [check] = await databaseCanonicalCensusEntry.run(ctx);
+    const [check] = await databaseCanonicalCensusEntry.run(ctx) as Check[];
     expect(check).toMatchObject({ name: 'database_canonical_census', status: 'warn', details: { next: 'gbrain sources canonical default --census' } });
     expect((check!.details as { writers: Array<{ writer: string }> }).writers.map(w => w.writer).sort()).toEqual(['Alice Example', 'notes-cron']);
     expect(check!.message).not.toContain('gbrain_git_effect');

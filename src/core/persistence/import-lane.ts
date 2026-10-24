@@ -83,11 +83,13 @@ export interface MergeCounts { file_only: number; database_only: number; both_sa
 
 type Canonical = ReturnType<typeof reconcileCanonical>;
 
-/** Fields compared one by one: the identity and body fields, the tag set, and each frontmatter key (delete-aware: absent is a value). */
+/** Fields compared one by one: every top-level field of the comparison form, the tag set as one field, and each frontmatter key (delete-aware: absent is a value). */
 export function mergeCounts(base: Canonical, file: Canonical, database: Canonical): MergeCounts {
   const fields = (page: Canonical): Map<string, string> => {
-    const map = new Map<string, string>([['/title', digest(page.title)], ['/type', digest(page.type)], ['/compiled_truth', digest(page.compiled_truth)],
-      ['/timeline', digest(page.timeline ?? '')], ['/tags', digest([...page.tags].sort())]]);
+    const map = new Map<string, string>();
+    for (const [field, value] of Object.entries(page)) {
+      if (field !== 'frontmatter') map.set(`/${field}`, digest(field === 'tags' ? [...(value as string[])].sort() : value ?? ''));
+    }
     for (const [key, value] of Object.entries(page.frontmatter ?? {})) map.set(`/frontmatter/${key}`, digest(value));
     return map;
   };
