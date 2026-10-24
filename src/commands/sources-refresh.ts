@@ -83,6 +83,7 @@ export async function runSourcesRefresh(engine: BrainEngine, args: string[]): Pr
   const json = args.includes('--json');
   try {
     const parsed = parseRefreshArgs(args);
+    await (await import('../core/persistence/canonical-export-store.ts')).assertWorktreeNotExportOwned(engine, parsed.sourceId);
     printRefreshOutcome({ result: await refreshWorktree(engine, parsed.sourceId, parsed.options) }, json);
   } catch (error) {
     if (!(error instanceof OperationError)) throw error;

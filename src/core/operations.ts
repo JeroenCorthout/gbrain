@@ -83,6 +83,7 @@ import { attributionOperations } from './ops/attribution.ts';
 import { skillsCatalogOperations } from './ops/skills-catalog.ts';
 import { brainMembershipOperations } from './ops/brain-membership.ts';
 import { syncStatusOperations } from './ops/sync-status.ts';
+import { sourceConflictsOperations } from './ops/source-conflicts.ts';
 import { rawDataOperations } from './ops/raw-data.ts';
 import { chunksOperations } from './ops/chunks.ts';
 import { ingestLogOperations } from './ops/ingest-log.ts';
@@ -192,6 +193,8 @@ export const operations: Operation[] = [
   ...takesOperations,
   // v0.28: whoami + scoped sources management — ops/sources.ts
   ...sourcesOperations,
+  // Database-canonical wave 5b: open import conflicts, read-only (list_source_conflicts) — ops/source-conflicts.ts
+  ...sourceConflictsOperations,
   // WP4 (T9): discovery + pull-based per-client surface unlock (D4/D5/D9) —
   // ops/request-tools.ts
   ...requestToolsOperations,

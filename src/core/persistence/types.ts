@@ -21,6 +21,7 @@ export const WRITE_ERROR_CODES = [
   'timeline_rows_would_be_removed', 'purged_content', 'preparation_stalled',
   'fence_unrenderable', 'page_body_segmented', 'revision_changed', 'tail_changed',
   'write_outcome_unknown', 'write_interrupted', 'connection_inherited_read_only',
+  'import_conflict_not_found', 'import_conflict_not_writable', 'import_conflict_stale',
 ] as const;
 
 export type WriteErrorCode = typeof WRITE_ERROR_CODES[number];

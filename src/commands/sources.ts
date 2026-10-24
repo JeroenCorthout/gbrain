@@ -22,6 +22,7 @@
  *   gbrain sources refresh <id> — drained worktree-wide ff-only refresh on a managed brain (F0)
  *   gbrain sources canonical <id> --dry-run — read-only database-canonical census (sources-canonical.ts)
  *   gbrain sources canonical <id> --census | --observe — import lane census and observe pass (sources-canonical-census.ts)
+ *   gbrain sources conflicts <id> list|show|resolve — database-canonical import conflicts (sources-conflicts.ts)
  *   gbrain sources push [<id>|--path <dir>] — scan-gated add→commit→pull→push
  *                               (agent-bootstrap; core in src/core/workspace-push.ts)
  *
@@ -1910,6 +1911,7 @@ export async function runSources(engine: BrainEngine, args: string[]): Promise<v
     case 'set-sync':   return (await import('./sources-sync-enabled.ts')).runSetSync(engine, rest);
     case 'refresh':    return (await import('./sources-refresh.ts')).runSourcesRefresh(engine, rest);
     case 'canonical':  return (await import('./sources-canonical.ts')).runSourcesCanonical(engine, rest);
+    case 'conflicts':  return (await import('./sources-conflicts.ts')).runSourcesConflicts(engine, rest);
     case 'archive':    return runArchive(engine, rest);
     case 'restore':    return runRestore(engine, rest);
     case 'purge':      return runPurge(engine, rest);
@@ -2023,6 +2025,8 @@ Subcommands:
   canonical <id> --observe [--watch] [--json]
                                     One observe-mode import lane pass (writes only its own
                                     tables; needs shadow on for the source).
+  conflicts <id> list|show <cid>|resolve <cid> --take file|database (--dry-run|--expect <hash>)
+                                    Open database-canonical import conflicts; resolve is preview-bound.
   set-cr-mode <id> <none|title|per_chunk_synopsis>
                                     Per-source contextual retrieval mode
                                     override (v0.40.3.0). Pass "unset" or

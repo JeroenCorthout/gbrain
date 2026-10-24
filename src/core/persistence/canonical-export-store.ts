@@ -334,3 +334,17 @@ export async function unfinishedExportBatches(exec: SqlEngine, sourceIds?: reado
   return exec.executeRaw(`SELECT source_id, id::text, state FROM export_batches WHERE state IN ${UNFINISHED_EXPORT_BATCH_STATES_SQL}
     AND ($1::text[] IS NULL OR source_id = ANY($1::text[])) ORDER BY source_id`, [sourceIds ? [...sourceIds] : null]);
 }
+
+/**
+ * Wave 5b: `gbrain sources refresh` refuses `source_export_owned` for a worktree bound to a database-mode source, before
+ * anything is fetched or drained; the exporter owns fetches and fast-forwards there.
+ */
+export async function assertWorktreeNotExportOwned(exec: SqlEngine, sourceId: string): Promise<void> {
+  const [owned] = await exec.executeRaw<{ source_id: string }>(`SELECT d.source_id FROM persistence_source_bindings b
+      JOIN persistence_source_bindings peer ON peer.worktree_id=b.worktree_id JOIN database_canonical_sources d ON d.source_id=peer.source_id
+    WHERE b.source_id=$1 AND d.mode='database' ORDER BY d.source_id LIMIT 1`, [sourceId]);
+  if (!owned) return;
+  throw opError('source_export_owned', `Source ${owned.source_id} is in database mode, so its exporter owns fetches and fast-forwards of this worktree; nothing was fetched or drained.`,
+    `Read gbrain sync status --source ${owned.source_id}; the exporter brings the remote in on its own schedule.`,
+    { fix: readFix(`Shows source ${owned.source_id}'s exporter and checkout state, read-only.`, { argv: ['gbrain', 'sync', 'status', '--source', owned.source_id, '--json'] }) });
+}

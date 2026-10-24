@@ -352,6 +352,10 @@ export const OPS_CHECK_NAMES: ReadonlySet<string> = new Set([
   'database_canonical',
   // Database-canonical memory wave 3: writers still committing page files of shadowed sources (doctor/checks/database-canonical-import.ts).
   'database_canonical_census',
+  // Database-canonical memory wave 5b: backup evidence, exporter lag and open live import conflicts (doctor/checks/database-canonical-export.ts).
+  'database_canonical_backup',
+  'export_lag',
+  'import_conflicts',
   'stale_embedding_effects',
   'vector_plan',
   'keyword_plan',

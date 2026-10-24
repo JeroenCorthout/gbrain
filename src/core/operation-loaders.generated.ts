@@ -46,6 +46,7 @@ const load_search_exact = () => import('./ops/search-exact.ts') as Promise<Recor
 const load_search = () => import('./ops/search.ts') as Promise<Record<string, unknown>>;
 const load_skillopt = () => import('./ops/skillopt.ts') as Promise<Record<string, unknown>>;
 const load_skills_catalog = () => import('./ops/skills-catalog.ts') as Promise<Record<string, unknown>>;
+const load_source_conflicts = () => import('./ops/source-conflicts.ts') as Promise<Record<string, unknown>>;
 const load_sources = () => import('./ops/sources.ts') as Promise<Record<string, unknown>>;
 const load_sync_status = () => import('./ops/sync-status.ts') as Promise<Record<string, unknown>>;
 const load_tags = () => import('./ops/tags.ts') as Promise<Record<string, unknown>>;
@@ -176,6 +177,7 @@ export const OPERATION_LOADERS: Record<string, readonly [() => Promise<Record<st
   "sources_status": [load_sources, "sourcesOperations"],
   "sources_inspect": [load_sources, "sourcesOperations"],
   "sources_resolve_path": [load_sources, "sourcesOperations"],
+  "list_source_conflicts": [load_source_conflicts, "sourceConflictsOperations"],
   "request_tools": [load_request_tools, "requestToolsOperations"],
   "get_recent_salience": [load_salience, "salienceOperations"],
   "find_anomalies": [load_salience, "salienceOperations"],

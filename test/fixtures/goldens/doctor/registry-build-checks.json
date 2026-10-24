@@ -995,6 +995,18 @@
       },
       {
         "category": "ops",
+        "name": "database_canonical_backup"
+      },
+      {
+        "category": "ops",
+        "name": "export_lag"
+      },
+      {
+        "category": "ops",
+        "name": "import_conflicts"
+      },
+      {
+        "category": "ops",
         "name": "search_mode"
       },
       {

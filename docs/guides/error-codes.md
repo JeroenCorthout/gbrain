@@ -741,6 +741,16 @@ More: [docs/guides/write-refusals.md#concurrent_write](../../docs/guides/write-r
 |---|---|---|---|---|---|---|
 | The command needs the user's authorization before it runs; nothing was changed. | The step needs the user's decision before it runs. | Stop and ask the user; re-run only with the authorization the message names. | user | `repeat the read that failed` | 3 | no |
 
+### conflict_take_unavailable
+
+<a id="conflict_take_unavailable"></a>
+
+| Meaning | Why | Next step | Who acts · consent | Verify | Exit | Retryable |
+|---|---|---|---|---|---|---|
+| The requested take is not possible for this conflict kind (for example --take file on deleted_uncommitted or unparseable); use the other take, or fix the file so the import lane reads it again. | The request itself was wrong or no longer matches the brain; nothing was changed. | Correct the request using the message above, then retry. | agent | `repeat the read that failed` | 1 | no |
+
+More: [docs/designs/database-canonical-w5-contract.md](../../docs/designs/database-canonical-w5-contract.md)
+
 ### conflicting_source_scope
 
 <a id="conflicting_source_scope"></a>
@@ -2124,6 +2134,36 @@ More: [docs/guides/troubleshooting.md#host-identity-mismatch](../../docs/guides/
 | Meaning | Why | Next step | Who acts · consent | Verify | Exit | Retryable |
 |---|---|---|---|---|---|---|
 | The request_id already belongs to a different accepted operation. | The request itself was wrong or no longer matches the brain; nothing was changed. | Correct the request using the message above, then retry. | agent | `repeat the read that failed` | 1 | no |
+
+### import_conflict_not_found
+
+<a id="import_conflict_not_found"></a>
+
+| Meaning | Why | Next step | Who acts · consent | Verify | Exit | Retryable |
+|---|---|---|---|---|---|---|
+| No open import conflict with that id is visible to this caller (another source's conflict does not exist for it); list the conflicts again. | The request itself was wrong or no longer matches the brain; nothing was changed. | Correct the request using the message above, then retry. | agent | `repeat the read that failed` | 1 | no |
+
+More: [docs/designs/database-canonical-w5-contract.md](../../docs/designs/database-canonical-w5-contract.md)
+
+### import_conflict_not_writable
+
+<a id="import_conflict_not_writable"></a>
+
+| Meaning | Why | Next step | Who acts · consent | Verify | Exit | Retryable |
+|---|---|---|---|---|---|---|
+| put_page resolves_conflict named a conflict kind a page write does not settle (only both_changed, unexported_collision and protected_metadata); the brain host operator resolves it with gbrain sources conflicts. | The request itself was wrong or no longer matches the brain; nothing was changed. | Correct the request using the message above, then retry. | agent | `repeat the read that failed` | 1 | no |
+
+More: [docs/designs/database-canonical-w5-contract.md](../../docs/designs/database-canonical-w5-contract.md)
+
+### import_conflict_stale
+
+<a id="import_conflict_stale"></a>
+
+| Meaning | Why | Next step | Who acts · consent | Verify | Exit | Retryable |
+|---|---|---|---|---|---|---|
+| The conflict closed or changed since it was read (its file, page revision or lifetime moved); read it again and retry. | The request itself was wrong or no longer matches the brain; nothing was changed. | Correct the request using the message above, then retry. | agent | `repeat the read that failed` | 1 | no |
+
+More: [docs/designs/database-canonical-w5-contract.md](../../docs/designs/database-canonical-w5-contract.md)
 
 ### import_lane_shadow_off
 
@@ -4028,6 +4068,16 @@ More: [docs/guides/write-refusals.md#slug_page_mismatch](../../docs/guides/write
 | Meaning | Why | Next step | Who acts · consent | Verify | Exit | Retryable |
 |---|---|---|---|---|---|---|
 | The source changed during the operation; nothing was committed. | Covers a replaced, archived or re-bound source and a canonical file that differs from the page's database copy (detail file_database_drift). When that file is a committed Git change sync has not imported yet, the reason is pending_import: a refused remember is replayed once by the sync that imports it, any other write is resubmitted after that sync (docs/guides/write-refusals.md#pending_import). A page that records no file of its own reconciles against the file at its slug path only with gbrain sources reconcile <source> <slug> --preview --adopt-slug-path. A canonical file that is gone while its page is live (reason canonical_file_missing, a ghost page) never clears by retrying or syncing: a person restores the file and syncs, or removes the page (docs/guides/write-refusals.md#canonical_file_missing). | Correct the request using the message above, then retry. | agent | `repeat the read that failed` | 1 | no |
+
+### source_export_owned
+
+<a id="source_export_owned"></a>
+
+| Meaning | Why | Next step | Who acts · consent | Verify | Exit | Retryable |
+|---|---|---|---|---|---|---|
+| The source is in database mode: its exporter owns fetches and fast-forwards of this worktree, so gbrain sources refresh does not touch it. Read gbrain sync status --source <id>. | The request itself was wrong or no longer matches the brain; nothing was changed. | Correct the request using the message above, then retry. | agent | `repeat the read that failed` | 1 | no |
+
+More: [docs/designs/database-canonical-w5-contract.md](../../docs/designs/database-canonical-w5-contract.md)
 
 ### source_id_taken
 

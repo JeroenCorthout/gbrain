@@ -196,6 +196,9 @@ export async function runSyncStatus(engine: BrainEngine, args: string[]): Promis
   const [freshness = null] = await readSyncFreshness(engine, { sourceIds: [sourceId] }).catch(() => []);
   const { readNotifierBlock, formatNotifierBlock } = await import('../../core/notifier/status.ts');
   const notifierBlock = await readNotifierBlock(engine, sourceId).catch(() => null);
+  // Database-canonical wave 5b: the exporter and live-lane block of a database-mode or exporting source (null otherwise).
+  const { readDatabaseCanonicalStatus, formatCanonicalStatus } = await import('../../core/persistence/canonical-status.ts');
+  const [canonical = null] = await readDatabaseCanonicalStatus(engine, { sourceIds: [sourceId], detail: args.includes('--detail') }).catch(() => []);
   const notifier = notifierBlock && { ...notifierBlock, fix: notifierBlock.fix ? renderAction(notifierBlock.fix, ctx) : null };
   const read = (r: typeof status.cursors_read) => r.status === 'read' ? r : { ...r, fix: renderAction(r.fix, ctx) };
   const { holds: _holds, ...shown } = status;
@@ -204,7 +207,7 @@ export async function runSyncStatus(engine: BrainEngine, args: string[]): Promis
     fence_holds: status.fence_holds.map(hold => ({ ...hold, fix: renderAction(hold.fix, ctx) })), next: status.next ? renderAction(status.next, ctx) : null,
     checkpoint_blockers_read: read(status.checkpoint_blockers_read), cursors_read: read(status.cursors_read), terminal_failures_read: read(status.terminal_failures_read),
     landing_read: read(status.landing_read), landing: status.landing?.status === 'ok' ? { ...status.landing, pages: status.landing.pages.map(page => ({ ...page, fix: page.fix ? renderAction(page.fix, ctx) : null })) } : status.landing,
-    capacity: { status: snapshot.status, pause_pct: snapshot.pause_pct, low: snapshot.low, paused: snapshot.paused }, freshness, notifier, ...(notices.length ? { notices } : {}),
+    capacity: { status: snapshot.status, pause_pct: snapshot.pause_pct, low: snapshot.low, paused: snapshot.paused }, freshness, notifier, database_canonical: canonical, ...(notices.length ? { notices } : {}),
     // #7243: the holds come last, summary first, so a reader can stop before the rows.
     holds_summary: listing.summary, ...(listing.paging ? { holds_page: listing.paging } : {}), holds: listing.rows.map(hold => ({ ...hold, fix: renderAction(hold.fix, ctx) })) };
   if (args.includes('--json')) return writeJsonDocument(JSON.stringify(rendered, null, 2));
@@ -223,6 +226,7 @@ export async function runSyncStatus(engine: BrainEngine, args: string[]): Promis
   if (pass) console.log(`  newest pass: ${pass.outcome}${pass.stop_reason ? ` (${pass.stop_reason})` : ''}, round ${pass.round}, pinned ${pass.target.slice(0, 8)}; `
     + `${pass.converged_target ? `last converged at ${pass.converged_target.slice(0, 8)} (${pass.converged_at})` : 'no converged stamp stored'}`);
   if (freshness) console.log(`  freshness: ${formatSyncFreshness(freshness)}`);
+  for (const line of canonical ? formatCanonicalStatus(canonical) : []) console.log(`  ${line}`);
   if (notifierBlock) console.log(`  ${formatNotifierBlock(sourceId, notifierBlock)}`);
   console.log(`  holds: ${status.holds.length}${status.holds.length ? ` (${status.holds.filter(h => h.needs_human).length} need a person)` : ''}; last error: ${status.last_error ? `${status.last_error.code} [${status.last_error.class}]` : 'none'}`);
   for (const hold of listing.rows) console.log(`    ${hold.path}${hold.slug ? ` (${hold.slug})` : ''}: ${hold.code} [${hold.class}] safe: ${hold.safe_actions.join(',')}${hold.needs_human ? ` NEEDS HUMAN: ${hold.human_reason}` : ''}${hold.attempts > 1 ? ` (held ${hold.attempts} times)` : ''}`);

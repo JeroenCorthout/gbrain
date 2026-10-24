@@ -2,8 +2,8 @@
   "golden": {
     "exitCode": 0,
     "stderr": "",
-    "stdoutBytes": 262702,
-    "stdoutSha256": "bfd962a82f16847c7969963ab23410170196491231dcdef214ab3863873b495e",
+    "stdoutBytes": 264416,
+    "stdoutSha256": "0c7092f41ccb6910cbc0b015b0f20cf3ce765650b035be8ccaa1b5da9b3ac344",
     "toolNames": [
       "remember",
       "entity",
@@ -124,6 +124,7 @@
       "sources_status",
       "sources_inspect",
       "sources_resolve_path",
+      "list_source_conflicts",
       "request_tools",
       "get_recent_salience",
       "find_anomalies",
@@ -613,6 +614,7 @@
           "force": "boolean?",
           "ingested_via": "string?",
           "request_id": "string?",
+          "resolves_conflict": "number?",
           "slug": "string",
           "source_id": "string?",
           "source_kind": "string?",
@@ -662,6 +664,10 @@
             "request_id": {
               "description": "Reuse only to retry.",
               "type": "string"
+            },
+            "resolves_conflict": {
+              "description": "Open import conflict id (list_source_conflicts) this write settles; needs expected_revision.",
+              "type": "number"
             },
             "slug": {
               "description": "Page slug.",
@@ -5677,6 +5683,48 @@
             "id",
             "paths"
           ],
+          "type": "object"
+        },
+        "scope": "read"
+      },
+      {
+        "description": "List open database-canonical import conflicts (a page file and the database both changed, or a file the import lane could not take) for the sources this caller can read. Read-only. Remote callers get summaries only. Resolve with gbrain sources conflicts <id> resolve on the brain host.",
+        "idempotent": true,
+        "local_only": false,
+        "mutating": false,
+        "name": "list_source_conflicts",
+        "parameters": {
+          "conflict_id": "number?",
+          "include_bytes": "boolean?",
+          "kind": "string?",
+          "limit": "number?",
+          "source_id": "string?"
+        },
+        "required_scopes": [],
+        "schema": {
+          "properties": {
+            "conflict_id": {
+              "description": "One conflict by id; import_conflict_not_found when it is not visible.",
+              "type": "number"
+            },
+            "include_bytes": {
+              "description": "Trusted local callers only: include the stored file bytes (base64).",
+              "type": "boolean"
+            },
+            "kind": {
+              "description": "Only this conflict kind (for example both_changed).",
+              "type": "string"
+            },
+            "limit": {
+              "description": "At most this many rows (1 to 200, default 50).",
+              "type": "number"
+            },
+            "source_id": {
+              "description": "Only this source (must be within the caller's source grant).",
+              "type": "string"
+            }
+          },
+          "required": [],
           "type": "object"
         },
         "scope": "read"

@@ -686,7 +686,17 @@ export async function preparePageMutation(unbounded: BrainEngine, row: WriteRequ
     signal?.throwIfAborted();
     return prepareStagedUpload(unbounded, row, staged => preparePageMutation(unbounded, staged, _config, preparedIntent, signal, options));
   }
-  return prepareInlineOrSegmentedMutation(unbounded, row, _config, preparedIntent, signal, options);
+  const prepared = await prepareInlineOrSegmentedMutation(unbounded, row, _config, preparedIntent, signal, options);
+  // Database-canonical wave 5b: `resolves_conflict` closes its conflict in this publication transaction or fails it (conflict-write.ts).
+  if (row.operation !== 'put_page' || row.intent?.resolves_conflict === undefined || row.intent.resolves_conflict === null) return prepared;
+  const apply = prepared.apply;
+  prepared.apply = async (tx, preimage) => {
+    const outcome = await apply.call(prepared, tx, preimage);
+    await (await import('./conflict-write.ts')).closeResolvedConflict(tx, { sourceId: row.source_id, slug: row.slug, pageId: row.page_id,
+      conflictId: row.intent!.resolves_conflict, fileSha256: row.intent!.resolves_conflict_sha256 });
+    return { ...outcome, resolved_conflict: Number(row.intent!.resolves_conflict) };
+  };
+  return prepared;
 }
 
 async function prepareInlineOrSegmentedMutation(unbounded: BrainEngine, row: WriteRequest, _config: Parameters<typeof preparePageMutation>[2],

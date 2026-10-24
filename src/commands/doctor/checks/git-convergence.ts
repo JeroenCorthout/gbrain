@@ -46,7 +46,7 @@ const MAX_DIRTY_PATHS = 200;
 
 interface RootReport { root: string; source_ids: string[]; branch: string | null; ahead: number; behind: number; dirty: number;
   oldest_unpushed_at: string | null; oldest_dirty_at: string | null; status: 'ok' | 'warn' | 'fail'; stranded?: true; uncommitted_pages?: string[];
-  managed?: true; diverged?: true; unpushed_commits?: CheckoutCommit[]; porcelain?: CheckoutPorcelain }
+  managed?: true; diverged?: true; unpushed_commits?: CheckoutCommit[]; porcelain?: CheckoutPorcelain; database_mode?: string[] }
 
 const canonicalPath = (path: string) => { try { return realpathSync(path); } catch { return path; } };
 
@@ -136,6 +136,16 @@ export async function sourceRoots(engine: BrainEngine): Promise<Map<string, stri
   return roots;
 }
 
+async function databaseModeSources(engine: BrainEngine): Promise<Map<string, boolean>> {
+  try {
+    const rows = await engine.executeRaw<{ source_id: string; export_commits: boolean | null }>(
+      "SELECT d.source_id, x.export_commits FROM database_canonical_sources d LEFT JOIN canonical_export_sources x ON x.source_id=d.source_id WHERE d.mode='database'");
+    return new Map(rows.map(r => [r.source_id, !!r.export_commits]));
+  } catch {
+    return new Map();
+  }
+}
+
 export async function gitConvergenceCheck(engine: BrainEngine, now = Date.now()): Promise<Check | null> {
   const roots = await sourceRoots(engine);
   if (!roots.size) return null;
@@ -167,6 +177,17 @@ export async function gitConvergenceCheck(engine: BrainEngine, now = Date.now())
     if (pages.length) report.uncommitted_pages = pages;
     if (report.status === 'ok') report.status = 'warn';
   }
+  // Database-canonical wave 5b: on a database-mode checkout the exporter commits and pushes, so no plain-git or keep-checkout
+  // remedy applies there, and with export commits off a divergence is expected (nothing exports it) and is not a finding.
+  const databaseMode = reports.length ? await databaseModeSources(engine) : new Map<string, boolean>();
+  for (const report of reports) {
+    const ids = report.source_ids.filter(id => databaseMode.has(id));
+    if (!ids.length) continue;
+    report.database_mode = ids;
+    delete report.stranded;
+    delete report.uncommitted_pages;
+    if (!ids.some(id => databaseMode.get(id)) && !report.dirty) report.status = 'ok';
+  }
   const skipped = [...byTop.values()].filter((r): r is { root: string; source_ids: string[]; skipped: string } => 'skipped' in r);
   const details = { roots: reports, skipped, ...(roots.size > MAX_ROOTS ? { not_probed: roots.size - MAX_ROOTS } : {}),
     warn_after_hours: GIT_CONVERGENCE_WARN_MS / 3_600_000, fail_after_hours: GIT_CONVERGENCE_FAIL_MS / 3_600_000, fetched: false };
@@ -193,6 +214,12 @@ export async function gitConvergenceCheck(engine: BrainEngine, now = Date.now())
   const remedy = bad.some(r => isManagedFilesystemPath(r.root))
     ? 'Commit and push them: on a managed canonical worktree the persistence owner commits and pushes page writes (gbrain sources writer status <source> --json shows parked pushes; gbrain sources writer git-durability <source> --enable turns them on), and files that are not pages are committed and pushed with plain git in the checkout, never pulled or rebased; elsewhere gbrain sources push --path <root> for a bootstrap workspace, or git push in the checkout'
     : 'Commit and push them (gbrain sources push --path <root> for a bootstrap workspace, or git push in the checkout)';
+  const databaseBad = bad.filter(r => r.database_mode);
+  if (databaseBad.length === bad.length) {
+    const first = databaseBad[0]!.database_mode![0]!;
+    return { name: 'git_convergence', status: bad.some(r => r.status === 'fail') ? 'fail' : 'warn', details,
+      message: `Git checkouts have not converged with their upstream: ${lines.join(' | ')}. ${databaseBad.length === 1 ? 'This checkout is' : 'These checkouts are'} bound to database-mode source(s): the database is canonical and the exporter commits and pushes, so do not commit, push or refresh page files there with git; gbrain sync status --source ${first} shows the export lag, parked batches and open conflicts; this compares with the last fetched upstream and does not fetch.${boundNote}` };
+  }
   const stranded = bad.filter(r => r.stranded);
   const status = bad.some(r => r.status === 'fail') ? 'fail' : 'warn';
   const uncommitted = stranded.find(r => r.uncommitted_pages);
@@ -215,7 +242,7 @@ export async function gitConvergenceCheck(engine: BrainEngine, now = Date.now())
         why: `${first.root} has ${first.ahead} commit(s) not on its upstream and no Git effect left to push them (#7089); this publishes the commits already on the branch and commits nothing. A conflict with the remote is reported with the user's choice as its fix.${stranded.length > 1 ? ` ${stranded.length - 1} other checkout(s) need the same, see details.roots (stranded).` : ''}`,
         verify: doctorVerify('git_convergence') } };
   }
-  const diverged = bad.find(r => r.diverged);
+  const diverged = bad.find(r => r.diverged && !r.database_mode);
   if (diverged) {
     return { name: 'git_convergence', status, details,
       message: `Git checkouts have not converged with their upstream: ${lines.join(' | ')}. ${diverged.root} is a managed checkout that diverged from its upstream, so gbrain sources refresh refuses (refresh_diverged) until its local commits are published merged with the upstream; details.roots lists each one (sha, author, date, paths). ${remedy}; this compares with the last fetched upstream and does not fetch.${boundNote}`,

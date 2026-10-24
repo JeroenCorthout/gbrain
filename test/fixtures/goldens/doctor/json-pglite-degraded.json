@@ -3299,6 +3299,39 @@
         },
         {
           "category": "ops",
+          "details": {
+            "database_sources": 0,
+            "docs": "docs/designs/database-canonical-w5-contract.md"
+          },
+          "elapsed_ms": "<volatile>",
+          "message": "No source is in database mode, so the files remain a full copy of memory.",
+          "name": "database_canonical_backup",
+          "status": "ok"
+        },
+        {
+          "category": "ops",
+          "details": {
+            "database_sources": 0,
+            "docs": "docs/designs/database-canonical-w5-contract.md"
+          },
+          "elapsed_ms": "<volatile>",
+          "message": "No source is in database mode, so nothing is exported.",
+          "name": "export_lag",
+          "status": "ok"
+        },
+        {
+          "category": "ops",
+          "details": {
+            "database_sources": 0,
+            "docs": "docs/designs/database-canonical-w5-contract.md"
+          },
+          "elapsed_ms": "<volatile>",
+          "message": "No source is in database mode, so no live import conflict can exist.",
+          "name": "import_conflicts",
+          "status": "ok"
+        },
+        {
+          "category": "ops",
           "elapsed_ms": "<volatile>",
           "message": "Mode: conservative (no per-key overrides — mode bundle is canonical).",
           "name": "search_mode",
@@ -3322,7 +3355,7 @@
         {
           "category": "brain",
           "elapsed_ms": "<volatile>",
-          "message": "No retrieval-affecting files changed in working tree.",
+          "message": "1 retrieval-affecting file(s) changed since HEAD: src/core/operations.ts. Re-run `gbrain eval run-all` after committing these changes.",
           "name": "eval_drift",
           "status": "ok"
         },

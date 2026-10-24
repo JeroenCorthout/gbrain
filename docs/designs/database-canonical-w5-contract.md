@@ -295,6 +295,11 @@ attempts, `error_code` and, when parked, `parked_at` and the retry command
   and `--json`, with parked paths under `--detail` (the `*_read: not_read` convention for the bounded read).
 - **`get_brain_health`** (`src/core/ops/admin.ts`): bands only, no slugs or paths, for the sources the caller can read:
   export lag band, import lag band, coverage band, open conflict count band.
+  *As built:* `database_canonical: { sources, export_behind, export_stalled, open_conflicts }`, each a count band
+  (`src/commands/doctor/brain-health-bands.ts`): database-mode or exporting sources, those more than 300 s behind, those
+  more than 3600 s behind or holding a parked batch, and open live conflicts. A stalled source turns `status` to
+  `attention`. Import lag and coverage stay in `gbrain sync status` only, because a ratio band added nothing an agent
+  without admin scope can act on.
 
 **`gbrain sources conflicts <id> list|show|resolve`** (`src/commands/sources-conflicts.ts`, routed from `sources.ts`;
 trusted local CLI):
@@ -372,6 +377,16 @@ paths of a database-mode source; W5b adds the agent route (`put_page` / `remembe
 and keeps non-page paths of a database-mode worktree committable under the commit lock (the operator row of the design's
 "who writes where" table).
 
+**As built in W5b:** `put_page resolves_conflict` lives in `src/core/persistence/conflict-write.ts`. Admission
+(`page-mutations.ts`, one call) pins the conflict's `file_sha256` in the stored intent as `resolves_conflict_sha256`, a
+server field outside the replay digest like `timeline_section`. Publication (`page-prepare.ts`, one wrapper around the
+prepared `apply`, so a no-op write settles too) runs the compare-and-set and the ledger base update and enqueues the page
+for export, the same way `--take database` does. `journal.ts`, `page-input.ts` and `coordinator.ts` are unchanged. The
+lifetime binding is the page id: a recreated page gets a new id, so a conflict bound to the old page no longer matches.
+The commit-push `put_page` hint is **deferred**: it extends wave 4's `source_database_mode` refusal, which is not on wave
+4's branch yet, so commit-push is unchanged in W5b. `list_source_conflicts` is registered after `sourcesOperations`;
+the doctor entries follow `database_canonical_census`, because wave 4's `database_canonical_fence` does not exist yet.
+
 ## Wave 4 dependency (fallback in W5a)
 
 Wave 4's branch carries its contract only. The exporter reads the source's mode, so W5a's migration adds wave 4's mode
@@ -432,11 +447,11 @@ Existing files, **persistence/sync lane (GBRA-133)**, each edit behind the mode 
 | `src/core/persistence/graduation-drain.ts` | 5a | refuse while an export batch is unfinished (one predicate) |
 | `src/core/persistence/deactivation.ts` | 5a | refuse while an export batch is unfinished, beside wave 4's database-mode refusal |
 | `src/commands/sync/operator.ts` | 5b | the `database_canonical` block in `gbrain sync status` |
-| `src/core/persistence/page-mutations.ts`, `page-input.ts`, `journal.ts` | 5b | `resolves_conflict` carried in the intent and checked at admission |
-| `src/core/persistence/coordinator.ts` | 5b | the conflict compare-and-set close in the publication transaction |
-| `src/core/persistence/types.ts` | 5b | `import_conflict_not_writable` and `import_conflict_stale` in `WRITE_ERROR_CODES` |
+| `src/core/persistence/page-mutations.ts` | 5b | `resolves_conflict` checked at admission and its file hash pinned in the intent (as built; `page-input.ts` and `journal.ts` unchanged) |
+| `src/core/persistence/page-prepare.ts` | 5b | the conflict compare-and-set close wrapped around the prepared `apply`, inside the publication transaction (as built; `coordinator.ts` unchanged) |
+| `src/core/persistence/types.ts` | 5b | `import_conflict_not_found`, `import_conflict_not_writable` and `import_conflict_stale` in `WRITE_ERROR_CODES` |
 | `src/commands/sources-refresh.ts` | 5b | the `source_export_owned` refusal before delegation |
-| `src/commands/git.ts`, `src/core/git/commit-push.ts` | 5b | the `put_page` hint on wave 4's `source_database_mode` page-path refusal |
+| `src/commands/git.ts`, `src/core/git/commit-push.ts` | 5b | deferred: the `put_page` hint on wave 4's `source_database_mode` page-path refusal, which wave 4 has not landed |
 | `src/commands/doctor/checks/git-convergence.ts` | 5b | the database-mode branch (also edited by wave 4 and by #7487) |
 
 Existing files, **database-canonical lane (waves 1 to 4)**:

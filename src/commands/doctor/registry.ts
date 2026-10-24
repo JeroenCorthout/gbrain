@@ -98,6 +98,7 @@ import { runtimeBuildSkewEntry } from './checks/runtime-build-skew.ts';
 import { cliSocketRefusalsEntry } from './checks/cli-socket-refusals.ts';
 import { databaseCanonicalEntry } from './checks/database-canonical.ts';
 import { databaseCanonicalCensusEntry } from './checks/database-canonical-import.ts';
+import { databaseCanonicalBackupEntry, exportLagEntry, importConflictsEntry } from './checks/database-canonical-export.ts';
 import { gitConvergenceEntry } from './checks/git-convergence.ts';
 import { gitWriterEntry } from './checks/git-writer.ts';
 import { retrievalFeedbackEntry } from './checks/retrieval-feedback.ts';
@@ -290,6 +291,9 @@ export const DOCTOR_CHECK_REGISTRY: readonly DoctorEntry[] = [
   fenceIntegrityEntry,
   databaseCanonicalEntry,
   databaseCanonicalCensusEntry,
+  databaseCanonicalBackupEntry,
+  exportLagEntry,
+  importConflictsEntry,
   searchModeEntry,
 ];
 

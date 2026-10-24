@@ -341,6 +341,7 @@ const put_page: Operation = {
     allow_empty: { type: 'boolean', required: false, description: 'Allow an empty page.' },
     allow_shrink: { type: 'boolean', required: false, description: 'Allow content under half a >256 KB page. To add text use append_page, not a re-put; a page over one request goes by begin_page_upload.', fullSurfaceOnly: true },
     drop_timeline: { type: 'boolean', required: false, description: 'No Timeline in content: delete its entries.' },
+    resolves_conflict: { type: 'number', required: false, description: 'Open import conflict id (list_source_conflicts) this write settles; needs expected_revision.' },
     wait_ms: WRITE_WAIT_PARAM,
     // v0.39.3.0 provenance write-through (WARN-8 + A1 + CV6). Optional fields
     // for trusted local callers (capture CLI, autopilot, dream cycle). Remote

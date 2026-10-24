@@ -322,6 +322,12 @@ export async function preparePageAdmission(ctx: OperationContext,
     intent.timeline_section = isTimelineSection(input.timelineSection) ? input.timelineSection : timelineSectionOf(p.content, slug);
   }
   if (input.operation === 'put_page') await normalizeSubagentPageInput(ctx, intent);
+  // Database-canonical wave 5b: a put_page that settles an open live import conflict pins the conflict's file hash (conflict-write.ts).
+  delete intent.resolves_conflict_sha256;
+  if (intent.resolves_conflict !== undefined && intent.resolves_conflict !== null) {
+    intent.resolves_conflict_sha256 = await (await import('./conflict-write.ts')).admitConflictResolution(ctx.engine,
+      { operation: input.operation, sourceId, slug, conflictId: intent.resolves_conflict, expectedRevision: intent.expected_revision });
+  }
   const typeWarning = input.operation === 'put_page' && input.managedFileImport !== true
     ? await undeclaredPageTypeWarning(ctx, { ...intent, slug }, sourceId) : null;
   if (input.operation === 'capture') {

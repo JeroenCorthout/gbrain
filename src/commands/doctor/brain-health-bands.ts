@@ -20,6 +20,8 @@ import { cachedTerminalSummary } from '../serve-http-metrics.ts';
 import { readEmbeddingState } from '../../core/embedding-state.ts';
 import { readGhostPages } from '../../core/ghost-pages.ts';
 import { MANAGED_SYNC_BLOCKED_FAIL_MS, readBlockedManagedSyncs } from '../../core/persistence/sync-blocked.ts';
+import { readDatabaseCanonicalStatus } from '../../core/persistence/canonical-status.ts';
+import { EXPORT_LAG_FAIL_SECONDS, EXPORT_LAG_WARN_SECONDS } from './checks/database-canonical-export.ts';
 
 export const BRAIN_HEALTH_TTL_MS = 60_000;
 export type CountBand = 'none' | '1-9' | '10-99' | '100-999' | '1000+' | 'unknown';
@@ -40,6 +42,8 @@ export interface BrainHealthBands {
   ghost_pages: { band: CountBand; reason?: string };
   /** #6858: sources whose managed sync run has been blocked on a page longer than the doctor `managed_sync_blocked` threshold. */
   sync_blocked: { band: CountBand };
+  /** Database-canonical memory (wave 5b): database-mode or exporting sources, those whose export is behind (over 300 s), stalled (over 3600 s or a parked batch) and open live import conflicts. */
+  database_canonical: { sources: CountBand; export_behind: CountBand; export_stalled: CountBand; open_conflicts: CountBand };
   /** The read-only command an operator runs on the brain host for the full report. */
   host_command: string[];
 }
@@ -59,7 +63,7 @@ export function readBrainHealthBands(engine: BrainEngine, opts: { sourceIds?: st
 }
 
 async function computeBands(engine: BrainEngine, sourceIds: string[] | undefined): Promise<BrainHealthBands> {
-  const [capacity, failures, unsearchable, ghostPages, syncBlocked] = await Promise.all([
+  const [capacity, failures, unsearchable, ghostPages, syncBlocked, canonical] = await Promise.all([
     Promise.all([cachedCapacitySnapshot(engine), readCapacityThresholds(engine)])
       .then(([snapshot, thresholds]) => snapshot.status !== 'ok'
         ? { capacity: 'unknown' as const, days: 'unknown' as const, max_pct_band: 'unknown' as const, forecast: 'unavailable' as const }
@@ -80,11 +84,18 @@ async function computeBands(engine: BrainEngine, sourceIds: string[] | undefined
     readBlockedManagedSyncs(engine, sourceIds)
       .then((blocked): { band: CountBand } => ({ band: countBand(new Set(blocked.filter(b => Date.now() - Date.parse(b.blocked_since) > MANAGED_SYNC_BLOCKED_FAIL_MS).map(b => b.source_id)).size) }))
       .catch(() => ({ band: 'unknown' as const })),
+    readDatabaseCanonicalStatus(engine, sourceIds ? { sourceIds } : {})
+      .then((rows): BrainHealthBands['database_canonical'] => ({ sources: countBand(rows.length),
+        export_behind: countBand(rows.filter(r => (r.export_lag_seconds ?? 0) > EXPORT_LAG_WARN_SECONDS).length),
+        export_stalled: countBand(rows.filter(r => !!r.batch?.parked_at || (r.export_lag_seconds ?? 0) > EXPORT_LAG_FAIL_SECONDS).length),
+        open_conflicts: countBand(rows.reduce((n, r) => n + r.conflicts_open, 0)) }))
+      .catch(() => ({ sources: 'unknown' as const, export_behind: 'unknown' as const, export_stalled: 'unknown' as const, open_conflicts: 'unknown' as const })),
   ]);
   const bands = { capacity: { band: capacity.capacity, days: capacity.days, max_pct_band: capacity.max_pct_band, forecast: capacity.forecast }, write_failures: failures, unsearchable, ghost_pages: ghostPages,
-    sync_blocked: syncBlocked };
+    sync_blocked: syncBlocked, database_canonical: canonical };
   const unknown = bands.capacity.band === 'unknown' || failures.band === 'unknown';
   const attention = bands.capacity.band === 'low' || bands.capacity.band === 'critical' || (failures.active_blockers !== 'none' && failures.active_blockers !== 'unknown')
-    || (ghostPages.band !== 'none' && ghostPages.band !== 'unknown') || (syncBlocked.band !== 'none' && syncBlocked.band !== 'unknown');
+    || (ghostPages.band !== 'none' && ghostPages.band !== 'unknown') || (syncBlocked.band !== 'none' && syncBlocked.band !== 'unknown')
+    || (canonical.export_stalled !== 'none' && canonical.export_stalled !== 'unknown');
   return { schema_version: 1, status: attention ? 'attention' : unknown ? 'unknown' : 'ok', ...bands, host_command: ['gbrain', 'doctor', '--tier', 'ops', '--json'] };
 }

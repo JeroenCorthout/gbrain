@@ -463,6 +463,11 @@ export const OPERATION_MANIFEST: OperationMeta[] = [
         "required": false,
         "description": "No Timeline in content: delete its entries."
       },
+      "resolves_conflict": {
+        "type": "number",
+        "required": false,
+        "description": "Open import conflict id (list_source_conflicts) this write settles; needs expected_revision."
+      },
       "wait_ms": {
         "type": "number",
         "description": "Commit wait ms (0-30000, default 5000)."
@@ -4736,6 +4741,36 @@ export const OPERATION_MANIFEST: OperationMeta[] = [
       "hidden": true
     },
     "area": "sources"
+  },
+  {
+    "name": "list_source_conflicts",
+    "mutating": false,
+    "idempotent": true,
+    "outputRedaction": "no_stored_text",
+    "description": "List open database-canonical import conflicts (a page file and the database both changed, or a file the import lane could not take) for the sources this caller can read. Read-only. Remote callers get summaries only. Resolve with gbrain sources conflicts <id> resolve on the brain host.",
+    "params": {
+      "source_id": {
+        "type": "string",
+        "description": "Only this source (must be within the caller's source grant)."
+      },
+      "kind": {
+        "type": "string",
+        "description": "Only this conflict kind (for example both_changed)."
+      },
+      "conflict_id": {
+        "type": "number",
+        "description": "One conflict by id; import_conflict_not_found when it is not visible."
+      },
+      "limit": {
+        "type": "number",
+        "description": "At most this many rows (1 to 200, default 50)."
+      },
+      "include_bytes": {
+        "type": "boolean",
+        "description": "Trusted local callers only: include the stored file bytes (base64)."
+      }
+    },
+    "scope": "read"
   },
   {
     "name": "request_tools",
