@@ -59,6 +59,7 @@ const PERMITTED_TEST_ONLY = [
   { path: 'src/eval/longmemeval/evidence-packet.ts', reason: 'script-reachable' },
   { path: 'src/eval/longmemeval/locomo.ts', reason: 'script-reachable' },
   { path: 'src/core/write-gate-scan.ts', reason: 'script-reachable' },
+  { path: 'src/core/persistence/canonical-shadow.ts', reason: 'held: database-canonical wave 2 phase A contract; the --shadow verb and doctor check wire it in phase B' },
   { path: 'src/eval/shared/autocut-replay.ts', reason: 'script-reachable' },
   { path: 'src/mcp/http-transport.ts', reason: 'script-reachable' },
   { path: 'src/mcp/tool-catalog.ts', reason: 'script-reachable' },

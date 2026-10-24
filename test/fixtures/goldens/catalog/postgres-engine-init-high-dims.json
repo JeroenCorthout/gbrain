@@ -48,6 +48,11 @@
       "conversation_parser_llm_cache.conversation_parser_llm_cache_call_shape_check": "c CHECK ((call_shape = ANY (ARRAY['polish'::text, 'fallback'::text])))",
       "conversation_parser_llm_cache.conversation_parser_llm_cache_pkey": "p PRIMARY KEY (content_sha256, model_id, call_shape)",
       "core_edit_notices.core_edit_notices_pkey": "p PRIMARY KEY (id)",
+      "database_canonical_brain.database_canonical_brain_active_sources_check": "c CHECK ((active_sources >= 0))",
+      "database_canonical_brain.database_canonical_brain_pkey": "p PRIMARY KEY (singleton)",
+      "database_canonical_brain.database_canonical_brain_singleton_check": "c CHECK ((singleton = 1))",
+      "database_canonical_sources.database_canonical_sources_pkey": "p PRIMARY KEY (source_id)",
+      "database_canonical_sources.database_canonical_sources_source_id_fkey": "f FOREIGN KEY (source_id) REFERENCES sources(id) ON DELETE CASCADE",
       "decide_calibrations.decide_calibrations_pkey": "p PRIMARY KEY (id)",
       "decide_proposals.decide_proposals_pkey": "p PRIMARY KEY (id)",
       "decide_proposals.decide_proposals_sweep_id_pair_index_key": "u UNIQUE (sweep_id, pair_index)",
@@ -95,6 +100,19 @@
       "eval_takes_quality_runs.eval_takes_quality_runs_pkey": "p PRIMARY KEY (id)",
       "eval_takes_quality_runs.eval_takes_quality_runs_receipt_sha8_corpus_receipt_sha8_pr_key": "u UNIQUE (receipt_sha8_corpus, receipt_sha8_prompt, receipt_sha8_models, receipt_sha8_rubric)",
       "eval_takes_quality_runs.eval_takes_quality_runs_verdict_check": "c CHECK ((verdict = ANY (ARRAY['pass'::text, 'fail'::text, 'inconclusive'::text])))",
+      "export_ledger.export_ledger_lifetime_check": "c CHECK ((lifetime >= 1))",
+      "export_ledger.export_ledger_pkey": "p PRIMARY KEY (id)",
+      "export_ledger.export_ledger_seeded_from_check": "c CHECK ((seeded_from = ANY (ARRAY['sync_provenance'::text, 'shadow_adopt'::text, 'export'::text, 'import_lane'::text, 'adoption'::text])))",
+      "export_ledger.export_ledger_source_id_fkey": "f FOREIGN KEY (source_id) REFERENCES sources(id) ON DELETE CASCADE",
+      "export_outbox.export_outbox_cause_check": "c CHECK ((cause = ANY (ARRAY['created'::text, 'written'::text, 'deleted'::text, 'moved_out'::text, 'purged'::text, 'withdrawal'::text])))",
+      "export_outbox.export_outbox_pkey": "p PRIMARY KEY (source_id, page_id)",
+      "export_outbox.export_outbox_source_id_fkey": "f FOREIGN KEY (source_id) REFERENCES sources(id) ON DELETE CASCADE",
+      "export_shadow_batches.export_shadow_batches_pkey": "p PRIMARY KEY (id)",
+      "export_shadow_batches.export_shadow_batches_source_id_fkey": "f FOREIGN KEY (source_id) REFERENCES sources(id) ON DELETE CASCADE",
+      "export_shadow_diffs.export_shadow_diffs_batch_id_fkey": "f FOREIGN KEY (batch_id) REFERENCES export_shadow_batches(id) ON DELETE CASCADE",
+      "export_shadow_diffs.export_shadow_diffs_kind_check": "c CHECK ((kind = ANY (ARRAY['equal'::text, 'adopt'::text, 'write'::text, 'create'::text, 'remove'::text, 'absent'::text, 'ineligible'::text, 'file_deleted'::text, 'outside_edit'::text, 'both_changed'::text, 'unexported_collision'::text, 'unparseable'::text, 'no_checkout'::text, 'render_mismatch'::text, 'ineligible_file'::text, 'unsafe_path'::text, 'path_collision'::text])))",
+      "export_shadow_diffs.export_shadow_diffs_pkey": "p PRIMARY KEY (source_id, page_id)",
+      "export_shadow_diffs.export_shadow_diffs_source_id_fkey": "f FOREIGN KEY (source_id) REFERENCES sources(id) ON DELETE CASCADE",
       "extract_atoms_page_state.extract_atoms_page_state_fail_count_check": "c CHECK ((fail_count >= 0))",
       "extract_atoms_page_state.extract_atoms_page_state_page_id_fkey": "f FOREIGN KEY (page_id) REFERENCES pages(id) ON DELETE CASCADE",
       "extract_atoms_page_state.extract_atoms_page_state_pkey": "p PRIMARY KEY (source_incarnation, page_id, content_hash)",
@@ -523,6 +541,10 @@
       "gbrain_advance_tag_revision()": "RETURNS trigger kind=f lang=plpgsql volatility=v secdef=false config=[search_path=pg_catalog, public] body_sha256=7807b26b4933148aa63c67fca824a60d3492396728205d04e16c48c81174cbd5",
       "gbrain_bump_trust_generation()": "RETURNS trigger kind=f lang=plpgsql volatility=v secdef=false config=[search_path=pg_catalog, public] body_sha256=4708a89d166ac0999a8922ad8ee8f69fea3213c59e0782d96220f93b0c001a62",
       "gbrain_clear_atom_page_state()": "RETURNS trigger kind=f lang=plpgsql volatility=v secdef=false config=[search_path=pg_catalog, public] body_sha256=7db0ef05d1220a579e64428b2dd7cf5183191da186fbe64b6496433a7a713d11",
+      "gbrain_count_canonical_sources()": "RETURNS trigger kind=f lang=plpgsql volatility=v secdef=false config=[search_path=pg_catalog, public] body_sha256=ddc91b45490d006d495742bfaa7dada3dbbf1e1ba2c739fff03f371c54006049",
+      "gbrain_enqueue_page_export()": "RETURNS trigger kind=f lang=plpgsql volatility=v secdef=false config=[search_path=pg_catalog, public] body_sha256=6afb6a1e2668821254a4018a9b426dc5c14be5192b668e0c199797068e9c8c5b",
+      "gbrain_enqueue_withdrawal_export()": "RETURNS trigger kind=f lang=plpgsql volatility=v secdef=false config=[search_path=pg_catalog, public] body_sha256=845ecb49019b2259ca9edddfd335caa2a846fa875df9b710f941573edaea7f10",
+      "gbrain_export_outbox_put(src text, page integer, page_slug text, rev uuid, why text)": "RETURNS void kind=f lang=plpgsql volatility=v secdef=false config=[search_path=pg_catalog, public] body_sha256=d0e87ad89249c8b85693430382a02459aff004620c3bc7b485913bb41d8e7bb9",
       "gbrain_fact_fingerprint(claim text)": "RETURNS text kind=f lang=sql volatility=i secdef=false config=[] body_sha256=ff99709590deb4c83f0e16d30b3988ca2598018f5fd6f30d132acf31b1010174",
       "gbrain_fact_fingerprint_v1(claim text)": "RETURNS text kind=f lang=sql volatility=i secdef=false config=[] body_sha256=aa955a02d3c695f237e1771f0ffded2fa8e5c7b795c42b87f7fd239ae35e213c",
       "gbrain_fact_normalize(claim text)": "RETURNS text kind=f lang=sql volatility=i secdef=false config=[] body_sha256=595b1e012edeb66edbec72a2a8b1d046a8360a386bfce2fd903e50e3f78af37b",
@@ -613,6 +635,12 @@
       "core_edit_notices": [
         "<current_role> -> <current_role> WITH GRANT OPTION: DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE"
       ],
+      "database_canonical_brain": [
+        "<current_role> -> <current_role> WITH GRANT OPTION: DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE"
+      ],
+      "database_canonical_sources": [
+        "<current_role> -> <current_role> WITH GRANT OPTION: DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE"
+      ],
       "decide_calibrations": [
         "<current_role> -> <current_role> WITH GRANT OPTION: DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE"
       ],
@@ -680,6 +708,18 @@
         "<current_role> -> <current_role> WITH GRANT OPTION: DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE"
       ],
       "eval_takes_quality_runs": [
+        "<current_role> -> <current_role> WITH GRANT OPTION: DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE"
+      ],
+      "export_ledger": [
+        "<current_role> -> <current_role> WITH GRANT OPTION: DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE"
+      ],
+      "export_outbox": [
+        "<current_role> -> <current_role> WITH GRANT OPTION: DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE"
+      ],
+      "export_shadow_batches": [
+        "<current_role> -> <current_role> WITH GRANT OPTION: DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE"
+      ],
+      "export_shadow_diffs": [
         "<current_role> -> <current_role> WITH GRANT OPTION: DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE"
       ],
       "extract_atoms_page_state": [
@@ -1075,6 +1115,8 @@
       "conversation_parser_llm_cache_pkey": "CREATE UNIQUE INDEX conversation_parser_llm_cache_pkey ON public.conversation_parser_llm_cache USING btree (content_sha256, model_id, call_shape)",
       "core_edit_notices_pending_idx": "CREATE INDEX core_edit_notices_pending_idx ON public.core_edit_notices USING btree (source_id, slug, id) WHERE (acked_at IS NULL)",
       "core_edit_notices_pkey": "CREATE UNIQUE INDEX core_edit_notices_pkey ON public.core_edit_notices USING btree (id)",
+      "database_canonical_brain_pkey": "CREATE UNIQUE INDEX database_canonical_brain_pkey ON public.database_canonical_brain USING btree (singleton)",
+      "database_canonical_sources_pkey": "CREATE UNIQUE INDEX database_canonical_sources_pkey ON public.database_canonical_sources USING btree (source_id)",
       "decide_calibrations_lookup_idx": "CREATE INDEX decide_calibrations_lookup_idx ON public.decide_calibrations USING btree (slot, provider, model_resolved, created_at DESC)",
       "decide_calibrations_pkey": "CREATE UNIQUE INDEX decide_calibrations_pkey ON public.decide_calibrations USING btree (id)",
       "decide_proposals_pkey": "CREATE UNIQUE INDEX decide_proposals_pkey ON public.decide_proposals USING btree (id)",
@@ -1123,6 +1165,17 @@
       "eval_takes_quality_runs_pkey": "CREATE UNIQUE INDEX eval_takes_quality_runs_pkey ON public.eval_takes_quality_runs USING btree (id)",
       "eval_takes_quality_runs_receipt_sha8_corpus_receipt_sha8_pr_key": "CREATE UNIQUE INDEX eval_takes_quality_runs_receipt_sha8_corpus_receipt_sha8_pr_key ON public.eval_takes_quality_runs USING btree (receipt_sha8_corpus, receipt_sha8_prompt, receipt_sha8_models, receipt_sha8_rubric)",
       "eval_takes_quality_runs_trend_idx": "CREATE INDEX eval_takes_quality_runs_trend_idx ON public.eval_takes_quality_runs USING btree (rubric_version, created_at DESC)",
+      "export_ledger_lifetime_idx": "CREATE UNIQUE INDEX export_ledger_lifetime_idx ON public.export_ledger USING btree (source_id, page_id, lifetime)",
+      "export_ledger_live_page_idx": "CREATE UNIQUE INDEX export_ledger_live_page_idx ON public.export_ledger USING btree (source_id, page_id) WHERE (retired_at IS NULL)",
+      "export_ledger_live_path_idx": "CREATE UNIQUE INDEX export_ledger_live_path_idx ON public.export_ledger USING btree (source_id, path_folded) WHERE (retired_at IS NULL)",
+      "export_ledger_pkey": "CREATE UNIQUE INDEX export_ledger_pkey ON public.export_ledger USING btree (id)",
+      "export_outbox_pkey": "CREATE UNIQUE INDEX export_outbox_pkey ON public.export_outbox USING btree (source_id, page_id)",
+      "export_outbox_source_seq_idx": "CREATE INDEX export_outbox_source_seq_idx ON public.export_outbox USING btree (source_id, seq)",
+      "export_shadow_batches_pkey": "CREATE UNIQUE INDEX export_shadow_batches_pkey ON public.export_shadow_batches USING btree (id)",
+      "export_shadow_batches_source_idx": "CREATE INDEX export_shadow_batches_source_idx ON public.export_shadow_batches USING btree (source_id, finished_at)",
+      "export_shadow_diffs_batch_idx": "CREATE INDEX export_shadow_diffs_batch_idx ON public.export_shadow_diffs USING btree (batch_id)",
+      "export_shadow_diffs_pkey": "CREATE UNIQUE INDEX export_shadow_diffs_pkey ON public.export_shadow_diffs USING btree (source_id, page_id)",
+      "export_shadow_diffs_unexpected_idx": "CREATE INDEX export_shadow_diffs_unexpected_idx ON public.export_shadow_diffs USING btree (source_id, kind) WHERE (NOT expected)",
       "extract_atoms_page_state_page_idx": "CREATE INDEX extract_atoms_page_state_page_idx ON public.extract_atoms_page_state USING btree (page_id)",
       "extract_atoms_page_state_pkey": "CREATE UNIQUE INDEX extract_atoms_page_state_pkey ON public.extract_atoms_page_state USING btree (source_incarnation, page_id, content_hash)",
       "extract_atoms_page_state_tombstoned_idx": "CREATE INDEX extract_atoms_page_state_tombstoned_idx ON public.extract_atoms_page_state USING btree (source_incarnation, content_hash, page_id) WHERE tombstoned",
@@ -1518,6 +1571,9 @@
       "eval_candidates_id_seq": "integer start=1 min=1 max=2147483647 increment=1 cycle=false cache=1 owned_by=eval_candidates.id",
       "eval_capture_failures_id_seq": "integer start=1 min=1 max=2147483647 increment=1 cycle=false cache=1 owned_by=eval_capture_failures.id",
       "eval_takes_quality_runs_id_seq": "bigint start=1 min=1 max=9223372036854775807 increment=1 cycle=false cache=1 owned_by=eval_takes_quality_runs.id",
+      "export_ledger_id_seq": "bigint start=1 min=1 max=9223372036854775807 increment=1 cycle=false cache=1 owned_by=export_ledger.id",
+      "export_outbox_seq": "bigint start=1 min=1 max=9223372036854775807 increment=1 cycle=false cache=1 owned_by=-",
+      "export_shadow_batches_id_seq": "bigint start=1 min=1 max=9223372036854775807 increment=1 cycle=false cache=1 owned_by=export_shadow_batches.id",
       "facts_id_seq": "bigint start=1 min=1 max=9223372036854775807 increment=1 cycle=false cache=1 owned_by=facts.id",
       "files_id_seq": "integer start=1 min=1 max=2147483647 increment=1 cycle=false cache=1 owned_by=files.id",
       "graph_generation_seq": "bigint start=1 min=1 max=9223372036854775807 increment=1 cycle=false cache=1 owned_by=-",
@@ -1891,6 +1947,24 @@
           "8 actor text/text NOT NULL",
           "9 created_at timestamp with time zone/timestamptz NOT NULL DEFAULT now()",
           "10 acked_at timestamp with time zone/timestamptz NULL"
+        ],
+        "flags": "relkind=r rls=true force_rls=false"
+      },
+      "database_canonical_brain": {
+        "columns": [
+          "1 singleton smallint/int2 NOT NULL DEFAULT 1",
+          "2 active_sources integer/int4 NOT NULL DEFAULT 0"
+        ],
+        "flags": "relkind=r rls=true force_rls=false"
+      },
+      "database_canonical_sources": {
+        "columns": [
+          "1 source_id text/text NOT NULL",
+          "2 source_incarnation uuid/uuid NOT NULL",
+          "3 shadow boolean/bool NOT NULL DEFAULT false",
+          "4 shadow_epoch bigint/int8 NOT NULL DEFAULT 0",
+          "5 shadow_changed_at timestamp with time zone/timestamptz NOT NULL DEFAULT now()",
+          "6 created_at timestamp with time zone/timestamptz NOT NULL DEFAULT now()"
         ],
         "flags": "relkind=r rls=true force_rls=false"
       },
@@ -2281,6 +2355,70 @@
           "11 receipt_json jsonb/jsonb NOT NULL",
           "12 receipt_disk_path text/text NULL",
           "13 created_at timestamp with time zone/timestamptz NOT NULL DEFAULT now()"
+        ],
+        "flags": "relkind=r rls=true force_rls=false"
+      },
+      "export_ledger": {
+        "columns": [
+          "1 id bigint/int8 NOT NULL DEFAULT nextval('export_ledger_id_seq'::regclass)",
+          "2 source_id text/text NOT NULL",
+          "3 source_incarnation uuid/uuid NOT NULL",
+          "4 page_id integer/int4 NOT NULL",
+          "5 lifetime integer/int4 NOT NULL DEFAULT 1",
+          "6 path text/text NOT NULL",
+          "7 path_folded text/text NOT NULL",
+          "8 revision uuid/uuid NOT NULL",
+          "9 disk_sha256 text/text NOT NULL",
+          "10 blob_oid text/text NULL",
+          "11 renderer_fp text/text NULL",
+          "12 commit_sha text/text NULL",
+          "13 seeded_from text/text NOT NULL",
+          "14 exported_at timestamp with time zone/timestamptz NOT NULL DEFAULT now()",
+          "15 retired_at timestamp with time zone/timestamptz NULL"
+        ],
+        "flags": "relkind=r rls=true force_rls=false"
+      },
+      "export_outbox": {
+        "columns": [
+          "1 source_id text/text NOT NULL",
+          "2 page_id integer/int4 NOT NULL",
+          "3 slug text/text NOT NULL",
+          "4 revision uuid/uuid NULL",
+          "5 cause text/text NOT NULL",
+          "6 seq bigint/int8 NOT NULL DEFAULT nextval('export_outbox_seq'::regclass)",
+          "7 first_enqueued_at timestamp with time zone/timestamptz NOT NULL DEFAULT now()",
+          "8 enqueued_at timestamp with time zone/timestamptz NOT NULL DEFAULT now()"
+        ],
+        "flags": "relkind=r rls=true force_rls=false"
+      },
+      "export_shadow_batches": {
+        "columns": [
+          "1 id bigint/int8 NOT NULL DEFAULT nextval('export_shadow_batches_id_seq'::regclass)",
+          "2 source_id text/text NOT NULL",
+          "3 shadow_epoch bigint/int8 NOT NULL",
+          "4 outbox_rows integer/int4 NOT NULL",
+          "5 counts jsonb/jsonb NOT NULL DEFAULT '{}'::jsonb",
+          "6 unexpected integer/int4 NOT NULL DEFAULT 0",
+          "7 renderer_fp text/text NOT NULL",
+          "8 started_at timestamp with time zone/timestamptz NOT NULL",
+          "9 finished_at timestamp with time zone/timestamptz NOT NULL DEFAULT now()"
+        ],
+        "flags": "relkind=r rls=true force_rls=false"
+      },
+      "export_shadow_diffs": {
+        "columns": [
+          "1 source_id text/text NOT NULL",
+          "2 page_id integer/int4 NOT NULL",
+          "3 batch_id bigint/int8 NOT NULL",
+          "4 slug text/text NOT NULL",
+          "5 path text/text NULL",
+          "6 revision uuid/uuid NULL",
+          "7 kind text/text NOT NULL",
+          "8 expected boolean/bool NOT NULL",
+          "9 ledger_revision uuid/uuid NULL",
+          "10 disk_sha256 text/text NULL",
+          "11 detail jsonb/jsonb NOT NULL DEFAULT '{}'::jsonb",
+          "12 recorded_at timestamp with time zone/timestamptz NOT NULL DEFAULT now()"
         ],
         "flags": "relkind=r rls=true force_rls=false"
       },
@@ -4180,7 +4318,10 @@
       "config.trust_generation_insert": "CREATE CONSTRAINT TRIGGER trust_generation_insert AFTER INSERT ON public.config DEFERRABLE INITIALLY DEFERRED FOR EACH ROW WHEN ((new.key ~~ 'trust.%'::text)) EXECUTE FUNCTION gbrain_bump_trust_generation()",
       "config.trust_generation_update": "CREATE CONSTRAINT TRIGGER trust_generation_update AFTER UPDATE ON public.config DEFERRABLE INITIALLY DEFERRED FOR EACH ROW WHEN ((((old.key ~~ 'trust.%'::text) OR (new.key ~~ 'trust.%'::text)) AND ((old.key IS DISTINCT FROM new.key) OR (old.value IS DISTINCT FROM new.value)))) EXECUTE FUNCTION gbrain_bump_trust_generation()",
       "content_chunks.chunk_search_vector_trigger": "CREATE TRIGGER chunk_search_vector_trigger BEFORE INSERT OR UPDATE OF chunk_text, doc_comment, symbol_name_qualified ON public.content_chunks FOR EACH ROW EXECUTE FUNCTION update_chunk_search_vector()",
+      "database_canonical_sources.database_canonical_sources_count": "CREATE TRIGGER database_canonical_sources_count AFTER INSERT OR DELETE OR UPDATE OR TRUNCATE ON public.database_canonical_sources FOR EACH STATEMENT EXECUTE FUNCTION gbrain_count_canonical_sources()",
+      "fact_purges.fact_purges_export_outbox": "CREATE TRIGGER fact_purges_export_outbox AFTER INSERT OR DELETE OR UPDATE ON public.fact_purges FOR EACH ROW EXECUTE FUNCTION gbrain_enqueue_withdrawal_export()",
       "fact_purges.trust_generation_insert": "CREATE CONSTRAINT TRIGGER trust_generation_insert AFTER INSERT ON public.fact_purges DEFERRABLE INITIALLY DEFERRED FOR EACH ROW WHEN (true) EXECUTE FUNCTION gbrain_bump_trust_generation()",
+      "fact_withdrawals.fact_withdrawals_export_outbox": "CREATE TRIGGER fact_withdrawals_export_outbox AFTER INSERT OR DELETE OR UPDATE ON public.fact_withdrawals FOR EACH ROW EXECUTE FUNCTION gbrain_enqueue_withdrawal_export()",
       "facts.facts_guard_inserted": "CREATE TRIGGER facts_guard_inserted AFTER INSERT ON public.facts REFERENCING NEW TABLE AS inserted_facts FOR EACH STATEMENT EXECUTE FUNCTION gbrain_guard_inserted_facts()",
       "facts.facts_preserve_withdrawal": "CREATE TRIGGER facts_preserve_withdrawal BEFORE UPDATE OF fact, source_id, visibility, entity_slug, expired_at ON public.facts FOR EACH ROW EXECUTE FUNCTION gbrain_preserve_fact_withdrawal()",
       "facts.facts_preserve_withdrawal_insert": "CREATE TRIGGER facts_preserve_withdrawal_insert BEFORE INSERT ON public.facts FOR EACH ROW WHEN (((new.expired_at IS NULL) AND (COALESCE(current_setting('gbrain.fact_withdrawal_stamp_deferred'::text, true), ''::text) <> 'on'::text))) EXECUTE FUNCTION gbrain_preserve_fact_withdrawal()",
@@ -4203,6 +4344,9 @@
       "pages.bump_page_generation_trg": "CREATE TRIGGER bump_page_generation_trg BEFORE INSERT OR UPDATE ON public.pages FOR EACH ROW EXECUTE FUNCTION bump_page_generation_fn()",
       "pages.managed_writer_guard": "CREATE TRIGGER managed_writer_guard BEFORE INSERT OR DELETE OR UPDATE ON public.pages FOR EACH ROW EXECUTE FUNCTION gbrain_require_managed_writer()",
       "pages.pages_clear_atom_scan_state": "CREATE TRIGGER pages_clear_atom_scan_state AFTER UPDATE ON public.pages FOR EACH ROW EXECUTE FUNCTION gbrain_clear_atom_page_state()",
+      "pages.pages_export_outbox_delete": "CREATE TRIGGER pages_export_outbox_delete AFTER DELETE ON public.pages FOR EACH ROW EXECUTE FUNCTION gbrain_enqueue_page_export()",
+      "pages.pages_export_outbox_insert": "CREATE TRIGGER pages_export_outbox_insert AFTER INSERT ON public.pages FOR EACH ROW EXECUTE FUNCTION gbrain_enqueue_page_export()",
+      "pages.pages_export_outbox_update": "CREATE TRIGGER pages_export_outbox_update AFTER UPDATE ON public.pages FOR EACH ROW WHEN (((old.knowledge_revision IS DISTINCT FROM new.knowledge_revision) OR (old.slug IS DISTINCT FROM new.slug) OR (old.source_id IS DISTINCT FROM new.source_id) OR (old.deleted_at IS DISTINCT FROM new.deleted_at) OR (old.database_only_reason IS DISTINCT FROM new.database_only_reason))) EXECUTE FUNCTION gbrain_enqueue_page_export()",
       "pages.pages_forget_retrievals": "CREATE TRIGGER pages_forget_retrievals AFTER DELETE ON public.pages REFERENCING OLD TABLE AS gbrain_deleted_pages FOR EACH STATEMENT EXECUTE FUNCTION gbrain_forget_page_retrievals()",
       "pages.pages_knowledge_revision": "CREATE TRIGGER pages_knowledge_revision BEFORE UPDATE ON public.pages FOR EACH ROW EXECUTE FUNCTION gbrain_advance_page_revision()",
       "pages.pages_projection_queue": "CREATE TRIGGER pages_projection_queue AFTER INSERT OR DELETE OR UPDATE ON public.pages FOR EACH ROW EXECUTE FUNCTION gbrain_queue_page_projection()",

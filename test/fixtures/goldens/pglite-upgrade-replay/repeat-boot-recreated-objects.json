@@ -1,5 +1,8 @@
 {
   "golden": [
+    "trg:database_canonical_sources.database_canonical_sources_count",
+    "trg:fact_purges.fact_purges_export_outbox",
+    "trg:fact_withdrawals.fact_withdrawals_export_outbox",
     "trg:facts.managed_writer_guard",
     "trg:minion_jobs.minion_queue_protocol",
     "trg:page_aliases.managed_writer_guard",
@@ -8,6 +11,9 @@
     "trg:pages.bump_page_generation_clock_trg",
     "trg:pages.bump_page_generation_trg",
     "trg:pages.managed_writer_guard",
+    "trg:pages.pages_export_outbox_delete",
+    "trg:pages.pages_export_outbox_insert",
+    "trg:pages.pages_export_outbox_update",
     "trg:pages.pages_forget_retrievals",
     "trg:pages.pages_knowledge_revision",
     "trg:pages.pages_projection_queue",
