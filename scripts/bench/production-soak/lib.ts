@@ -61,7 +61,8 @@ function bouncerIni(dir: string, name: string, mode: 'session' | 'transaction', 
 export async function startTopology(workDir: string, ports: Ports = DEFAULT_PORTS, lanes: LaneSizes = DEFAULT_LANES, keep = false): Promise<Topology> {
   if (!running(C.pg)) {
     docker(['rm', '-f', C.pg], true);
-    docker(['run', '-d', '--name', C.pg, '--network', 'host', '-e', 'POSTGRES_PASSWORD=postgres', '--shm-size=4g', 'pgvector/pgvector:pg16',
+    docker(['run', '-d', '--name', C.pg, '--network', 'host', '-e', 'POSTGRES_PASSWORD=postgres', '--shm-size=4g',
+      ...(process.env.SOAK_PG_VOLUME ? ['-v', process.env.SOAK_PG_VOLUME + ':/var/lib/postgresql/data'] : []), 'pgvector/pgvector:pg16',
       '-c', 'port=' + ports.pg, '-c', 'listen_addresses=127.0.0.1', '-c', 'max_connections=300', '-c', 'shared_preload_libraries=pg_stat_statements',
       '-c', 'shared_buffers=' + (process.env.SOAK_PG_SHARED_BUFFERS ?? '4GB'), '-c', 'maintenance_work_mem=1GB', '-c', 'max_wal_size=8GB', '-c', 'checkpoint_timeout=15min']);
   }
