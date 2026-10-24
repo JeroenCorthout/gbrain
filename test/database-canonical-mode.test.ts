@@ -5,7 +5,7 @@
 import { describe, expect, test } from 'bun:test';
 import postgres from '#postgres';
 import { randomUUID } from 'node:crypto';
-import { existsSync } from 'node:fs';
+import { existsSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import type { BrainEngine } from '../src/core/engine.ts';
 import { operationsByName, type OperationContext } from '../src/core/operations.ts';
@@ -26,6 +26,8 @@ import type { Check } from '../src/commands/doctor.ts';
 import { consumeExportOutbox, exportOutboxStats, readExportOutbox } from '../src/core/persistence/canonical-shadow.ts';
 import { applyShadowChange, previewShadowChange } from '../src/commands/sources-canonical-shadow.ts';
 import { sourceCanonicalAdminState } from '../src/core/persistence/canonical-admin.ts';
+import { disposePersistenceConsumer } from '../src/core/persistence/service.ts';
+import { UNSETTLED_REQUEST_SQL } from '../src/core/persistence/canonical-mode-schema.ts';
 
 const op = (ctx: OperationContext, name: string, params: Record<string, unknown>) => operationsByName[name]!.handler(ctx, params) as Promise<any>;
 const note = (title: string, body = 'A synthetic note.') => `---\ntitle: ${title}\ntype: note\n---\n${body}\n`;
@@ -135,6 +137,48 @@ for (const backend of testBackends()) describe(`database-canonical wave 4 mode a
       expect(Number((await engine.executeRaw<{ n: number }>("SELECT count(*)::int AS n FROM persistence_effects WHERE source_id='default' AND kind IN ('git','withdrawal-mirror')"))[0]!.n)).toBe(0);
     });
   }, 120_000);
+
+  test('an agent write commits and returns its receipt while the export owner is down: no consumer, no checkout', async () => {
+    await brain(async ({ engine, ctx, root }) => {
+      await toDatabase(engine);
+      await disposePersistenceConsumer(engine);
+      rmSync(root, { recursive: true, force: true });
+      const receipt = await op(ctx, 'put_page', { slug: 'notes/owner-down', content: note('Owner down') });
+      expect(receipt.write_through).toMatchObject({ written: false, skipped: 'database_canonical' });
+      expect(await latestRequest(engine, 'notes/owner-down')).toMatchObject({ worktree_id: null, canonical_epoch: '1', state: 'committed' });
+      expect((await engine.readPageSnapshot('notes/owner-down', { sourceId: 'default' }))?.page.title).toBe('Owner down');
+      expect(existsSync(root)).toBe(false);
+    });
+  }, 120_000);
+
+  test('many writes with the exporter stopped: no checkout work accumulates, and the outbox keeps one row per page (files-mode control queues Git)', async () => {
+    const WRITES = 100, PAGES = 10;
+    const writeMany = async (ctx: OperationContext, engine: BrainEngine) => {
+      for (let i = 0; i < WRITES; i++) {
+        const slug = `notes/bulk-${i % PAGES}`;
+        const current = await engine.readPageSnapshot(slug, { sourceId: 'default' });
+        await op(ctx, 'put_page', { slug, content: note(`Bulk ${i % PAGES}`, `Revision ${i}.`), ...(current ? { expected_revision: current.revision } : {}) });
+      }
+    };
+    const counts = (engine: BrainEngine) => engine.executeRaw<{ requests: number; unsettled: number; checkout: number; outbox: number }>(`SELECT
+      (SELECT count(*)::int FROM persistence_requests WHERE source_id='default' AND operation='put_page') AS requests,
+      (SELECT count(*)::int FROM persistence_requests r WHERE r.source_id='default' AND ${UNSETTLED_REQUEST_SQL('r')}) AS unsettled,
+      (SELECT count(*)::int FROM persistence_effects WHERE source_id='default' AND kind IN ('git','withdrawal-mirror')) AS checkout,
+      (SELECT count(*)::int FROM export_outbox WHERE source_id='default') AS outbox`).then(rows => rows[0]!);
+    await brain(async ({ engine, ctx }) => {
+      await toDatabase(engine);
+      await disposePersistenceConsumer(engine);
+      await writeMany(ctx, engine);
+      expect(await counts(engine)).toEqual({ requests: WRITES, unsettled: 0, checkout: 0, outbox: PAGES });
+    });
+    await brain(async ({ engine, ctx }) => {
+      await writeMany(ctx, engine);
+      const control = await counts(engine);
+      expect(control.requests).toBe(WRITES);
+      expect(control.checkout).toBeGreaterThanOrEqual(WRITES);
+      expect(control.outbox).toBe(0);
+    });
+  }, 300_000);
 
   test('a checkout effect left from files mode is never claimed once the source is in database mode', async () => {
     await brain(async ({ engine, ctx }) => {

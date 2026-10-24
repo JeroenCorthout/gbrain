@@ -7,12 +7,17 @@
  * source in database mode, and for a files-mode source's unfinished request admitted under database mode. Read-only.
  */
 import type { Check } from '../../doctor.ts';
+import { agentFix, type FixUnavailableReason } from '../check-fix.ts';
+import type { Action } from '../../../core/agent-output.ts';
 import { connectedEngine, type DoctorContext, type DoctorEntry } from '../context.ts';
 import { DATABASE_CANONICAL_KEY, databaseCanonicalEnabled } from '../../../core/persistence/canonical-export.ts';
 import { DATABASE_CANONICAL_DOCS } from '../../../core/persistence/canonical-mode.ts';
 import { UNSETTLED_REQUEST_SQL } from '../../../core/persistence/canonical-mode-schema.ts';
 
-interface Finding { source_id: string | null; problem: string; count?: number; fix: string }
+/** A finding's next step: a read-only command, or why none is safe (`note` says what to do instead). */
+interface Finding { source_id: string | null; problem: string; count?: number; fix?: Action; reason?: FixUnavailableReason; note?: string }
+const CHECK = 'database_canonical_fence';
+const writerStatus = (sourceId: string, why: string) => agentFix(['gbrain', 'sources', 'writer', 'status', sourceId, '--json'], why, CHECK);
 
 async function runDatabaseCanonicalFence(ctx: DoctorContext): Promise<Check[]> {
   const engine = connectedEngine(ctx);
@@ -24,7 +29,7 @@ async function runDatabaseCanonicalFence(ctx: DoctorContext): Promise<Check[]> {
   const red: Finding[] = [], yellow: Finding[] = [];
   if (Number(brain?.n ?? 0) !== sources.length) {
     red.push({ source_id: null, problem: `database_canonical_brain counts ${brain?.n ?? 0} database-mode source(s) but ${sources.length} row(s) are in database mode`,
-      fix: 'Report it: run gbrain doctor --json and include this finding; the count trigger keeps the two equal.' });
+      reason: 'no_safe_automatic_fix', note: 'Report it with this doctor finding: the count trigger keeps the two equal.' });
   }
   if (sources.length) {
     const ids = sources.map(s => s.source_id);
@@ -37,27 +42,30 @@ async function runDatabaseCanonicalFence(ctx: DoctorContext): Promise<Check[]> {
       engine.executeRaw<{ n: number }>("SELECT count(*)::int AS n FROM persistence_consumers WHERE renewed_at > now() - interval '5 minutes' AND canonical_protocol IS NULL"),
     ]);
     for (const s of sources) {
-      if (Number(s.mode_epoch) < 1) red.push({ source_id: s.source_id, problem: 'mode epoch is 0', fix: 'Report it: a flip always advances the epoch.' });
-      if (!s.shadow) red.push({ source_id: s.source_id, problem: 'shadow is off', fix: 'Report it: the database_canonical_mode_shadow constraint keeps shadow on in database mode.' });
+      if (Number(s.mode_epoch) < 1) red.push({ source_id: s.source_id, problem: 'mode epoch is 0', reason: 'no_safe_automatic_fix', note: 'Report it: a flip always advances the epoch.' });
+      if (!s.shadow) red.push({ source_id: s.source_id, problem: 'shadow is off', reason: 'no_safe_automatic_fix',
+        note: 'Report it: the database_canonical_mode_shadow constraint keeps shadow on in database mode.' });
     }
     for (const r of requests) red.push({ source_id: r.source_id, count: Number(r.n), problem: `${r.n} unfinished request(s) carry a worktree or another mode epoch`,
-      fix: `gbrain sources writer status ${r.source_id} --json names them; cancel a queued one with gbrain cancel-write-request <request_id>.` });
+      fix: writerStatus(r.source_id, 'Read-only: names the unfinished requests and their state; a queued one can then be cancelled by its request id.') });
     for (const e of effects) red.push({ source_id: e.source_id, count: Number(e.n), problem: `${e.n} unfinished checkout effect(s) (git or withdrawal-mirror)`,
-      fix: `gbrain sources writer status ${e.source_id} --json lists them (blocking_effects); claims never run them for a database-mode source.` });
+      fix: writerStatus(e.source_id, 'Read-only: lists the unfinished checkout effects (blocking_effects); claims never run them for a database-mode source.') });
     if (Number(processes[0]?.n ?? 0)) red.push({ source_id: null, count: Number(processes[0]!.n), problem: `${processes[0]!.n} live gbrain process(es) do not speak the canonical protocol`,
-      fix: 'Upgrade or restart them (gbrain upgrade on their host); the fence refuses their writes to database-mode sources.' });
+      reason: 'operator_judgement', note: 'Upgrade or restart them on their hosts; meanwhile the fence refuses their writes to database-mode sources.' });
     if (!await databaseCanonicalEnabled(engine)) yellow.push({ source_id: null, problem: `the brain gate ${DATABASE_CANONICAL_KEY} is off while ${sources.length} source(s) are in database mode`,
-      fix: `The fence still holds and the verb refuses; turn the gate on with gbrain config set ${DATABASE_CANONICAL_KEY} true to change modes again.` });
+      reason: 'operator_judgement', note: 'The fence still holds and the mode verb refuses until the gate is turned back on.' });
   }
   for (const r of stale) yellow.push({ source_id: r.source_id, count: Number(r.n), problem: `${r.n} unfinished request(s) were admitted under database mode before the source returned to files`,
-    fix: `They refuse canonical_mode_changed when they publish; gbrain sources writer status ${r.source_id} --json names them.` });
+    fix: writerStatus(r.source_id, 'Read-only: names them; they refuse canonical_mode_changed when they publish.') });
   const details = { database_sources: sources.map(s => ({ source_id: s.source_id, mode_epoch: Number(s.mode_epoch) })), findings: [...red, ...yellow], docs: DATABASE_CANONICAL_DOCS };
   const list = (findings: Finding[]) => findings.map(f => `${f.source_id ? `${f.source_id}: ` : ''}${f.problem}`).join('; ');
   const status = red.length ? 'fail' : yellow.length ? 'warn' : 'ok';
   const checks: Check[] = [];
-  checks.push({ name: 'database_canonical_fence', status, details,
-    message: red.length ? `Database-canonical fence inconsistent: ${list(red)}. ${red[0]!.fix}`
-      : yellow.length ? `Database-canonical fence: ${list(yellow)}. ${yellow[0]!.fix}`
+  const lead = red[0] ?? yellow[0];
+  const next = lead ? (lead.fix ? { fix: lead.fix } : { fix_unavailable_reason: lead.reason! }) : {};
+  checks.push({ name: 'database_canonical_fence', status, details, ...next,
+    message: red.length ? `Database-canonical fence inconsistent: ${list(red)}.${lead!.note ? ` ${lead!.note}` : ''}`
+      : yellow.length ? `Database-canonical fence: ${list(yellow)}.${lead!.note ? ` ${lead!.note}` : ''}`
         : sources.length ? `${sources.length} source(s) in database mode, each fenced: no worktree-bound or stale-epoch request, no checkout effect, no old-protocol process.`
           : 'No source is in database mode, so the canonical fence is inert.' });
   return checks;

@@ -10,7 +10,7 @@
  * record `gbrain repair file-drift` materializes; single-batch materialization arrives with the committing exporter.
  */
 import { createHash } from 'node:crypto';
-import { execFileSync } from 'node:child_process';
+import { execFileSync } from '../core/spawn.ts';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import type { BrainEngine } from '../core/engine.ts';

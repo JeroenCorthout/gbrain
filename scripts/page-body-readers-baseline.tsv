@@ -366,6 +366,7 @@ src/core/page-window/segmented.ts	markdownHead	call:serializePageToMarkdown	NONE
 src/core/persistence/atom-maintenance.ts	prepareManagedAtomMutation	field	META	
 src/core/persistence/atom-maintenance.ts	readAtomOrigin	field	META	
 src/core/persistence/atom-retry.ts	retryManagedAtomBatch	field	STREAM	
+src/core/persistence/canonical-mode-schema.ts	DATABASE_CANONICAL_MODE_SCHEMA_SQL	sql	STREAM	database-canonical fence: the managed-writer guard tuple, compared OLD vs NEW in-row so content-free stamps pass; a segmented write moves body_generation, which the tuple also compares; moves with the guard row
 src/core/persistence/canonical-projections.ts	compileCanonicalProjections	field	STREAM	per-page projection: segmented page: getter throws page_body_segmented
 src/core/persistence/canonical-projections.ts	materializeTimeline	field	STREAM	per-page projection: segmented page: getter throws page_body_segmented
 src/core/persistence/canonical-projections.ts	prepareCanonicalProjections	field	STREAM	per-page projection: segmented page: getter throws page_body_segmented
