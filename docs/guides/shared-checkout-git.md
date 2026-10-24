@@ -116,10 +116,17 @@ path-scoped commit and a plain push. A rejected push then fails loudly (exit 4)
 and tells you to install gbrain and run `gbrain git commit-push --push-only`;
 the fallback never integrates remote commits itself.
 
-A managed canonical worktree (`gbrain sources writer git-durability`) refuses
-both forms with `writer_coordinator_required`: its persistence owner is the only
-Git writer there. Save pages with `put_page`, `edit_page`, `remember` or
-`capture`; see [files that are not pages](../architecture/topologies.md#files-that-are-not-pages).
+In a managed canonical worktree (`gbrain sources writer git-durability`) its
+persistence owner is the only Git publisher. Save pages with `put_page`,
+`edit_page`, `remember` or `capture`. For files written there outside gbrain
+(see [files that are not pages](../architecture/topologies.md#files-that-are-not-pages)),
+`gbrain git commit-push -m "<msg>" -- <paths>` commits only the named paths
+under the checkout's commit lock and reports `committed_local`: it never
+fetches, merges, pushes or moves the checkout, and refuses `--pending`,
+`--branch`, `--resolve` and `--allow-outside-source-root` there
+(`commit_paths_invalid`). The commit reaches the remote on the owner's next Git
+publish. `--push-only` without `--keep-checkout` is still refused with
+`writer_coordinator_required`.
 
 The one form a managed worktree accepts is `--push-only --keep-checkout`. It
 publishes the commits already on the branch, merging a moved remote in memory,
