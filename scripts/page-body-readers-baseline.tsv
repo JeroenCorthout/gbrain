@@ -28,8 +28,6 @@ src/commands/doctor/checks/graph-health.ts	runGraphCoverage	field	NONE	not the p
 src/commands/doctor/checks/graph-health.ts	runGraphCoverage	sql	NONE	not the page body: timeline coverage count alias
 src/commands/enrich.ts	enrichOneLocked	call:serializeMarkdown	SEGW	
 src/commands/enrich.ts	enrichOneLocked	field	SEGW	
-src/commands/export.ts	runExport	call:serializeMarkdown	SEGW	
-src/commands/export.ts	runExport	field	STREAM	
 src/commands/export.ts	runExport	sql	STREAM	
 src/commands/extract-conversation-facts.ts	regularPageVersionToken	field	STREAM	
 src/commands/extract-mentions-explain.ts	explainMention	field	STREAM	
@@ -194,6 +192,9 @@ src/core/engine-sql/salience.ts	listEnrichCandidates	sql	META
 src/core/engine-sql/timeline.ts	getTimeline	sql	NONE	not the page body: SELECT * FROM pages inside a LATERAL used for the page id only
 src/core/enrichment-service.ts	enrichEntity	call:putPage	INLINE	
 src/core/enrichment-service.ts	enrichEntity	call:serializeMarkdown	INLINE	
+src/core/export-snapshot.ts	inlineExportMarkdown	call:serializeMarkdown	SEGW	
+src/core/export-snapshot.ts	inlineExportMarkdown	field	STREAM	
+src/core/export-snapshot.ts	segmentedExportHead	call:serializeMarkdown	NONE	not the page body: the frontmatter head, rendered with an empty body
 src/core/export-snapshot.ts	readExportPage	field	STREAM	inline pages only: a segmented page skips the overlay here and streams through segmentedExportMarkdown (readBodyRange, trusted stored)
 src/core/export-snapshot.ts	readExportPage	sql	STREAM	
 src/core/extract-ner.ts	extractNerLinks	field	STREAM	

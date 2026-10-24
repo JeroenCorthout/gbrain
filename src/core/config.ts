@@ -1803,6 +1803,7 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = [
   'persistence.capacity.warn_days', 'persistence.capacity.fail_days', 'persistence.capacity.background_pause_pct', // #6696: persistence/capacity-forecast.ts, admission-origin.ts
   'persistence.maintenance.compaction_stale_hours', // #6696 (A11): persistence/compaction-pass.ts, doctor persistence_compaction
   'persistence.maintenance.refusal_breaker_threshold', // #6696 (A12): persistence/refusal-breaker.ts
+  'persistence.database_canonical.enabled', // brain gate for database-canonical memory, default off (persistence/canonical-export.ts)
   'persistence.single_consumer', // #6317: persistence/switches.ts, consumer-election.ts (one full consumer per host; off by default)
   // shared-skills migration inventory bounds (src/core/shared-skills/inventory-limits.ts)
   'shared_skills.inventory.max_files', 'shared_skills.inventory.max_total_bytes', 'shared_skills.inventory.max_file_bytes', 'shared_skills.inventory.max_entries', 'shared_skills.migration.enabled', // #6466: false declines the 0.53.0 migration (commands/migrations/opt-out.ts)

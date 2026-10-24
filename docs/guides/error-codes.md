@@ -1023,6 +1023,16 @@ More: [docs/guides/repair.md#managed-sync-orphans](../../docs/guides/repair.md#m
 |---|---|---|---|---|---|---|
 | The selection split has too few tasks for meaningful validation. | The request itself was wrong or no longer matches the brain; nothing was changed. | Correct the request using the message above, then retry. | agent | `repeat the read that failed` | 1 | no |
 
+### database_canonical_disabled
+
+<a id="database_canonical_disabled"></a>
+
+| Meaning | Why | Next step | Who acts · consent | Verify | Exit | Retryable |
+|---|---|---|---|---|---|---|
+| Database-canonical mode is off for this brain (persistence.database_canonical.enabled). | The request itself was wrong or no longer matches the brain; nothing was changed. | Correct the request using the message above, then retry. | agent | `repeat the read that failed` | 1 | no |
+
+More: [docs/designs/DATABASE_CANONICAL_MEMORY.md](../../docs/designs/DATABASE_CANONICAL_MEMORY.md)
+
 ### database_error
 
 <a id="database_error"></a>

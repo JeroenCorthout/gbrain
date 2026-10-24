@@ -96,6 +96,7 @@ import { linksExtractionLagEntry, syncFreshnessEntry, searchModeEntry } from './
 import { persistenceConsumersEntry, serveBuildDriftEntry } from './checks/persistence-consumers.ts';
 import { runtimeBuildSkewEntry } from './checks/runtime-build-skew.ts';
 import { cliSocketRefusalsEntry } from './checks/cli-socket-refusals.ts';
+import { databaseCanonicalEntry } from './checks/database-canonical.ts';
 import { gitConvergenceEntry } from './checks/git-convergence.ts';
 import { gitWriterEntry } from './checks/git-writer.ts';
 import { retrievalFeedbackEntry } from './checks/retrieval-feedback.ts';
@@ -287,6 +288,7 @@ export const DOCTOR_CHECK_REGISTRY: readonly DoctorEntry[] = [
   personTitleDuplicatesEntry,
   fenceIntegrityEntry,
   searchModeEntry,
+  databaseCanonicalEntry,
 ];
 
 /**

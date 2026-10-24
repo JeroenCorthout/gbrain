@@ -346,6 +346,8 @@ export const OPS_CHECK_NAMES: ReadonlySet<string> = new Set([
   'runtime_build_skew',
   // GBRA-156: the warm CLI socket refused CLI calls by identity part in the last 24 h (doctor/checks/cli-socket-refusals.ts).
   'cli_socket_refusals',
+  // Database-canonical memory wave 1: the brain gate's state (doctor/checks/database-canonical.ts).
+  'database_canonical',
   'stale_embedding_effects',
   'vector_plan',
   'keyword_plan',
