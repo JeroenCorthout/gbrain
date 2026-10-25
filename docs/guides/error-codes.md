@@ -2443,7 +2443,7 @@ More: [docs/guides/repair.md#rename-identity](../../docs/guides/repair.md#rename
 
 | Meaning | Why | Next step | Who acts · consent | Verify | Exit | Retryable |
 |---|---|---|---|---|---|---|
-| A managed source refuses --skip-failed and --include-gitignored: managed sync keeps every failed-receipt and ignored-file guard, so the run was refused before anything ran. | --skip-failed would acknowledge a failed receipt instead of retrying it, and --include-gitignored would import files Git ignores; neither has a managed meaning. `detail` names the flag. | Rerun the same gbrain sync command without the named flag; fix a failed file and the plain sync retries it, or commit an ignored file to sync it. Run: gbrain sources status --json | agent | `gbrain sources status --json` | 1 | no |
+| A managed source refuses --skip-failed and --include-gitignored, and a strict (git-canonical) source also refuses --working-tree: managed sync keeps every failed-receipt and ignored-file guard and a strict source indexes commits only, so the run was refused before anything ran. | --skip-failed would acknowledge a failed receipt instead of retrying it, and --include-gitignored would import files Git ignores; neither has a managed meaning. `detail` names the flag. | Rerun the same gbrain sync command without the named flag; fix a failed file and the plain sync retries it, or commit an ignored file to sync it. Run: gbrain sources status --json | agent | `gbrain sources status --json` | 1 | no |
 
 More: [docs/guides/write-refusals.md#managed_sync_flag_refused](../../docs/guides/write-refusals.md#managed_sync_flag_refused)
 

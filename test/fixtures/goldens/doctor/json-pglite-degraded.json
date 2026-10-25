@@ -3210,6 +3210,18 @@
         {
           "category": "brain",
           "details": {
+            "docs": "docs/designs/GIT_CANONICAL_MEMORY.md#the-model",
+            "sources": [],
+            "warn_seconds": 900
+          },
+          "elapsed_ms": "<volatile>",
+          "message": "No source is strict (git-canonical), so no index trails a commit.",
+          "name": "git_index_lag",
+          "status": "ok"
+        },
+        {
+          "category": "brain",
+          "details": {
             "docs": "docs/guides/write-refusals.md#invalid_fence",
             "model_repair": {
               "max_usd_per_day": 1,

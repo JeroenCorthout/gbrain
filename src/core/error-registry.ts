@@ -425,7 +425,7 @@ export const CODES = {
     docs: 'docs/guides/troubleshooting.md#managed-sync-not-moving',
     suggestion: 'Rerun gbrain sources writer movement <id>; if the backlog read keeps failing, run gbrain doctor --json.',
     fix: { argv: ['gbrain', 'sources', 'writer', 'movement', '{source_id}', '--json'], consent: [], actor: 'agent', why: 'Read-only: reads the managed sync backlog again and judges movement over one window.', requires_exclusive: false, verify: { argv: ['gbrain', 'doctor', '--only', 'managed_sync_not_moving', '--json'] } } },
-  managed_sync_flag_refused: { class: 'caller', summary: "A managed source refuses --skip-failed and --include-gitignored: managed sync keeps every failed-receipt and ignored-file guard, so the run was refused before anything ran.",
+  managed_sync_flag_refused: { class: 'caller', summary: "A managed source refuses --skip-failed and --include-gitignored, and a strict (git-canonical) source also refuses --working-tree: managed sync keeps every failed-receipt and ignored-file guard and a strict source indexes commits only, so the run was refused before anything ran.",
     why: "--skip-failed would acknowledge a failed receipt instead of retrying it, and --include-gitignored would import files Git ignores; neither has a managed meaning. `detail` names the flag.",
     docs: 'docs/guides/write-refusals.md#managed_sync_flag_refused',
     suggestion: 'Rerun the same gbrain sync command without the named flag; fix a failed file and the plain sync retries it, or commit an ignored file to sync it.',

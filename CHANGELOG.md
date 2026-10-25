@@ -10,6 +10,33 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.446.0] - 2026-10-25
+
+**A source configured `canonical: git` is now indexed from its commits alone, and Git wins. Its sync pass imports every committed blob over what the database holds, and `gbrain sources reindex <id> --from-git` previews that replacement before applying it. A new doctor check, `git_index_lag`, reports how far the index trails HEAD.**
+
+Strict mode stays off by default. Only sources whose config sets `canonical: git` change, and nothing rewrites data on upgrade.
+
+### What changed
+
+| Situation, on a `canonical: git` source | Before | Now |
+|---|---|---|
+| The database holds a version sync never saw (`db_ahead`) | kept the database version | imports the committed blob |
+| A commit moved a page the database also changed (drift) | held `file_drift` | imports the committed blob |
+| A file has an uncommitted edit | held `worktree_dirty` | indexes the committed bytes and leaves the edit on disk |
+| A commit removed a file but an untracked copy stays on disk | kept the page | deletes the page |
+| `gbrain sync --working-tree` | read the working tree | refused with `managed_sync_flag_refused` before anything runs |
+| Re-deriving the index from Git | no verb | `gbrain sources reindex <id> --from-git` previews every page Git replaces, bound to HEAD by a hash; `--apply --expect <hash>` runs the full pass |
+| How far the index trails HEAD | not reported | doctor `git_index_lag` counts commits and seconds behind and warns past `GBRAIN_DOCTOR_GIT_INDEX_LAG_WARN_SECONDS` (default 900) |
+
+### Itemized changes
+
+- `src/core/persistence/sync-classify.ts`: `classifySyncPath(state, { strict })` returns Git's verdict where a mixed source keeps or holds. `sync-pass.ts` and `sync-pass-run.ts` force committed mode for a strict source, skip the dirtiness probe, and carry `strict` in the classified key and the selection fingerprint (`canonical: 'git'`).
+- `src/core/persistence/sync-run.ts` and `sync-prepare.ts`: a strict entry freezes its pinned blob and publication skips the raw-hash compare for it.
+- `src/core/persistence/sync-tree-reuse.ts`: the tree listing a pass keeps for the next records the canonical mode, and a listing kept under the other mode is dropped, so it never carries across a flip in either direction.
+- `src/commands/sources-reindex.ts` (new), `src/commands/doctor/checks/git-index-lag.ts` (new), `src/core/persistence/managed-sync-flags.ts`, `src/core/error-registry.ts`.
+- `docs/designs/GIT_CANONICAL_MEMORY.md`: the indexer, the re-derive verb and the lag check, and the door commit as the one deliberate place the working tree reaches Git on a strict source.
+- Tests: `test/git-canonical-indexer-g3.test.ts` (PGLite and Postgres: mixed control, strict import and delete, the `--working-tree` refusal, reindex, `git_index_lag`, a canonical flip across passes on one HEAD, and a sync pass between a door commit and its replay), `test/sync-classify-strict-g3.test.ts`.
+
 ## [0.60.445.0] - 2026-10-25
 
 **A source configured `canonical: git` is now written only through the managed door. On a brain whose writes aren't managed, a direct import into that source is refused before anything is written. On a managed brain, maintenance writers commit once per run instead of once per page, and a quote the dream model invented or a page marked private never reaches git history.**

@@ -987,6 +987,10 @@
       },
       {
         "category": "brain",
+        "name": "git_index_lag"
+      },
+      {
+        "category": "brain",
         "name": "fence_integrity"
       },
       {
