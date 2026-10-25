@@ -285,6 +285,9 @@ test('applyForwardReferenceBootstrap covers every forward reference declared in 
       ALTER TABLE content_chunks DROP COLUMN IF EXISTS symbol_name_qualified;
       ALTER TABLE content_chunks DROP COLUMN IF EXISTS search_vector;
 
+      -- The derivation-purge scope trigger fires on UPDATE OF deleted_at; a
+      -- pre-v0.26.5 brain predates it (the schema replay recreates it).
+      DROP TRIGGER IF EXISTS pages_derivation_scope_delete ON pages;
       DROP INDEX IF EXISTS pages_deleted_at_purge_idx;
       ALTER TABLE pages DROP COLUMN IF EXISTS deleted_at;
 
@@ -436,6 +439,9 @@ test('after bootstrap, PGLITE_SCHEMA_SQL replays without crashing on missing for
       ALTER TABLE links DROP CONSTRAINT IF EXISTS links_from_to_type_source_origin_unique;
       ALTER TABLE links DROP COLUMN IF EXISTS link_source;
       ALTER TABLE links DROP COLUMN IF EXISTS origin_page_id;
+      -- The derivation-purge scope trigger fires on UPDATE OF deleted_at; a
+      -- pre-v0.26.5 brain predates it (the schema replay recreates it).
+      DROP TRIGGER IF EXISTS pages_derivation_scope_delete ON pages;
       DROP INDEX IF EXISTS pages_deleted_at_purge_idx;
       ALTER TABLE pages DROP COLUMN IF EXISTS deleted_at;
 
@@ -485,6 +491,12 @@ test('after bootstrap, PGLITE_SCHEMA_SQL replays without crashing on missing for
     const { PGLITE_SCHEMA_SQL } = await import('../src/core/pglite-schema.ts');
     await (engine as any).applyForwardReferenceBootstrap();
     await db.exec(PGLITE_SCHEMA_SQL);
+
+    // An upgrading brain gets the deleted_at scope trigger once the column exists.
+    const { rows: scopeTrigger } = await db.query(
+      `SELECT 1 FROM pg_trigger WHERE tgrelid = 'pages'::regclass AND tgname = 'pages_derivation_scope_delete'`,
+    );
+    expect(scopeTrigger).toHaveLength(1);
   } finally {
     await engine.disconnect();
   }
@@ -1005,6 +1017,9 @@ const COLUMN_EXEMPTIONS = new Set<string>([
   // (absent from PGLITE_SCHEMA_SQL), so no schema-blob forward reference can
   // exist; nullable column only, no index or FK.
   'facts.attributed_to',
+  // migration v265 (Wave B PR 4) — conversation window anchor. Same precedent: the facts table is migration-created,
+  // so no schema-blob forward reference can exist; nullable column plus a CHECK, no index or FK.
+  'facts.source_window',
   // v0.42.56.0 (migration v122, #2390) — Life Chronicle ontology columns.
   // Same precedent as facts.claim_metric et al: the `facts` table itself is
   // migration-created (absent from PGLITE_SCHEMA_SQL), so no schema-blob
