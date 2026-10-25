@@ -99,8 +99,10 @@ async function planRememberTarget(ctx: OperationContext, sourceId: string, sourc
   if (inferred && (await isFactWithdrawn(ctx.engine, sourceId, inferred.visibility, inferred.fact, slug)
     || parseFactsFence(whole!.compiled_truth).warnings.length)) throw new InferredTargetRejected('ENTITY_LINK_FAILED');
   // Preserve the stub guard: a fallback name remains DB-only until a real
-  // entity page exists. No placeholder page is created by remember.
-  const fence = entitySlug !== null && snapshot !== null;
+  // entity page exists. No placeholder entity page is created by remember; a
+  // fact without an entity is a row of memory/unattributed, created on first use (GBRA-190 G4).
+  const unattributed = entitySlug === null;
+  let fence = unattributed || snapshot !== null;
   const sandbox = ctx.viaSubagent === true && !(ctx.allowedSlugPrefixes?.length);
   const configuredWriteThrough = !/^(false|0|off|no)$/i.test(await ctx.engine.getConfig('sync.write_through') ?? 'true');
   const writeThrough = configuredWriteThrough && !sandbox;
@@ -108,10 +110,13 @@ async function planRememberTarget(ctx: OperationContext, sourceId: string, sourc
   else if (!configuredWriteThrough) authority.databaseOnlyReason = 'disabled_by_config';
   // An inferred link never designates an owner or reports a missing one.
   const target = fence ? await resolveFactWriteTarget(ctx.engine, sourceId, source,
-    { sandbox, fileBacked: Boolean(snapshot!.page.source_path), remote: ctx.remote !== false }).catch((error: unknown) => {
+    { sandbox, fileBacked: snapshot ? Boolean(snapshot.page.source_path) : true, remote: ctx.remote !== false }).catch((error: unknown) => {
     if (inferred && error instanceof OperationError) throw new InferredTargetRejected('ENTITY_LINK_FAILED');
+    // A source that refuses a new canonical file keeps the subjectless fact database-only, as before memory/unattributed had a page.
+    if (unattributed && !snapshot && error instanceof OperationError) return null;
     throw error;
   }) : null;
+  if (unattributed && !snapshot && !target) fence = false;
   let binding = target?.kind === 'publish' ? target.binding : null;
   if (target?.kind === 'publish' && target.databaseOnlyReason) authority.databaseOnlyReason = target.databaseOnlyReason;
   if (target?.kind === 'unbound') {
