@@ -108,7 +108,10 @@ async function readHeldSplitPages(engine: BrainEngine, sourceIds: string[]): Pro
   return { count: Number(counted?.n ?? 0), sample };
 }
 
-function heldFix(first: HeldSplitPage) {
+/** A remote caller's fix names no page or source (the details carry counts only); the brain host's own read names them. */
+function heldFix(first: HeldSplitPage, remote: boolean) {
+  if (remote) return agentFix(['gbrain', 'sources', 'status', '--json'],
+    'Read-only, on the brain host: lists each source\'s held files, the held split pages among them, with the fix for each.', 'split_layout', { docs: DOCS });
   const slug = first.slug ?? first.path.replace(/\.md$/, '');
   return first.code === 'split_head_modified'
     ? agentFix(['gbrain', 'pages', 'split-storage', slug, '--source', first.source_id, '--resolve-head', 'keep-edit', '--json'],
@@ -127,7 +130,7 @@ async function runSplitLayout(ctx: DoctorContext): Promise<Check[]> {
     const shown = <T>(rows: T[]) => (ctx.remote ? [] : rows.slice(0, SAMPLE));
     const bound = walk.truncated ? { truncated: true, limit: walkLimit, exact: false } : { truncated: false, exact: true };
     const layoutDetails = { stray_parts_dirs: walk.stray.length, held_split_pages: held.count, stray_sample: shown(walk.stray), held_sample: shown(held.sample),
-      sources_walked: walk.sources, entries_read: walk.entries, ...bound, docs: DOCS };
+      sources_walked: ctx.remote ? [] : walk.sources, source_count: walk.sources.length, entries_read: walk.entries, ...bound, docs: DOCS };
     if (!walk.sources.length && !held.count) {
       checks.push(infoCheck('split_layout', 'Not applicable: no source has a canonical checkout on this host and no split page is held.', 'not_applicable', undefined, layoutDetails));
     } else if (walk.stray.length || held.count) {
@@ -135,7 +138,7 @@ async function runSplitLayout(ctx: DoctorContext): Promise<Check[]> {
         ...(held.count ? [`${held.count} split page(s) held by sync (${SPLIT_HOLD_CODES.join(' / ')})${ctx.remote ? '' : `, e.g. ${held.sample.map(row => `${row.source_id}:${row.path} (${row.code})`).join(', ')}`}`] : []),
         ...(walk.stray.length ? [`${walk.stray.length}${walk.truncated ? '+' : ''} stray parts director${walk.stray.length === 1 ? 'y' : 'ies'} with no split head naming them${ctx.remote ? '' : `, e.g. ${walk.stray.slice(0, SAMPLE).map(row => `${row.source_id}:${row.path} (${row.reason})`).join(', ')}`}`] : []),
       ];
-      const fix: Action = held.count ? heldFix(held.sample[0]!)
+      const fix: Action = held.count ? heldFix(held.sample[0]!, ctx.remote === true)
         : { consent: [], actor: 'agent', ask_user: true, requires_exclusive: false, docs: DOCS,
           why: 'A parts directory no head names holds bytes no page reads; whether to remove it (git rm -r <dir>, then commit) or restore its head from Git is the user\'s call.',
           user_message: `${walk.stray.length} hidden part-file director${walk.stray.length === 1 ? 'y has' : 'ies have'} no page head that names ${walk.stray.length === 1 ? 'it' : 'them'}. Remove ${walk.stray.length === 1 ? 'it' : 'them'}, or restore the head from Git?` };
@@ -153,8 +156,10 @@ async function runSplitLayout(ctx: DoctorContext): Promise<Check[]> {
       checks.push({ name: 'oversize_canonical_file', status: 'warn', details: oversizeDetails,
         message: `${walk.oversize.length}${walk.truncated ? '+' : ''} canonical file(s) are single files over ${SPLIT_MAX_FILE_BYTES_KEY} (${threshold} bytes)${ctx.remote ? '' : `, e.g. ${walk.oversize.slice(0, SAMPLE).map(row => `${row.source_id}:${row.path} (${row.bytes} bytes)`).join(', ')}`}. `
           + 'The split git layout stores such a page as a head file plus hidden part files; preview the change with gbrain pages split-storage <slug> --source <id>, then --apply.',
-        fix: agentFix(['gbrain', 'pages', 'split-storage', first.slug, '--source', first.source_id, '--json'],
-          'Read-only preview: the head and part files the split layout would write for this page; nothing is written until --apply.', 'oversize_canonical_file', { docs: DOCS }) });
+        fix: ctx.remote ? agentFix(['gbrain', 'doctor', '--only', 'oversize_canonical_file', '--json'],
+          'Read-only, on the brain host: names each oversize file and the split-storage preview for it.', 'oversize_canonical_file', { docs: DOCS })
+          : agentFix(['gbrain', 'pages', 'split-storage', first.slug, '--source', first.source_id, '--json'],
+            'Read-only preview: the head and part files the split layout would write for this page; nothing is written until --apply.', 'oversize_canonical_file', { docs: DOCS }) });
     } else {
       checks.push({ name: 'oversize_canonical_file', status: 'ok', details: oversizeDetails,
         message: `No single canonical file is over ${SPLIT_MAX_FILE_BYTES_KEY} (${threshold} bytes)${walk.truncated ? ` among the ${walk.entries} entries read (the walk stopped at its bound)` : ''}.` });

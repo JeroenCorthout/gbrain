@@ -3383,6 +3383,7 @@
             "exact": true,
             "held_sample": [],
             "held_split_pages": 0,
+            "source_count": 1,
             "sources_walked": [
               "default"
             ],
