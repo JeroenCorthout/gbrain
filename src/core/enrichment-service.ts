@@ -34,7 +34,7 @@ import { isJunkEntityName } from './entity-name-quality.ts';
 import { followRetirement } from './entities/resolve.ts';
 import { maintenanceTransaction } from './persistence/attribution.ts';
 import { managedPersistenceEnabled } from './persistence/ownership.ts';
-import { deriveTrust, derivedMaintenanceTransaction, lowerDerivedPage, lowerDerivedPageIn } from './trust/taint.ts';
+import { deriveTrust, derivedMaintenanceTransaction, lowerDerivedPage, lowerDerivedPageIn, lowerToDerivedTier } from './trust/taint.ts';
 import { derivedGateConfig, derivedGateInput, recordTimelineFlag, timelineRowAllowed } from './trust/derived-gate.ts';
 import { assessTimelineForGate } from './write-gate.ts';
 
@@ -339,8 +339,21 @@ export async function enrichEntity(
       if (added) await recordTimelineFlag(tx, assessment, { slug, source_id: sourceId, ...entry });
       return true;
     };
-    timelineAdded = timelineRowAllowed(assessment) &&
-      (managed ? (await coordinated([slug], write))!.value : await maintenanceTransaction(engine, write, derivation.trust));
+    if (!managed) timelineAdded = timelineRowAllowed(assessment) && await maintenanceTransaction(engine, write, derivation.trust);
+    else if (timelineRowAllowed(assessment)) {
+      // G5: the bullet is spliced into the page's markdown and the row follows it; the door gates it at the same tier.
+      const { submitPageMutation } = await import('./persistence/page-mutations.ts');
+      const written = await submitPageMutation(ctx!, { operation: 'add_timeline_entry', params: { slug, ...entry,
+        ...(derivation.trust.tier === 'external_untrusted' ? { content_origin: 'tool_output' } : {}) } });
+      // The door stamps agent_written or external_untrusted; an unknown-tier derivation lowers its new row as on an unmanaged brain.
+      const stored = written.entry as { date: string; summary: string; source: string } | undefined;
+      if (stored && written.status === 'ok' && derivation.trust.tier === 'unknown') await coordinated([slug], async tx => {
+        const rows = await tx.executeRaw<{ id: number }>(`SELECT te.id FROM timeline_entries te JOIN pages p ON p.id=te.page_id
+          WHERE p.source_id=$1 AND p.slug=$2 AND te.date=$3::date AND te.summary=$4 AND COALESCE(te.source,'')=$5`, [sourceId, slug, stored.date, stored.summary, stored.source]);
+        await lowerToDerivedTier(tx, 'timeline_entries', rows.map(row => Number(row.id)), derivation.trust);
+      });
+      timelineAdded = true;
+    }
   } catch (e) {
     if (managed) throw e;
     // Timeline add failed (page might not support it)
@@ -348,13 +361,14 @@ export async function enrichEntity(
 
   // 5. Add backlink from entity to source
   let backlinkCreated = false;
-  try {
-    const link = (tx: BrainEngine) => tx.addLink(slug, request.sourceSlug, `Entity mention from ${request.sourceSlug}`, undefined, undefined, undefined, undefined, opts?.sourceId ? { fromSourceId: opts.sourceId, toSourceId: opts.sourceId } : undefined); // gbrain-allow-direct-insert: auto-link reconciliation triggered by entity reference in source markdown
-    if (managed) await coordinated([slug, request.sourceSlug], link);
-    else await link(engine);
+  if (managed) {
+    // G5: the bullet's [source](source) link is the backlink; the timeline publication derives it from the page's markdown.
+    backlinkCreated = (await engine.executeRaw(`SELECT 1 FROM links l JOIN pages f ON f.id=l.from_page_id JOIN pages t ON t.id=l.to_page_id
+      WHERE f.source_id=$1 AND f.slug=$2 AND t.source_id=$1 AND t.slug=$3 LIMIT 1`, [sourceId, slug, request.sourceSlug])).length > 0;
+  } else try {
+    await engine.addLink(slug, request.sourceSlug, `Entity mention from ${request.sourceSlug}`, undefined, undefined, undefined, undefined, opts?.sourceId ? { fromSourceId: opts.sourceId, toSourceId: opts.sourceId } : undefined); // gbrain-allow-direct-insert: auto-link reconciliation triggered by entity reference in source markdown
     backlinkCreated = true;
-  } catch (e) {
-    if (managed && e instanceof OperationError) throw e;
+  } catch {
     // Link might already exist
   }
 

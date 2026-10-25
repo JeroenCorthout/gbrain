@@ -2,8 +2,8 @@
   "golden": {
     "exitCode": 0,
     "stderr": "",
-    "stdoutBytes": 263785,
-    "stdoutSha256": "88d8d8cd845c772508f60bcbf8048bb0f92e046ee544617d0789b86742dee497",
+    "stdoutBytes": 264067,
+    "stdoutSha256": "322cd487bdcb219e87559c45427052c23c51f31f9909eba52f032ccca18fdd42",
     "toolNames": [
       "remember",
       "entity",
@@ -2384,7 +2384,7 @@
       },
       {
         "description": "Create a typed link (edge) from one page to another in the same source. Use when recording a relationship (works_at, invested_in, mentions); remote page writes already link [[wikilinks]] to existing pages as mentions (receipt auto_links), so add only typed links or ones the text lacks. Needs write scope; an explicit link_type must be declared by the active schema pack. On page_not_found: resolve both slugs with resolve_slugs.",
-        "idempotent": false,
+        "idempotent": true,
         "local_only": false,
         "mutating": true,
         "name": "add_link",
@@ -2393,6 +2393,7 @@
           "from": "string",
           "link_source": "string?",
           "link_type": "string?",
+          "request_id": "string?",
           "to": "string",
           "valid_from": "string?",
           "valid_until": "string?"
@@ -2414,6 +2415,10 @@
             },
             "link_type": {
               "description": "Link type (e.g., invested_in, works_at). When the active schema pack declares a link vocabulary, an explicit link_type must be one of its declared verbs (undeclared verbs are rejected, also under dry_run). Omitted = untyped edge.",
+              "type": "string"
+            },
+            "request_id": {
+              "description": "Reuse only to retry.",
               "type": "string"
             },
             "to": {
@@ -2439,7 +2444,7 @@
       },
       {
         "description": "Remove a link between two pages (optionally only one link_type or link_source). Use when a relationship was recorded wrongly. Needs write scope. On page_not_found: resolve both slugs with resolve_slugs.",
-        "idempotent": false,
+        "idempotent": true,
         "local_only": false,
         "mutating": true,
         "name": "remove_link",
@@ -2447,6 +2452,7 @@
           "from": "string",
           "link_source": "string?",
           "link_type": "string?",
+          "request_id": "string?",
           "to": "string"
         },
         "required_scopes": [],
@@ -2462,6 +2468,10 @@
             },
             "link_type": {
               "description": "Only remove edges of this link type (omit = all types)",
+              "type": "string"
+            },
+            "request_id": {
+              "description": "Reuse only to retry.",
               "type": "string"
             },
             "to": {

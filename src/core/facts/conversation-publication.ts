@@ -23,7 +23,9 @@
  * (`--since`, `--segment-limit`) and the page's newest extractor row id (so
  * every committed batch, an approved repair or `--force` after a commit
  * starts the next generation). A batch's request id is the digest of its
- * members' (generation, attempt) pairs. Before a page's model work the run
+ * members' (generation, attempt) pairs; an id another write already holds,
+ * or a receipt that lost its intent without committing, moves the batch to
+ * its members' next attempt (#7516). Before a page's model work the run
  * consults the writer's unsettled and failed batch requests (loaded once per
  * run; compacted ones drop out):
  *   - a member of a still-unsettled batch (a crash after admission) waits for
@@ -63,7 +65,7 @@ import { readFix } from '../ops/op-fix.ts';
 import { authorizeStoredRequest, authorizeWrite } from '../persistence/authority.ts';
 import { digest, jsonBytes } from '../persistence/digest.ts';
 import { receiptReservation } from '../persistence/receipt-bytes.ts';
-import { getWriteRequestById } from '../persistence/journal.ts';
+import { getWriteRequestById, intentDigest } from '../persistence/journal.ts';
 import { journalLimitKey, oneYearCapacity, readJournalLimits } from '../persistence/limits.ts';
 import { principalKey } from '../persistence/model.ts';
 import { PERSISTENCE_IPC_MAX_BYTES } from '../persistence/ipc.ts';
@@ -197,6 +199,27 @@ export async function conversationGeneration(engine: BrainEngine, authority: Mai
 function batchRequestId(sourceIncarnation: string, pages: ReadonlyArray<Pick<ConversationPageEntry, 'generation' | 'attempt'>>): string {
   const h = digest(['conversation-facts-batch-v1', sourceIncarnation, pages.map(p => `${p.generation}:${p.attempt}`).sort()]);
   return `${h.slice(0, 8)}-${h.slice(8, 12)}-4${h.slice(13, 16)}-a${h.slice(17, 20)}-${h.slice(20, 32)}`;
+}
+
+/**
+ * #7516: the batch at the first attempt, from its members' own upward, whose request id is unspent: unused, or used by
+ * this very batch (a replay) whose receipt still holds its intent or committed. A receipt without its intent (a
+ * purged_content refusal the journal redacts, retention compaction) takes its members' attempt history with it, so
+ * startManagedPage can derive an attempt whose id admission would refuse as idempotency_conflict or answer with the
+ * compacted failure, on every run. Each step raises every member's attempt by one, and the journal's rows are finite.
+ */
+async function unspentBatch(engine: BrainEngine, authority: MaintenanceAuthority, pages: ConversationPageEntry[]): Promise<{ intent: ConversationFactsIntent; requestId: string }> {
+  const { principal, sourceId, sourceIncarnation } = authority.writer;
+  for (let raise = 0; ; raise++) {
+    const members = pages.map(entry => ({ ...entry, attempt: entry.attempt + raise }));
+    const intent: ConversationFactsIntent = { kind: CONVERSATION_FACTS_INTENT, protocol: CONVERSATION_FACTS_PROTOCOL, expected_revision: null, pages: members };
+    const requestId = batchRequestId(sourceIncarnation, members);
+    const [spent] = await engine.executeRaw<{ request_id: string }>(`SELECT request_id::text AS request_id FROM persistence_requests
+      WHERE principal_kind=$1 AND principal_id=$2 AND request_id=$3::uuid AND (digest<>$4 OR (compacted AND state<>'committed'))`,
+    [principal.kind, principal.id, requestId, intentDigest({ operation: 'submit_job', sourceId, slug: ANCHOR_SLUG, callerIntent: intent })]);
+    if (!spent) return { intent, requestId };
+    log(`batch request ${spent.request_id} already belongs to another or a compacted write; publishing the batch at its members' next attempt`);
+  }
 }
 
 /** What this writer's unsettled and failed batch requests say about one generation. */
@@ -357,14 +380,14 @@ export async function buildConversationPage(engine: BrainEngine, config: GBrainC
  * pending after the job's wait throws `write_pending`.
  */
 export async function submitConversationPages(engine: BrainEngine, authority: MaintenanceAuthority, pages: ConversationPageEntry[]): Promise<Record<string, unknown>> {
-  const intent: ConversationFactsIntent = { kind: CONVERSATION_FACTS_INTENT, protocol: CONVERSATION_FACTS_PROTOCOL, expected_revision: null, pages };
+  const { intent, requestId } = await unspentBatch(engine, authority, pages);
   const limit = await conversationIntentByteLimit(engine);
   const bytes = jsonBytes(intent);
   if (bytes > limit) {
     throw opError('request_too_large', 'The frozen fact batch exceeds the request size limit; the pages\' prior facts were kept.',
       `The batch of ${pages.map(p => p.slug).join(', ')} is ${bytes} bytes, over the ${limit}-byte limit for one request, so nothing was submitted. Narrow the run with --segment-limit, or raise persistence.limits.principal_intent_bytes (the user's call).`);
   }
-  return submitDatabaseMaintenanceIntent(engine, authority, ANCHOR_SLUG, intent, batchRequestId(authority.writer.sourceIncarnation, pages));
+  return submitDatabaseMaintenanceIntent(engine, authority, ANCHOR_SLUG, intent, requestId);
 }
 
 function invalid(row: WriteRequest, cause: string): OperationError {

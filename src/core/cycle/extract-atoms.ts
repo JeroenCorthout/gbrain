@@ -87,7 +87,7 @@ import { utcDate } from './cycle-date.ts';
 import { atomSourceDate } from './atom-source-date.ts';
 import { normalizeForGrounding } from './synthesize-verify.ts';
 import type { TranscriptPageIndex } from '../transcripts/discover.ts';
-import { atomOriginPin, managedAtomSession, readAtomOrigin, resumeManagedAtoms, publishManagedAtoms, publishManagedAtomGeneration, resumeManagedGenerationMembers,
+import { atomOriginPin, atomWriteFailure, type AtomWriteFailure, managedAtomSession, readAtomOrigin, resumeManagedAtoms, publishManagedAtoms, publishManagedAtomGeneration, resumeManagedGenerationMembers,
   MANAGED_ATOM_DISCOVERY_SQL, managedAtomDiscoverySql, type AtomOrigin } from '../persistence/atom-maintenance.ts';
 import { effectiveVisibility } from '../search/private-visibility.ts';
 import { OperationError } from '../ops/contract.ts';
@@ -901,7 +901,7 @@ export async function runPhaseExtractAtoms(
   let pagesProcessed = 0;
   let transcriptsSkipped = 0;
   let pagesSkipped = 0;
-  const failures: Array<{ source: string; error: string }> = [];
+  const failures: Array<{ source: string; error: string } & Partial<Omit<AtomWriteFailure, 'error'>>> = [];
   let estimatedSpendUsd = 0;
   let budgetExhausted = false;
   // #3813: key-aware tier default, not a hardcoded Anthropic model — an
@@ -1098,8 +1098,9 @@ export async function runPhaseExtractAtoms(
     // disposition instead of a completion stamp (extract-atoms-input.ts).
     const input = extractAtomsInput(item, maxInputChars, item.kind === 'page' ? (await readPageWatermark(engine, sourceId, item.slug, 'extract_atoms')).stored : null);
     const { promptContent, truncated } = input;
+    let origin: AtomOrigin | null = null;
     try {
-      const origin: AtomOrigin | null = managed ? { ...await readAtomOrigin(engine, managed, item), ...(truncated ? { partialInputChars: maxInputChars } : {}) } : null;
+      origin = managed ? { ...await readAtomOrigin(engine, managed, item), ...(truncated ? { partialInputChars: maxInputChars } : {}) } : null;
       const sourcePage = item.kind === 'page' ? await engine.getPage(item.slug, { sourceId }) : null;
       const contentDate = await atomSourceDate(engine, sourcePage); // #6720: captured with the input, before inference
       const visibility = origin?.visibility ?? effectiveVisibility(item.kind === 'transcript' ? { kind: 'transcript' } // #5525
@@ -1199,6 +1200,7 @@ export async function runPhaseExtractAtoms(
             item.kind === 'page'
               ? await resolvePageAtomSlug(engine, atom.title, item.slug, sourceId, undatedDate, pageAtomTitles)
               : await resolveTranscriptAtomSlug(engine, sourceId, atom.title, item, undatedDate, atomSlug);
+          if (importedSlugs.includes(slug)) continue; // #7514: a repeated title is one atom; a second item at its slug cannot publish
           const originFrontmatter =
             item.kind === 'transcript'
               ? { source_path: item.filePath }
@@ -1337,6 +1339,8 @@ export async function runPhaseExtractAtoms(
         else pagesSkipped++;
         continue;
       }
+      const written = managed && origin ? await atomWriteFailure(engine, managed, origin, err) : null; // #7514: never a provider error
+      if (written) { hardFailureCount++; failures.push({ source: originLabel, ...written }); continue; }
       // gbrain#4148: classify. Transient provider/infra errors (timeouts,
       // rate limits, 5xx, network) stay retryable and are NOT counted toward
       // any tombstone. A provider content block (prompt-level refusal) is

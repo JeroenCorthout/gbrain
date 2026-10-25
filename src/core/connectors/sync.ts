@@ -44,6 +44,7 @@ import {
   ConnectorHttpError,
   ConnectorNetworkError,
   ConnectorRateLimitedError,
+  ConnectorRunLimitError,
 } from './client.ts';
 import type { ConnectorFetch } from './client.ts';
 import { getConnectorProvider } from './registry.ts';
@@ -113,8 +114,11 @@ export interface ConnectorSyncResult {
   gone: string[];
   spoolPaths: string[];
   embedKickoff: EmbedKickoffOutcome;
-  /** #7482: set when the run stopped fetching early because CONSECUTIVE_FETCH_FAILURE_LIMIT fetches failed in a row. */
-  stopReason?: 'consecutive_fetch_failures';
+  /**
+   * Why the run stopped early: CONSECUTIVE_FETCH_FAILURE_LIMIT fetches failed in a row (#7482), or it reached its
+   * request ceiling or deadline (#7515: MAX_CONNECTOR_REQUESTS_PER_RUN, --max-requests, --deadline).
+   */
+  stopReason?: 'consecutive_fetch_failures' | 'max_requests' | 'deadline';
   hint?: string;
 }
 
@@ -181,6 +185,10 @@ export interface ConnectorSyncOpts {
   windowDays?: number;
   /** Embed during ingest (default OFF — the kickoff catches up post-run). */
   embed?: boolean;
+  /** Request ceiling for this run, capped at MAX_CONNECTOR_REQUESTS_PER_RUN (#7515). */
+  maxRequests?: number;
+  /** Epoch ms after which the run starts no request (#7515). */
+  deadlineAt?: number;
   signal?: AbortSignal;
   onProgress?: (p: { phase: 'list' | 'fetch' | 'ingest'; listed: number; fetched: number; imported: number }) => void;
   deps?: ConnectorSyncDeps;
@@ -196,17 +204,17 @@ export function subtractDays(iso: string, days: number, now: () => number): stri
 function buildClient(
   provider: ChatHistoryProvider,
   cred: import('./types.ts').ConnectorCredential,
+  opts: ConnectorSyncOpts,
   deps: ConnectorSyncDeps,
 ): ConnectorClient {
   if (deps.client) return deps.client;
-  const fetchImpl = deps.fetchImpl;
   return new ConnectorClient({
     baseUrl: deps.baseUrlOverride ?? provider.baseUrl,
     headers: () => provider.authHeaders(cred),
-    refresh: provider.refreshAccessToken
-      ? () => provider.refreshAccessToken!(cred, fetchImpl ?? (fetch as unknown as ConnectorFetch))
-      : undefined,
-    fetchImpl,
+    refresh: provider.refreshAccessToken ? (client) => provider.refreshAccessToken!(cred, client) : undefined,
+    maxRequests: opts.maxRequests,
+    deadlineAt: opts.deadlineAt,
+    fetchImpl: deps.fetchImpl,
     sleep: deps.sleep,
     now: deps.now,
     log: deps.log,
@@ -254,7 +262,7 @@ export async function runConnectorSync(
     return { ...base, status: 'auth_required', hint: provider.sessionInstructions() };
   }
 
-  const client = buildClient(provider, resolved.cred, deps);
+  const client = buildClient(provider, resolved.cred, opts, deps);
 
   // Probe first: a dead credential must not burn a full list+fetch.
   const probe = await provider.probe(client, opts.signal);
@@ -290,6 +298,7 @@ export async function runConnectorSync(
     }
   } catch (e) {
     listErrored = true;
+    if (e instanceof ConnectorRunLimitError) base.stopReason = e.reason;
     const term = classifyThrow(e);
     if (term) {
       if (term === 'auth_required') await stampAuthError(engine, opts.provider, now);
@@ -363,8 +372,9 @@ export async function runConnectorSync(
         consecutiveFetchFailures = 0;
         opts.onProgress?.({ phase: 'fetch', listed: stubs.length, fetched, imported: importedTotal });
       } catch (e) {
-        // A cancelled run says nothing about the conversation: no strike.
+        // A cancelled run, or one at its request ceiling or deadline, says nothing about the conversation: no strike.
         if (opts.signal?.aborted) { aborted = true; break; }
+        if (e instanceof ConnectorRunLimitError) { base.stopReason = e.reason; break; }
         const term = classifyThrow(e);
         if (term) {
           if (term === 'auth_required') await stampAuthError(engine, opts.provider, now);
@@ -512,9 +522,13 @@ export async function runConnectorSync(
 /** What the run left unarchived (failed or still publishing) and the command that shows it. */
 function unresolvedHint(base: ConnectorSyncResult, provider: ConnectorProviderName, sourceId: string): string | undefined {
   const parts: string[] = [];
-  if (base.stopReason) {
+  if (base.stopReason === 'consecutive_fetch_failures') {
     parts.push(`Stopped after ${CONSECUTIVE_FETCH_FAILURE_LIMIT} conversation fetches failed in a row; the provider may be ` +
       'throttling or down. The next sync resumes from the same place.');
+  } else if (base.stopReason) {
+    parts.push(`Stopped at the run's ${base.stopReason === 'deadline' ? 'deadline' : 'request limit'} before every ` +
+      `conversation was fetched. Run \`gbrain connectors sync ${provider}\` again (without --full) to continue: conversations ` +
+      'already imported are skipped.');
   }
   if (base.unresolved > 0) {
     parts.push(
