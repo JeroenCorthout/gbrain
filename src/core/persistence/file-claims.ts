@@ -17,13 +17,15 @@
  * are not claimants (#6517): a soft-deleted twin has given the file up.
  */
 import { existsSync, realpathSync } from 'node:fs';
-import { basename, dirname, join } from 'node:path';
+import { basename, dirname, join, relative, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { BrainEngine } from '../engine.ts';
 import { resolveSourceLocalFilePath } from '../markdown.ts';
 import { opError } from '../ops/contract.ts';
 import { isWriteTargetContained } from '../path-confine.ts';
 import { recordedPathFromFileUri } from '../write-through.ts';
+import { isPartPath } from '../split-layout/paths.ts';
+import type { Action } from '../agent-output.ts';
 
 export interface FileClaimTarget {
   sourceId: string; slug: string; pageId: number; root: string; mode: 'git-root' | 'source-root';
@@ -32,6 +34,19 @@ export interface FileClaimTarget {
   absent?: true;
 }
 export interface FileClaimant { id: number; slug: string }
+
+/**
+ * Wave B PR 5 (split git layout): a file inside a `.<name>.gbparts` directory is a part of the split page whose head is
+ * `<name>.md` beside it. The head claims it, so it is never a page's canonical file: a write whose target lands there
+ * (a recorded path or slug inside a parts directory) is refused before anything is read or written.
+ */
+export function refusePartFileTarget(row: { source_id: string; slug: string }, root: string, path: string, fix: Action): void {
+  const rel = relative(root, path).split(sep).join('/');
+  if (!isPartPath(rel)) return;
+  throw opError('source_changed', 'The canonical file target is inside a split page parts directory.',
+    `The file of ${row.slug} would be ${rel}, which lies in the parts directory of a split page head and belongs to that page, so nothing was written. Store the page under a path outside any .<name>.gbparts directory.`,
+    { detail: 'split_part_path', fix });
+}
 
 /** A path that may not exist, canonicalized the way `isWriteTargetContained` does: its nearest existing ancestor's realpath plus the rest. */
 export function absentCanonicalPath(path: string): string {

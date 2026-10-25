@@ -82,6 +82,7 @@ test/get-chunks-paging.test.ts
 test/git-canonical-declared-g7a.test.ts
 test/git-canonical-indexer-g3.test.ts
 test/git-door-plumbing-gbra133.test.ts
+test/git-door-remote-g7b.test.ts
 test/git-door-strict-gbra133.test.ts
 test/git-gap-census.test.ts
 test/google-connector-facts-fence-7292.test.ts
@@ -210,6 +211,7 @@ test/large-pages/timeline-top-insert-reembed.test.ts
 test/large-pages/upload-binding.test.ts
 test/large-pages/upload-over-ceiling.test.ts
 test/large-pages/upload-review.test.ts
+test/large-pages/upload-streamed-git.test.ts
 test/large-pages/v252-master-reader-compat.test.ts
 test/link-cross-source.test.ts
 test/link-preparation-shared-index.test.ts
@@ -442,6 +444,8 @@ test/source-row-diagnostics.test.ts
 test/sources-resolve-path.test.ts
 test/split-layout-command.test.ts
 test/split-layout-doctor.test.ts
+test/split-layout-publish-recovery.test.ts
+test/split-layout-publish.test.ts
 test/split-layout-sync.test.ts
 test/stats-health-source-scope.test.ts
 test/sync-absent-from-worktree-s27.test.ts

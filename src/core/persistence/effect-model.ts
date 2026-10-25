@@ -43,6 +43,16 @@ export const WITHHELD_BY_MIRROR = 'withdrawal_mirror_failed';
 /** A Git or withdrawal target parks after this many consecutive execution failures. */
 export const PARK_AFTER_FAILURES = 5;
 /**
+ * Wave B PR 5: the `data.version` of a Git effect whose publication wrote a split page head or removed part files
+ * (split-files.ts). The current runner commits the head with every part path in one commit; a runner that predates it
+ * reads any version but 2 as an invalid withdrawal manifest (`withdrawal_provenance`, effect-targets.ts) and the
+ * coalesced claim skips effects with a version, so it never commits the head without its parts.
+ */
+export const SPLIT_GIT_EFFECT_VERSION = 3;
+export function splitGitEffect(effect: Pick<PersistenceEffect, 'kind' | 'data'>): boolean {
+  return effect.kind === 'git' && effect.data.version === SPLIT_GIT_EFFECT_VERSION;
+}
+/**
  * A withdrawal mirror's recovery record. Version 1 embeds the mirrored file (`after`, base64). Version 2 is a segmented
  * page's file, never held whole: `after` is null and `staging.publication` names the file streamed from the page's
  * segments by path, SHA-256 (`afterHash`) and length, written once the record is durable (effect-recovery.ts).
@@ -71,7 +81,7 @@ export interface PersistenceEffect {
   source_id: string;
   source_incarnation: string;
   worktree_id: string | null;
-  data: { version?: 2; targets?: WithdrawalTarget[]; slug?: string; page_id?: number; relative_path?: string; expected_hash?: string | null; after_slug?: string; source_id?: string; source_scan?: boolean; visibility?: 'private' | 'world'; embedding_attempt_base?: number; embedding_retry_base?: number;
+  data: { version?: 2 | typeof SPLIT_GIT_EFFECT_VERSION; targets?: WithdrawalTarget[]; slug?: string; page_id?: number; relative_path?: string; expected_hash?: string | null; after_slug?: string; source_id?: string; source_scan?: boolean; visibility?: 'private' | 'world'; embedding_attempt_base?: number; embedding_retry_base?: number;
     /** Wave B: the occurrences a segmented write added; its embedding effect embeds only their chunk rows. */
     occurrence_ids?: number[];
     /** #7122: an append's `links` effect mines only these appended truth bytes and never removes an edge. */

@@ -78,6 +78,7 @@ import { claimAndRecoverEffect } from './effects.ts';
 import { rebaseStaleEffectRecovery } from './effect-recovery.ts';
 import { trueUpRequests } from './receipt-true-up.ts';
 import { bundleFileHash } from './bundle-files.ts';
+import { isSplitRecoveryRecord } from './split-files.ts';
 import { mayReprepare } from './semantic.ts';
 import { cleanupRecoveryStaging, restoreBeforeStage, upgradeRecoveryStaging } from './staging.ts';
 import { FileBytes, hashDescriptor, hashFile, LARGE_FILE_MIN_BYTES, largeFileWork, validateBeforeStagePath } from './large-file.ts';
@@ -507,7 +508,7 @@ export async function scanStuckRecoveries(engine: BrainEngine, sourceIds: string
         residual('newer_recovery_record');
         continue;
       }
-      if (row.recovery?.version === 2 && !filesOf(row.recovery)) {
+      if (row.recovery?.version === 2 && (!filesOf(row.recovery) || isSplitRecoveryRecord(row.recovery))) {
         const refused = bundleRefusal(row);
         if (opts.requestId) throw refusalError(refused);
         scan.refused.push(refused);
@@ -546,7 +547,9 @@ const effectFix = (sourceId: string, requestId: string | null): Action => ({ ask
     + 'Copy the edited file somewhere safe and put it back to its committed version (do not delete it); gbrain then finishes removing the forgotten fact. Make the edit again afterwards, leaving that fact out.' });
 function bundleRefusal(row: WriteRequest): RefusedRecovery {
   return { code: 'recovery_bundle_unsupported', request_id: row.request_id, source_id: row.source_id, slug: row.slug, state: row.state, blocked_reason: row.blocked_reason ?? null,
-    reason: `Request ${row.request_id} in source ${row.source_id} holds a shared-skill bundle recovery record this binary cannot read (an unknown shape or more files than a bundle holds).`,
+    reason: isSplitRecoveryRecord(row.recovery)
+      ? `Request ${row.request_id} in source ${row.source_id} holds a split page recovery record (a head and its part files), which gbrain repair stuck-recovery does not resolve; the owner's recovery restores or keeps every file of the page together.`
+      : `Request ${row.request_id} in source ${row.source_id} holds a shared-skill bundle recovery record this binary cannot read (an unknown shape or more files than a bundle holds).`,
     fix: { ask_user: true, argv: stuckRecoveryPreviewArgv([row.source_id], row.request_id), consent: [], actor: 'agent', requires_exclusive: false,
       why: `Shared-skill request ${row.request_id} is stuck in recovery with a record gbrain repair stuck-recovery cannot read, so every write on source ${row.source_id} waits. `
         + 'The preview (read-only) lists it; which version of each skill file to keep is the user\'s call.',

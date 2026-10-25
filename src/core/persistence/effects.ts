@@ -40,14 +40,14 @@ import { atomicStagingPath } from '../atomic-write.ts';
 import { isSourceDbOnlySlug } from './source-storage.ts';
 import { advanceEffectCursor, claimCoalescedGitEffects, claimPersistenceEffect, completeEffect, effectClaimStamp, effectClaimKeeper, failEffect, hasRearmableTargets, mirrorGates, parkEffect, rearmWithheldTargets, renewPersistenceEffectClaim, requeueEffect, retryBusyEffect, retryEffect, singleFileGitEffect, type MirrorGate } from './effect-journal.ts';
 import { guardEffectSource, recoverEffectPublication, reserveEffectRecovery } from './effect-recovery.ts';
-import { commitGitTargets, DURABILITY_NOT_ENABLED, gitRootAhead, publishGitEffect, pushGitRoot, type GitEffectOwner } from './effect-git.ts';
+import { commitGitTargets, DURABILITY_NOT_ENABLED, gitRootAhead, publishGitEffect, publishSplitGitEffect, pushGitRoot, type GitEffectOwner } from './effect-git.ts';
 import { retryIndexLockParks } from './effect-retry.ts';
 import { assertSegmentedMirrorGate, resumeGatedMirrors } from './segmented-mirror-gate.ts';
 import { gitDurabilityPolicy } from './git-durability-policy.ts';
 import { EFFECT_FAULT_POINTS, faultPoint } from './fault-points.ts';
 import { dispatchFactsBackstopEffect } from './effect-facts.ts';
 import { runLinksEffect } from './effect-links.ts';
-import { PARK_AFTER_FAILURES, WITHHELD_BY_MIRROR, type EffectRecovery, type GitCommitNote, type PersistenceEffect, type SkippedTarget } from './effect-model.ts';
+import { PARK_AFTER_FAILURES, splitGitEffect, WITHHELD_BY_MIRROR, type EffectRecovery, type GitCommitNote, type PersistenceEffect, type SkippedTarget } from './effect-model.ts';
 import { fileContentHash } from './large-file.ts';
 import { isSyncMetafile, metafileIsPage, readMetafilePagesMode } from '../sync.ts';
 import { diskMetafileHeads } from '../sync-metafile-pages.ts';
@@ -336,6 +336,12 @@ async function gitPage(engine: BrainEngine, effect: PersistenceEffect, binding: 
 async function publishGitPage(engine: BrainEngine, effect: PersistenceEffect, binding: WorktreeBinding & { local_path: string }, opts: EffectWorkerOptions,
   attempt: EffectAttempt, hardened: boolean | undefined, owner: GitEffectOwner | undefined): Promise<void> {
   const root = binding.local_path;
+  // Wave B PR 5: a split page's head commits with its part files (effect-git.ts publishSplitGitEffect).
+  if (splitGitEffect(effect)) {
+    const target = await singleFileGitTarget(engine, effect, { ...binding, local_path: root }, attempt);
+    if (target !== null) await completeEffect(engine, effect, await publishSplitGitEffect(root, target, opts.signal, hardened, gitCommitNote(effect), undefined, owner));
+    return;
+  }
   if (!targetedWithdrawalEffect(effect) && !effect.data.source_scan) {
     const target = await singleFileGitTarget(engine, effect, { ...binding, local_path: root }, attempt);
     if (target !== null) await completeEffect(engine, effect, await publishGitEffect(root, target, opts.signal, hardened, gitCommitNote(effect), undefined, owner));

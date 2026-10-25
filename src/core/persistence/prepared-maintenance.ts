@@ -192,7 +192,10 @@ async function prepareMaintenanceAdmission(engine: BrainEngine, authority: Maint
   // exists, so a producer that runs every cycle stops adding a conflict receipt per cycle. A replay above still returns its receipt.
   if (file && authority.binding && snapshot && !snapshot.page.deleted_at) {
     const live = await liveFileDrift(engine, authority.writer.sourceId, slug, snapshot);
-    if (live.still_present === true) throw maintenanceDriftRefusal(authority.writer.sourceId, slug);
+    // A split head edited by hand is drift, and `pages split-storage --resolve-head discard` is its resolution: publication
+    // (split-files.ts resolvesModifiedHead) decides whether this request may replace it.
+    const resolvesHead = intent.kind === 'managed_maintenance_split_relayout' && intent.resolve_head === 'discard';
+    if (live.still_present === true && !resolvesHead) throw maintenanceDriftRefusal(authority.writer.sourceId, slug);
     // #6696 (A12): the recorded canonical file is gone, so publication would refuse source_changed; refuse before a request exists.
     if (live.reason === CANONICAL_FILE_MISSING && !PUBLISHES_WITHOUT_FILE.has(String(intent.kind))) throw maintenanceGhostRefusal(authority.writer.sourceId, slug);
   }

@@ -59,12 +59,34 @@ export interface BundleRecoveryRecord {
   staging?: never;
   beforeHash?: never;
 }
-export type RecoveryRecord = FileRecoveryRecord | BundleRecoveryRecord;
+/**
+ * Wave B PR 5 (split git layout, split-files.ts): one page publication that writes or removes the page's head file and
+ * its part files together. `files` holds the head first, then the parts; each file keeps the single-file staging
+ * (embedded or staged prior bytes, streamed publication stage). `door` is the strict source's marker, shared by every
+ * file. A binary that predates it reads version 2 as a skill bundle, finds `target` is not `skill_bundle`, and
+ * `recoveryFiles` throws `unsupported_mutation_protocol` before any file is touched.
+ */
+export interface SplitRecoveryRecord {
+  version: 2;
+  target: 'page_split';
+  root: string;
+  ownerEpoch: string;
+  attempt: string;
+  files: FileRecoveryRecord[];
+  door?: { root: string; head: string | null };
+  staging?: never;
+  beforeHash?: never;
+}
+/** Head plus at most 9999 parts written and 9999 removed (a split page converting between part sets). */
+export const SPLIT_RECOVERY_FILES_MAX = 1 + 2 * 9999;
+export type RecoveryRecord = FileRecoveryRecord | BundleRecoveryRecord | SplitRecoveryRecord;
 export function recoveryFiles(record: RecoveryRecord): FileRecoveryRecord[] {
   assertRecoveryVersion('persistence_requests', record, null);
   if (record.version === 1) return [record];
   if (record.version === 2 && record.target === 'skill_bundle' && Array.isArray(record.files)
     && record.files.length > 0 && record.files.length <= 128 && record.files.every(file => file.version === 1)) return record.files;
+  if (record.version === 2 && record.target === 'page_split' && Array.isArray(record.files)
+    && record.files.length > 0 && record.files.length <= SPLIT_RECOVERY_FILES_MAX && record.files.every(file => file.version === 1)) return record.files;
   throw new Error('unsupported_mutation_protocol');
 }
 export interface WriteRequest {

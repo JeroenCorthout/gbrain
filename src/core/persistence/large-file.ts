@@ -95,15 +95,18 @@ function changedWhileRead(): OperationError {
 /**
  * Bytes of a canonical file produced in pieces (restore_page of a page over the single-string ceiling: export's
  * serializer over the segments), measured once in preparation (length and SHA-256) and produced again into the
- * publication's staging file. Never concatenated.
+ * publication's staging file. Never concatenated. `page` is the type and frontmatter the bytes render, for a strict
+ * source's class checks (git-declared.ts `renderedPageForClass`); absent, the bytes render the snapshot's.
  */
 export class StreamedFileContent {
-  private constructor(readonly bytes: number, readonly hash: string, private readonly produce: (engine: BrainEngine) => AsyncIterable<string | Uint8Array>) {}
-  static async measure(engine: BrainEngine, produce: (engine: BrainEngine) => AsyncIterable<string | Uint8Array>): Promise<StreamedFileContent> {
+  private constructor(readonly bytes: number, readonly hash: string, private readonly produce: (engine: BrainEngine) => AsyncIterable<string | Uint8Array>,
+    readonly page?: { type: string | null; frontmatter: unknown }) {}
+  static async measure(engine: BrainEngine, produce: (engine: BrainEngine) => AsyncIterable<string | Uint8Array>,
+    page?: { type: string | null; frontmatter: unknown }): Promise<StreamedFileContent> {
     const hash = createHash('sha256');
     let bytes = 0;
     for await (const piece of pieces(produce(engine))) { counted(piece.length, 'bytesRead'); largeFileWork.bytesMeasured += piece.length; hash.update(piece); bytes += piece.length; }
-    return new StreamedFileContent(bytes, hash.digest('hex'), produce);
+    return new StreamedFileContent(bytes, hash.digest('hex'), produce, page);
   }
   pieces(engine: BrainEngine): AsyncIterable<Uint8Array> { return pieces(this.produce(engine)); }
 }

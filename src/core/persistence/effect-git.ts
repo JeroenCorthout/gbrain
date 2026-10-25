@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync } from 'node:fs';
 import { basename, dirname, join, relative, resolve as resolvePath, sep } from 'node:path';
 import { execFileBounded } from '../brain-repo-durability.ts';
 import { gitDurabilityPolicy } from './git-durability-policy.ts';
@@ -12,6 +12,7 @@ import { gitChildEnv } from '../git-env.ts';
 import type { Action } from '../agent-output.ts';
 import type { NativeLockHandle } from './native-lock.ts';
 import { proveIndexLockAbandoned, reclaimIndexLock, type IndexLockReclaim } from './index-lock-reclaim.ts';
+import { parseHead, partsDirFor, verifyParts } from '../split-layout/index.ts';
 
 /** An index lock younger than this is contention; an older one is reported as stale. */
 const INDEX_LOCK_GRACE_MS = 10 * 60 * 1000;
@@ -454,3 +455,51 @@ export async function publishGitEffect(root: string, relativePath: string, signa
   const pushed = await pushGitRoot(root, signal);
   return { ...outcome, ...pushed };
 }
+
+
+/**
+ * Wave B PR 5: the paths a split page's Git effect commits with its head (relative to `root`): every part the head on disk
+ * lists, once they verify, and every tracked file in its parts directory that is gone from disk (parts a later layout
+ * dropped, or all of them once the page is one file again). A head whose parts do not verify refuses, so the effect
+ * retries and parks instead of committing a head without its parts.
+ */
+async function splitUnitPaths(session: GitSession, root: string, head: string): Promise<string[]> {
+  const headPath = resolvePath(root, head);
+  const partsDir = partsDirFor(headPath);
+  const listed: string[] = [];
+  if (existsSync(headPath)) {
+    const parsed = parseHead(readFileSync(headPath, 'utf8'));
+    if (parsed && 'error' in parsed) throw splitHeadUnsafe(head, parsed.error.reason);
+    if (parsed) {
+      const verdict = verifyParts(headPath, parsed);
+      if (!verdict.ok) throw splitHeadUnsafe(head, verdict.reason);
+      listed.push(...parsed.manifest.parts.map(part => relative(root, join(dirname(headPath), part.path)).split(sep).join('/')));
+    }
+  }
+  const tracked = await git(session, ['ls-files', '-z', '--', relative(root, partsDir).split(sep).join('/')]);
+  if (tracked.code !== 0) throw gitFailure('Cannot inspect the canonical Git target.', `git ls-files failed for the part files of ${head}.`);
+  const gone = tracked.stdout.split('\0').filter(path => path && !existsSync(join(root, path)));
+  return [...new Set([...listed, ...gone])];
+}
+
+const splitHeadUnsafe = (head: string, reason: string) => opError('git_target_unsafe', `The split page head ${head} does not match its part files, so it was not committed.`,
+  `${reason}. The page write itself is committed; its Git effect retries and parks after repeated failures. Inspect the head and its parts directory on the brain host (gbrain sources writer status names the effect).`,
+  { fix: effectStatusFix });
+
+/**
+ * Wave B PR 5: a split publication's Git effect (effect-model.ts `SPLIT_GIT_EFFECT_VERSION`): the head and every path of
+ * its part files commit together in one `commit --only`, then the root is pushed. Any path Git refuses fails the whole
+ * effect, so no commit holds a head without its parts.
+ */
+export async function publishSplitGitEffect(root: string, head: string, signal?: AbortSignal, hardened?: boolean, note?: GitCommitNote,
+  binding?: Pick<WorktreeBinding, 'git_durability'> | null, owner?: GitEffectOwner): Promise<Record<string, unknown>> {
+  if (!(hardened ?? (await gitDurabilityPolicy(binding, root)).durable)) return { ...DURABILITY_NOT_ENABLED };
+  const parts = await withSession(root, signal, owner, false, session => splitUnitPaths(session, root, head));
+  const outcomes = await commitGitTargets(root, [head, ...parts], signal, note ? new Map([[head, note]]) : undefined, owner);
+  for (const outcome of outcomes.values()) if (outcome instanceof OperationError) throw outcome;
+  const settled = [...outcomes.values()] as GitOutcome[];
+  const outcome: GitOutcome = settled.some(entry => entry.git === 'committed') ? { git: 'committed' } : outcomes.get(head) as GitOutcome;
+  if (outcome.reason === 'target_absent' && !(await gitRootAhead(root, signal))) return outcome;
+  return { ...outcome, ...await pushGitRoot(root, signal) };
+}
+

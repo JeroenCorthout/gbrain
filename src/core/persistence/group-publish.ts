@@ -62,6 +62,7 @@ import { withFilesystemPublication } from './filesystem-guard.ts';
 import { isWriteTargetContained } from '../path-confine.ts';
 import { assertKnowledgePublicationAllowed } from '../shared-skills/knowledge-guard.ts';
 import { isStreamedContent } from './large-file.ts';
+import { mayTakeSplitLayout } from './split-files.ts';
 import { sharedReadFailure } from './bounded-reads.ts';
 import { chargedInterruption, decoratePublicationOutcome, finishPreparationStalled, finishUnpublishedFailure, pageRecoveryRecord, persistenceFileHash, preparationAbortReason,
   publicationPostimage, publishMutation, publishPersistenceFile, recoverPublication, releaseChargedInterruption, type PreparedMutation, type PublicationHooks } from './coordinator.ts';
@@ -101,6 +102,8 @@ export function groupable(row: WriteRequest, prepared: PreparedMutation): boolea
   if (syncMember(row)) return !prepared.file && typeof prepared.validate === 'function';
   // A streamed file (large-file.ts) is staged before its publication transaction, which only publishMutation does.
   if (isStreamedContent(prepared.file?.content)) return false;
+  // Wave B PR 5: a page that may take (or leave) the split layout writes its head and parts through publishMutation.
+  if (mayTakeSplitLayout(prepared.file)) return false;
   return independentGroup(publicationGroupKey(row)) || singleWrite(row);
 }
 

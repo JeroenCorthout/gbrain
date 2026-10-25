@@ -2,12 +2,12 @@ import type { BrainEngine } from '../engine.ts';
 import { OperationError, opError } from '../ops/contract.ts';
 import { readFix } from '../ops/op-fix.ts';
 import { discoverWithdrawalTargets, withdrawalDiscoveryFailure, WITHDRAWAL_LIMITS, type WithdrawalClaim } from '../facts/withdrawal-discovery.ts';
-import type { PersistenceEffect } from './effect-model.ts';
+import { splitGitEffect, type PersistenceEffect } from './effect-model.ts';
 import { guardEffectSource } from './effect-recovery.ts';
 import { declarePersistenceProtocol } from './protocol.ts';
 
 export function targetedWithdrawalEffect(effect: PersistenceEffect): boolean {
-  if (effect.data.version === undefined) return false;
+  if (effect.data.version === undefined || splitGitEffect(effect)) return false;
   const targets = effect.data.targets;
   if (effect.data.version !== 2 || !Array.isArray(targets) || targets.length > WITHDRAWAL_LIMITS.targets || Buffer.byteLength(JSON.stringify(targets)) > WITHDRAWAL_LIMITS.targetBytes ||
     targets.some((target, index) => !target || typeof target.slug !== 'string' || !target.slug || !Number.isSafeInteger(target.page_id) || target.page_id <= 0 ||

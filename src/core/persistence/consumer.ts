@@ -1,5 +1,6 @@
 import type { BrainEngine, ReservedConnection } from '../engine.ts';
 import type { GBrainConfig } from '../config.ts';
+import { sweepSplitStaging } from '../split-layout/index.ts';
 import { claimableWriteSql, foregroundPrioritySql, claimGroupFollowers, claimNextLaneHead, claimNextWrite, publicationGroupKey, syncGroup, floorPreparationAttempts, hasClaimableWrite, getWriteRequestById, releaseUnpublishedClaim, renewWriteClaim, vacuumPersistenceQueues, independentGroup, sweepSegmentStorage, yieldToEventLoop } from './journal.ts';
 import { connectionCapFailure, finishPreparationStalled, finishUnpublishedFailure, preparationAbortReason, recoverPublication, transientDatabaseFailure, type PreparedMutation } from './coordinator.ts';
 import { localHostId } from './identity.ts';
@@ -651,6 +652,7 @@ export class PersistenceConsumer implements PersistenceConsumerLike {
       this.publishedSinceMaintenance = 0;
       this.maintenanceWorker = runCompactionPass(this.engine, { hostId: this.hostId, notice: this.opts.drainNotice })
         .then(yieldToEventLoop).then(() => sweepSegmentStorage(this.engine).catch(error => this.report(error)))
+        .then(() => { try { sweepSplitStaging(); } catch (error) { this.report(error); } })
         .then(yieldToEventLoop).then(() => vacuumPersistenceQueues(this.engine))
         .then(rows => { this.maintenanceVolume = 50 + Math.ceil(rows * 0.2); }).catch(error => this.report(error))
         .finally(() => { this.maintenanceWorker = undefined; });

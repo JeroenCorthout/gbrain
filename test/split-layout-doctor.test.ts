@@ -100,7 +100,10 @@ for (const backend of testBackends()) {
     test('stray parts directories warn with their reason; an oversize single file warns with the split-storage preview', async () => {
       await inBrain(async brain => {
         await put(brain, 'notes/plain-example', page('Plain', 3));
+        // Written under a raised threshold, so it stays one oversize file; the write path (lane 5b) would split it.
+        await brain.engine.setConfig(SPLIT_MAX_FILE_BYTES_KEY, String(1024 ** 2));
         await put(brain, 'notes/big-example', page('Big', 120));
+        await brain.engine.setConfig(SPLIT_MAX_FILE_BYTES_KEY, String(THRESHOLD));
         await put(brain, 'notes/split-example', page('Split', 120));
         await writeSplit(brain, 'notes/split-example');
         mkdirSync(join(brain.root, 'notes/.orphan-example.gbparts'), { recursive: true });
