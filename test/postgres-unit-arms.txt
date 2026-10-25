@@ -447,6 +447,7 @@ test/split-layout-doctor.test.ts
 test/split-layout-managed-sync.test.ts
 test/split-layout-publish-recovery.test.ts
 test/split-layout-publish.test.ts
+test/split-layout-reserved-key.test.ts
 test/split-layout-sync.test.ts
 test/stats-health-source-scope.test.ts
 test/sync-absent-from-worktree-s27.test.ts
