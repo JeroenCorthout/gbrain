@@ -164,7 +164,7 @@ async function assertNotSplitHead(engine: BrainEngine, file: SplitTarget): Promi
   }
   if (!declaresPartsKey(prefix)) return;
   throw opError('split_head_content', 'The content is a split page head, not a page file, so it was not written.',
-    `The content for ${basename(file.path)} has a top-level gbrain_parts key: it is the head file of a split page (the first bytes of the page and the manifest of its part files), read and written back as if it were the whole page. Writing it would replace the page with its lead and remove every part, so nothing was written. Write the whole page instead (gbrain get gives it whole), or change how the page is stored with gbrain pages split-storage <slug>, which previews before --apply.`,
+    `The content for ${basename(file.path)} has a top-level gbrain_parts key: it is the head file of a split page (the first bytes of the page and the manifest of its part files), read and written back as if it were the whole page. Writing it would replace the page with its lead and remove every part, so nothing was written. Write the whole page instead (gbrain get gives it whole), or change how the page is stored with gbrain pages split-storage and the page slug, which previews before --apply.`,
     { docs: 'docs/guides/write-refusals.md#split_head_content' });
 }
 
