@@ -135,3 +135,17 @@ test('the push gate streams a part over the whole-read cap and refuses its seams
     }
   }
 }, T);
+
+test('the push gate refuses every staged part of a head whose manifest it cannot read, so a seam secret never passes', async () => {
+  for (const breakHead of ['manifest', 'missing'] as const) {
+    const { work, env } = pushWorkspace();
+    const page = await splitPage(cutLineBody(GITHUB), work);
+    if (breakHead === 'manifest') writeFileSync(page.abs(HEAD), page.head.replace('gbrain_parts:', 'gbrain_parts: ['));
+    else rmSync(page.abs(HEAD));
+    const result = await withEnv(env, () => workspacePush({ dir: work, branch: 'main', allowUnverifiedRemote: true }));
+    expect(result.status).toBe('blocked_unscannable');
+    const why = breakHead === 'manifest' ? 'its head has no valid gbrain_parts manifest' : 'its head is not in the index';
+    expect(result.unscannable).toEqual(page.parts.map(part => `${part.rel} (split page seam: ${why})`));
+    expect(execFileSync('git', ['-C', work, 'diff', '--cached', '--name-only'], { encoding: 'utf8' })).toBe('');
+  }
+}, T);
