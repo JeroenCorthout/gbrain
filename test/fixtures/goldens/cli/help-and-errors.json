@@ -748,6 +748,7 @@
         "  --since                    On/after: YYYY-MM-DD or 7d/2w/1y.",
         "  --until                    On/before.",
         "  --source-id                One source, or '__all__'.",
+        "  --source-ids               Narrow to these sources (omit or [] for all you can read).",
         "  --cross-modal              Default auto.",
         "  --embedding-column         Registered embedding column.",
         "  --adaptive-return          true for one answer (fewer rows, never empty); omit for breadth.",

@@ -283,8 +283,10 @@ export async function prepareFileTarget(engine: BrainEngine, row: Pick<WriteRequ
   const root = join(binding.local_path, binding.relative_path);
   // #5622: a new page captured from a file inside the source is published to that file.
   const capturedPath = !snapshot && options.capture ? options.capture.path : recordedPathFromFileUri(snapshot?.page.source_uri, root);
-  const mode = snapshot?.page.source_path ? await scannerSlugRootMode(engine, row.source_id, root) : undefined;
-  const candidate = resolveSourceLocalFilePath(root, snapshot?.page.source_path, row.slug, mode)
+  // G7a: a strict page that turned private keeps the path of the file its removal took (withheld_source_path) and writes it there again.
+  const recordedPath = snapshot?.page.source_path || snapshot?.page.withheld_source_path || null;
+  const mode = recordedPath ? await scannerSlugRootMode(engine, row.source_id, root) : undefined;
+  const candidate = resolveSourceLocalFilePath(root, recordedPath, row.slug, mode)
     ?? (capturedPath ? join(root, capturedPath) : join(root, `${row.slug}.md`));
   if (isWindowsColonTarget(relative(root, candidate))) {
     if (!options.allowMissing && publishesDatabaseOnly(root, row.slug, snapshot)) return undefined;
@@ -341,7 +343,9 @@ async function compareFileTarget(engine: BrainEngine, row: Pick<WriteRequest, 's
     const claimants = await findLiveFileClaimants(engine, target);
     if (claimants.length) { options.sharedOrigin.onShared({ target, claimants }); return undefined; }
   }
-  if (!before && snapshot && !snapshot.page.deleted_at && !options.allowMissing) {
+  // G7a: a page whose file its private transition removed (withheld_source_path) writes it again; the file is absent by design.
+  const withheld = !snapshot?.page.source_path && Boolean(snapshot?.page.withheld_source_path);
+  if (!before && snapshot && !snapshot.page.deleted_at && !options.allowMissing && !withheld) {
     // A declared db_only page has no canonical file by design and publishes to
     // the database only. gbrain.yml is consulted only here, where the write
     // would otherwise refuse, so an invalid config can only change the refusal.

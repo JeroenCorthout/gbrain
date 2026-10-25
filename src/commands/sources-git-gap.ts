@@ -97,7 +97,7 @@ export function parseGitGapArgs(args: string[]): { sourceId: string; json: boole
   return { sourceId: positional[0]!, json: args.includes('--json'), sample };
 }
 
-type Key = { id: string; slug: string; source_id: string; source_path: string | null; source_path_bytes: number; source_uri: string | null; type: string;
+type Key = { id: string; slug: string; source_id: string; source_path: string | null; source_path_bytes: number; source_uri: string | null; withheld_source_path: string | null; type: string;
   frontmatter: unknown; database_only_reason: string | null; segmented: boolean; lineage_private: boolean; revision: string | null };
 
 const zeros = <K extends string>(keys: readonly K[]) => Object.fromEntries(keys.map(key => [key, 0])) as Record<K, number>;
@@ -139,7 +139,7 @@ export async function censusGitGap(engine: BrainEngine, sourceId: string, opts: 
     if (opts.deadlineAt !== undefined && Date.now() >= opts.deadlineAt) { census.complete = false; break; }
     const done = await engine.transaction(async tx => {
       await tx.executeRaw('SET TRANSACTION READ ONLY');
-      const batch = await tx.executeRaw<Key>(`SELECT id::text, slug, source_id, source_path, octet_length(source_path) AS source_path_bytes, source_uri, type, frontmatter,
+      const batch = await tx.executeRaw<Key>(`SELECT id::text, slug, source_id, source_path, octet_length(source_path) AS source_path_bytes, source_uri, withheld_source_path, type, frontmatter,
           database_only_reason, body_storage='segmented' AS segmented, knowledge_revision::text AS revision, NOT ${privatePagesFilterFragment('pages')} AS lineage_private
         FROM pages WHERE source_id=$1 AND deleted_at IS NULL AND pages.id > $2::bigint ORDER BY pages.id LIMIT ${BATCH}`, [sourceId, cursor]);
       if (batch.length) { await censusBatch(tx, batch, census, { checkout, policy, incarnation: source!.incarnation, sample: opts.sample }); cursor = batch[batch.length - 1]!.id; }

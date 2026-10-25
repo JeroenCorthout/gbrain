@@ -291,8 +291,9 @@ live in `test/postgres-engine-rls-scope.test.ts`.
 keeps its text in `page_segment_texts`, its layout and headings in
 `page_body_manifest`, uploads in progress in `page_body_stagings` /
 `page_body_staging_parts` (with the segment texts each one holds in
-`page_body_staging_texts`), and view sizes in `page_view_digests`. gbrain
-enables RLS on all six on every schema replay, as it does on `pages` and
+`page_body_staging_texts`), view sizes in `page_view_digests`, and per-segment
+derivation results (link candidates, window anchors) in `page_segment_derivations`.
+gbrain enables RLS on all seven on every schema replay, as it does on `pages` and
 `content_chunks`, so with no policy a role that does not bypass RLS reads no row
 of them. Title search, the source-scoped vector scan, the chunk windows search
 reads around its hits, `get_chunks` and get_page check a chunk of a page stored
@@ -335,6 +336,9 @@ CREATE POLICY page_body_staging_parts_scope_filter ON page_body_staging_parts
 CREATE POLICY page_view_digests_scope_filter ON page_view_digests
   USING (current_setting('app.scopes', true) = '*'
          OR EXISTS (SELECT 1 FROM pages p WHERE p.id = page_id));
+CREATE POLICY page_segment_derivations_scope_filter ON page_segment_derivations
+  USING (current_setting('app.scopes', true) = '*'
+         OR EXISTS (SELECT 1 FROM pages p WHERE p.id = page_id));
 CREATE POLICY content_chunks_scope_filter ON content_chunks
   USING (current_setting('app.scopes', true) = '*'
          OR EXISTS (SELECT 1 FROM pages p WHERE p.id = page_id));
@@ -351,6 +355,7 @@ ALTER TABLE page_body_stagings FORCE ROW LEVEL SECURITY;
 ALTER TABLE page_body_staging_parts FORCE ROW LEVEL SECURITY;
 ALTER TABLE page_body_staging_texts FORCE ROW LEVEL SECURITY;
 ALTER TABLE page_view_digests FORCE ROW LEVEL SECURITY;
+ALTER TABLE page_segment_derivations FORCE ROW LEVEL SECURITY;
 ALTER TABLE content_chunks FORCE ROW LEVEL SECURITY;
 ```
 <!-- gbrain:segmented-rls-recipe:end -->

@@ -241,6 +241,7 @@ const LINK_SOURCE_ID_PARAM = {
 const LINK_ALL_SOURCES_PARAM = {
   type: 'boolean',
   description: 'Same as source_id __all__.',
+  fullSurfaceOnly: true,
 } as const;
 const LINK_LIMIT_PARAM = { type: 'number', description: `Rows per call (default ${LINK_READ_DEFAULT_LIMIT}, max ${LINK_READ_MAX_LIMIT}).` } as const;
 const LINK_CURSOR_PARAM = { type: 'string', description: 'next_cursor from the previous call (same filters).' } as const;

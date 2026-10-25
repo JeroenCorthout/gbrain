@@ -61,12 +61,17 @@ describe() {
     "$(mem_free_pct)" "$(swap_used)" "$(load_1m)" "$(top_names)" | tr -cd 'A-Za-z0-9 ._/|%:,=+-' | cut -c1-140
 }
 
+# A failed post names curl's exit code and the HTTP status on stderr (the loop discards it; stop's lands in the job log).
 post() {
-  local url="${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY:-}/actions/runs/${GITHUB_RUN_ID:-}"
-  curl -fsS --max-time 10 -o /dev/null -X POST \
+  local url="${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY:-}/actions/runs/${GITHUB_RUN_ID:-}" code rc
+  code=$(curl -sS --max-time 10 -o /dev/null -w '%{http_code}' -X POST \
     -H "Authorization: Bearer ${GH_TOKEN:-}" -H 'Accept: application/vnd.github+json' \
     "${GITHUB_API_URL:-https://api.github.com}/repos/${GITHUB_REPOSITORY:-}/statuses/${GBRAIN_HEARTBEAT_SHA:-}" \
-    -d "{\"state\":\"$1\",\"context\":\"$CONTEXT\",\"description\":\"$2\",\"target_url\":\"$url\"}" >/dev/null 2>&1
+    -d "{\"state\":\"$1\",\"context\":\"$CONTEXT\",\"description\":\"$2\",\"target_url\":\"$url\"}" 2>/dev/null)
+  rc=$?
+  case "$code" in 2[0-9][0-9]) [ "$rc" = 0 ] && return 0 ;; esac
+  echo "heartbeat: $1 post failed (curl exit $rc, HTTP ${code:-000})" >&2
+  return 1
 }
 
 loop() {

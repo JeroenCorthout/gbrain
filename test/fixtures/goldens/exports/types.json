@@ -185,6 +185,7 @@
           "readManifest: (pageId: number, opts?: { generation?: number; stagingId?: string; region?: BodyRegion; lastN?: number; }) => Promise<ManifestRow[]>",
           "readPageSnapshot: (slug: string, opts?: PageSnapshotOptions) => Promise<PageSnapshot | null>",
           "readPageSnapshotsBatch: (refs: ReadonlyArray<{ slug: string; sourceId: string; }>, opts?: { maxBytes?: number; includeDeleted?: boolean; absentIsNull?: boolean; }) => Promise<PageSnapshotBatch>",
+          "readSegmentDerivations: (pageId: number, opts?: { kind?: SegmentDerivationKind; occurrenceIds?: readonly number[]; }) => Promise<SegmentDerivationRow[]>",
           "readSegmentTexts: (sourceId: string, sha256s: readonly Uint8Array[]) => Promise<Map<string, Uint8Array>>",
           "readonly kind: \"postgres\" | \"pglite\"",
           "reconnect: (ctx?: { error?: unknown; }) => Promise<void>",
@@ -204,6 +205,7 @@
           "resolveSlugsByPaths: (paths: string[], opts: { sourceId: string; }) => Promise<Map<string, string>>",
           "resolveTake: (pageId: number, rowNum: number, resolution: TakeResolution) => Promise<void>",
           "restorePage: (slug: string, opts?: { sourceId?: string; }) => Promise<boolean>",
+          "retireSegmentDerivations: (pageId: number, liveOccurrenceIds: readonly number[], opts?: { kind?: SegmentDerivationKind; }) => Promise<number>",
           "revertToVersion: (slug: string, versionId: number, opts?: { sourceId?: string; }) => Promise<void>",
           "rewriteLinks: (oldSlug: string, newSlug: string) => Promise<void>",
           "runMigration: (version: number, sql: string) => Promise<void>",
@@ -244,6 +246,7 @@
           "upsertChunks: (slug: string, chunks: ChunkInput[], opts?: { sourceId?: string; embeddingColumn?: ResolvedColumn; expectedRevision?: string; sealChunkerVersion?: number; pageId?: number; deferSeal?: true; } & BatchOpts) => Promise<void>",
           "upsertEventProjection: (opts: { depthSlug: string; eventSlug: string; date: string; summary: string; detail?: string; sourceId?: string; }) => Promise<{ projected: boolean; }>",
           "upsertFile: (spec: FileSpec) => Promise<{ id: number; created: boolean; }>",
+          "upsertSegmentDerivations: (rows: readonly SegmentDerivationInput[]) => Promise<void>",
           "withReservedConnection: <T>(fn: (conn: ReservedConnection) => Promise<T>, opts?: { route?: \"ordinary\"; selfContained?: boolean; }) => Promise<T>",
           "writeContradictionsRun: (row: { run_id: string; judge_model: string; prompt_version: string; queries_evaluated: number; queries_with_contradiction: number; total_contradictions_flagged: number; wilson_ci_lower: number; wilson_ci_upper: number; judge_errors_total: number; cost_usd_total: number; duration_ms: number; source_tier_breakdown: Record<string, unknown>; report_json: Record<string, unknown>; }) => Promise<boolean>"
         ],
@@ -941,7 +944,8 @@
           "title: string",
           "type: string",
           "updated_at: Date",
-          "updated_at_iso?: string | undefined"
+          "updated_at_iso?: string | undefined",
+          "withheld_source_path?: string | null | undefined"
         ],
         "name": "Page"
       },
@@ -1233,6 +1237,7 @@
           "readManifest: (pageId: number, opts?: { generation?: number; stagingId?: string; region?: BodyRegion; lastN?: number; }) => Promise<ManifestRow[]>",
           "readPageSnapshot: (slug: string, opts?: PageSnapshotOptions) => Promise<PageSnapshot | null>",
           "readPageSnapshotsBatch: (refs: ReadonlyArray<{ slug: string; sourceId: string; }>, opts?: { maxBytes?: number; includeDeleted?: boolean; absentIsNull?: boolean; }) => Promise<PageSnapshotBatch>",
+          "readSegmentDerivations: (pageId: number, opts?: { kind?: SegmentDerivationKind; occurrenceIds?: readonly number[]; }) => Promise<SegmentDerivationRow[]>",
           "readSegmentTexts: (sourceId: string, sha256s: readonly Uint8Array[]) => Promise<Map<string, Uint8Array>>",
           "readonly kind: \"postgres\"",
           "reconnect: (ctx?: { error?: unknown; }) => Promise<void>",
@@ -1252,6 +1257,7 @@
           "resolveSlugsByPaths: (paths: string[], opts: { sourceId: string; }) => Promise<Map<string, string>>",
           "resolveTake: (pageId: number, rowNum: number, resolution: TakeResolution) => Promise<void>",
           "restorePage: (slug: string, opts?: { sourceId?: string; }) => Promise<boolean>",
+          "retireSegmentDerivations: (pageId: number, liveOccurrenceIds: readonly number[], opts?: { kind?: SegmentDerivationKind; }) => Promise<number>",
           "revertToVersion: (slug: string, versionId: number, opts?: { sourceId?: string; }) => Promise<void>",
           "rewriteLinks: (_oldSlug: string, _newSlug: string) => Promise<void>",
           "runMigration: (_version: number, sqlStr: string) => Promise<void>",
@@ -1293,6 +1299,7 @@
           "upsertChunks: (slug: string, chunks: ChunkInput[], opts?: { sourceId?: string; embeddingColumn?: ResolvedColumn; expectedRevision?: string; sealChunkerVersion?: number; pageId?: number; deferSeal?: true; } & BatchOpts) => Promise<void>",
           "upsertEventProjection: (opts: { depthSlug: string; eventSlug: string; date: string; summary: string; detail?: string; sourceId?: string; }) => Promise<{ projected: boolean; }>",
           "upsertFile: (spec: FileSpec) => Promise<{ id: number; created: boolean; }>",
+          "upsertSegmentDerivations: (rows: readonly SegmentDerivationInput[]) => Promise<void>",
           "withReservedConnection: <T>(fn: (conn: ReservedConnection) => Promise<T>, opts?: { route?: \"ordinary\"; selfContained?: boolean; }) => Promise<T>",
           "writeContradictionsRun: (row: { run_id: string; judge_model: string; prompt_version: string; queries_evaluated: number; queries_with_contradiction: number; total_contradictions_flagged: number; wilson_ci_lower: number; wilson_ci_upper: number; judge_errors_total: number; cost_usd_total: number; duration_ms: number; source_tier_breakdown: Record<string, unknown>; report_json: Record<string, unknown>; }) => Promise<boolean>"
         ],
@@ -3514,6 +3521,7 @@
           "readManifest: (pageId: number, opts?: { generation?: number; stagingId?: string; region?: BodyRegion; lastN?: number; }) => Promise<ManifestRow[]>",
           "readPageSnapshot: (slug: string, opts?: PageSnapshotOptions) => Promise<PageSnapshot | null>",
           "readPageSnapshotsBatch: (refs: ReadonlyArray<{ slug: string; sourceId: string; }>, opts?: { maxBytes?: number; includeDeleted?: boolean; absentIsNull?: boolean; }) => Promise<PageSnapshotBatch>",
+          "readSegmentDerivations: (pageId: number, opts?: { kind?: SegmentDerivationKind; occurrenceIds?: readonly number[]; }) => Promise<SegmentDerivationRow[]>",
           "readSegmentTexts: (sourceId: string, sha256s: readonly Uint8Array[]) => Promise<Map<string, Uint8Array>>",
           "readonly kind: \"postgres\" | \"pglite\"",
           "reconnect: (ctx?: { error?: unknown; }) => Promise<void>",
@@ -3533,6 +3541,7 @@
           "resolveSlugsByPaths: (paths: string[], opts: { sourceId: string; }) => Promise<Map<string, string>>",
           "resolveTake: (pageId: number, rowNum: number, resolution: TakeResolution) => Promise<void>",
           "restorePage: (slug: string, opts?: { sourceId?: string; }) => Promise<boolean>",
+          "retireSegmentDerivations: (pageId: number, liveOccurrenceIds: readonly number[], opts?: { kind?: SegmentDerivationKind; }) => Promise<number>",
           "revertToVersion: (slug: string, versionId: number, opts?: { sourceId?: string; }) => Promise<void>",
           "rewriteLinks: (oldSlug: string, newSlug: string) => Promise<void>",
           "runMigration: (version: number, sql: string) => Promise<void>",
@@ -3573,6 +3582,7 @@
           "upsertChunks: (slug: string, chunks: ChunkInput[], opts?: { sourceId?: string; embeddingColumn?: ResolvedColumn; expectedRevision?: string; sealChunkerVersion?: number; pageId?: number; deferSeal?: true; } & BatchOpts) => Promise<void>",
           "upsertEventProjection: (opts: { depthSlug: string; eventSlug: string; date: string; summary: string; detail?: string; sourceId?: string; }) => Promise<{ projected: boolean; }>",
           "upsertFile: (spec: FileSpec) => Promise<{ id: number; created: boolean; }>",
+          "upsertSegmentDerivations: (rows: readonly SegmentDerivationInput[]) => Promise<void>",
           "withReservedConnection: <T>(fn: (conn: ReservedConnection) => Promise<T>, opts?: { route?: \"ordinary\"; selfContained?: boolean; }) => Promise<T>",
           "writeContradictionsRun: (row: { run_id: string; judge_model: string; prompt_version: string; queries_evaluated: number; queries_with_contradiction: number; total_contradictions_flagged: number; wilson_ci_lower: number; wilson_ci_upper: number; judge_errors_total: number; cost_usd_total: number; duration_ms: number; source_tier_breakdown: Record<string, unknown>; report_json: Record<string, unknown>; }) => Promise<boolean>"
         ],
@@ -4382,7 +4392,7 @@
           "dryRun?: boolean | undefined",
           "includeFrontmatter?: boolean | undefined",
           "jsonMode?: boolean | undefined",
-          "mode: \"timeline\" | \"all\" | \"links\"",
+          "mode: \"timeline\" | \"links\" | \"all\"",
           "quiet?: boolean | undefined",
           "signal?: AbortSignal | undefined",
           "slugs?: string[] | undefined",
@@ -6842,6 +6852,7 @@
           "readManifest: (pageId: number, opts?: { generation?: number; stagingId?: string; region?: BodyRegion; lastN?: number; }) => Promise<ManifestRow[]>",
           "readPageSnapshot: (slug: string, opts?: PageSnapshotOptions) => Promise<PageSnapshot | null>",
           "readPageSnapshotsBatch: (refs: ReadonlyArray<{ slug: string; sourceId: string; }>, opts?: { maxBytes?: number; includeDeleted?: boolean; absentIsNull?: boolean; }) => Promise<PageSnapshotBatch>",
+          "readSegmentDerivations: (pageId: number, opts?: { kind?: SegmentDerivationKind; occurrenceIds?: readonly number[]; }) => Promise<SegmentDerivationRow[]>",
           "readSegmentTexts: (sourceId: string, sha256s: readonly Uint8Array[]) => Promise<Map<string, Uint8Array>>",
           "readonly kind: \"pglite\"",
           "reconnect: (_ctx?: { error?: unknown; }) => Promise<void>",
@@ -6861,6 +6872,7 @@
           "resolveSlugsByPaths: (paths: string[], opts: { sourceId: string; }) => Promise<Map<string, string>>",
           "resolveTake: (pageId: number, rowNum: number, resolution: TakeResolution) => Promise<void>",
           "restorePage: (slug: string, opts?: { sourceId?: string; }) => Promise<boolean>",
+          "retireSegmentDerivations: (pageId: number, liveOccurrenceIds: readonly number[], opts?: { kind?: SegmentDerivationKind; }) => Promise<number>",
           "revertToVersion: (slug: string, versionId: number, opts?: { sourceId?: string; }) => Promise<void>",
           "rewriteLinks: (_oldSlug: string, _newSlug: string) => Promise<void>",
           "runMigration: (_version: number, sql: string) => Promise<void>",
@@ -6901,6 +6913,7 @@
           "upsertChunks: (slug: string, chunks: ChunkInput[], opts?: { sourceId?: string; embeddingColumn?: ResolvedColumn; expectedRevision?: string; sealChunkerVersion?: number; pageId?: number; deferSeal?: true; } & BatchOpts) => Promise<void>",
           "upsertEventProjection: (opts: { depthSlug: string; eventSlug: string; date: string; summary: string; detail?: string; sourceId?: string; }) => Promise<{ projected: boolean; }>",
           "upsertFile: (spec: FileSpec) => Promise<{ id: number; created: boolean; }>",
+          "upsertSegmentDerivations: (rows: readonly SegmentDerivationInput[]) => Promise<void>",
           "walRepairReceipt: WalRepairReceipt | null",
           "withReservedConnection: <T>(fn: (conn: ReservedConnection) => Promise<T>) => Promise<T>",
           "writeContradictionsRun: (row: { run_id: string; judge_model: string; prompt_version: string; queries_evaluated: number; queries_with_contradiction: number; total_contradictions_flagged: number; wilson_ci_lower: number; wilson_ci_upper: number; judge_errors_total: number; cost_usd_total: number; duration_ms: number; source_tier_breakdown: Record<string, unknown>; report_json: Record<string, unknown>; }) => Promise<boolean>"
@@ -9254,7 +9267,8 @@
           "title: string",
           "type: string",
           "updated_at: Date",
-          "updated_at_iso?: string | undefined"
+          "updated_at_iso?: string | undefined",
+          "withheld_source_path?: string | null | undefined"
         ],
         "name": "Page"
       },

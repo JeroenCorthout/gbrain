@@ -12,7 +12,7 @@
  *    plus the serve-side timeout answer.
  * 4. No production seam.
  */
-import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'bun:test';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from 'bun:test';
 import { makeContext } from '../src/cli/main.ts';
 import { PGLiteEngine } from '../src/core/pglite-engine.ts';
 import { cliRequestContext, executeCliSocketRequest, mergedRequestConfig } from '../src/core/cli-socket/execute.ts';
@@ -20,7 +20,7 @@ import { cliSocketIdentity } from '../src/core/cli-socket/identity.ts';
 import { resetPgliteState } from './helpers/reset-pglite.ts';
 import { withEnv } from './helpers/with-env.ts';
 import { serializeOperationError, warmRoundTripTimeout } from '../src/core/cli-socket/protocol.ts';
-import { installOutputCapture } from '../src/core/cli-socket/output-capture.ts';
+import { _uninstallOutputCaptureForTests, installOutputCapture } from '../src/core/cli-socket/output-capture.ts';
 
 let engine: PGLiteEngine;
 const op = { params: {} };
@@ -33,6 +33,7 @@ beforeAll(async () => {
 }, 60_000);
 
 afterAll(async () => { await engine.disconnect(); });
+afterEach(() => _uninstallOutputCaptureForTests());
 
 beforeEach(async () => {
   await resetPgliteState(engine);
