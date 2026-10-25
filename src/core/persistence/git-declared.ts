@@ -169,9 +169,12 @@ export function gitHomeRequired(row: Pick<WriteRequest, 'source_id' | 'slug'>, r
   return opError('git_home_required', message, 'Ask the user which git home to configure, then submit the write again with a new request_id.', { reason, why, fix, docs: DOCS });
 }
 
-/** The page a strict file target publishes, judged for its class; streamed content keeps the snapshot's frontmatter. */
+/** The page a strict file target publishes, judged for its class; streamed content renders its own page, else the snapshot's. */
 export function renderedPageForClass(slug: string, content: string | Uint8Array | StreamedFileContent, snapshot: PageSnapshot | null): { id: number | null; slug: string; type: string | null; frontmatter: unknown } {
-  if (isStreamedContent(content)) return { id: snapshot?.page.id ?? null, slug, type: snapshot?.page.type ?? null, frontmatter: snapshot?.page.frontmatter };
+  if (isStreamedContent(content)) {
+    const page = content.page ?? { type: snapshot?.page.type ?? null, frontmatter: snapshot?.page.frontmatter };
+    return { id: snapshot?.page.id ?? null, slug, ...page };
+  }
   const parsed = parseMarkdown(typeof content === 'string' ? content : Buffer.from(content).toString('utf8'), `${slug}.md`);
   return { id: snapshot?.page.id ?? null, slug, type: parsed.typeExplicit ? parsed.type : snapshot?.page.type ?? parsed.type, frontmatter: parsed.frontmatter };
 }
