@@ -25,7 +25,7 @@ describe('BEHAVIOR_CHANGES table split', () => {
 
   // The notice groups rows by release in the order each release first appears, keeping table order within a release.
   test('a full disclosure emits every row once, numbered in table order within its release', () => {
-    const chain: ChainDisclosure = { plane: Object.keys(CHAT_FALLBACK_PLANE_LABEL)[0] as ChainDisclosure['plane'], entries: ['model-a'], providers: ['provider-a'], onRefusal: false, filePath: null };
+    const chain: ChainDisclosure = { plane: Object.keys(CHAT_FALLBACK_PLANE_LABEL)[0] as ChainDisclosure['plane'], entries: ['model-a'], providers: ['provider-a'], onRefusal: false, filePath: '/tmp/chat-fallback.json' };
     const byRelease = new Map<string, string[]>();
     for (const c of BEHAVIOR_CHANGES) byRelease.set(c.since, [...(byRelease.get(c.since) ?? []), (typeof c.text === 'string' ? c.text : c.text(chain, false))!]);
     const texts = [...byRelease.values()].flat();
