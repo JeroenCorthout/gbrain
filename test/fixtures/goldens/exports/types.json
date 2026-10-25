@@ -944,7 +944,8 @@
           "title: string",
           "type: string",
           "updated_at: Date",
-          "updated_at_iso?: string | undefined"
+          "updated_at_iso?: string | undefined",
+          "withheld_source_path?: string | null | undefined"
         ],
         "name": "Page"
       },
@@ -9266,7 +9267,8 @@
           "title: string",
           "type: string",
           "updated_at: Date",
-          "updated_at_iso?: string | undefined"
+          "updated_at_iso?: string | undefined",
+          "withheld_source_path?: string | null | undefined"
         ],
         "name": "Page"
       },

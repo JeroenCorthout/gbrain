@@ -10,6 +10,60 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.456.0] - 2026-10-25
+
+**In an OpenClaw workspace, `gbrain bootstrap render` writes the due-job list as SCHEDULES.md, and the OpenClaw skill scaffold installs five brain-first skills instead of the full bundle. `list_brain_skillpack` names each skill `name` instead of `slug`.**
+
+OpenClaw 2026.10.6 retired its own HEARTBEAT.md, and `openclaw doctor --fix` archives and removes any workspace file by that name, so the rendered AGENTS.md pointed at a missing file. Render now detects an OpenClaw workspace (`OPENCLAW_WORKSPACE_DIR`, `OPENCLAW_WORKSPACE`, or a workspace under `OPENCLAW_STATE_DIR`, `~/.openclaw` or `~/.openclaw-<profile>`), or takes `--host openclaw`, and writes SCHEDULES.md; AGENTS.md names whichever file was written. Other harnesses and minimal mode keep HEARTBEAT.md.
+
+OpenClaw puts every workspace skill's list entry in every prompt, so the full scaffold (127 files, 64 skills) cost each model call whether or not a skill was used. `gbrain skillpack scaffold --harness openclaw` without `--persona`, `--skill` or `--all` now installs query, brain-ops, capture, data-loss-gate and resolve-before-asking (30 files). On a 10-task harness check with claude-haiku-5-5, the bundle's prompt cost per model call over an MCP-only install fell from 4,867 tokens to 816, about 38,000 input tokens per trial, with the same pass rate (12 of 20 before and after).
+
+### What to watch for after you upgrade
+
+- A workspace rendered on OpenClaw before this release: run `gbrain bootstrap render --only AGENTS.md,HEARTBEAT.md --force` to write SCHEDULES.md and point AGENTS.md at it.
+- `--all` still installs the full bundle on OpenClaw. Existing workspaces keep the skills they have.
+- MCP clients that read `skills[].slug` from `list_brain_skillpack`, or `slug` from `get_skill` with `source_id`, read `name` instead. A skill name is the key `get_skill` takes; it was never a page slug.
+
+### Itemized changes
+
+- `src/core/bootstrap/render-host.ts`: `detectOpenClawWorkspace`, `resolveRenderHost` and the note render prints; `renderWorkspace` takes `host` (default `auto`), and an unknown host refuses with `unknown_host` before anything is written.
+- `src/core/bootstrap/render.ts`, `templates/bootstrap/AGENTS.md.template`, `templates/bootstrap/HEARTBEAT.md.template`: the `openclawDest` template field and the `SCHEDULES_FILE` token.
+- `src/commands/skillpack/harness.ts`: the OpenClaw core skill set as the default when no persona, skill or `--all` is given.
+- `src/core/skillpack/brain-resident-locate.ts`, `src/core/shared-skills/compatibility.ts`: pack skills and skill detail carry `name`.
+- Docs: INSTALL_FOR_AGENTS.md steps 5 and 6, docs/INSTALL.md, the personal-brain tutorial, the skillpacks-as-scaffolding guide, docs/mcp/TOOL_REFERENCE.md.
+- Tests: `test/bootstrap-render.test.ts` (six render-host tests), `test/skillpack-scaffold-harness.test.ts` (OpenClaw default and `--all`), `test/skillpack-brain-resident-locate.test.ts` and the shared-skills transport cases (`name`, no `slug` key).
+
+## [0.60.455.0] - 2026-10-25
+
+**Sync reads a source repository owned by another Unix user once the operator allows it with Git's `safe.directory`. Before, it failed with "HEAD does not name a commit" however the directory was allowed.**
+
+Sync reads a source checkout through a hardened Git environment that turns off system and global config and drops every `GIT_*` variable. Those are the three places Git reads `safe.directory` from, so Git refused the repository for dubious ownership, and the empty read surfaced as a missing HEAD. The hardened environment now carries the operator's `safe.directory` entries, from system config, global config and `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_n`/`GIT_CONFIG_VALUE_n`, in Git's order. Every other key in those places stays out, and the hardening arguments still apply. A config edit is picked up within 30 seconds. Other Git calls already read system and global config, and they now also keep a `safe.directory` set in the environment.
+
+### Itemized changes
+
+- `src/core/hardened-git.ts`: `hardenedGitEnvironment` adds the operator's `safe.directory` entries as environment config. System and global entries are read from `/` with `git config --includes --show-scope` (so no repository's config takes part) and cached for 30 s.
+- `src/core/git-env.ts`: `envSafeDirectories` and `safeDirectoryEnv`; `gitChildEnv` keeps environment `safe.directory` entries and still drops every other `GIT_CONFIG_*` key.
+- `test/hardened-git-safe-directory-7584.test.ts`: dubious ownership forced with Git's `GIT_TEST_ASSUME_DIFFERENT_OWNER` through a `git` wrapper on PATH. With no allowance the read is refused; a global, system or environment allowance lets it through; a `core.excludesFile` set beside the allowance is not applied; an allowance for another directory does not open this one.
+
+## [0.60.454.0] - 2026-10-25
+
+**On a git-canonical source, a page that turned private gets its file back when it turns world again.** Turning private still removes the page's file in a commit, so no commit holds private text. The page now remembers the path that file had, and when it turns world again the file is written back at that path. Before, a world concept republished without full provenance passed through a private step and lost its file for good, and any other page refused to turn world again (`source_changed`).
+
+### What changed
+
+| Situation | Before | Now |
+|---|---|---|
+| A file-backed page under a derive folder (`concepts/`, `atoms/`, ...) turns private, then world | it stayed database-only, and `gbrain sources git-gap` listed it as `declared.private` | its file is committed again at the path it had (`concepts/Some Idea.md` stays `concepts/Some Idea.md`) |
+| Any other page on a git-canonical source turns private, then world | the write refused with `source_changed` ("the canonical file was removed outside coordinated publication") | the file is written back and committed |
+| `synthesize_concepts` republishes a file-backed concept whose provenance does not yet cover its members | the private step removed the file and the world promotion published database-only | the world promotion restores the file |
+| A private page whose folder was declared `db_only` since, published at world | kept its stale `private` class | stays database-only and drops the stale class |
+
+### What to watch for after you upgrade
+
+- Migration v274 adds the nullable column `pages.withheld_source_path`. Nothing is backfilled or rewritten on upgrade.
+- Only sources converted to git-canonical (`sources.config.canonical = "git"`) are affected. Other sources behave as before.
+- A page that turned private before this release has no recorded path. When it turns world, its file is written at the path its slug gives.
+
 ## [0.60.453.0] - 2026-10-25
 
 **Large pages (over 1 MiB, stored in segments) now keep their links, mentions, timeline, fences, conversation facts and synopses per segment. A write reads only the segments it changed, an append reads only its new tail, and appending to a long conversation re-extracts facts for the new messages only. A sentence that a forced chunk cut used to split is now found whole by search. New transcript sessions import as one page. A page's new chunks go to the embedding provider once.**

@@ -1157,6 +1157,10 @@ const COLUMN_EXEMPTIONS = new Set<string>([
   // index or function in either blob references it, and the doctor reader
   // probes for the column on older brains.
   'pages.links_extract_failure',
+  // GBRA-95 G7a follow-up (migration v274) - the file path a strict page's private transition withheld. Same posture as
+  // v258: absent from both schema blobs, so fresh and upgraded brains share its ordinal; column-only and nullable, no
+  // index or function in either blob references it, and only strict-source publications (v272+) write it.
+  'pages.withheld_source_path',
   // Wave B segmented page storage (migration v248). Deliberately absent from
   // both schema blobs so fresh and upgraded brains share their ordinals; no
   // index in either blob references them (content_chunks_occurrence_idx is

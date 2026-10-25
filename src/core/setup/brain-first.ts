@@ -87,7 +87,7 @@ export function renderBrainFirstTurnRule(access: BrainFirstAccess): string {
   const how = access.kind === 'cli' ? `\`${access.launcher} search "<names>"\` or \`${access.launcher} query "<question>"\``
     : access.surface === 'verbs' ? `\`recall\` or \`entity\` on the \`${access.server}\` MCP server`
       : `\`search\` or \`query\` on the \`${access.server}\` MCP server`;
-  return `GBrain: before answering this turn, check GBrain first (${how}) for the people, companies, projects, meetings and decisions it touches. Then answer and finish the task.`;
+  return `GBrain: before answering this turn, check GBrain first (${how}) for the people, companies, projects, meetings and decisions it touches. Results span every source it holds: use only what the current requester may see. Then answer and finish the task.`;
 }
 
 /**

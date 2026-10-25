@@ -3288,7 +3288,8 @@
           "50 body_flags jsonb/jsonb NULL",
           "51 truth_lead text/text NULL",
           "52 timeline_lead text/text NULL",
-          "53 links_extract_failure jsonb/jsonb NULL"
+          "53 links_extract_failure jsonb/jsonb NULL",
+          "54 withheld_source_path text/text NULL"
         ],
         "flags": "relkind=r rls=false force_rls=false"
       },
