@@ -19,6 +19,17 @@
  * canonical overlay (retained tags, a withdrawal, sanitization) is refused,
  * never written with the overlay bypassed.
  *
+ * Wave B PR 5 (split git layout): the file a repair binds, reads and writes
+ * is the page file, so at a split page head it is the page file F' the head
+ * and its parts reassemble to (`pageFileSha256`): `beforeHash` is the hash
+ * of F', the file target's `expectedBeforeHash` is the head's own hash (the
+ * bytes the door compares), and the door lays the repaired page out as a head
+ * plus parts again. A head that does not reassemble (a missing or changed
+ * part, an edited head body) is `changed_since_preview` naming its hold code,
+ * and a repair bound to the raw head's hash no longer matches, so neither
+ * writes anything. The import provenance records the bytes the publication
+ * left on disk: the head, for a page laid out as a head plus parts.
+ *
  * A fence repair (`gbrain repair fences`) carries its `FenceRepairReceipt` in
  * the intent (`fenceRepair`): the preparer refuses a malformed receipt or one
  * whose before/after sha256 are not the previewed and the written bytes, the
@@ -78,6 +89,7 @@ import { contentRepairCommit, fenceRepairCommit } from './effect-model.ts';
 import { recordSlugLineAlias } from '../page-state/rename-alias.ts';
 import type { WriteRequest } from './model.ts';
 import { bindOrigin } from './origin-guard.ts';
+import { pageFileSha256, partsDirFor } from '../split-layout/index.ts';
 
 export interface ManagedFileRepairIntent extends Record<string, unknown> {
   kind: 'managed_file_repair';
@@ -193,9 +205,24 @@ export function confinedRepairTarget(root: string, path: string, sourceId: strin
   return target;
 }
 
-/** sha256 of the file as it is now (hex). */
-export function fileSha256(path: string): string {
-  return sha256(readFileSync(path));
+/** The reason a repair that cannot write a split page back as a head plus parts (a direct write on a brain with no canonical owner, a reconcile of the head) passes the head by. */
+export const SPLIT_PAGE_UNSUPPORTED = 'split_page_unsupported';
+
+/**
+ * The raw sha256 the door compares at `target` (the head's own, for a split page), once the page file there (F' for a
+ * split head) still hashes to the previewed `beforeHash`; a split head that does not reassemble, or other bytes, is
+ * `changed_since_preview`.
+ */
+function checkedFileHash(target: string, beforeHash: string, sourceId: string, path: string, kind: FileRepairKind): string {
+  const now = pageFileSha256(target);
+  if (now.hold) throw changedSincePreview(sourceId, path, `it is a split page head whose page file cannot be read (${now.hold.code})`, kind);
+  if (now.sha256 !== beforeHash) throw changedSincePreview(sourceId, path, 'the file bytes differ from the previewed hash', kind);
+  return now.split ? now.headSha256 : now.sha256;
+}
+
+/** The bytes a publication left at `target`: the head when the page is laid out as a head plus parts, else the page file it wrote. */
+function diskBytes(target: string, bytes: Buffer): Buffer {
+  return target.endsWith('.md') && existsSync(partsDirFor(target)) ? readFileSync(target) : bytes;
 }
 
 /** The canonical page fields a publication stores; what the preview hash binds besides the bytes. */
@@ -303,8 +330,7 @@ export async function submitManagedFileRepair(ctx: OperationContext, input: Mana
   checkedFenceRepair(input, input.sourceId);
   checkedContentRepair(input, input.sourceId);
   const { root, ownerEpoch, incarnation } = await managedRepairRoot(ctx.engine, input.sourceId, kind, { remote: false });
-  const target = confinedRepairTarget(root, input.path, input.sourceId, kind);
-  if (fileSha256(target) !== input.beforeHash) throw changedSincePreview(input.sourceId, input.path, 'the file bytes differ from the previewed hash', kind);
+  checkedFileHash(confinedRepairTarget(root, input.path, input.sourceId, kind), input.beforeHash, input.sourceId, input.path, kind);
   const busy = await loadRepairBusySet(ctx.engine, input.sourceId, incarnation);
   if (repairBusy(busy, { path: input.path, sourcePath: input.sourcePath, slug: input.slug }) || (input.renameFrom && repairBusy(busy, { sourcePath: input.renameFrom.sourcePath, slug: input.renameFrom.slug }))) {
     throw repairBusyError(busy, input.sourceId, input.path);
@@ -334,12 +360,13 @@ export async function prepareManagedFileRepairMutation(engine: BrainEngine, row:
   const root = join(binding.local_path, binding.relative_path);
   const bytes = Buffer.from(p.content, 'utf8');
   const fileChanges = sha256(bytes) !== p.beforeHash;
+  const target = confinedRepairTarget(root, p.path, row.source_id, kind);
+  const rawHash = checkedFileHash(target, p.beforeHash, row.source_id, p.path, kind);
+  // Once the door has staged a split page's new part files beside the head, the parts no longer reassemble as they are,
+  // so validation compares the raw bytes this preparation bound; the door compares every file it replaces or removes.
   const checkFile = () => {
-    const target = confinedRepairTarget(root, p.path, row.source_id, kind);
-    if (fileSha256(target) !== p.beforeHash) throw changedSincePreview(row.source_id, p.path, 'the file bytes differ from the previewed hash', kind);
-    return target;
+    if (sha256(readFileSync(confinedRepairTarget(root, p.path, row.source_id, kind))) !== rawHash) throw changedSincePreview(row.source_id, p.path, 'the file bytes differ from the previewed hash', kind);
   };
-  const target = checkFile();
   const source = { sourceId: row.source_id };
   const snapshot = await engine.readPageSnapshot(row.slug, { ...source, includeDeleted: true });
   assertPageRevision(snapshot, { expectedRevision: p.expected_revision ?? null }); // null: admitted against an absent page; still a revision_conflict if one appeared (#5385)
@@ -374,7 +401,7 @@ export async function prepareManagedFileRepairMutation(engine: BrainEngine, row:
   return { observedRevision: snapshot?.revision ?? null, noop: ready.noop && !fileChanges && !moved, contentUnchanged: ready.noop && !fileChanges && !moved,
     trust: await ownerImportTrust(engine, row, ready.parsedPage.frontmatter, p.sourcePath), deferEmbedding: p.noEmbed, ...(moved ? { additionalPageKeys: [{ sourceId: row.source_id, slug: moved.slug }] } : {}),
     ...(ready.afterCommit || moved ? { afterCommit: async (target: BrainEngine) => { await published.afterCommit?.(target); } } : {}),
-    ...(fileChanges ? { file: { root, path: target, content: bytes, expectedBeforeHash: p.beforeHash,
+    ...(fileChanges ? { file: { root, path: target, content: bytes, expectedBeforeHash: rawHash,
       ...(fenceRepair ? { commit: fenceRepairCommit(p.path, fenceRepair.classes, fenceRepair.tier) } : contentRepair ? { commit: contentRepairCommit(p.path, contentRepair) } : {}) } } : {}),
     validate: async tx => {
       const current = await getWorktreeBinding(tx, row.source_id);
@@ -407,7 +434,7 @@ export async function prepareManagedFileRepairMutation(engine: BrainEngine, row:
       // #6712 PR 1: the record names what is on disk now (the approved bytes), the page revision they produced and the parser, so the next discovery prescreens the file.
       const page = await tx.readPageSnapshot(row.slug, { ...source, includeDeleted: true });
       if (page && page.page.deleted_at == null) await recordSyncImportProvenance(tx, { source_id: row.source_id, incarnation: row.source_incarnation, page_id: Number(page.page.id), origin: p.sourcePath,
-        raw_sha256: sha256(importContent), gbrain_version: VERSION, revision: page.revision, parser: syncImportParserFor(p.sourcePath, screenConfig.packIdentity), ...syncDiskProvenance(bytes, null) });
+        raw_sha256: sha256(importContent), gbrain_version: VERSION, revision: page.revision, parser: syncImportParserFor(p.sourcePath, screenConfig.packIdentity), ...syncDiskProvenance(diskBytes(target, bytes), null) });
       return { status: moved ? 'renamed' : applied.noop ? 'skipped' : snapshot ? 'updated' : 'created', slug: row.slug, source_id: row.source_id,
         chunks: applied.result.chunks, imported_file: true, file_repaired: fileChanges, hold_cleared: holdCleared, ...(moved ? { renamed_from: moved.slug } : {}),
         ...(fenceRepair ? { fence_repair: fenceRepair } : {}), ...(contentRepair ? { content_repair: contentRepair } : {}) };
