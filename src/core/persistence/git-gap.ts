@@ -16,21 +16,22 @@ import { parseMarkdown } from '../markdown.ts';
 import { isDerivationPrivate, isPrivatePage } from '../search/private-visibility.ts';
 import { alignWithStored } from './align-stored.ts';
 import { digest } from './digest.ts';
-import { isNeverFiledDerivedPage } from './page-prepare.ts';
+import { isDeclaredReason, isNeverFiledDerivedPage } from './git-declared.ts';
 import { classifyDrift } from './reconcile-additive.ts';
 import { reconcileCanonical } from './reconcile-merge.ts';
 import { reconcileFileReading } from './reconcile-state.ts';
 
 /** Why a page has no tracked file on purpose, in the order `declaredDatabaseOnly` tests them. */
-export const DECLARED_CLASSES = ['mirror_source', 'private', 'alias_private', 'lineage_private', 'database_only', 'db_only_prefix', 'derive_folder', 'git_ignored'] as const;
+export const DECLARED_CLASSES = ['mirror_source', 'database_only_source', 'private', 'alias_private', 'lineage_private', 'database_only', 'db_only_prefix', 'derive_folder', 'git_ignored'] as const;
 export type DeclaredClass = typeof DECLARED_CLASSES[number];
 
 /**
  * What decides a declared class beyond the page itself: whether the source is a read-only mirror (sourceMirrorReadOnly),
- * whether a slug sits under a `storage.db_only` dir (isSourceDbOnlySlug, which refuses an invalid gbrain.yml) and the
- * paths the checkout's Git ignores.
+ * whether the whole source is database-only (G7a: no checkout, so every write is unbound and outside strict mode), whether
+ * a slug sits under a `storage.db_only` dir (isSourceDbOnlySlug, which refuses an invalid gbrain.yml) and the paths the
+ * checkout's Git ignores.
  */
-export interface GitHomePolicy { mirror: boolean; dbOnly: (slug: string) => boolean; ignored: ReadonlySet<string> }
+export interface GitHomePolicy { mirror: boolean; databaseOnlySource?: boolean; dbOnly: (slug: string) => boolean; ignored: ReadonlySet<string> }
 
 /**
  * Why a page may not have a tracked file, or null when it may. gbrain never writes a read-only mirror's checkout (#5409);
@@ -43,9 +44,13 @@ export interface GitHomePolicy { mirror: boolean; dbOnly: (slug: string) => bool
 export function declaredDatabaseOnly(page: { slug: string; type?: string | null; frontmatter?: unknown; database_only_reason?: string | null;
   lineage_private?: boolean; source_path?: string | null; source_uri?: string | null }, relativePath: string | null, policy: GitHomePolicy): DeclaredClass | null {
   if (policy.mirror) return 'mirror_source';
+  if (policy.databaseOnlySource) return 'database_only_source';
   if (isPrivatePage(page)) return 'private';
   if (isDerivationPrivate(page)) return 'alias_private';
   if (page.lineage_private) return 'lineage_private';
+  // G7a (git-declared.ts): a strict publication stamps the class it declared; one whose cause is gone (an origin turned
+  // public, `visibility.honor_aliases` off, the ignore rule removed) keeps it until the page is written again.
+  if (isDeclaredReason(page.database_only_reason)) return page.database_only_reason;
   if (page.database_only_reason) return 'database_only';
   if (policy.dbOnly(page.slug)) return 'db_only_prefix';
   if (isNeverFiledDerivedPage(page.slug, page)) return 'derive_folder';

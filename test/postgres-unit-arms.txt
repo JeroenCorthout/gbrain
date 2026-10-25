@@ -78,7 +78,9 @@ test/file-drift-soft-delete-hold-release-gbra133.test.ts
 test/forecast-journal.test.ts
 test/frontmatter-reserved-keys-6454.test.ts
 test/get-chunks-paging.test.ts
+test/git-canonical-declared-g7a.test.ts
 test/git-canonical-indexer-g3.test.ts
+test/git-door-plumbing-gbra133.test.ts
 test/git-door-strict-gbra133.test.ts
 test/git-gap-census.test.ts
 test/google-connector-facts-fence-7292.test.ts
@@ -241,6 +243,7 @@ test/managed-sync-pinned-reads.test.ts
 test/managed-sync-preparation-stalled-holds.test.ts
 test/managed-sync-row-parity.test.ts
 test/managed-sync-stale-group-head.test.ts
+test/mcp-unreadable-sources-notice.test.ts
 test/migration-persistence-request-id-index.test.ts
 test/migration-persistence-request-slug-index.test.ts
 test/on-commit-embedding.serial.test.ts
@@ -417,6 +420,7 @@ test/repair-receipt-compaction.test.ts
 test/repair-rename-identity-6729.test.ts
 test/retrieval-coverage-notices.test.ts
 test/schema-missing-tables.test.ts
+test/schema-replay-deadlock-6143.test.ts
 test/scripts/test-stress-postgres.test.ts
 test/search-read-keyword-bound.test.ts
 test/search/page-rank-cut.test.ts

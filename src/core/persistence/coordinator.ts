@@ -54,6 +54,7 @@ import { publicationBeliefOptions, withBeliefBatch } from '../belief/ledger.ts';
 import { markBeliefCommits } from '../belief/append.ts';
 import { classifyPgAccessError } from '../pg-access-classify.ts';
 import { commitThroughDoor, doorCommitLanded, doorMarker, replayAfterDoorCommit, sourceCanonicalGit, strictChanged } from './git-door.ts';
+import { assertNoPrivateCommit, declareStrictPublication } from './git-declared.ts';
 
 interface PreparedMutationBase {
   sourceExclusive?: boolean;
@@ -585,6 +586,8 @@ export async function publishMutation(engine: BrainEngine, row: WriteRequest, pr
       const door = recovery?.version === 1 ? recovery : null;
       // A write prepared strict rechecks its flag under the source lock; one prepared without it publishes as before (only conversion sets the flag).
       if (door?.door && !await sourceCanonicalGit(tx, row.source_id, true)) throw strictChanged(row.source_id);
+      // G7a (git-declared.ts): a strict publication never writes or commits a private page's bytes.
+      if (!skill) await assertNoPrivateCommit(tx, row, prepared, snapshot, binding);
       if (recovery) {
         const records = recoveryFiles(recovery);
         for (const record of records) if ((skill ? bundleFileHash(record) : fileHash(record.path)) !== record.beforeHash) {
@@ -616,6 +619,8 @@ export async function publishMutation(engine: BrainEngine, row: WriteRequest, pr
       if (!skill) await classifyUnboundPage(tx, row);
       if (prepared.databaseOnlyReason === 'mirror_read_only') await classifyMirrorPage(tx, row);
       const final = skill ? null : await publicationPostimage(tx, row, prepared);
+      // G7a: a strict file-less write must be declared; its class is stamped before the door commit, in this transaction.
+      if (!skill) await declareStrictPublication(tx, row, prepared, snapshot, final, binding);
       decoratePublicationOutcome(row, prepared, outcome, final, files.length, skill);
       await recordPublicationFenceTrend(tx, row, outcome);
       // G2: a strict source's file is committed before its row; its Git effect only pushes.

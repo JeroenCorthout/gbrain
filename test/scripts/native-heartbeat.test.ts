@@ -25,11 +25,12 @@ function sandbox() {
   // a number in <root>/fail-success makes that many success posts fail the way a timed-out curl does.
   writeFileSync(join(bin, 'curl'), `#!/usr/bin/env bash
 url="" data=""
-while [ $# -gt 0 ]; do case "$1" in -d) data="$2"; shift 2 ;; -H|-o|-X|--max-time) shift 2 ;; -*) shift ;; *) url="$1"; shift ;; esac; done
+while [ $# -gt 0 ]; do case "$1" in -d) data="$2"; shift 2 ;; -H|-o|-X|-w|--max-time) shift 2 ;; -*) shift ;; *) url="$1"; shift ;; esac; done
 case "$data" in *'"state":"pending"'*) sleep "\${CURL_PENDING_DELAY_S:-0}" ;; esac
 fails=$(cat "${root}/fail-success" 2>/dev/null || echo 0)
 case "$data" in *'"state":"success"'*) if [ "$fails" -gt 0 ]; then echo $((fails - 1)) > "${root}/fail-success"; exit 28; fi ;; esac
 printf '{"url":"%s","body":%s}\\n' "$url" "$data" >> "${log}"
+printf 200
 `);
   chmodSync(join(bin, 'curl'), 0o755);
   const env = (extra: Record<string, string> = {}): Record<string, string> => ({

@@ -272,6 +272,7 @@ import { v268 } from './v268-effect-claim-owner.ts';
 import { v269 } from './v269-links-supersedes-index.ts';
 import { v270 } from './v270-pages-source-created-index.ts';
 import { v271 } from './v271-facts-superseded-by-index.ts';
+import { v272 } from './v272-git-canonical-declared.ts';
 
 // Array order is historical (see HISTORICAL_ARRAY_ORDER in the generator); the
 // runner sorts by version before applying.
@@ -542,4 +543,5 @@ export const MIGRATIONS: Migration[] = [
   v269,
   v270,
   v271,
+  v272,
 ];

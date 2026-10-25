@@ -57,7 +57,7 @@ export interface GitGapCensus {
   database_ahead_without_import_record: number;
   /** git_ahead pages whose row also moved since its last import: both sides changed. */
   git_ahead_database_also_moved: number;
-  /** Pages of a source without a checkout that are not declared: nothing to compare them with. */
+  /** Pages of a source without a checkout that are not declared. Since G7a such a source is declared `database_only_source`, so this stays 0; kept for readers of the JSON. */
   not_compared: number;
   /** Working-tree files of the pages that may have a tracked file, by their raw bytes against HEAD; null without a checkout. */
   worktree: Record<WorktreeState, number> | null;
@@ -133,7 +133,8 @@ export async function censusGitGap(engine: BrainEngine, sourceId: string, opts: 
     checkout = { root, head, mode: await scannerSlugRootMode(engine, sourceId, root), scope };
   }
   const census = emptyCensus(sourceId, root, checkout?.head ?? null);
-  const policy = { mirror, dbOnly: (slug: string) => root !== null && isSourceDbOnlySlug(root, slug, 'refuse'), ignored: new Set<string>() };
+  // G7a: a source with no checkout is a database-only source, one declared class for all its pages (outside strict mode).
+  const policy = { mirror, databaseOnlySource: root === null, dbOnly: (slug: string) => root !== null && isSourceDbOnlySlug(root, slug, 'refuse'), ignored: new Set<string>() };
   for (let cursor = '0'; ;) {
     if (opts.deadlineAt !== undefined && Date.now() >= opts.deadlineAt) { census.complete = false; break; }
     const done = await engine.transaction(async tx => {
@@ -153,7 +154,7 @@ export async function censusGitGap(engine: BrainEngine, sourceId: string, opts: 
   return census;
 }
 
-interface BatchContext { checkout: Checkout | null; policy: { mirror: boolean; dbOnly: (slug: string) => boolean; ignored: Set<string> }; incarnation: string; sample: number }
+interface BatchContext { checkout: Checkout | null; policy: { mirror: boolean; databaseOnlySource: boolean; dbOnly: (slug: string) => boolean; ignored: Set<string> }; incarnation: string; sample: number }
 
 function note(census: GitGapCensus, limit: number, item: GitGapSample): void {
   if (census.sample.length < limit) census.sample.push(item);
@@ -299,7 +300,7 @@ const counts = (record: Record<string, number>) => Object.entries(record).filter
 
 export function describeGitGap(census: GitGapCensus): string {
   const lines = [`Git gap of source ${census.source_id} (read-only): ${census.pages} live page(s)${census.head ? `, compared with HEAD ${census.head.slice(0, 12)}` : ''}.`];
-  if (!census.checkout) lines.push(`The source has no checkout, so ${census.not_compared} page(s) were not compared.`);
+  if (!census.checkout) lines.push(`The source has no checkout: a database-only source, so its page(s) are declared database_only_source and none were compared.`);
   else if (!census.head) lines.push('The checkout has no commit yet, so no page has a committed file.');
   lines.push(`Pages: ${counts(census.states)}.`, `Declared database-only: ${counts(census.declared)}${census.declared_with_head_blob ? ` (${census.declared_with_head_blob} still committed at HEAD)` : ''}.`);
   if (census.database_ahead_without_import_record) lines.push(`${census.database_ahead_without_import_record} database_ahead page(s) have no import record, so the side that moved is unknown.`);

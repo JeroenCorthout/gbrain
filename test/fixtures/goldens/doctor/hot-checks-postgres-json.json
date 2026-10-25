@@ -1112,7 +1112,7 @@
           {
             "category": "ops",
             "elapsed_ms": "<volatile>",
-            "message": "RLS enabled on 156/156 public tables",
+            "message": "RLS enabled on 157/157 public tables",
             "name": "rls",
             "status": "ok"
           },
@@ -1126,14 +1126,14 @@
           {
             "category": "meta",
             "elapsed_ms": "<volatile>",
-            "message": "1357 column(s) verified against live schema",
+            "message": "1359 column(s) verified against live schema",
             "name": "schema_columns",
             "status": "ok"
           },
           {
             "category": "meta",
             "elapsed_ms": "<volatile>",
-            "message": "All 156 table(s) the applied migrations create exist.",
+            "message": "All 157 table(s) the applied migrations create exist.",
             "name": "schema_missing_tables",
             "status": "ok"
           },
@@ -3728,6 +3728,7 @@
                   "declared": {
                     "alias_private": 0,
                     "database_only": 0,
+                    "database_only_source": 0,
                     "db_only_prefix": 0,
                     "derive_folder": 0,
                     "git_ignored": 0,
@@ -5816,7 +5817,7 @@
           {
             "category": "ops",
             "elapsed_ms": "<volatile>",
-            "message": "RLS enabled on 156/156 public tables",
+            "message": "RLS enabled on 157/157 public tables",
             "name": "rls",
             "status": "ok"
           },
@@ -5830,14 +5831,14 @@
           {
             "category": "meta",
             "elapsed_ms": "<volatile>",
-            "message": "1357 column(s) verified against live schema",
+            "message": "1359 column(s) verified against live schema",
             "name": "schema_columns",
             "status": "ok"
           },
           {
             "category": "meta",
             "elapsed_ms": "<volatile>",
-            "message": "All 156 table(s) the applied migrations create exist.",
+            "message": "All 157 table(s) the applied migrations create exist.",
             "name": "schema_missing_tables",
             "status": "ok"
           },
@@ -8432,6 +8433,7 @@
                   "declared": {
                     "alias_private": 0,
                     "database_only": 0,
+                    "database_only_source": 0,
                     "db_only_prefix": 0,
                     "derive_folder": 0,
                     "git_ignored": 0,

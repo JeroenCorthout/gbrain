@@ -1059,14 +1059,14 @@
         {
           "category": "meta",
           "elapsed_ms": "<volatile>",
-          "message": "1351 column(s) verified against live schema",
+          "message": "1353 column(s) verified against live schema",
           "name": "schema_columns",
           "status": "ok"
         },
         {
           "category": "meta",
           "elapsed_ms": "<volatile>",
-          "message": "All 157 table(s) the applied migrations create exist.",
+          "message": "All 158 table(s) the applied migrations create exist.",
           "name": "schema_missing_tables",
           "status": "ok"
         },
@@ -3502,6 +3502,7 @@
                 "declared": {
                   "alias_private": 0,
                   "database_only": 0,
+                  "database_only_source": 0,
                   "db_only_prefix": 0,
                   "derive_folder": 0,
                   "git_ignored": 0,

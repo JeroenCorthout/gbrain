@@ -289,8 +289,8 @@ for (const backend of testBackends()) describe(`git-gap census (git-canonical G1
     await engine.putPage('notes/secret', { type: 'note', title: 'Secret', compiled_truth: 'Secret.', timeline: '', frontmatter: { visibility: 'private' } });
     const [{ min, max }] = await engine.executeRaw<{ min: string; max: string }>('SELECT min(id)::text AS min, max(id)::text AS max FROM pages');
     expect(min.length).toBeLessThan(max.length);
-    expect(await censusGitGap(engine, 'default', { sample: 0 })).toMatchObject({ checkout: null, head: null, pages: 301, not_compared: 300, worktree: null,
-      states: { declared_database_only: 1, equal: 0 }, declared: { private: 1 } });
+    expect(await censusGitGap(engine, 'default', { sample: 0 })).toMatchObject({ checkout: null, head: null, pages: 301, not_compared: 0, worktree: null,
+      states: { declared_database_only: 301, equal: 0 }, declared: { database_only_source: 301, private: 0 } });
     expect((await censusGitGap(engine, 'default', { sample: 0, deadlineAt: Date.now() - 1 })).complete).toBe(false);
   }, 120000);
 

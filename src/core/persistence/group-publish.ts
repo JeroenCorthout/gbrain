@@ -56,6 +56,7 @@ import { assertUnboundPublication, classifyUnboundPage } from './unbound-source.
 import { boundPublication, declarePublication, publicationLeaseMs, publicationTransaction, type PublicationBound } from './publication-deadline.ts';
 import { classifyMirrorPage, sourceMirrorReadOnly } from './mirror-read-only.ts';
 import { commitThroughDoor, doorMarker, sourceCanonicalGit, strictChanged } from './git-door.ts';
+import { assertNoPrivateCommit, declareStrictPublication } from './git-declared.ts';
 import { authorizePageVisibility } from './page-visibility.ts';
 import { withFilesystemPublication } from './filesystem-guard.ts';
 import { isWriteTargetContained } from '../path-confine.ts';
@@ -383,6 +384,8 @@ export async function publishGroup(engine: BrainEngine, rows: WriteRequest[], pr
               async () => { if (!file && attribute) await setMemberAttribution(tx, publicationAttribution(row, member.trust)); },
             ]) as [unknown, Awaited<ReturnType<BrainEngine['readPageSnapshot']>>];
             if (!sync) await member.validate?.(tx);
+            // G7a (git-declared.ts): a strict member never writes or commits a private page's bytes; one refusal rolls the group back.
+            await assertNoPrivateCommit(tx, row, member, snapshot, binding);
             if (file) {
               if (persistenceFileHash(file.record.path) !== file.record.beforeHash) throw new OperationError('unexpected_file_bytes', 'The canonical file changed during preparation.', 'The members publish one at a time.');
               await seam('before_publication', row);
@@ -396,6 +399,7 @@ export async function publishGroup(engine: BrainEngine, rows: WriteRequest[], pr
             await classifyUnboundPage(tx, row);
             if (member.databaseOnlyReason === 'mirror_read_only') await classifyMirrorPage(tx, row);
             const final = await publicationPostimage(tx, row, member);
+            await declareStrictPublication(tx, row, member, snapshot, final, binding);
             decoratePublicationOutcome(row, member, outcome, final, file ? 1 : 0, false);
             effects = async () => {
               await recordPublicationFenceTrend(tx, row, outcome);

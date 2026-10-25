@@ -149,16 +149,17 @@ for (const backend of testBackends()) describe(`[${backend}] G2: a strict source
     expect(git(root, 'log', '--format=%H', '--', ...slugs.map(slug => `${slug}.md`)).split('\n').filter(Boolean).sort()).toEqual([...commits].sort());
   }, { databaseUrl, setup }), 120_000);
 
-  test('a commit Git refuses publishes nothing: the write fails and the file is never left behind', () => managedBrain(async ({ engine, ctx, root }) => {
+  test('a path Git would refuse is never written or committed: G7a declares it git_ignored (database-only, no Git effect)', () => managedBrain(async ({ engine, ctx, root }) => {
     writeFileSync(join(root, '.gitignore'), 'notes/ignored.md\n');
     git(root, 'commit', '-qam', 'ignore one path');
     await strict(engine);
     const head = git(root, 'rev-parse', 'HEAD').trim();
-    const result = await put(ctx, 'notes/ignored', page('Ignored', 'Never published.')).then(value => value, (error: { code?: string }) => ({ thrown: error.code }));
-    expect(result).toMatchObject({ thrown: 'git_target_ignored' });
+    const requestId = randomUUID();
+    expect(await put(ctx, 'notes/ignored', page('Ignored', 'Never in Git.'), requestId)).toMatchObject({ state: 'committed' });
     expect(existsSync(join(root, 'notes/ignored.md'))).toBe(false);
     expect(git(root, 'rev-parse', 'HEAD').trim()).toBe(head);
-    expect(await engine.executeRaw("SELECT 1 FROM pages WHERE source_id='default' AND slug='notes/ignored' AND deleted_at IS NULL")).toHaveLength(0);
+    expect(await engine.executeRaw("SELECT database_only_reason FROM pages WHERE source_id='default' AND slug='notes/ignored' AND deleted_at IS NULL")).toEqual([{ database_only_reason: 'git_ignored' }]);
+    expect(await engine.executeRaw("SELECT 1 FROM persistence_effects e JOIN persistence_requests r ON r.id=e.request_id WHERE r.request_id=$1::uuid AND e.kind='git'", [requestId])).toHaveLength(0);
   }, { databaseUrl, setup }), 120_000);
 
   test('without the flag nothing is committed before the row; the effect commits it later', () => managedBrain(async ({ engine, ctx, root }) => {
