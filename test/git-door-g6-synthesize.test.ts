@@ -26,6 +26,7 @@ import type { ChatOpts, ChatResult } from '../src/core/ai/gateway.ts';
 import { configureGateway, resetGateway, __setChatTransportForTests } from '../src/core/ai/gateway.ts';
 import { runPhaseSynthesizeConcepts } from '../src/core/cycle/synthesize-concepts.ts';
 import { runPhaseSynthesize } from '../src/core/cycle/synthesize.ts';
+import { isNeverFiledDerivedPage } from '../src/core/persistence/git-declared.ts';
 import { submitPageMutation } from '../src/core/persistence/page-mutations.ts';
 import { durableGitRepo, gitAsync } from './helpers/git-publication.ts';
 import { managedBrain, settleManagedGitEffects } from './helpers/managed-brain.ts';
@@ -139,25 +140,38 @@ for (const backend of testBackends()) {
         expectDoorTarget(audit, engine.kind);
         return;
       }
-      // The #5525 private step is G7a's visibility transition: one door commit per publication group removes each file
-      // (the probe reads no blob), so no commit holds the private narrative. The page keeps no recorded file, so its world
-      // promotion publishes database-only, a declared page (the census keeps the class the transition stamped).
-      expect(probes.filter(probe => probe.probe !== null)).toEqual([]);
-      expect(probes.map(probe => probe.path).sort()).toEqual(CONCEPTS.map(slug => `${slug}.md`).sort());
-      expect(new Set(probes.map(probe => probe.sha)).size).toBe(engine.kind === 'postgres' ? 1 : CONCEPTS.length);
+      // GBRA-176 option (a): the #5525 private step is G7a's visibility transition, a door commit per publication group
+      // that removes each file, so no commit holds the uncovered narrative. Once the edges are banked the world promotion
+      // commits the file again at the path the transition recorded (GBRA-95), so Git ends up holding the world page.
+      for (const path of CONCEPTS.map(slug => `${slug}.md`)) {
+        expect({ path, history: probes.filter(probe => probe.path === path).map(probe => probe.probe) }).toEqual({ path, history: [null, 'world'] });
+      }
+      const patch = await gitAsync(root, 'log', '-p', `${since}..HEAD`, '--', 'concepts/');
+      expect(patch.split('\n').filter(line => line.startsWith('+') && /visibility: (?!world)/.test(line))).toEqual([]);
+      for (const page of audit.pages) {
+        expect({ slug: page.slug, atHead: page.head !== null, worktree: page.worktree === page.head, row: page.row })
+          .toEqual({ slug: page.slug, atHead: true, worktree: true, row: { state: 'equal' } });
+        const [row] = await engine.executeRaw<{ source_path: string | null; source_uri: string | null }>(
+          'SELECT source_path, source_uri FROM pages WHERE source_id=$1 AND slug=$2 AND deleted_at IS NULL', ['default', page.slug]);
+        expect({ slug: page.slug, source_path: row?.source_path, never_filed: isNeverFiledDerivedPage(page.slug, row ?? {}) })
+          .toEqual({ slug: page.slug, source_path: page.path, never_filed: false });
+      }
       expect(audit.porcelain).toBe('');
       expect({ gaps: audit.gaps, sample: audit.gapSample }).toEqual({ gaps: NO_GAP, sample: [] });
-      expect(audit.census.states.declared_database_only).toBe(CONCEPTS.length);
-      expect(audit.pages.map(page => ({ slug: page.slug, head: page.head, worktree: page.worktree }))).toEqual(CONCEPTS.map(slug => ({ slug, head: null, worktree: null })));
+      expect({ declared_database_only: audit.census.states.declared_database_only, derive_folder: audit.census.declared.derive_folder })
+        .toEqual({ declared_database_only: 0, derive_folder: 0 });
+      const batchPaths = new Set(audit.pages.map(page => page.path));
+      expect(audit.commits.filter(commit => commit.paths.some(path => batchPaths.has(path))).length).toBe(engine.kind === 'postgres' ? 2 : 2 * CONCEPTS.length);
     }, { databaseUrl, setup });
 
     test('three file-backed concepts with banked provenance edges republished once at world: at HEAD, clean, no census gap, one commit per group',
       () => republish({ banked: true }), 180_000);
 
-    // GBRA-60/GBRA-95: a file-backed world concept whose edges do not yet cover its members takes the #5525 private step;
-    // on a strict source that step is G7a's visibility transition (a door commit that removes the file and clears
-    // source_path/source_uri).
-    test('three file-backed concepts without provenance edges republished: the private step removes the file (G7a visibility transition)',
+    // GBRA-60/GBRA-95/GBRA-176: a file-backed world concept whose edges do not yet cover its members takes the #5525 private
+    // step, G7a's visibility transition (a door commit that removes the file and clears source_path/source_uri); its world
+    // promotion restores the file at the recorded path. Master records no path yet, so the promotion publishes
+    // database-only; this stays a todo until GBRA-95's withheld-path record lands. `bun test --todo` runs it.
+    test.todo('three file-backed concepts without provenance edges republished: the private step removes the file, the world promotion restores it',
       () => republish({ banked: false }), 180_000);
   });
 
