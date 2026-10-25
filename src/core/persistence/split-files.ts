@@ -56,10 +56,12 @@ export interface SplitFileFields {
    */
   expectedParts?: Record<string, string>;
   /** Part files written (content) or removed (null) beside the head: the new manifest's changed parts, then removals. */
-  parts?: MutationFile[];
+  /** Part files written (content) or removed (null) beside the head; each takes the head's exact publish mode, if any. */
+  parts?: PartTarget[];
   split?: SplitLayout;
 }
-type SplitTarget = MutationFile & SplitFileFields;
+type PartTarget = MutationFile & { publishMode?: number };
+type SplitTarget = PartTarget & SplitFileFields;
 
 const ownersFix = (sourceId?: string): Action => readFix(sourceId
   ? `Shows source ${sourceId}'s canonical owner with its pending, failed and recovering write requests, read-only.`
@@ -141,7 +143,8 @@ export async function splitPublicationTargets(engine: BrainEngine, file: SplitTa
   const existing = currentParts(file.path, file.root);
   if (bytes <= threshold && !existing.size) return false;
   const original = file.content;
-  const parts: MutationFile[] = [];
+  const parts: PartTarget[] = [];
+  const publishMode = file.publishMode === undefined ? {} : { publishMode: file.publishMode };
   const manifest: string[] = [];
   const kept: Record<string, string> = {};
   let plan: SplitPlan | null = null;
@@ -154,12 +157,12 @@ export async function splitPublicationTargets(engine: BrainEngine, file: SplitTa
         manifest.push(path);
         const current = existing.get(path) ?? null;
         if (current === part.sha256) { kept[path] = current; continue; }
-        parts.push({ path, root: file.root, content: await plan.partContent(engine, part), expectedBeforeHash: current });
+        parts.push({ path, root: file.root, content: await plan.partContent(engine, part), expectedBeforeHash: current, ...publishMode });
       }
       file.content = plan.head();
     }
     const listed = new Set(manifest);
-    for (const [path, hash] of existing) if (!listed.has(path)) parts.push({ path, root: file.root, content: null, expectedBeforeHash: hash });
+    for (const [path, hash] of existing) if (!listed.has(path)) parts.push({ path, root: file.root, content: null, expectedBeforeHash: hash, ...publishMode });
   } catch (error) {
     plan?.dispose();
     file.content = original;

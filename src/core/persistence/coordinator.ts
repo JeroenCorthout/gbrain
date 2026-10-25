@@ -191,7 +191,7 @@ async function stageLargeFiles(engine: BrainEngine, row: WriteRequest, file: Pag
       phase => faultPoint(`large_file:${phase}`, { requestId: row.request_id, sourceId: row.source_id, operation: row.operation }))) throw localEditRefusal('The canonical file changed after preparation.', row, false, 'while its prior bytes were being staged');
     if (isStreamedContent(file.content)) {
       prepareParent(file);
-      await stageStreamedContent(engine, file.path, file.content, publication!, record.mode);
+      await stageStreamedContent(engine, file.path, file.content, publication!, file.publishMode ?? record.mode);
     }
   });
 }
