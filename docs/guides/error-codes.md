@@ -4049,6 +4049,16 @@ More: [docs/guides/troubleshooting.md#split-head-modified](../../docs/guides/tro
 
 More: [docs/guides/troubleshooting.md#split-page-incomplete](../../docs/guides/troubleshooting.md#split-page-incomplete)
 
+### split_parts_unexpected
+
+<a id="split_parts_unexpected"></a>
+
+| Meaning | Why | Next step | Who acts · consent | Verify | Exit | Retryable |
+|---|---|---|---|---|---|---|
+| A split page's parts directory holds something that is not a part file (a file not named NNNN-<sha8>.gbpart, a subdirectory or a symlink), or is not a plain directory, so the page's files were not written and nothing in it was removed. | A write over a split page rewrites its head and parts and removes every other part file in the directory. An entry that is not a part file is nobody's part, so gbrain will not plan around it or delete it; what it is and whether it may go is the user's decision. | Ask the user what the entry is, move it out of the parts directory (or remove it if they agree), then submit the write again with a new request_id. Run: gbrain doctor --only split_layout --json | user | `repeat the read that failed` | 1 | no |
+
+More: [docs/guides/write-refusals.md#split_parts_unexpected](../../docs/guides/write-refusals.md#split_parts_unexpected)
+
 ### split_unparseable
 
 <a id="split_unparseable"></a>

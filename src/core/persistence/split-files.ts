@@ -74,10 +74,16 @@ const utf8 = new TextDecoder('utf-8', { fatal: true });
 /** The maintenance intent `gbrain pages split-storage --apply` admits (split-layout/relayout.ts `SPLIT_RELAYOUT_INTENT`). */
 const SPLIT_RELAYOUT_INTENT_KIND = 'managed_maintenance_split_relayout';
 
-function unsafePartsDir(dir: string): OperationError {
-  return opError('storage_error', 'A split page parts directory holds something other than regular part files.',
-    `${dir} is not a plain directory of regular files (a symlink, a subdirectory or a special file is in the way), so the page's file was not written. Inspect it on the brain host; how to repair it is the user's decision.`,
-    { fix: ownersFix() });
+/**
+ * The refusal of a parts directory that is not a plain directory of part files: `entry` is what is in the way (the
+ * directory itself, or a file in it that is not a regular file named as a part, NNNN-<sha8>.gbpart). Nothing is written
+ * or removed: what the entry is and whether it may go is the user's decision.
+ */
+function unexpectedPartsEntry(dir: string, entry: string): OperationError {
+  return opError('split_parts_unexpected', 'A split page parts directory holds something that is not a part file.',
+    `${entry === dir ? `${dir} is not a plain directory` : `${dir} holds ${basename(entry)}, which is not a part file (a regular file named NNNN-<sha8>.gbpart)`}, so the page's files were not written and nothing in it was removed. Ask the user what it is: move it out of the parts directory (or remove it, if they agree), then submit the write again with a new request_id.`,
+    { fix: readFix('Lists split page layouts on this host (stray parts directories and held split pages) with their fixes, read-only.', { argv: ['gbrain', 'doctor', '--only', 'split_layout', '--json'] }),
+      docs: 'docs/guides/write-refusals.md#split_parts_unexpected' });
 }
 
 /** The parts directory a head path names, or null for a target that cannot be a head (not a .md file). */
@@ -85,20 +91,26 @@ function partsDirOf(headPath: string): string | null {
   try { return partsDirFor(headPath); } catch { return null; }
 }
 
-/** Every file in the parts directory beside `headPath`, with its SHA-256; empty when the directory is absent. */
-function currentParts(headPath: string, root: string): Map<string, string> {
+/**
+ * The part files in the parts directory beside `headPath` (empty when the directory is absent), read without their
+ * bytes; refuses `split_parts_unexpected` for anything else in the way.
+ */
+export function partFilesOnly(headPath: string, root: string): string[] {
   const dir = partsDirOf(headPath);
-  const found = new Map<string, string>();
-  if (!dir) return found;
+  if (!dir) return [];
   const stat = lstatSync(dir, { throwIfNoEntry: false });
-  if (!stat) return found;
-  if (!stat.isDirectory() || !isWriteTargetContained(dir, root)) throw unsafePartsDir(dir);
-  for (const name of readdirSync(dir).sort()) {
+  if (!stat) return [];
+  if (!stat.isDirectory() || !isWriteTargetContained(dir, root)) throw unexpectedPartsEntry(dir, dir);
+  return readdirSync(dir).sort().map(name => {
     const path = join(dir, name);
-    if (!lstatSync(path).isFile()) throw unsafePartsDir(dir);
-    found.set(path, hashFile(path)!);
-  }
-  return found;
+    if (!PART_FILE_RE.test(name) || !lstatSync(path).isFile()) throw unexpectedPartsEntry(dir, path);
+    return path;
+  });
+}
+
+/** Every part file in the parts directory beside `headPath`, with its SHA-256. */
+function currentParts(headPath: string, root: string): Map<string, string> {
+  return new Map(partFilesOnly(headPath, root).map(path => [path, hashFile(path)!]));
 }
 
 /** The parts directory beside `headPath` as prepareFileTarget finds it (no split head there): path to SHA-256. */

@@ -38,7 +38,7 @@ import { engineMutationPrecondition, parseMutationPrecondition } from './precond
 import { assertPurgeParams } from './purge-params.ts';
 import { authorizeWrite, slugDisclosable } from './authority.ts';
 import { findLiveFileClaimants, refusePartFileTarget, type FileClaimant, type FileClaimTarget } from './file-claims.ts';
-import { preparedParts, readSplitHead, resolvesModifiedHead, type SplitHeadReading } from './split-files.ts';
+import { partFilesOnly, preparedParts, readSplitHead, resolvesModifiedHead, type SplitHeadReading } from './split-files.ts';
 import { digest, sha256 } from './digest.ts';
 import { replaceableFile } from '../facts/file-body-guard.ts';
 import { getWorktreeBinding } from './ownership.ts';
@@ -332,6 +332,7 @@ export async function prepareFileTarget(engine: BrainEngine, row: Pick<WriteRequ
   // A head whose body was edited compares as itself (drift) unless this write is that edit's resolution.
   let head: SplitHeadReading | null = null;
   try {
+    partFilesOnly(path, root);
     head = before ? readSplitHead(path, before) : null;
     if (head?.modified && await resolvesModifiedHead(engine, row, path, head.modified, content)) return { path, root, content, expectedBeforeHash: head.headHash, expectedParts: head.parts };
     const target = await compareFileTarget(engine, row, snapshot, content, options, { root, path, mode, capturedPath, before: head?.reassembled ?? before });
