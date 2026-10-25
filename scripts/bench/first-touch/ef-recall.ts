@@ -3,10 +3,11 @@
  * HNSW ef_search vs recall@10 and pages touched on the loaded brain (GBRA-156).
  * Query vectors come from the soak's mock embedder for the probe's query texts
  * (in-distribution). Exact top-10 is a sequential scan with index scans off;
- * each ef is an index scan with LIMIT = max(ef, 10), as gbrain asks for its window.
+ * each ef is an index scan with LIMIT = max(ef, 10), or with --walk-limit the shape of
+ * gbrain's index walk (iterative relaxed_order scan, that LIMIT and tuple budget, re-sorted).
  * Pages touched (shared hit + read) is the first-touch read count on a cold cache.
  *
- *   bun scripts/bench/first-touch/ef-recall.ts --work ~/soak/work --queries q.json --set A --n 30 --out ef.json [--efs 40,100,200,300,500]
+ *   bun scripts/bench/first-touch/ef-recall.ts --work ~/soak/work --queries q.json --set A --n 30 --out ef.json [--efs 40,100,200,300,500] [--walk-limit 500 --max-scan-tuples 2000]
  */
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
@@ -18,6 +19,12 @@ const flag = (n: string, f = '') => { const i = argv.indexOf('--' + n); return i
 const WORK = resolve(flag('work')), N = Number(flag('n', '30'));
 const EFS = flag('efs', '40,100,200,300,500').split(',').map(Number);
 const K = Number(flag('k', '10'));
+const WALK = Number(flag('walk-limit', '0')), MAX_SCAN = Number(flag('max-scan-tuples', '2000'));
+const MODES = WALK ? ['plain', 'walk'] as const : ['plain'] as const;
+const scanSettings = (mode: string, ef: number) => mode === 'walk'
+  ? `SET LOCAL hnsw.ef_search = ${ef}; SET LOCAL hnsw.iterative_scan = relaxed_order; SET LOCAL hnsw.max_scan_tuples = ${MAX_SCAN}; SET LOCAL enable_sort = off; SET LOCAL jit = off`
+  : `SET LOCAL hnsw.ef_search = ${ef}; SET LOCAL jit = off`;
+const windowFor = (mode: string, ef: number) => mode === 'walk' ? WALK : Math.max(ef, 10);
 const ready = JSON.parse(readFileSync(join(WORK, 'ready.json'), 'utf8'));
 const manifest = JSON.parse(readFileSync(join(WORK, '..', 'fixture', 'manifest.json'), 'utf8'));
 const qs = (JSON.parse(readFileSync(resolve(flag('queries')), 'utf8'))[flag('set', 'A')] as Array<{ q: string }>).slice(0, N);
@@ -33,23 +40,26 @@ for (let i = 0; i < qs.length; i++) {
     await tx.unsafe("SET LOCAL enable_indexscan = off; SET LOCAL jit = off; SET LOCAL max_parallel_workers_per_gather = 4");
     return (await tx.unsafe(`SELECT id FROM content_chunks WHERE ${WHERE} ORDER BY embedding <=> $1::vector LIMIT ${K}`, [v])).map((r: any) => Number(r.id));
   });
-  const row: any = { q: qs[i]!.q, exact, ef: {} };
-  for (const ef of EFS) {
-    const r = await sql.begin(async tx => {
-      await tx.unsafe(`SET LOCAL hnsw.ef_search = ${ef}; SET LOCAL jit = off`);
-      const plan = (await tx.unsafe(`EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) SELECT id FROM content_chunks WHERE ${WHERE} ORDER BY embedding <=> $1::vector LIMIT ${Math.max(ef, 10)}`, [v]))[0]['QUERY PLAN'][0];
-      const ids = (await tx.unsafe(`SELECT id FROM content_chunks WHERE ${WHERE} ORDER BY embedding <=> $1::vector LIMIT ${Math.max(ef, 10)}`, [v])).map((x: any) => Number(x.id));
-      return { touched: plan.Plan['Shared Hit Blocks'] + plan.Plan['Shared Read Blocks'], ms: plan['Execution Time'], ids };
-    });
-    const top = new Set(r.ids.slice(0, K));
-    row.ef[ef] = { recall10: exact.filter((id: number) => top.has(id)).length / K, touched: r.touched, ms: Math.round(r.ms * 10) / 10 };
+  const row: any = { q: qs[i]!.q, exact };
+  for (const mode of MODES) {
+    row[mode] = {};
+    for (const ef of EFS) {
+      const r = await sql.begin(async tx => {
+        await tx.unsafe(scanSettings(mode, ef));
+        const plan = (await tx.unsafe(`EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) SELECT id FROM content_chunks WHERE ${WHERE} ORDER BY embedding <=> $1::vector LIMIT ${windowFor(mode, ef)}`, [v]))[0]['QUERY PLAN'][0];
+        const ids = (await tx.unsafe(`SELECT id, embedding <=> $1::vector AS d FROM content_chunks WHERE ${WHERE} ORDER BY embedding <=> $1::vector LIMIT ${windowFor(mode, ef)}`, [v])).sort((a: any, b: any) => a.d - b.d).map((x: any) => Number(x.id));
+        return { touched: plan.Plan['Shared Hit Blocks'] + plan.Plan['Shared Read Blocks'], ms: plan['Execution Time'], ids };
+      });
+      const top = new Set(r.ids.slice(0, K));
+      row[mode][ef] = { recall10: exact.filter((id: number) => top.has(id)).length / K, touched: r.touched, ms: Math.round(r.ms * 10) / 10 };
+    }
   }
   out.push(row);
-  console.log(i, Object.entries(row.ef).map(([ef, x]: any) => ef + ':' + x.recall10 + '/' + x.touched).join(' '));
+  console.log(i, MODES.map(m => m + ' ' + Object.entries(row[m]).map(([ef, x]: any) => ef + ':' + x.recall10 + '/' + x.touched).join(' ')).join(' | '));
 }
 await sql.end();
 const mean = (xs: number[]) => Math.round(xs.reduce((a, b) => a + b, 0) / xs.length * 1000) / 1000;
-const summary = Object.fromEntries(EFS.map(ef => [ef, { recall10: mean(out.map(r => r.ef[ef].recall10)), touched: mean(out.map(r => r.ef[ef].touched)), ms_warm: mean(out.map(r => r.ef[ef].ms)) }]));
+const summary = Object.fromEntries(MODES.map(m => [m, Object.fromEntries(EFS.map(ef => [ef, { recall10: mean(out.map(r => r[m][ef].recall10)), touched: mean(out.map(r => r[m][ef].touched)), ms_warm: mean(out.map(r => r[m][ef].ms)) }]))]));
 writeFileSync(resolve(flag('out')), JSON.stringify({ summary, rows: out }, null, 1));
 console.log(JSON.stringify(summary, null, 1));
 process.exit(0);

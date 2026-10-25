@@ -87,7 +87,7 @@ async function call(qi: number, rep: number, q: { cls: string; q: string }) {
   const t = j?.timings_ms ?? null;
   const warm = PATH === 'socket' ? /\[cli-socket\] warm/.test(stderr) : false;
   const row = { set: SET, path: PATH, qi, rep, cls: q.cls, q: q.q, ms, code, warm, rows: Array.isArray(j?.results) ? j.results.length : null,
-    top: Array.isArray(j?.results) ? j.results.slice(0, 10).map((r: any) => r.slug) : null, timings: t, pgss, stderr_tail: code === 0 ? undefined : stderr.slice(-400) };
+    top: Array.isArray(j?.results) ? j.results.slice(0, 10).map((r: any) => r.slug) : null, timings: t, pgss, bench_ef: stderr.match(/\[bench-ef\][^\n]*/g) ?? undefined, stderr_tail: code === 0 ? undefined : stderr.slice(-400) };
   appendFileSync(join(OUT, 'calls.jsonl'), JSON.stringify(row) + '\n');
   console.log(`${SET} ${PATH} q${qi} r${rep} ${q.cls.padEnd(10)} ${String(ms).padStart(5)} ms op=${t?.op ?? '?'} lex=${t?.stages?.lexical ?? '-'} vec=${t?.stages?.vector ?? '-'} resp=${t?.stages?.response ?? '-'} meta=${t?.parts?.response?.meta ?? '-'} reads=${pgss?.read ?? '-'} ${warm ? 'warm' : ''} ${code}`);
 }

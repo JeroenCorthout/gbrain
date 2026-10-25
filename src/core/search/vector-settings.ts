@@ -26,7 +26,9 @@ export function vectorScanSettings(
   joined = false,
 ): Record<string, string> {
   const window = walkOverfetch ? candidateLimit * walkOverfetch : candidateLimit;
-  const settings: Record<string, string> = { 'hnsw.ef_search': String(hnswEfSearchFor(window)), ...(walkOverfetch ? INDEX_WALK_SETTINGS : {}), ...(joined ? JOINED_STATEMENT_SETTINGS : {}) };
+  const benchEf = Number(process.env.GBRAIN_BENCH_HNSW_EF_SEARCH) || 0;
+  if (process.env.GBRAIN_BENCH_EF_LOG) console.error(`[bench-ef] window=${window} walk=${walkOverfetch ?? 0} joined=${joined} code_ef=${hnswEfSearchFor(window)} override=${benchEf || '-'}`);
+  const settings: Record<string, string> = { 'hnsw.ef_search': String(benchEf || hnswEfSearchFor(window)), ...(walkOverfetch ? INDEX_WALK_SETTINGS : {}), ...(joined ? JOINED_STATEMENT_SETTINGS : {}) };
   if (iterative) {
     settings['hnsw.iterative_scan'] = iterativeMode;
     settings['hnsw.max_scan_tuples'] = String(maxScanTuples);
