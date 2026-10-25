@@ -108,6 +108,7 @@ export const WRITE_RECEIPT_SCHEMA = {
         mode: { type: 'string', enum: ['filesystem', 'database'] },
         file_written: { type: 'boolean' },
         git_state: { type: 'string' },
+        git_commit: { type: 'string' },
       },
     },
     created_at: { type: 'string' },

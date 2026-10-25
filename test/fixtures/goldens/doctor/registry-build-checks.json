@@ -983,6 +983,10 @@
       },
       {
         "category": "brain",
+        "name": "db_ahead_of_git"
+      },
+      {
+        "category": "brain",
         "name": "fence_integrity"
       },
       {

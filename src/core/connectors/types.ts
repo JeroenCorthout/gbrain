@@ -82,7 +82,7 @@ export type ProbeResult =
   | { ok: true }
   | {
       ok: false;
-      kind: 'unauthorized' | 'forbidden_fingerprint' | 'network' | 'drift';
+      kind: 'unauthorized' | 'forbidden_fingerprint' | 'rate_limited' | 'invalid_credential' | 'network' | 'drift';
       detail: string;
     };
 

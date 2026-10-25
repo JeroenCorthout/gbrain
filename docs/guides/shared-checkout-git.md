@@ -283,6 +283,20 @@ remote commits (in its `detail`), and a question to relay to the user. Until it
 is resolved, every later commit-push from this checkout hits the same
 conflict, even for other files, because the unpushed commit is still waiting.
 
+One kind of conflict settles itself on push. When the remote's version of a
+file is one this checkout already had at that path and later replaced with
+another version (a stale clone or writer pushed an old copy back, often inside
+a merge), gbrain keeps this machine's version: the remote's copy is history
+this checkout already moved past. It looks at the last 200 commits that
+changed the file. The push lists those files in `superseded_remote_paths`
+(`--json`) and a `[gbrain notice]` line, and the merge commit message names
+them. A version this checkout never had, a file the remote deleted, and a file
+you name with `--resolve` stay ordinary conflicts. When both kinds meet in one
+push, the error lists only the real conflicts (its `detail.superseded` names
+the others), and the `--resolve` run keeps this machine's version of the
+superseded files. `--pull` still reports them as conflicts; a
+`gbrain git commit-push --push-only` settles them.
+
 To resolve:
 
 1. Ask the user which version of each file should win, or whether they want

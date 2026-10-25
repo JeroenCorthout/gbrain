@@ -1,5 +1,7 @@
 # The database as the source of truth for agent-written memory
 
+> **Superseded.** This direction was not taken: git stays the source of truth and the database is derived from it. See [GIT_CANONICAL_MEMORY.md](GIT_CANONICAL_MEMORY.md). This document is kept for its incident analysis ("What breaks and why", "What it retires").
+
 Status: design only, no production change. Every switch named here ships off.
 Revision: 3, after two rounds of the gstack /autoplan review (see "Review record").
 Author: GBRA-176 (GBrain Minder crew). Review: see "Review record" at the end.

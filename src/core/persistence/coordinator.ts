@@ -53,6 +53,7 @@ import { segmentWriteScope } from '../page-body/ingest.ts';
 import { publicationBeliefOptions, withBeliefBatch } from '../belief/ledger.ts';
 import { markBeliefCommits } from '../belief/append.ts';
 import { classifyPgAccessError } from '../pg-access-classify.ts';
+import { commitThroughDoor, doorCommitLanded, doorMarker, replayAfterDoorCommit, sourceCanonicalGit, strictChanged } from './git-door.ts';
 
 interface PreparedMutationBase {
   sourceExclusive?: boolean;
@@ -526,7 +527,9 @@ export async function publishMutation(engine: BrainEngine, row: WriteRequest, pr
         `This host does not hold source ${row.source_id}'s canonical worktree, or the file of ${row.slug} resolves outside it, so request ${row.request_id} wrote no file. Inspect the owner; the write publishes only on the host that owns the source.`,
         { fix: ownerStatusFix(row.source_id) });
       const { record, bytes } = pageRecoveryRecord(row, prepared.file, binding);
-      if (prepared.file.expectedBeforeHash !== undefined && record.beforeHash !== prepared.file.expectedBeforeHash) {
+      if (binding.canonical_git === true) record.door = await doorMarker(binding.local_path!);
+      // G2: a strict write replayed after its door commit landed finds its own bytes, committed (git-door.ts).
+      if (prepared.file.expectedBeforeHash !== undefined && record.beforeHash !== prepared.file.expectedBeforeHash && !await replayAfterDoorCommit(record)) {
         // A coordinated writer (a withdrawal mirror) also advanced the page:
         // reprepare against it. Bytes changed at an unchanged revision are an
         // uncoordinated edit.
@@ -579,6 +582,9 @@ export async function publishMutation(engine: BrainEngine, row: WriteRequest, pr
         throw new OperationError('source_changed', 'The source became a read-only mirror after this write was prepared; nothing was written to its checkout.',
           'Retry the write with a new request_id; it is now stored database-only.');
       }
+      const door = recovery?.version === 1 ? recovery : null;
+      // A write prepared strict rechecks its flag under the source lock; one prepared without it publishes as before (only conversion sets the flag).
+      if (door?.door && !await sourceCanonicalGit(tx, row.source_id, true)) throw strictChanged(row.source_id);
       if (recovery) {
         const records = recoveryFiles(recovery);
         for (const record of records) if ((skill ? bundleFileHash(record) : fileHash(record.path)) !== record.beforeHash) {
@@ -612,7 +618,9 @@ export async function publishMutation(engine: BrainEngine, row: WriteRequest, pr
       const final = skill ? null : await publicationPostimage(tx, row, prepared);
       decoratePublicationOutcome(row, prepared, outcome, final, files.length, skill);
       await recordPublicationFenceTrend(tx, row, outcome);
-      await timePublicationStep('effects', row.slug, () => queuePublicationEffects(tx, row, final, outcome, prepared));
+      // G2: a strict source's file is committed before its row; its Git effect only pushes.
+      if (door?.door) Object.assign(outcome.persistence as object, { git_state: 'committed', git_commit: await commitThroughDoor(door.door.root, [{ path: door.path, note: prepared.file?.commit }], lock ?? undefined) });
+      await timePublicationStep('effects', row.slug, () => queuePublicationEffects(tx, row, final, outcome, prepared, { pushOnly: !!door?.door }));
       if (prepared.afterEffects) await withCoordinatedWrite(tx, [row.source_id], () => prepared.afterEffects!(tx, outcome), publicationAttribution(row, prepared.trust));
       await hooks.boundary?.('before_commit', row);
       const committed = await completeWrite(tx, current, 'committed', outcome, undefined, current);
@@ -721,7 +729,10 @@ export async function recoverPublication(engine: BrainEngine, id: string, hostId
           hooks.fileBoundary?.('before_restore', current, index);
           const actual = current.recovery.version === 2 ? bundleFileHash(record) : fileHash(record.path);
           if (actual !== record.beforeHash && actual !== record.afterHash) throw unexpectedRecoveryBytes('Canonical recovery bytes changed during restoration.', current, 'changed while recovery was restoring it and');
-          if (record.staging?.before) {
+          // G2: a strict publication whose commit landed keeps the committed file; Git holds it.
+          if (current.recovery.version === 1 && await doorCommitLanded(record)) {
+            if (record.staging?.before) await withFilesystemPublication([record.root], async () => cleanupRecoveryStaging(record, { priorIntact: true }));
+          } else if (record.staging?.before) {
             await withFilesystemPublication([record.root], async () => {
               if (actual === record.afterHash && actual !== record.beforeHash) restoreBeforeStage(record, phase => hooks.fileBoundary?.(`restoration_${phase}`, current, index));
               else cleanupRecoveryStaging(record, { priorIntact: actual === record.beforeHash });

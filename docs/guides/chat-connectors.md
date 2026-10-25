@@ -240,9 +240,13 @@ Env override for a credential (incident escape hatch):
 
 `chatgpt.com` / `claude.ai` sit behind bot-management that fingerprints the
 TLS/HTTP2 handshake, and `cf_clearance` is bound to a real browser. A server-side
-`fetch` with a valid cookie may still draw a 403 challenge. When that happens the
-connector reports `forbidden` and points you at the official export lane; it never
-loop-retries. If server-side fetch is reliably blocked in your environment, prefer
+`fetch` with a valid cookie may still draw a challenge, on a 403 or on any other status
+(the `cf-mitigated: challenge` header, a challenge page, or a redirect to one). When that
+happens the connector reports `forbidden` and points you at the official export lane; it
+never loop-retries. Sustained rate limiting ends the run as `rate_limited` instead of
+working through the rest of the history, and five conversation fetches in a row that fail
+with a server error or no response stop it as `partial` (`stopReason:
+consecutive_fetch_failures`). If server-side fetch is reliably blocked in your environment, prefer
 the export-file lane (`conversation-archive`) — it always works.
 
 ## Troubleshooting
@@ -252,6 +256,8 @@ the export-file lane (`conversation-archive`) — it always works.
 | Symptom | Cause | Fix | Who acts | Consent | Verify |
 |---|---|---|---|---|---|
 | `forbidden` | Cloudflare/bot challenge on server-side fetch | Use the official export + `gbrain transcripts ingest` | user (downloads the export); agent ingests it | none | `gbrain connectors status --json` |
+| `rate_limited` | the provider kept answering 429 after four retries, or asked for a wait over two minutes | Wait, then re-run; the next sync resumes where this one stopped. Don't loop it | agent | `credentials` | `gbrain connectors status --json` |
+| `auth_required` with "cannot carry" in the hint | the saved cookie or token holds a line break, control or non-ASCII character (`invalid_header_value`); nothing was sent | Re-copy the Cookie header on one line, `gbrain connectors auth` | user (copies the cookie) | `credentials` | `gbrain connectors status --json` |
 | `auth_required` | cookie expired/invalid | Re-copy a fresh Cookie header, `gbrain connectors auth` | user (copies a fresh Cookie header) | `credentials` | `gbrain connectors status --json` |
 | `connectors auth` exits 1 with an `[AGENT]` cookie checklist | no credential and nobody at the terminal ([headless lane](#headless-lane-an-agent-without-a-terminal)) | Relay the `[SHOW USER]` checklist; the user pipes the cookie into `gbrain connectors auth <provider> --cookie -` | user (copies the cookie) | `credentials` | `gbrain connectors status --json` |
 | `partial` | a conversation failed to fetch or import, the conversation list failed, or `--limit` capped the run | Re-run. A failed conversation is retried and holds the watermark until it imports. One that failed three times at the same update time is quarantined instead: it no longer holds the watermark and later syncs retry it on a backoff until it imports | agent | `credentials` (fetches from the provider again with the saved session) | `gbrain connectors status --json` |

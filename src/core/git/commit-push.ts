@@ -74,6 +74,8 @@ export interface CommitPushResult {
   lagging_reason?: string;
   /** Opt-in quarantine (git config gbrain.quarantine): the local versions of conflicting files, parked under a ref; the remote's version was published. */
   quarantined?: QuarantineEntry;
+  /** Conflicted files where the remote held a version this checkout had already replaced: this checkout's version was published. */
+  superseded_remote_paths?: string[];
 }
 
 export interface PullResult {
@@ -717,6 +719,30 @@ function blobConflict(root: string, base: string, ours: string, theirs: string, 
   return true;
 }
 
+const MAX_SUPERSEDED_HISTORY = 200;
+
+/**
+ * Content conflicts where the remote's blob is one this checkout held at the same path and then replaced with
+ * another blob (a stale clone or writer brought an old copy back): the remote's version is history this side
+ * already moved past, so these resolve to ours. Reads the last MAX_SUPERSEDED_HISTORY commits of `ours` that touch
+ * the path. A blob ours never held there, a remote deletion, a structural conflict and a path the caller resolves
+ * explicitly stay conflicts.
+ */
+function supersededPaths(root: string, ours: string, theirs: string, merged: MergeTree, explicit?: Map<string, Resolution>): string[] {
+  const base = git(root, ['merge-base', ours, theirs]).stdout.trim();
+  return merged.conflicts.filter(path => {
+    if (explicit?.has(path) || merged.structural.includes(path) || path.includes('\n') || !blobConflict(root, base, ours, theirs, path)) return false;
+    const remote = treeEntry(root, theirs, path);
+    if (!remote) return false;
+    const commits = git(root, ['--literal-pathspecs', 'log', '--format=%H', '-n', String(MAX_SUPERSEDED_HISTORY), ours, '--', path]).stdout.split('\n').filter(Boolean);
+    const blobs = git(root, ['cat-file', '--batch-check=%(objectname) %(objecttype)'], { input: commits.map(c => `${c}:${path}\n`).join('') })
+      .stdout.split('\n').slice(0, commits.length).map(line => (line.endsWith(' blob') ? line.split(' ')[0] : null));
+    const held = [treeEntry(root, ours, path)?.sha ?? null, ...blobs];
+    const at = held.indexOf(remote.sha);
+    return at > 0 && held.slice(0, at).some(sha => sha && sha !== remote.sha);
+  });
+}
+
 /** Apply `--resolve` choices on top of the merge's placeholder tree; structural conflicts are refused. */
 function resolvedTree(ctx: Ctx, ours: string, theirs: string, merged: MergeTree, resolutions: Map<string, Resolution>, cwd: string): string {
   if (merged.conflicts.some(p => !resolutions.has(p))) throw conflictError(ctx, ours, theirs, merged);
@@ -748,7 +774,7 @@ function shellWord(v: string): string {
   return /^[A-Za-z0-9._\/@%+:-]+$/.test(v) ? v : `'${v.replace(/'/g, `'\\''`)}'`;
 }
 
-function conflictError(ctx: Ctx, ours: string, theirs: string, merged: MergeTree, preface = ''): OperationError {
+function conflictError(ctx: Ctx, ours: string, theirs: string, merged: MergeTree & { superseded?: string[] }, preface = ''): OperationError {
   const paths = merged.conflicts;
   const local = ours.slice(0, 12);
   const remote = theirs.slice(0, 12);
@@ -757,7 +783,7 @@ function conflictError(ctx: Ctx, ours: string, theirs: string, merged: MergeTree
     ? `${preface}The local commit ${local} stays local and the checkout is unchanged. ${merged.structural.map(shellWord).join(', ')} ${merged.structural.length === 1 ? 'is' : 'are'} a file/directory or rename conflict that a per-file choice cannot resolve. ${compare}, then move or remove the local path in a new commit (gbrain git commit-push -m "<msg>" -- <paths>) and rerun gbrain git commit-push --push-only. See docs/guides/shared-checkout-git.md#conflicts.`
     : `${preface}The local commit ${local} stays local and the checkout is unchanged. ${compare}, then run gbrain git commit-push --push-only${ctx.keepCheckout ? ' --keep-checkout' : ''} --expect-remote ${remote} ${paths.map(p => `--resolve ${shellWord(p)}=ours|theirs`).join(' ')} (ours = this machine's version, theirs = the remote's, or =file:<path> with a merged copy). Until then every push from this checkout reports this conflict. See docs/guides/shared-checkout-git.md#conflicts.`;
   return opError('integrate_conflict', `Local and remote commits both changed ${paths.length} file(s) on ${ctx.branch}; nothing was merged.`, fix,
-    { detail: JSON.stringify({ local: ours, remote: theirs, paths, structural: merged.structural }),
+    { detail: JSON.stringify({ local: ours, remote: theirs, paths, structural: merged.structural, ...(merged.superseded?.length ? { superseded: merged.superseded } : {}) }),
       fix: { ask_user: true, consent: [], actor: 'user', requires_exclusive: false,
         why: 'Choosing which version of a file wins discards the other side; ask the user before resolving.',
         user_message: `Both this machine and the remote changed ${paths.join(', ')}. Which version should win, or should they be merged by hand?`,
@@ -809,7 +835,7 @@ function remoteContains(ctx: Ctx, sha: string): boolean {
   return true;
 }
 
-interface Published { sha: string; integrated: number; confirmed: 'push' | 'remote'; quarantined?: QuarantineEntry }
+interface Published { sha: string; integrated: number; confirmed: 'push' | 'remote'; quarantined?: QuarantineEntry; superseded?: string[] }
 
 // ── Quarantine (opt-in) ─────────────────────────────────────────────────────
 
@@ -856,14 +882,16 @@ function publish(ctx: Ctx, start: string, resolutions: Map<string, Resolution> |
   let lastError = '';
   let stalled = 0;
   let quarantined: QuarantineEntry | undefined;
+  const superseded = new Set<string>();
+  const notes = () => ({ ...(quarantined ? { quarantined } : {}), ...(superseded.size ? { superseded: [...superseded] } : {}) });
   const onRemote = (): Published => {
     const tip = fetchTracking(ctx);
-    return { sha: tip && isAncestor(ctx.root, candidate, tip) ? tip : candidate, integrated, confirmed: 'remote', ...(quarantined ? { quarantined } : {}) };
+    return { sha: tip && isAncestor(ctx.root, candidate, tip) ? tip : candidate, integrated, confirmed: 'remote', ...notes() };
   };
   for (let attempt = 0; attempt < MAX_PUSH_ATTEMPTS; attempt++) {
     if (attempt) Atomics.wait(sleeper, 0, 0, Math.min(2000, 50 * 2 ** attempt) + Math.floor(Math.random() * 100));
     const push = remoteGit(ctx.root, 'push', [...(ctx.keepCheckout ? ['--no-verify'] : []), '--', ctx.remote, `${candidate}:${ctx.mergeRef}`]);
-    if (push.code === 0) return { sha: candidate, integrated, confirmed: 'push', ...(quarantined ? { quarantined } : {}) };
+    if (push.code === 0) return { sha: candidate, integrated, confirmed: 'push', ...notes() };
     lastError = push.stderr.trim();
     if (remoteContains(ctx, candidate)) return onRemote();
     const remoteTip = fetchTracking(ctx);
@@ -872,13 +900,19 @@ function publish(ctx: Ctx, start: string, resolutions: Map<string, Resolution> |
       if (++stalled > 1) break;
       continue;
     }
-    const merged = integrate(ctx.root, candidate, remoteTip);
+    const raw = integrate(ctx.root, candidate, remoteTip);
+    const kept = supersededPaths(ctx.root, candidate, remoteTip, raw, resolutions);
+    const merged = kept.length
+      ? { ...raw, superseded: kept, conflicts: raw.conflicts.filter(p => !kept.includes(p)),
+        tree: resolvedTree(ctx, candidate, remoteTip, { ...raw, conflicts: kept }, new Map(kept.map(p => [p, { kind: 'ours' } as Resolution])), cwd) }
+      : raw;
     let tree = merged.tree!;
-    let parkedNote: string[] = [];
+    let mergeNotes: string[] = kept.length
+      ? [`Kept this machine's version of ${kept.length} file(s) where the remote held a version this checkout had already replaced: ${kept.slice(0, 20).join(', ')}${kept.length > 20 ? ', ...' : ''}`] : [];
     if (merged.conflicts.length && !resolutions?.size && !merged.structural.length && quarantineEnabled(ctx.root)) {
       tree = resolvedTree(ctx, candidate, remoteTip, merged, new Map(merged.conflicts.map(p => [p, { kind: 'theirs' } as Resolution])), cwd);
       quarantined = parkLocalVersion(ctx.root, candidate, remoteTip, merged.conflicts);
-      parkedNote = [`Quarantined this machine's version of ${merged.conflicts.length} conflicting file(s) under ${quarantined.ref}: ${merged.conflicts.slice(0, 20).join(', ')}`];
+      mergeNotes = [...mergeNotes, `Quarantined this machine's version of ${merged.conflicts.length} conflicting file(s) under ${quarantined.ref}: ${merged.conflicts.slice(0, 20).join(', ')}`];
     } else if (merged.conflicts.length) {
       if (!resolutions?.size) throw conflictError(ctx, candidate, remoteTip, merged);
       if (!expectRemote || !remoteTip.startsWith(expectRemote.toLowerCase())) {
@@ -888,7 +922,8 @@ function publish(ctx: Ctx, start: string, resolutions: Map<string, Resolution> |
       tree = resolvedTree(ctx, candidate, remoteTip, merged, resolutions, cwd);
     }
     integrated += Number(git(ctx.root, ['rev-list', '--count', `${candidate}..${remoteTip}`]).stdout.trim() || 0);
-    candidate = buildMerge(ctx, candidate, remoteTip, tree, merged.skipped, parkedNote);
+    candidate = buildMerge(ctx, candidate, remoteTip, tree, merged.skipped, mergeNotes);
+    for (const p of kept) superseded.add(p);
   }
   if (remoteContains(ctx, candidate)) return onRemote();
   throw opError('push_unconfirmed', `The commit is durable locally but no push to ${ctx.remote}/${ctx.mergeRef.replace(/^refs\/heads\//, '')} was confirmed.`,
@@ -1111,6 +1146,7 @@ export function commitAndPush(opts: CommitPushOptions): CommitPushResult {
     sha: published.sha, committed, branch: ctx.branch, remote: ctx.remote, paths: rel,
     integrated: published.integrated, confirmed: published.confirmed, checkout: moved.checkout, ...(moved.reason ? { lagging_reason: moved.reason } : {}),
     ...(published.quarantined ? { quarantined: published.quarantined } : {}),
+    ...(published.superseded ? { superseded_remote_paths: published.superseded } : {}),
   };
 }
 
