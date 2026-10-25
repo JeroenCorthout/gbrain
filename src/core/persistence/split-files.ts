@@ -384,31 +384,40 @@ export function splitGitEffectData(file: MutationFile & SplitFileFields): { vers
 
 /**
  * The door commit that landed for a split record: the newest commit after `doorHead` (to HEAD) touching any of the
- * record's paths, provided it holds every one of them as published (each worktree file hashes to its `afterHash` and
- * is that commit's blob; a removal is absent from both). Null for an empty range, a commit that does not hold every
- * file, or when Git cannot answer: the record's files then resolve to no one commit.
+ * record's paths, which must hold every one of them as published (each worktree file hashes to its `afterHash` and is
+ * that commit's blob; a removal is absent from both). Null only for an empty range: no commit landed. A commit that
+ * does not hold every file refuses `recovery_required`, and a Git command that fails refuses `git_unavailable`
+ * (retryable): either way the record stays fenced and no file is restored over a commit that may have landed.
  */
 export async function splitLandedCommit(root: string, doorHead: string | null, files: ReadonlyArray<Pick<FileRecoveryRecord, 'path' | 'afterHash'>>): Promise<string | null> {
   if (!files.length) return null;
   const rels = files.map(file => relative(root, file.path).split(sep).join('/'));
-  try {
-    return await withSession(root, undefined, undefined, false, async session => {
-      const listed = await git(session, ['rev-list', '-1', doorHead ? `${doorHead}..HEAD` : 'HEAD', '--', ...rels.map(rel => `:(literal)${rel}`)], false);
-      const commit = listed.code === 0 ? listed.stdout.trim() : '';
-      if (!/^[0-9a-f]{40,64}$/.test(commit)) return null;
-      for (const [index, file] of files.entries()) {
-        const blob = await git(session, ['rev-parse', '--verify', '--quiet', `${commit}:./${rels[index]}`], false);
-        if (file.afterHash === null) {
-          if (blob.code === 0 || existsSync(file.path)) return null;
-          continue;
-        }
-        if (blob.code !== 0 || hashFile(file.path) !== file.afterHash) return null;
-        const worktree = await git(session, ['hash-object', '--', `./${rels[index]}`], false);
-        if (worktree.code !== 0 || worktree.stdout.trim() !== blob.stdout.trim()) return null;
+  const gitFailed = (what: string) => opError('git_unavailable', 'Git could not say whether the split page door commit landed; its files remain fenced.',
+    `${what} failed in ${root} while recovery checked whether the door commit of a split page landed, so recovery restored nothing and the request stays recovering; it retries. If it keeps failing, inspect the checkout with git status on the brain host. Never delete the files or the record to force progress.`,
+    { fix: ownersFix() });
+  return withSession(root, undefined, undefined, false, async session => {
+    const listed = await git(session, ['rev-list', '-1', doorHead ? `${doorHead}..HEAD` : 'HEAD', '--', ...rels.map(rel => `:(literal)${rel}`)], false);
+    if (listed.code !== 0) throw gitFailed('git rev-list');
+    const commit = listed.stdout.trim();
+    if (!commit) return null;
+    if (!/^[0-9a-f]{40,64}$/.test(commit)) throw gitFailed('git rev-list');
+    const unlike = () => opError('recovery_required', 'A commit after the split page door head does not hold its files as published; they remain fenced.',
+      `Commit ${commit} in ${root} touches the files of an interrupted split page publication but does not hold every one of them as that publication wrote it, so recovery neither kept nor restored them and the request stays recovering. Show the user the owner status and the commit; never delete the files or the record to force progress.`,
+      { fix: ownersFix() });
+    for (const [index, file] of files.entries()) {
+      const blob = await git(session, ['rev-parse', '--verify', '--quiet', `${commit}:./${rels[index]}`], false);
+      if (blob.code !== 0 && blob.code !== 1) throw gitFailed('git rev-parse');
+      if (file.afterHash === null) {
+        if (blob.code === 0 || existsSync(file.path)) throw unlike();
+        continue;
       }
-      return commit;
-    });
-  } catch { return null; }
+      if (blob.code !== 0 || hashFile(file.path) !== file.afterHash) throw unlike();
+      const worktree = await git(session, ['hash-object', '--', `./${rels[index]}`], false);
+      if (worktree.code !== 0) throw gitFailed('git hash-object');
+      if (worktree.stdout.trim() !== blob.stdout.trim()) throw unlike();
+    }
+    return commit;
+  }).catch(error => { throw error instanceof OperationError ? error : gitFailed('git'); });
 }
 
 /** Refuses a split record that does not belong to this owner and claim, or whose files are not one head and its parts. */
