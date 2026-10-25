@@ -18,7 +18,8 @@ import { assertLargePageReplacement } from './large-page-guard.ts';
 import { applyInference } from '../frontmatter-inference.ts';
 import { OperationError, opError } from '../ops/contract.ts';
 import { CANONICAL_FILE_MISSING } from './publication-failure.ts';
-import { committedPendingImport, pendingImportRefusal, SYNC_HELD } from './pending-import.ts';
+import { committedBlob, committedPendingImport, headBlob, pendingImportRefusal, SYNC_HELD } from './pending-import.ts';
+import { sourceCanonicalGit } from './git-door.ts';
 import { readFix } from '../ops/op-fix.ts';
 import { isOpPageSlug } from '../ops/context.ts';
 import { shellQuote, type Action } from '../agent-output.ts';
@@ -340,6 +341,8 @@ async function compareFileTarget(engine: BrainEngine, row: Pick<WriteRequest, 's
     // missing still refuses below.
     if (publishesDatabaseOnly(root, row.slug, snapshot)) return undefined;
     if (options.deleting === true && content === null && !snapshot.page.source_path && !capturedPath) return undefined;
+    // G2: on a strict source a removal Git already holds (a replay after the door commit landed) completes in the database.
+    if (options.deleting === true && content === null && await sourceCanonicalGit(engine, row.source_id) && await headBlob(root, path) === null) return undefined;
     // #6696 (A12): tagged, so a producer can refuse this before admission and the receipt says which refusal it was.
     throw opError('source_changed', 'The canonical file was removed outside coordinated publication.',
       'Import the local deletion or recover the canonical file before editing this page.', { detail: CANONICAL_FILE_MISSING });
@@ -357,6 +360,10 @@ async function compareFileTarget(engine: BrainEngine, row: Pick<WriteRequest, 's
     // holding content the database never had is an uncoordinated edit and still refuses below.
     const staleCache = !matches && before instanceof Buffer && publishesDatabaseOnly(root, row.slug, snapshot)
       && await replaceableFile(engine, row.source_id, row.slug, path).then(check => check.ok && check.expectedFileBytes === before.toString('utf8'));
+    // G2: a strict publication replayed after its door commit landed finds exactly its own bytes, committed, and completes against them.
+    const landed = !matches && !staleCache && content !== null && beforeHash() === fileContentHash(content)
+      && await sourceCanonicalGit(engine, row.source_id) && await committedBlob(root, path) !== null;
+    if (landed) return { path, root, content, expectedBeforeHash: beforeHash() };
     if (!matches && !staleCache) {
       const held = await heldFileRefusal(engine, row, root, path, 'drift', options.remote === true);
       if (held) throw held;

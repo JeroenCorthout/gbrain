@@ -54,6 +54,7 @@ import { timePublicationStep } from './publication-timing.ts';
 import { assertUnboundPublication, classifyUnboundPage } from './unbound-source.ts';
 import { boundPublication, declarePublication, publicationLeaseMs, publicationTransaction, type PublicationBound } from './publication-deadline.ts';
 import { classifyMirrorPage, sourceMirrorReadOnly } from './mirror-read-only.ts';
+import { commitThroughDoor, doorMarker, sourceCanonicalGit, strictChanged } from './git-door.ts';
 import { authorizePageVisibility } from './page-visibility.ts';
 import { withFilesystemPublication } from './filesystem-guard.ts';
 import { isWriteTargetContained } from '../path-confine.ts';
@@ -255,7 +256,7 @@ export async function publishGroup(engine: BrainEngine, rows: WriteRequest[], pr
   if (lane) lane.coordinationPath ??= binding.coordination_path;
   let releaseCapacity: (() => void) | null = null;
   const recorded = new Map<number, { row: WriteRequest; record: FileRecoveryRecord; bytes: number }>();
-  let committed = false;
+  let committed = false, strict = false;
   const timed: { apply: ReturnType<typeof laneApplyBegin> | null } = { apply: null };
   try {
     // The recovery check and the journal limits the recovery record is sized against go out together.
@@ -282,6 +283,9 @@ export async function publishGroup(engine: BrainEngine, rows: WriteRequest[], pr
       if (file.expectedBeforeHash !== undefined && member.record.beforeHash !== file.expectedBeforeHash) return none;
       files.set(i, member);
     }
+    // G2 (git-door.ts): a strict source's members are committed together before the transaction commits.
+    strict = files.size > 0 && binding.canonical_git === true;
+    if (strict) { const door = await doorMarker(binding.local_path); for (const member of files.values()) member.record.door = door; }
     if (files.size) {
       await prepareRecoveries(engine, [...files.values()], transaction, limits);
       for (const [i, member] of files) recorded.set(i, member);
@@ -307,16 +311,19 @@ export async function publishGroup(engine: BrainEngine, rows: WriteRequest[], pr
         () => members.length ? tx.executeRaw(`UPDATE persistence_requests r SET publication_started=true FROM unnest($1::uuid[],$2::uuid[]) AS t(id,token)
           WHERE r.id=t.id AND r.execution_token=t.token AND r.state='running' RETURNING r.id`, [members.map(row => row.id), members.map(row => row.execution_token)]) : Promise.resolve([]),
         () => prepared.some(member => member.file) ? sourceMirrorReadOnly(tx, head.source_id, true) : Promise.resolve(false),
+        // A group prepared strict rechecks its flag under the source lock; one prepared without it publishes as before.
+        () => strict ? sourceCanonicalGit(tx, head.source_id, true) : Promise.resolve(false),
         () => tx.lockPageKeys(keys),
         // The owner's host binding every file member's Git effect records (a STABLE_IN_GROUP read), fetched with the guards.
         () => prepared.some(member => member.file && !member.noop) ? tx.executeRaw(HOST_BINDING_SQL, [head.worktree_id]) : Promise.resolve([]),
         ...storedAuthorizationReads(tx, rows, true),
       ]).then(results => {
-        const [, live, started, readOnly] = results as [unknown, Awaited<ReturnType<typeof guardOwnership>>, unknown[], boolean];
+        const [, live, started, readOnly, strictNow] = results as [unknown, Awaited<ReturnType<typeof guardOwnership>>, unknown[], boolean, boolean];
         if (String(live?.owner_epoch) !== String(binding.owner_epoch)) throw new OperationError('owner_unavailable', 'Owner epoch changed before publication.', 'Inspect the source owner with gbrain sources writer status; do not claim or transfer the source to push this write.');
         if (started.length !== members.length) throw new OperationError('write_claim_lost', 'Execution claim changed before publication.', 'Another worker holds the request; inspect it rather than resubmitting.');
         // A file target prepared before the source became a read-only mirror is never published (as in publishMutation, noop included).
         if (readOnly) throw new OperationError('source_changed', 'The source became a read-only mirror after this write was prepared.', 'The members publish one at a time.');
+        if (strictNow !== strict) throw strictChanged(head.source_id);
       });
       // The coordinated write's settings statement follows that pipeline. When the pipeline fails first, the
       // transaction reports that failure (postgres.js names the cause of a 25P02 abort), not the settings statement's abort.
@@ -373,7 +380,7 @@ export async function publishGroup(engine: BrainEngine, rows: WriteRequest[], pr
             decoratePublicationOutcome(row, member, outcome, final, file ? 1 : 0, false);
             effects = async () => {
               await recordPublicationFenceTrend(tx, row, outcome);
-              await timePublicationStep('effects', row.slug, () => queuePublicationEffects(tx, row, final, outcome, member, singleWrite(row) ? {} : { deferBatchReconcile: true }));
+              await timePublicationStep('effects', row.slug, () => queuePublicationEffects(tx, row, final, outcome, member, { deferBatchReconcile: !singleWrite(row), pushOnly: strict && !!file }));
             };
             outcomes.push(outcome);
           } catch (error) { throw tag(error, i); }
@@ -382,6 +389,11 @@ export async function publishGroup(engine: BrainEngine, rows: WriteRequest[], pr
       }, publicationAttribution(head, prepared[0]!.trust));
       // #5984 lanes: applied concurrently, committed in manifest order.
       if (lane) { timed.apply?.turn(); await faultPoint('lane:applied', { requestId: head.request_id, sourceId: head.source_id, operation: head.operation }); await awaitLaneTurn(tx, lane, rows); timed.apply?.turned(); }
+      // G2: one path-only commit for every member's file, in commit order, before the rows commit; a shared lease never reclaims an index lock.
+      if (strict && recorded.size) {
+        const commit = await commitThroughDoor(binding.local_path!, [...recorded].map(([i, member]) => ({ path: member.record.path, note: prepared[i]!.file?.commit })), lane || joined ? undefined : lock);
+        for (const i of recorded.keys()) Object.assign(outcomes[i]!.persistence as object, { git_state: 'committed', git_commit: commit });
+      }
       const done = await completeGroup(tx, rows, outcomes);
       // Every member is complete in this transaction: the batch's last page re-arms the batch's mention links once.
       const last = rows[rows.length - 1]!;

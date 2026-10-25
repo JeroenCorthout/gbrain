@@ -198,6 +198,9 @@ export async function runGit(args: string[]): Promise<number> {
     if (result.quarantined && !json) {
       process.stderr.write(`[gbrain notice] quarantine: the remote also changed ${result.quarantined.paths.join(', ')}; its version was published and this machine's version is kept under ${result.quarantined.ref}. gbrain doctor lists it (quarantined_changes).\n`);
     }
+    if (result.superseded_remote_paths && !json) {
+      process.stderr.write(`[gbrain notice] kept this machine's version of ${result.superseded_remote_paths.join(', ')}: the remote held a version this checkout had already replaced. See docs/guides/shared-checkout-git.md#conflicts.\n`);
+    }
     if (result.outcome === 'pushed_checkout_lagging' && !json) {
       process.stderr.write(`[gbrain notice] the push landed but this checkout was not advanced: ${result.lagging_reason}. The next commit-push or --pull catches it up.\n`);
     }

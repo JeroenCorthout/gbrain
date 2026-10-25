@@ -213,6 +213,8 @@ export const chatgptProvider: ChatHistoryProvider = {
       const msg = e instanceof Error ? e.message : String(e);
       if (name === 'ConnectorAuthError') return { ok: false, kind: 'unauthorized', detail: msg };
       if (name === 'ConnectorForbiddenError') return { ok: false, kind: 'forbidden_fingerprint', detail: msg };
+      if (name === 'ConnectorRateLimitedError') return { ok: false, kind: 'rate_limited', detail: msg };
+      if (name === 'ConnectorCredentialFormatError') return { ok: false, kind: 'invalid_credential', detail: msg };
       return { ok: false, kind: 'network', detail: msg };
     }
   },

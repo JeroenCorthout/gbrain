@@ -265,6 +265,105 @@ describe('integrate in memory', () => {
   });
 });
 
+describe('superseded remote blobs: a stale clone brings back a version this checkout replaced', () => {
+  const P = 'notes/alice-example.md';
+  const Q = 'notes/bob-example.md';
+
+  function commitFiles(dir: string, files: Record<string, string | null>, message: string): void {
+    for (const [f, body] of Object.entries(files)) {
+      if (body === null) { git(dir, 'rm', '-q', '--', f); continue; }
+      mkdirSync(join(dir, f, '..'), { recursive: true });
+      writeFileSync(join(dir, f), body);
+      git(dir, 'add', '--', f);
+    }
+    git(dir, 'commit', '-qm', message);
+  }
+
+  /**
+   * a publishes A for P and Q, then commits `ours` locally, one commit per step. b, still at A, commits `theirs`
+   * (with an unrelated y.md edit) on a side branch, as a stale writer replaying an old copy would, then
+   * merges it over an unrelated z.md commit and publishes the merge.
+   */
+  function staleMerge(ours: Array<Record<string, string | null>>, theirs: Record<string, string | null>) {
+    const { bare, a, b } = setup();
+    commitFiles(a, { [P]: 'A\n', [Q]: 'A\n' }, 'A');
+    git(a, 'push', '-q');
+    git(b, 'pull', '-q', '--ff-only');
+    ours.forEach((step, i) => commitFiles(a, step, `local ${i + 1}`));
+    git(b, 'checkout', '-qb', 'stale');
+    commitFiles(b, { ...theirs, 'y.md': 'stale writer\n' }, 'stale writer');
+    git(b, 'checkout', '-q', 'main');
+    commitFiles(b, { 'z.md': 'unrelated\n' }, 'unrelated');
+    git(b, 'merge', '-q', '--no-ff', '-m', 'merge stale', 'stale');
+    git(b, 'push', '-q', 'origin', 'main');
+    return { bare, a, b };
+  }
+
+  for (const fallback of [false, true]) {
+    test(`the remote's copy of an older blob this checkout replaced is resolved to ours and reported${fallback ? ' (git < 2.38 fallback)' : ''}`, () => {
+      if (fallback) process.env.GBRAIN_GIT_NO_MERGE_TREE = '1';
+      const { bare, a } = staleMerge([{ [P]: 'B\n' }, { [P]: 'C\n' }], { [P]: 'B\n' });
+      const r = commitAndPush({ repo: a, pushOnly: true, cwd: a });
+      expect(r).toMatchObject({ outcome: 'pushed', checkout: 'advanced', superseded_remote_paths: [P] });
+      expect(git(bare, 'show', `main:${P}`)).toBe('C');
+      expect(git(bare, 'show', 'main:y.md')).toBe('stale writer');
+      expect(git(bare, 'show', 'main:z.md')).toBe('unrelated');
+      expect(remoteHead(bare)).toBe(git(a, 'rev-parse', 'HEAD'));
+      expect(git(a, 'log', '-1', '--format=%B')).toContain(P);
+      expect(readIntegrateConflict(a)).toBeNull();
+    });
+  }
+
+  test('a blob this checkout never held at the path is still a two-sided conflict, reported as before', () => {
+    const { bare, a } = staleMerge([{ [P]: 'B\n' }, { [P]: 'C\n' }], { [P]: 'D\n' });
+    const tip = remoteHead(bare);
+    let error: { code?: string; detail?: string } = {};
+    try { commitAndPush({ repo: a, pushOnly: true, cwd: a }); } catch (e) { error = e as typeof error; }
+    expect(error.code).toBe('integrate_conflict');
+    const detail = JSON.parse(error.detail!);
+    expect(Object.keys(detail).sort()).toEqual(['local', 'paths', 'remote', 'structural']);
+    expect(detail).toEqual({ local: git(a, 'rev-parse', 'HEAD'), remote: tip, paths: [P], structural: [] });
+    expect(remoteHead(bare)).toBe(tip);
+  });
+
+  test('mixed: only the real conflict is reported; the --resolve run settles the superseded path to ours too', () => {
+    const { bare, a } = staleMerge([{ [P]: 'B\n', [Q]: 'B\n' }, { [P]: 'C\n', [Q]: 'C\n' }], { [P]: 'B\n', [Q]: 'D\n' });
+    const c = conflictOf(() => commitAndPush({ repo: a, pushOnly: true, cwd: a })) as ReturnType<typeof conflictOf> & { superseded?: string[] };
+    expect(c.paths).toEqual([Q]);
+    expect(c.superseded).toEqual([P]);
+    expect(c.fix).toContain(`--resolve ${Q}=ours|theirs`);
+    expect(c.fix).not.toContain(`--resolve ${P}=`);
+    expect(readIntegrateConflict(a)).toEqual(expect.objectContaining({ paths: [Q] }));
+    const r = commitAndPush({ repo: a, pushOnly: true, cwd: a, resolutions: new Map([[Q, { kind: 'theirs' }]]), expectRemote: c.remote });
+    expect(r).toMatchObject({ outcome: 'pushed', superseded_remote_paths: [P] });
+    expect(git(bare, 'show', `main:${P}`)).toBe('C');
+    expect(git(bare, 'show', `main:${Q}`)).toBe('D');
+  });
+
+  test('an explicit --resolve choice for a superseded path wins over the automatic one', () => {
+    const { bare, a } = staleMerge([{ [P]: 'B\n' }, { [P]: 'C\n' }], { [P]: 'B\n' });
+    const r = commitAndPush({ repo: a, pushOnly: true, cwd: a, resolutions: new Map([[P, { kind: 'theirs' }]]), expectRemote: remoteHead(bare) });
+    expect(r.outcome).toBe('pushed');
+    expect(r.superseded_remote_paths).toBeUndefined();
+    expect(git(bare, 'show', `main:${P}`)).toBe('B');
+  });
+
+  test('deletions: the remote deleting the path stays a conflict; a restored blob counts only when this checkout replaced it before deleting', () => {
+    const deleted = staleMerge([{ [P]: 'B\n' }, { [P]: 'C\n' }], { [P]: null });
+    expect(conflictOf(() => commitAndPush({ repo: deleted.a, pushOnly: true, cwd: deleted.a })).paths).toEqual([P]);
+    rmSync(root, { recursive: true, force: true }); root = mkdtempSync(join(tmpdir(), 'cp6530-'));
+
+    const heldThenDeleted = staleMerge([{ [P]: 'B\n' }, { [P]: null }], { [P]: 'B\n' });
+    expect(conflictOf(() => commitAndPush({ repo: heldThenDeleted.a, pushOnly: true, cwd: heldThenDeleted.a })).paths).toEqual([P]);
+    rmSync(root, { recursive: true, force: true }); root = mkdtempSync(join(tmpdir(), 'cp6530-'));
+
+    const replacedThenDeleted = staleMerge([{ [P]: 'B\n' }, { [P]: 'C\n' }, { [P]: null }], { [P]: 'B\n' });
+    const r = commitAndPush({ repo: replacedThenDeleted.a, pushOnly: true, cwd: replacedThenDeleted.a });
+    expect(r.superseded_remote_paths).toEqual([P]);
+    expect(git(replacedThenDeleted.bare, 'ls-tree', '--name-only', 'main', 'notes/')).toBe('notes/bob-example.md');
+  });
+});
+
 describe('advance is a compare-and-swap', () => {
   test('a lockless commit that lands while the push is in flight survives (never checkout -B)', () => {
     const { bare, a, b } = setup();
