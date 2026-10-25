@@ -42,7 +42,8 @@ import { checkOwner, ownerRefusal, type OwnerRefusal } from '../persistence/owne
 import { loadRepairBusySet, type RepairBusySet } from '../persistence/repair-busy.ts';
 import { sourceMirrorReadOnly } from '../persistence/mirror-read-only.ts';
 import { isSourceDbOnlySlug } from '../persistence/source-storage.ts';
-import { confinedRepairTarget, prepareRepairPublication, repairScreenConfig, submitManagedFileRepair } from '../persistence/file-repair.ts';
+import { confinedRepairTarget, prepareRepairPublication, repairScreenConfig, SPLIT_PAGE_UNSUPPORTED, submitManagedFileRepair } from '../persistence/file-repair.ts';
+import { readPageFile, type PageFileHoldCode } from '../split-layout/index.ts';
 import { clearGitHold, readGitHold, type GitHoldRecord } from '../persistence/sync-holds.ts';
 import { submitPageMutation } from '../persistence/page-mutations.ts';
 import type { PageSnapshot } from '../page-state/types.ts';
@@ -129,9 +130,14 @@ export function pageSha(page: FencePage): string {
   return sha256(`${page.compiled_truth ?? ''}\u0000${page.timeline ?? ''}`);
 }
 
-export type TargetRead = { ok: true; target: FenceTarget } | { ok: false; reason: 'gone' | 'not_utf8' | 'unsafe_path' } | { ok: false; reason: 'origin_conflict'; message: string };
+export type TargetRead = { ok: true; target: FenceTarget } | { ok: false; reason: 'gone' | 'not_utf8' | 'unsafe_path' } | { ok: false; reason: 'origin_conflict'; message: string }
+  | { ok: false; reason: PageFileHoldCode | typeof SPLIT_PAGE_UNSUPPORTED; message: string; split: true };
 
-/** Reads a candidate as it is now. A held or walked file is read from the checkout; anything else is read from the page store. */
+/**
+ * Reads a candidate as it is now. A held or walked file is read from the checkout; anything else is read from the page store.
+ * A split page head reads as the page file F' its parts reassemble to (`readPageFile`); a head that does not reassemble is
+ * its hold code, and a legacy source, which writes the file directly, passes a split head by (`split_page_unsupported`).
+ */
 export async function readFenceTarget(engine: BrainEngine, src: FenceSource, cand: { key: string; path: string | null }): Promise<TargetRead> {
   const hold = cand.path ? await readGitHold(engine, src.id, src.incarnation, cand.path) : null;
   const holdSlug = hold?.slug ?? (cand.key.startsWith('path:') ? null : cand.key);
@@ -142,7 +148,11 @@ export async function readFenceTarget(engine: BrainEngine, src: FenceSource, can
         if (error instanceof OperationError) return { ok: false, reason: 'unsafe_path' };
         throw error;
       }
-      const bytes = readFileSync(abs);
+      const file = readPageFile(abs);
+      if (file.hold) return { ok: false, reason: file.hold.code, message: file.hold.message, split: true };
+      if (file.split && !src.managed && !src.mirror) return { ok: false, reason: SPLIT_PAGE_UNSUPPORTED, split: true,
+        message: `${cand.path} is a split page head (its page continues in part files), and this brain has no canonical owner to write the page back as a head plus parts, so it was passed by. Repair the fence on the host that owns the source with persistence enabled.` };
+      const bytes = file.bytes;
       const content = bytes.toString('utf8');
       if (!Buffer.from(content, 'utf8').equals(bytes)) return { ok: false, reason: 'not_utf8' };
       const sourcePath = hold?.source_path ?? cand.path;
