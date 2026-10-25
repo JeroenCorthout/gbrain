@@ -3,9 +3,14 @@
  *   - a publication that fails after any one of its files (the head, a part, the last part) restores every file to
  *     its prior bytes: never a mix of old and new files, and the page row is unchanged (no database content write
  *     before the files are in place);
- *   - on a strict source, interrupted after the door commit, every file is kept (one commit holds them all), the
- *     replay completes against it and the receipt names that commit with landed_before_row; interrupted before the
- *     commit, every file is restored and the replay commits once;
+ *   - on a strict source, interrupted after the door commit, every file is kept (one commit holds them all) and the
+ *     replay completes against it with the normal door receipt; interrupted before the commit, every file is restored
+ *     and the replay commits once;
+ *   - recovery runs in recoverPublication (#7521's G7b shape, git-door-remote-g7b.test.ts): a remote write whose door
+ *     commit landed before its grant was revoked keeps every file, refuses, and its receipt names that one commit with
+ *     landed_before_row; revoked before the commit landed, every file is restored and the receipt names no commit;
+ *   - the record names every prior file it replaces or removes (the head and each part) by its staged before-copy, path
+ *     and sha256, and never embeds a part's bytes;
  *   - a write whose target is a part file is refused;
  *   - the request protocol guard accepts the page_split recovery record on a page request (v275) and still refuses a
  *     skill bundle record there.
@@ -25,6 +30,7 @@ import { admitWrite, claimNextWrite, prepareRecovery } from '../src/core/persist
 import { getWorktreeBinding } from '../src/core/persistence/ownership.ts';
 import { preparePageMutation } from '../src/core/persistence/page-prepare.ts';
 import { disposePersistenceConsumer } from '../src/core/persistence/service.ts';
+import { mintLegacyToken } from '../src/core/token-mint.ts';
 import { __setSplitLimitsForTests, parseHead, partsDirFor, reassemble, splitScratchPath, SPLIT_MAX_FILE_BYTES_KEY } from '../src/core/split-layout/index.ts';
 import { durableGitRepo, git } from './helpers/git-publication.ts';
 import { managedBrain, settleManagedGitEffects } from './helpers/managed-brain.ts';
@@ -54,6 +60,12 @@ const reassembled = (path: string): string => {
   expect(reassemble(path, parsed, scratch)).toMatchObject({ ok: true });
   return readFileSync(scratch, 'utf8');
 };
+/** A remote legacy token granted read and write on the default source (git-door-remote-g7b.test.ts). */
+async function remoteToken(engine: BrainEngine, ctx: OperationContext): Promise<{ id: string; ctx: OperationContext }> {
+  const minted = await mintLegacyToken(engine, { name: `token-${randomUUID().slice(0, 8)}`, scopes: ['read', 'write'], sourceGrant: ['default'], takesHolders: ['world'] });
+  return { id: minted.id, ctx: { ...ctx, remote: true, transport: 'http', takesHoldersAllowList: ['world'],
+    auth: { token: '', clientId: minted.id, principal: { kind: 'legacy_token', id: minted.id }, sourceId: 'default', allowedSources: ['default'], scopes: ['read', 'write'] } } as OperationContext };
+}
 const commitsTouching = (root: string, ...rels: string[]) => git(root, 'log', '--format=%H', '--', ...rels).split('\n').filter(Boolean);
 
 /** One put_page publication run by hand (the consumer stopped), so the test's hooks see each file boundary. */
@@ -107,6 +119,30 @@ for (const backend of testBackends()) describe(`[${backend}] split git layout: r
     expect(reassembled(join(root, 'notes/unit.md'))).toContain(lines(69, 70, 'second')[0]);
   }, { databaseUrl, setup }), 180_000);
 
+  test('the record names every prior head and part by its staged before-copy (path, sha256), never by embedded bytes', () => managedBrain(async ({ engine, ctx, root }) => {
+    __setSplitLimitsForTests(LIMITS);
+    await engine.setConfig(SPLIT_MAX_FILE_BYTES_KEY, '2048');
+    expect(await put(ctx, 'notes/staged', page(lines(0, 60)))).toMatchObject({ state: 'committed' });
+    await settleManagedGitEffects(engine);
+    let files: Array<Record<string, any>> = [];
+    const done = await publishByHand(engine, ctx, 'notes/staged', page([...lines(0, 2), ...lines(2, 40, 'second')]), {
+      boundary: async (name, row) => {
+        if (name !== 'prepared') return;
+        const [saved] = await engine.executeRaw<{ recovery: Record<string, any> }>('SELECT recovery FROM persistence_requests WHERE id=$1::uuid', [row.id]);
+        files = saved!.recovery.files;
+      },
+    });
+    expect(done.state).toBe('committed');
+    const priors = files.filter(file => file.beforeHash !== null);
+    expect(priors.length).toBeGreaterThan(4);
+    expect(priors.some(file => file.path.includes('.staged.gbparts/') && file.afterHash === null)).toBe(true);
+    for (const file of files) expect(file.before).toBeNull();
+    for (const file of priors) expect(file.staging.before).toMatchObject({ hash: file.beforeHash, bytes: expect.any(Number) });
+    expect(reassembled(join(root, 'notes/staged.md'))).toContain(lines(39, 40, 'second')[0]);
+    await settleManagedGitEffects(engine);
+    expect(git(root, 'status', '--porcelain')).toBe('');
+  }, { databaseUrl, setup }), 120_000);
+
   test('strict, interrupted after the door commit: every file is kept and the replay completes against that commit', () => managedBrain(async ({ engine, ctx, root }) => {
     __setSplitLimitsForTests(LIMITS);
     await engine.setConfig(SPLIT_MAX_FILE_BYTES_KEY, '2048');
@@ -129,7 +165,8 @@ for (const backend of testBackends()) describe(`[${backend}] split git layout: r
     expect(commitsTouching(root, 'notes/kept.md', 'notes/.kept.gbparts')[0]).toBe(crash);
     expect(git(root, 'status', '--porcelain')).toBe('');
     const [done] = await engine.executeRaw<{ outcome: Record<string, any> }>('SELECT outcome FROM persistence_requests WHERE request_id=$1::uuid', [requestId]);
-    expect(done!.outcome.persistence).toMatchObject({ git_commit: crash });
+    expect(done!.outcome.persistence).toMatchObject({ git_state: 'committed', git_commit: crash });
+    expect(done!.outcome.persistence).not.toHaveProperty('landed_before_row');
     expect((await snapshotOf(engine, 'notes/kept')).page.compiled_truth).toContain(lines(69, 70, 'second')[0]);
   }, { databaseUrl, setup }), 120_000);
 
@@ -154,6 +191,55 @@ for (const backend of testBackends()) describe(`[${backend}] split git layout: r
     expect(commitsTouching(root, 'notes/restored.md', 'notes/.restored.gbparts')).toHaveLength(2);
     expect(git(root, 'status', '--porcelain')).toBe('');
     expect(reassembled(join(root, 'notes/restored.md'))).toContain(lines(69, 70, 'second')[0]);
+  }, { databaseUrl, setup }), 120_000);
+
+  test('strict, a door commit that landed before its grant was revoked: the replay refuses, and the receipt names that one commit for every file', () => managedBrain(async ({ engine, ctx, root }) => {
+    __setSplitLimitsForTests(LIMITS);
+    await engine.setConfig(SPLIT_MAX_FILE_BYTES_KEY, '2048');
+    await strict(engine);
+    const token = await remoteToken(engine, ctx);
+    const requestId = randomUUID();
+    let landed = '';
+    installFaultHook(async (point, detail) => {
+      if (detail.requestId !== requestId) return;
+      if (point === 'publication:before_commit' && !landed) { landed = git(root, 'rev-parse', 'HEAD').trim(); throw interruption('CONNECTION_CLOSED'); }
+      if (point === 'publication:prepared' && landed) await engine.executeRaw('UPDATE access_tokens SET revoked_at=now() WHERE id=$1 AND revoked_at IS NULL', [token.id]);
+    });
+    await expect(put(token.ctx, 'notes/landed', page(lines(0, 60)), undefined, requestId)).rejects.toMatchObject({ code: 'permission_denied' });
+    expect(landed).not.toBe('');
+    const holder = commitsTouching(root, 'notes/landed.md', 'notes/.landed.gbparts');
+    expect(holder).toEqual([landed]);
+    const files = unit(root, 'notes/landed.md');
+    expect(Object.keys(files).length).toBeGreaterThan(4);
+    for (const [name, bytes] of Object.entries(files)) expect(git(root, 'show', `${landed}:${name === 'notes/landed.md' ? name : `notes/.landed.gbparts/${name}`}`)).toBe(bytes);
+    const [done] = await engine.executeRaw<{ state: string; error_code: string; outcome: Record<string, any> }>('SELECT state, error_code, outcome FROM persistence_requests WHERE request_id=$1::uuid', [requestId]);
+    expect(done).toEqual({ state: 'failed', error_code: 'permission_denied', outcome: { persistence: { git_state: 'committed', git_commit: landed, landed_before_row: true } } });
+    expect(await engine.executeRaw("SELECT 1 FROM pages WHERE source_id='default' AND slug='notes/landed'")).toHaveLength(0);
+    expect(git(root, 'status', '--porcelain')).toBe('');
+  }, { databaseUrl, setup }), 120_000);
+
+  test('strict, a grant revoked before its door commit landed: every file is restored and the receipt names no commit', () => managedBrain(async ({ engine, ctx, root }) => {
+    __setSplitLimitsForTests(LIMITS);
+    await engine.setConfig(SPLIT_MAX_FILE_BYTES_KEY, '2048');
+    await strict(engine);
+    const token = await remoteToken(engine, ctx);
+    const head = git(root, 'rev-parse', 'HEAD').trim();
+    const requestId = randomUUID();
+    let thrown = false;
+    installFaultHook(async (point, detail) => {
+      if (detail.requestId !== requestId) return;
+      if (point === 'publication:after_publication' && !thrown) { thrown = true; throw interruption('CONNECTION_CLOSED'); }
+      if (point === 'publication:prepared' && thrown) await engine.executeRaw('UPDATE access_tokens SET revoked_at=now() WHERE id=$1 AND revoked_at IS NULL', [token.id]);
+    });
+    await expect(put(token.ctx, 'notes/unlanded', page(lines(0, 60)), undefined, requestId)).rejects.toMatchObject({ code: 'permission_denied' });
+    expect(thrown).toBe(true);
+    expect(git(root, 'rev-parse', 'HEAD').trim()).toBe(head);
+    expect(unit(root, 'notes/unlanded.md')).toEqual({});
+    expect(existsSync(partsDirFor(join(root, 'notes/unlanded.md')))).toBe(false);
+    const [done] = await engine.executeRaw<{ state: string; error_code: string; outcome: Record<string, any> | null }>('SELECT state, error_code, outcome FROM persistence_requests WHERE request_id=$1::uuid', [requestId]);
+    expect({ state: done!.state, error_code: done!.error_code, persistence: done!.outcome?.persistence ?? null }).toEqual({ state: 'failed', error_code: 'permission_denied', persistence: null });
+    expect(await engine.executeRaw("SELECT 1 FROM pages WHERE source_id='default' AND slug='notes/unlanded'")).toHaveLength(0);
+    expect(git(root, 'status', '--porcelain')).toBe('');
   }, { databaseUrl, setup }), 120_000);
 
   test('a write whose file is a part file of a split page is refused and writes nothing', () => managedBrain(async ({ engine, ctx, root }) => {

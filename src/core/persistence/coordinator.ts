@@ -55,6 +55,7 @@ import { markBeliefCommits } from '../belief/append.ts';
 import { classifyPgAccessError } from '../pg-access-classify.ts';
 import { commitThroughDoor, doorCommitLanded, doorMarker, replayAfterDoorCommit, sourceCanonicalGit, strictChanged } from './git-door.ts';
 import { assertNoPrivateCommit, declareStrictPublication } from './git-declared.ts';
+import { assertSplitRecoveryBinding, isSplitRecoveryRecord, releaseSplitTargets, removeEmptyPartsDir, splitFilesChanged, splitLandedCommit, splitPublicationTargets, splitRecoveryRecord, type SplitFileFields } from './split-files.ts';
 
 interface PreparedMutationBase {
   sourceExclusive?: boolean;
@@ -102,7 +103,7 @@ interface PreparedMutationBase {
  * A page file target; `publishMode` (Google pages) is the exact mode it publishes with, and its created directories get 0700.
  * `commit` (trusted local preparers only) rides the Git effect into the commit message.
  */
-export type PageMutationFile = MutationFile & { publishMode?: number; commit?: GitCommitNote };
+export type PageMutationFile = MutationFile & SplitFileFields & { publishMode?: number; commit?: GitCommitNote };
 export type PreparedMutation = PreparedMutationBase & (
   | { target?: 'page'; file?: PageMutationFile; files?: never }
   | { target: 'skill_bundle'; file?: never; files: MutationFile[]; validate(tx: BrainEngine): Promise<void> }
@@ -427,12 +428,12 @@ function publicationStage(path: string, content: string | Uint8Array | StreamedF
   return isStreamedContent(content) ? { path: atomicStagingPath(path), hash: content.hash, bytes: content.bytes } : recoveryStagingFile(path, content);
 }
 /**
- * A prior file over the single-string ceiling is hashed in pieces and named as the before stage (path, SHA-256,
- * length) its copy is written to, never embedded (model.ts). The reservation counts the copy and the publication stage
- * on disk plus the record. Null for a smaller or absent prior file (its bytes are embedded).
+ * A prior file over `minBytes` (the single-string ceiling) is hashed in pieces and named as the before stage (path,
+ * SHA-256, length) its copy is written to, never embedded (model.ts). The reservation counts the copy and the
+ * publication stage on disk plus the record. Null for a smaller or absent prior file (its bytes are embedded).
  */
-function largeRecoveryRecord(row: WriteRequest, file: PageMutationFile, binding: WorktreeBinding): { record: FileRecoveryRecord; bytes: number } | null {
-  if (!existsSync(file.path) || statSync(file.path).size <= LARGE_FILE_MIN_BYTES) return null;
+function largeRecoveryRecord(row: WriteRequest, file: PageMutationFile, binding: WorktreeBinding, minBytes = LARGE_FILE_MIN_BYTES): { record: FileRecoveryRecord; bytes: number } | null {
+  if (!existsSync(file.path) || statSync(file.path).size <= minBytes) return null;
   const fd = openSync(file.path, 'r');
   let prior: { hash: string; bytes: number; mode: number };
   try { prior = { ...hashDescriptor(fd), mode: fstatSync(fd).mode & 0o7777 }; } finally { closeSync(fd); }
@@ -527,10 +528,16 @@ export async function publishMutation(engine: BrainEngine, row: WriteRequest, pr
       if (!binding || !lock || !isWriteTargetContained(prepared.file.path, prepared.file.root)) throw opError('storage_error', 'Filesystem publication requires a confined canonical owner.',
         `This host does not hold source ${row.source_id}'s canonical worktree, or the file of ${row.slug} resolves outside it, so request ${row.request_id} wrote no file. Inspect the owner; the write publishes only on the host that owns the source.`,
         { fix: ownerStatusFix(row.source_id) });
-      const { record, bytes } = pageRecoveryRecord(row, prepared.file, binding);
+      // Wave B PR 5: a page over sync.max_file_bytes, or one leaving that layout, publishes its head and part files as one record;
+      // every prior file it replaces or removes is named by its staged before-copy (path, SHA-256), never embedded.
+      const split = await splitPublicationTargets(engine, prepared.file)
+        ? splitRecoveryRecord(row, prepared.file, binding, (r, file, b) => largeRecoveryRecord(r, file, b, 0) ?? pageRecoveryRecord(r, file, b)) : null;
+      if (split) files.push(...prepared.file.parts!);
+      const { record, bytes } = split ?? pageRecoveryRecord(row, prepared.file, binding);
       if (binding.canonical_git === true) record.door = await doorMarker(binding.local_path!);
       // G2: a strict write replayed after its door commit landed finds its own bytes, committed (git-door.ts).
-      if (prepared.file.expectedBeforeHash !== undefined && record.beforeHash !== prepared.file.expectedBeforeHash && !await replayAfterDoorCommit(record)) {
+      if (split ? await splitFilesChanged(files, split.record, replayAfterDoorCommit)
+        : record.version === 1 && prepared.file.expectedBeforeHash !== undefined && record.beforeHash !== prepared.file.expectedBeforeHash && !await replayAfterDoorCommit(record)) {
         // A coordinated writer (a withdrawal mirror) also advanced the page:
         // reprepare against it. Bytes changed at an unchanged revision are an
         // uncoordinated edit.
@@ -542,7 +549,7 @@ export async function publishMutation(engine: BrainEngine, row: WriteRequest, pr
       }
       await prepareRecovery(engine, row, record, bytes);
       recovery = record;
-      await stageLargeFiles(engine, row, prepared.file, record);
+      for (const [index, entry] of recoveryFiles(record).entries()) await stageLargeFiles(engine, row, files[index]!, entry);
       await hooks.boundary?.('prepared', row);
     }
     const done = await publicationTransaction(engine, async tx => {
@@ -584,8 +591,9 @@ export async function publishMutation(engine: BrainEngine, row: WriteRequest, pr
           'Retry the write with a new request_id; it is now stored database-only.');
       }
       const door = recovery?.version === 1 ? recovery : null;
+      const splitDoor = isSplitRecoveryRecord(recovery) ? recovery.door : undefined;
       // A write prepared strict rechecks its flag under the source lock; one prepared without it publishes as before (only conversion sets the flag).
-      if (door?.door && !await sourceCanonicalGit(tx, row.source_id, true)) throw strictChanged(row.source_id);
+      if ((door?.door || splitDoor) && !await sourceCanonicalGit(tx, row.source_id, true)) throw strictChanged(row.source_id);
       // G7a (git-declared.ts): a strict publication never writes or commits a private page's bytes.
       if (!skill) await assertNoPrivateCommit(tx, row, prepared, snapshot, binding);
       if (recovery) {
@@ -608,6 +616,7 @@ export async function publishMutation(engine: BrainEngine, row: WriteRequest, pr
             });
             hooks.fileBoundary?.('after_file', row, index);
           }
+          if (isSplitRecoveryRecord(recovery)) removeEmptyPartsDir(files[0]!.path);
         });
         await hooks.boundary?.('after_publication', row);
       }
@@ -625,7 +634,10 @@ export async function publishMutation(engine: BrainEngine, row: WriteRequest, pr
       await recordPublicationFenceTrend(tx, row, outcome);
       // G2: a strict source's file is committed before its row; its Git effect only pushes.
       if (door?.door) Object.assign(outcome.persistence as object, { git_state: 'committed', git_commit: await commitThroughDoor(door.door.root, [{ path: door.path, note: prepared.file?.commit }], lock ?? undefined) });
-      await timePublicationStep('effects', row.slug, () => queuePublicationEffects(tx, row, final, outcome, prepared, { pushOnly: !!door?.door }));
+      // Wave B PR 5: a split page's head and every part file it writes or removes land in one door commit.
+      if (splitDoor) Object.assign(outcome.persistence as object, { git_state: 'committed', git_commit: await commitThroughDoor(splitDoor.root,
+        files.map((file, index) => ({ path: file.path, ...(index ? {} : { note: prepared.file?.commit }) })), lock ?? undefined) });
+      await timePublicationStep('effects', row.slug, () => queuePublicationEffects(tx, row, final, outcome, prepared, { pushOnly: !!door?.door || !!splitDoor }));
       if (prepared.afterEffects) await withCoordinatedWrite(tx, [row.source_id], () => prepared.afterEffects!(tx, outcome), publicationAttribution(row, prepared.trust));
       await hooks.boundary?.('before_commit', row);
       const committed = await completeWrite(tx, current, 'committed', outcome, undefined, current);
@@ -636,8 +648,9 @@ export async function publishMutation(engine: BrainEngine, row: WriteRequest, pr
     if (beliefReport.appended && done.state === 'committed') await markBeliefCommits(engine, [row.id]).catch(() => undefined);
     if (recovery) {
       // A version 3 record's prior-file copy is removed once the outcome is durable, before its record is cleared.
-      const staged = recovery;
-      if (staged.version === 1 && staged.staging?.before) await withFilesystemPublication([staged.root], async () => cleanupRecoveryStaging(staged));
+      for (const staged of recoveryFiles(recovery)) if (staged.staging?.before) await withFilesystemPublication([staged.root], async () => cleanupRecoveryStaging(staged));
+      // A split page's parts directory held its removed parts' copies; it goes once they are gone and it is empty.
+      if (isSplitRecoveryRecord(recovery)) await withFilesystemPublication([recovery.root], async () => removeEmptyPartsDir(files[0]!.path));
       await clearResolvedRecovery(engine, row.id, done);
     }
     if (done.state === 'committed') afterCommitDue = done;
@@ -669,6 +682,7 @@ export async function publishMutation(engine: BrainEngine, row: WriteRequest, pr
     }
     return finishUnpublishedFailure(engine, row, error);
   } finally {
+    releaseSplitTargets(prepared.file);
     releaseCapacity?.();
     await lock?.release();
     if (afterCommitDue) {
@@ -708,20 +722,24 @@ export async function recoverPublication(engine: BrainEngine, id: string, hostId
       const [current] = await tx.executeRaw<WriteRequest>('SELECT * FROM persistence_requests WHERE id=$1::uuid FOR UPDATE', [id]);
       if (!current.recovery) return current;
       const records = recoveryFiles(current.recovery);
+      // Wave B PR 5: a split page's head and parts recover as one unit (split-files.ts); a skill bundle's files are bundle files.
+      const split = isSplitRecoveryRecord(current.recovery) ? current.recovery : null;
+      const bundle = current.recovery.version === 2 && !split;
       let landed: string | null = null;
       if (current.recovery.version === 2) {
         const owner = await guardOwnership(tx, current, hostId);
-        if (!owner) throw opError('owner_unavailable', 'Skill recovery requires its canonical owner.',
-          `This host no longer holds source ${current.source_id}'s current owner epoch, so shared-skill request ${current.request_id} stays recovering until its owner finishes it. Inspect the owner; its resident writer finishes the recovery.`,
+        if (!owner) throw opError('owner_unavailable', `${split ? 'Split page' : 'Skill'} recovery requires its canonical owner.`,
+          `This host no longer holds source ${current.source_id}'s current owner epoch, so ${split ? 'split page' : 'shared-skill'} request ${current.request_id} stays recovering until its owner finishes it. Inspect the owner; its resident writer finishes the recovery.`,
           { fix: ownerStatusFix(current.source_id) });
-        assertBundleRecoveryBinding(current.recovery, owner, current.execution_token);
+        if (isSplitRecoveryRecord(current.recovery)) assertSplitRecoveryBinding(current.recovery, owner, current.execution_token);
+        else assertBundleRecoveryBinding(current.recovery, owner, current.execution_token);
       }
       for (const record of records) if (!isWriteTargetContained(record.path, record.root) || !binding.local_path || !isWriteTargetContained(record.path, binding.local_path)) throw opError('recovery_required', 'Recovery file binding is no longer confined to this owner.',
         `A recovery file of request ${current.request_id} now resolves outside source ${current.source_id}'s canonical worktree (a moved checkout or a symlink), so recovery stopped without touching it and the request stays recovering. Inspect the owner and tell the user; the checkout must be repaired before recovery can finish.`,
         { fix: ownerStatusFix(current.source_id) });
       try {
         if (!isTerminal(current)) for (const record of records) {
-          const actual = current.recovery.version === 2 ? bundleFileHash(record) : fileHash(record.path);
+          const actual = bundle ? bundleFileHash(record) : fileHash(record.path);
           if (actual !== record.beforeHash && actual !== record.afterHash) throw unexpectedRecoveryBytes('Canonical recovery bytes changed outside publication.', current, 'was edited outside gbrain and');
         }
         // A terminal outcome's prior-file copy is dropped unread when its canonical file still holds the prior bytes.
@@ -730,14 +748,16 @@ export async function recoverPublication(engine: BrainEngine, id: string, hostId
             priorIntact: isTerminal(current) && !!record.staging?.before && fileHash(record.path) === record.beforeHash });
         });
         // A live request's restoration runs inside this guard too, so a refusal there is recorded as its blocked reason.
+        // A split record's files resolve to one door commit (splitLandedCommit) or to none: all are kept, or all restored.
+        if (!isTerminal(current) && split?.door) landed = await splitLandedCommit(split.door.root, split.door.head, records);
         if (!isTerminal(current)) for (let index = 0; index < records.length; index++) {
           const record = records[index];
           hooks.fileBoundary?.('before_restore', current, index);
-          const actual = current.recovery.version === 2 ? bundleFileHash(record) : fileHash(record.path);
+          const actual = bundle ? bundleFileHash(record) : fileHash(record.path);
           if (actual !== record.beforeHash && actual !== record.afterHash) throw unexpectedRecoveryBytes('Canonical recovery bytes changed during restoration.', current, 'changed while recovery was restoring it and');
           // G2: a strict publication whose commit landed keeps the committed file; Git holds it.
-          if (current.recovery.version === 1 && await doorCommitLanded(record)) {
-            landed = await landedCommit(record.door!.root, record.door!.head, record.path);
+          if (split ? landed !== null : current.recovery.version === 1 && await doorCommitLanded(record)) {
+            if (!split) landed = await landedCommit(record.door!.root, record.door!.head, record.path);
             if (record.staging?.before) await withFilesystemPublication([record.root], async () => cleanupRecoveryStaging(record, { priorIntact: true }));
           } else if (record.staging?.before) {
             await withFilesystemPublication([record.root], async () => {
@@ -747,7 +767,7 @@ export async function recoverPublication(engine: BrainEngine, id: string, hostId
           } else if (actual === record.afterHash && actual !== record.beforeHash) {
             await withFilesystemPublication([record.root], async () => {
               const file = { path: record.path, root: record.root, content: record.before === null ? null : Buffer.from(record.before, 'base64') };
-              if (current.recovery!.version === 2) {
+              if (bundle) {
                 const restored = { ...record, beforeHash: record.afterHash, afterHash: record.beforeHash,
                   mode: record.afterHash === null ? null : record.afterMode ?? record.mode, afterMode: record.mode ?? undefined,
                   staging: { publication: record.staging?.restoration } };
@@ -761,6 +781,7 @@ export async function recoverPublication(engine: BrainEngine, id: string, hostId
           hooks.fileBoundary?.('after_restore', current, index);
           assertRecoveryStagingAbsent(record);
         }
+        if (!isTerminal(current) && split) await withFilesystemPublication([split.root], async () => removeEmptyPartsDir(records[0]!.path));
       }
       catch (error) {
         if (!(error instanceof OperationError) || !['unexpected_staging_bytes','unexpected_file_bytes','storage_error'].includes(error.code)) throw error;

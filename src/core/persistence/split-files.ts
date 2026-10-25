@@ -11,8 +11,9 @@
  *   ends (`releaseSplitTargets`); `sweepSplitStaging` removes copies a dead process left.
  * - The recovery record (`SplitRecoveryRecord`, model.ts) holds the head first, then the parts, each with the
  *   single-file staging; a strict source commits every file of it through the door in one commit.
- * - `recoverSplitPublication` restores all files to their prior bytes, or keeps all of them when the door commit
- *   landed (`splitLandedCommit`): never a mix of old and new files.
+ * - `recoverPublication` (coordinator.ts) recovers the record as one unit: all files go back to their prior bytes, or
+ *   all are kept when the door commit landed (`splitLandedCommit`, named on the receipt with `landed_before_row`),
+ *   never a mix of old and new files. `assertSplitRecoveryBinding` checks the record is this owner's head and parts.
  * - A Git effect of a split publication carries `version: 3` (effect-model.ts `SPLIT_GIT_EFFECT_VERSION`): the
  *   current runner commits the head with every part path in one commit (effect-git.ts `publishSplitGitEffect`);
  *   binaries that predate it refuse the version (`targetedWithdrawalEffect`: `withdrawal_provenance`) and never commit a
@@ -30,16 +31,12 @@ import { isWriteTargetContained } from '../path-confine.ts';
 import { SEGMENT_MAX_BYTES } from '../page-body/limits.ts';
 import { headBodyFor, parseHead, partsDirFor, planSplit, PART_FILE_RE, reassemble, splitLimits, SplitLayoutError, splitNotice, splitScratchPath, splitThresholdBytes, type ParsedHead, type SplitPlan } from '../split-layout/index.ts';
 import type { MutationFile } from './bundle-files.ts';
-import type { PageMutationFile, PublicationHooks } from './coordinator.ts';
+import type { PageMutationFile } from './coordinator.ts';
 import { git, withSession } from './effect-git.ts';
 import { SPLIT_GIT_EFFECT_VERSION } from './effect-model.ts';
-import { withFilesystemPublication } from './filesystem-guard.ts';
-import { completeWrite } from './journal.ts';
 import { fileContentBytes, FileBytes, hashFile, isStreamedContent, type StreamedFileContent } from './large-file.ts';
-import { isTerminal, recoveryFiles, type FileRecoveryRecord, type RecoveryRecord, type SplitRecoveryRecord, type WriteRequest } from './model.ts';
-import { guardOwnership, type WorktreeBinding } from './ownership.ts';
-import type { PublicationFailure, PublicationFailureDetail } from './publication-failure.ts';
-import { assertRecoveryStagingAbsent, cleanupRecoveryStaging, restoreBeforeStage } from './staging.ts';
+import type { FileRecoveryRecord, RecoveryRecord, SplitRecoveryRecord, WriteRequest } from './model.ts';
+import type { WorktreeBinding } from './ownership.ts';
 
 /** The split layout a page publication leaves; set by `splitPublicationTargets` on the page's file target. */
 export interface SplitLayout {
@@ -328,22 +325,6 @@ export async function splitLandedCommit(root: string, doorHead: string | null, f
   } catch { return null; }
 }
 
-/** What split recovery takes from the coordinator (passed in, so this module imports none of its values). */
-export interface SplitRecoveryDeps {
-  binding: WorktreeBinding;
-  hostId: string;
-  terminalError?: PublicationFailure;
-  hooks: PublicationHooks;
-  failureState(code: string): 'conflict' | 'failed' | 'cancelled';
-  publishFile(file: PageMutationFile, stagingPath?: string, afterStagingFlush?: () => void, mode?: number | null): void;
-}
-
-function unexpectedBytes(message: string, row: WriteRequest, when: string): OperationError {
-  return opError('unexpected_file_bytes', message,
-    `A file of split page request ${row.request_id} in source ${row.source_id} ${when} matches neither its prior nor its published bytes, so recovery left every file of the page untouched and the worktree stays blocked. Inspect the owner and ask the user which version to keep; do not delete the files to unblock it.`,
-    { fix: ownersFix(row.source_id) });
-}
-
 /** Refuses a split record that does not belong to this owner and claim, or whose files are not one head and its parts. */
 export function assertSplitRecoveryBinding(record: SplitRecoveryRecord, binding: WorktreeBinding, attempt: string | null): void {
   const refuse = () => opError('recovery_required', 'Split page recovery identity is invalid; its files remain fenced.',
@@ -360,80 +341,4 @@ export function assertSplitRecoveryBinding(record: SplitRecoveryRecord, binding:
     seen.add(file.path);
   }
   if (parts.some(part => dirname(part.path) !== dir || !PART_FILE_RE.test(basename(part.path)))) throw refuse();
-}
-
-/** Restores one file of a split record to its prior bytes, or keeps it when the door commit landed. */
-async function restoreSplitFile(record: FileRecoveryRecord, current: WriteRequest, index: number, landed: boolean, deps: SplitRecoveryDeps): Promise<void> {
-  deps.hooks.fileBoundary?.('before_restore', current, index);
-  const actual = hashFile(record.path);
-  if (actual !== record.beforeHash && actual !== record.afterHash) throw unexpectedBytes('Canonical recovery bytes changed during restoration.', current, 'changed while recovery was restoring it and');
-  if (landed) {
-    if (record.staging?.before) await withFilesystemPublication([record.root], async () => cleanupRecoveryStaging(record, { priorIntact: true }));
-  } else if (record.staging?.before) {
-    await withFilesystemPublication([record.root], async () => {
-      if (actual === record.afterHash && actual !== record.beforeHash) restoreBeforeStage(record, phase => deps.hooks.fileBoundary?.(`restoration_${phase}`, current, index));
-      else cleanupRecoveryStaging(record, { priorIntact: actual === record.beforeHash });
-    });
-  } else if (actual === record.afterHash && actual !== record.beforeHash) {
-    await withFilesystemPublication([record.root], async () => {
-      const file = { path: record.path, root: record.root, content: record.before === null ? null : Buffer.from(record.before, 'base64') };
-      deps.publishFile(file, record.staging?.restoration?.path, () => deps.hooks.fileBoundary?.('restoration_staging_flushed', current, index), record.mode);
-    });
-  }
-  deps.hooks.fileBoundary?.('after_restore', current, index);
-  assertRecoveryStagingAbsent(record);
-}
-
-/**
- * recoverPublication's route for a split record, inside its transaction with the request row locked: every file goes
- * back to its prior bytes, or every file is kept when the strict source's door commit landed (one commit holds them
- * all), then the request is requeued or finished with its recorded failure. A landed commit is named on the receipt
- * (`persistence.git_commit` with `landed_before_row: true`, GBRA-191's shape). A terminal request only has its staging cleaned.
- */
-export async function recoverSplitPublication(tx: BrainEngine, current: WriteRequest, deps: SplitRecoveryDeps): Promise<WriteRequest> {
-  const record = current.recovery as SplitRecoveryRecord;
-  const records = recoveryFiles(record);
-  const owner = await guardOwnership(tx, current, deps.hostId);
-  if (!owner) throw opError('owner_unavailable', 'Split page recovery requires its canonical owner.',
-    `This host no longer holds source ${current.source_id}'s current owner epoch, so split page request ${current.request_id} stays recovering until its owner finishes it. Inspect the owner; its resident writer finishes the recovery.`,
-    { fix: ownersFix(current.source_id) });
-  assertSplitRecoveryBinding(record, owner, current.execution_token);
-  for (const file of records) if (!isWriteTargetContained(file.path, file.root) || !deps.binding.local_path || !isWriteTargetContained(file.path, deps.binding.local_path)) {
-    throw opError('recovery_required', 'Recovery file binding is no longer confined to this owner.',
-      `A recovery file of request ${current.request_id} now resolves outside source ${current.source_id}'s canonical worktree (a moved checkout or a symlink), so recovery stopped without touching any file of the split page and the request stays recovering. Inspect the owner and tell the user; the checkout must be repaired before recovery can finish.`,
-      { fix: ownersFix(current.source_id) });
-  }
-  const terminal = isTerminal(current);
-  let landed: string | null = null;
-  try {
-    if (!terminal) for (const file of records) {
-      const actual = hashFile(file.path);
-      if (actual !== file.beforeHash && actual !== file.afterHash) throw unexpectedBytes('Canonical recovery bytes changed outside publication.', current, 'was edited outside gbrain and');
-    }
-    await withFilesystemPublication([record.root], async () => {
-      for (const file of records) cleanupRecoveryStaging(file, { keepBefore: !terminal, priorIntact: terminal && !!file.staging?.before && hashFile(file.path) === file.beforeHash });
-    });
-    if (!terminal) {
-      landed = record.door ? await splitLandedCommit(record.door.root, record.door.head, records) : null;
-      for (const [index, file] of records.entries()) await restoreSplitFile(file, current, index, landed !== null, deps);
-      await withFilesystemPublication([record.root], async () => removeEmptyPartsDir(records[0]!.path));
-    }
-  } catch (error) {
-    if (!(error instanceof OperationError) || !['unexpected_staging_bytes', 'unexpected_file_bytes', 'storage_error'].includes(error.code)) throw error;
-    const reason = error.code === 'unexpected_staging_bytes' ? error.code : 'unexpected_file_bytes';
-    const [blocked] = await tx.executeRaw<WriteRequest>(`UPDATE persistence_requests SET
-      state=CASE WHEN state IN ('committed','conflict','failed','cancelled') THEN state ELSE 'recovering' END,
-      blocked_reason=$2,updated_at=now() WHERE id=$1::uuid RETURNING *`, [current.id, reason]);
-    return blocked!;
-  }
-  if (terminal) return { ...current, blocked_reason: null };
-  const failure: PublicationFailure | undefined = deps.terminalError ?? (current.error_code ? { code: current.error_code, message: current.error_message ?? 'Publication failed before database completion.',
-    ...(current.error_detail ? { detail: current.error_detail as unknown as PublicationFailureDetail } : {}) } : undefined);
-  const kept = landed ? { persistence: { git_state: 'committed', git_commit: landed, landed_before_row: true } } : null;
-  if (failure) return completeWrite(tx, current, deps.failureState(failure.code), kept ?? {}, failure);
-  for (const key of ['brain', `worktree:${current.worktree_id}`]) await tx.executeRaw('UPDATE persistence_counters SET recovery_bytes=recovery_bytes-$2 WHERE key=$1', [key, Number(current.recovery_bytes)]);
-  const [queued] = await tx.executeRaw<WriteRequest>(`UPDATE persistence_requests SET state='queued',execution_token=NULL,
-    claim_expires_at=NULL,recovery=NULL,recovery_bytes=0,publication_started=false,blocked_reason=NULL,outcome=COALESCE($2::text::jsonb,outcome),updated_at=now()
-    WHERE id=$1::uuid RETURNING *`, [current.id, kept ? JSON.stringify(kept) : null]);
-  return queued!;
 }
