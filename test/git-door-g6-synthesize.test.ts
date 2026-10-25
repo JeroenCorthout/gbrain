@@ -133,19 +133,31 @@ for (const backend of testBackends()) {
       console.log(summarizeAudit(`synthesize_concepts republish ${backend}`, audit));
       const probes = await commitProbe(root, audit, blob => /^visibility: (\w+)/m.exec(blob)?.[1] ?? null);
       console.log(`[g6-measure] synthesize_concepts republish (${banked ? 'banked' : 'no'} edges) commits ${backend}: ${JSON.stringify(probes)}`);
-      // GBRA-176: private content is never committed, so no commit in the batch holds a private concept.
-      expect(probes.filter(probe => probe.probe !== 'world')).toEqual([]);
-      expectDoorTarget(audit, engine.kind);
+      if (banked) {
+        // GBRA-176: private content is never committed, so no commit in the batch holds a private concept.
+        expect(probes.filter(probe => probe.probe !== 'world')).toEqual([]);
+        expectDoorTarget(audit, engine.kind);
+        return;
+      }
+      // The #5525 private step is G7a's visibility transition: one door commit per publication group removes each file
+      // (the probe reads no blob), so no commit holds the private narrative. The page keeps no recorded file, so its world
+      // promotion publishes database-only, a declared page (the census keeps the class the transition stamped).
+      expect(probes.filter(probe => probe.probe !== null)).toEqual([]);
+      expect(probes.map(probe => probe.path).sort()).toEqual(CONCEPTS.map(slug => `${slug}.md`).sort());
+      expect(new Set(probes.map(probe => probe.sha)).size).toBe(engine.kind === 'postgres' ? 1 : CONCEPTS.length);
+      expect(audit.porcelain).toBe('');
+      expect({ gaps: audit.gaps, sample: audit.gapSample }).toEqual({ gaps: NO_GAP, sample: [] });
+      expect(audit.census.states.declared_database_only).toBe(CONCEPTS.length);
+      expect(audit.pages.map(page => ({ slug: page.slug, head: page.head, worktree: page.worktree }))).toEqual(CONCEPTS.map(slug => ({ slug, head: null, worktree: null })));
     }, { databaseUrl, setup });
 
     test('three file-backed concepts with banked provenance edges republished once at world: at HEAD, clean, no census gap, one commit per group',
       () => republish({ banked: true }), 180_000);
 
     // GBRA-60/GBRA-95: a file-backed world concept whose edges do not yet cover its members takes the #5525 private step;
-    // on a strict source that step is a visibility transition (one door commit that removes the file and clears
-    // source_path/source_uri), owned by G7a. Until G7a's transition helper lands the private step commits the private
-    // page, so this stays a todo; `bun test --todo` runs it.
-    test.todo('three file-backed concepts without provenance edges republished: the private step removes the file (G7a visibility transition)',
+    // on a strict source that step is G7a's visibility transition (a door commit that removes the file and clears
+    // source_path/source_uri).
+    test('three file-backed concepts without provenance edges republished: the private step removes the file (G7a visibility transition)',
       () => republish({ banked: false }), 180_000);
   });
 
