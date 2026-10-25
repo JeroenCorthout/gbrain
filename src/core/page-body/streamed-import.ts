@@ -128,7 +128,17 @@ type StreamedImportOptions = {
 export type StreamedGateInput = Awaited<ReturnType<typeof ownerSourceGateInput>>;
 
 /** A coordinated streamed import ready to publish: no parsed body strings exist, only the page's frontmatter. */
-export type StreamedPreparedImport = Omit<PreparedContentImport, 'parsedPage'> & { frontmatter: Record<string, unknown> };
+export type StreamedPreparedImport = Omit<PreparedContentImport, 'parsedPage'> & { frontmatter: Record<string, unknown>; render?: StreamedPageRender };
+
+/**
+ * What a coordinated import that writes the page stores, for a caller that renders the page's canonical file before
+ * publication (persistence/upload-streamed.ts): the columns serializePageToMarkdown renders, the frontmatter tags, and
+ * the stored regions as ranges of the virtual stream (`prefix`, then the file after its first `bom` bytes).
+ */
+export interface StreamedPageRender {
+  title: string; type: string; frontmatter: Record<string, unknown>; tags: string[];
+  truthPieces: readonly BodyPiece[]; timelinePieces: readonly BodyPiece[]; bom: number; prefix: Uint8Array;
+}
 
 /** Today's refusal of a file over the single-string ceiling, naming the step that needs the whole body. */
 function hold(slug: string, size: number, reason: string): ImportResult {
@@ -480,6 +490,7 @@ async function importScanned(engine: BrainEngine, input: { file: FileHandle; bom
   if (opts.coordinated) {
     let applied: { pageId: number; complete: boolean } | null = null;
     return opts.coordinated.prepare({ slug, observedRevision: opts.coordinated.snapshot?.revision ?? null, noop: false, contentHash: hash, result: imported, frontmatter: parsed.frontmatter,
+      render: { title: parsed.title, type: parsed.type, frontmatter: parsed.frontmatter, tags: parsed.tags, truthPieces: scan.truth, timelinePieces: scan.timeline, bom, prefix },
       validate: async () => {
         // Wave B PR 5: a split page's F' is its caller's private copy, checked and disposed by it (persistence/sync-split.ts).
         if (opts.splitBody) return;

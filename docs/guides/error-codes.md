@@ -4029,6 +4029,16 @@ More: [docs/guides/write-refusals.md#slug_page_mismatch](../../docs/guides/write
 |---|---|---|---|---|---|---|
 | Split bad ratio. | The request itself was wrong or no longer matches the brain; nothing was changed. | Correct the request using the message above, then retry. | agent | `repeat the read that failed` | 1 | no |
 
+### split_head_content
+
+<a id="split_head_content"></a>
+
+| Meaning | Why | Next step | Who acts · consent | Verify | Exit | Retryable |
+|---|---|---|---|---|---|---|
+| A page write's content has a top-level gbrain_parts key: it is the head file of a split page read and written back as the whole page, so nothing was written. | A page larger than sync.max_file_bytes is stored as a head file (its frontmatter with the gbrain_parts manifest, the first bytes of the page and a notice) plus part files. Writing the head back as the page would make its lead the whole page and remove every part. A file repair, a put of the head file or a read-modify-write of the head file does exactly that, so every page publication refuses such content. | Write the whole page instead (gbrain get returns it whole, never the head), or change how it is stored on disk with gbrain pages split-storage, which previews before --apply. Submit the write again with a new request_id. Run: gbrain pages split-storage '{slug}' --source '{source_id}' --json | agent | `repeat the read that failed` | 1 | no |
+
+More: [docs/guides/write-refusals.md#split_head_content](../../docs/guides/write-refusals.md#split_head_content)
+
 ### split_head_modified
 
 <a id="split_head_modified"></a>
@@ -4045,9 +4055,19 @@ More: [docs/guides/troubleshooting.md#split-head-modified](../../docs/guides/tro
 
 | Meaning | Why | Next step | Who acts · consent | Verify | Exit | Retryable |
 |---|---|---|---|---|---|---|
-| Sync held a split page head whose part files are missing, unlisted or changed (or whose gbrain_parts manifest does not parse), so the page was not imported; the stored page keeps its last good version. | A page whose canonical file would exceed sync.max_file_bytes is stored as a head file plus hidden part files in a .<name>.gbparts directory beside it, and the head's manifest lists every part with its size and SHA-256. Sync reassembles the page only from exactly that set; a partial checkout, a part edited or deleted by hand, or a stray file in the parts directory would otherwise import a short or wrong page. Every sync re-screens the hold, so restoring the parts clears it without touching the head. | Restore the head and its part files from Git (git checkout -- followed by the head path and its .gbparts directory, or from the commit that last wrote them), remove any file the manifest does not list, then run gbrain sync --source with the source id and --no-pull. Run: gbrain sources status '{source_id}' --json | user | `repeat the read that failed` | 1 | no |
+| Sync held a split page head whose part files are missing, unlisted or changed (or whose gbrain_parts manifest does not parse), so the page was not imported; the stored page keeps its last good version. The Git effect of a split page that finds the same parks with this code and commits neither the head nor any part. | A page whose canonical file would exceed sync.max_file_bytes is stored as a head file plus hidden part files in a .<name>.gbparts directory beside it, and the head's manifest lists every part with its size and SHA-256. Sync reassembles the page only from exactly that set; a partial checkout, a part edited or deleted by hand, or a stray file in the parts directory would otherwise import a short or wrong page. Every sync re-screens the hold, so restoring the parts clears it without touching the head. | Restore the head and its part files from Git (git checkout -- followed by the head path and its .gbparts directory, or from the commit that last wrote them), remove any file the manifest does not list, then run gbrain sync --source with the source id and --no-pull. Run: gbrain sources status '{source_id}' --json | user | `repeat the read that failed` | 1 | no |
 
 More: [docs/guides/troubleshooting.md#split-page-incomplete](../../docs/guides/troubleshooting.md#split-page-incomplete)
+
+### split_parts_unexpected
+
+<a id="split_parts_unexpected"></a>
+
+| Meaning | Why | Next step | Who acts · consent | Verify | Exit | Retryable |
+|---|---|---|---|---|---|---|
+| A split page's parts directory holds something that is not a part file (a file not named NNNN-<sha8>.gbpart, a subdirectory or a symlink), or is not a plain directory, so the page's files were not written and nothing in it was removed. | A write over a split page rewrites its head and parts and removes every other part file in the directory. An entry that is not a part file is nobody's part, so gbrain will not plan around it or delete it; what it is and whether it may go is the user's decision. | Ask the user what the entry is, move it out of the parts directory (or remove it if they agree), then submit the write again with a new request_id. Run: gbrain doctor --only split_layout --json | user | `repeat the read that failed` | 1 | no |
+
+More: [docs/guides/write-refusals.md#split_parts_unexpected](../../docs/guides/write-refusals.md#split_parts_unexpected)
 
 ### split_unparseable
 

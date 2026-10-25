@@ -44,7 +44,7 @@ export function refusePartFileTarget(row: { source_id: string; slug: string }, r
   const rel = relative(root, path).split(sep).join('/');
   if (!isPartPath(rel)) return;
   throw opError('source_changed', 'The canonical file target is inside a split page parts directory.',
-    `The file of ${row.slug} would be ${rel}, which lies in the parts directory of a split page head and belongs to that page, so nothing was written. Store the page under a path outside any .<name>.gbparts directory.`,
+    `The file of ${row.slug} would be ${rel}, which lies in the parts directory of a split page head and belongs to that page, so nothing was written. Store the page under a path outside any .gbparts parts directory.`,
     { detail: 'split_part_path', fix });
 }
 

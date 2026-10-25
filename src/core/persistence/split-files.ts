@@ -28,8 +28,8 @@ import { OperationError, opError } from '../ops/contract.ts';
 import { readFix } from '../ops/op-fix.ts';
 import type { Action } from '../agent-output.ts';
 import { isWriteTargetContained } from '../path-confine.ts';
-import { SEGMENT_MAX_BYTES } from '../page-body/limits.ts';
-import { headBodyFor, parseHead, partsDirFor, planSplit, PART_FILE_RE, reassemble, splitLimits, SplitLayoutError, splitNotice, splitScratchPath, splitThresholdBytes, type ParsedHead, type SplitPlan } from '../split-layout/index.ts';
+import { FRONTMATTER_HEAD_MAX_BYTES, SEGMENT_MAX_BYTES } from '../page-body/limits.ts';
+import { assertNoPartsKey, headBodyFor, parseHead, partsDirFor, planSplit, PART_FILE_RE, reassemble, splitLimits, SplitLayoutError, splitNotice, splitScratchPath, splitThresholdBytes, type ParsedHead, type SplitPlan } from '../split-layout/index.ts';
 import type { MutationFile } from './bundle-files.ts';
 import type { PageMutationFile } from './coordinator.ts';
 import { git, withSession } from './effect-git.ts';
@@ -45,14 +45,23 @@ export interface SplitLayout {
   /** The content the target had before it became the head (F, or null for a removal). */
   original: MutationFile['content'];
   plan: SplitPlan | null;
+  /** The new manifest's parts already on disk with their planned bytes, not rewritten (absolute path to SHA-256). */
+  kept: Record<string, string>;
 }
 /** Fields a page file target gains when its publication touches the split layout. */
 export interface SplitFileFields {
+  /**
+   * The files of the parts directory beside the target when the write was prepared (absolute path to SHA-256): a verified
+   * head's manifest, or the directory as found. Publication refuses as drift when the directory differs from it.
+   */
+  expectedParts?: Record<string, string>;
   /** Part files written (content) or removed (null) beside the head: the new manifest's changed parts, then removals. */
-  parts?: MutationFile[];
+  /** Part files written (content) or removed (null) beside the head; each takes the head's exact publish mode, if any. */
+  parts?: PartTarget[];
   split?: SplitLayout;
 }
-type SplitTarget = MutationFile & SplitFileFields;
+type PartTarget = MutationFile & { publishMode?: number };
+type SplitTarget = PartTarget & SplitFileFields;
 
 const ownersFix = (sourceId?: string): Action => readFix(sourceId
   ? `Shows source ${sourceId}'s canonical owner with its pending, failed and recovering write requests, read-only.`
@@ -65,10 +74,16 @@ const utf8 = new TextDecoder('utf-8', { fatal: true });
 /** The maintenance intent `gbrain pages split-storage --apply` admits (split-layout/relayout.ts `SPLIT_RELAYOUT_INTENT`). */
 const SPLIT_RELAYOUT_INTENT_KIND = 'managed_maintenance_split_relayout';
 
-function unsafePartsDir(dir: string): OperationError {
-  return opError('storage_error', 'A split page parts directory holds something other than regular part files.',
-    `${dir} is not a plain directory of regular files (a symlink, a subdirectory or a special file is in the way), so the page's file was not written. Inspect it on the brain host; how to repair it is the user's decision.`,
-    { fix: ownersFix() });
+/**
+ * The refusal of a parts directory that is not a plain directory of part files: `entry` is what is in the way (the
+ * directory itself, or a file in it that is not a regular file named as a part, NNNN-<sha8>.gbpart). Nothing is written
+ * or removed: what the entry is and whether it may go is the user's decision.
+ */
+function unexpectedPartsEntry(dir: string, entry: string): OperationError {
+  return opError('split_parts_unexpected', 'A split page parts directory holds something that is not a part file.',
+    `${entry === dir ? `${dir} is not a plain directory` : `${dir} holds ${basename(entry)}, which is not a part file (a regular file named NNNN-<sha8>.gbpart)`}, so the page's files were not written and nothing in it was removed. Ask the user what it is: move it out of the parts directory (or remove it, if they agree), then submit the write again with a new request_id.`,
+    { fix: readFix('Lists split page layouts on this host (stray parts directories and held split pages) with their fixes, read-only.', { argv: ['gbrain', 'doctor', '--only', 'split_layout', '--json'] }),
+      docs: 'docs/guides/write-refusals.md#split_parts_unexpected' });
 }
 
 /** The parts directory a head path names, or null for a target that cannot be a head (not a .md file). */
@@ -76,20 +91,31 @@ function partsDirOf(headPath: string): string | null {
   try { return partsDirFor(headPath); } catch { return null; }
 }
 
-/** Every file in the parts directory beside `headPath`, with its SHA-256; empty when the directory is absent. */
-function currentParts(headPath: string, root: string): Map<string, string> {
+/**
+ * The part files in the parts directory beside `headPath` (empty when the directory is absent), read without their
+ * bytes; refuses `split_parts_unexpected` for anything else in the way.
+ */
+export function partFilesOnly(headPath: string, root: string): string[] {
   const dir = partsDirOf(headPath);
-  const found = new Map<string, string>();
-  if (!dir) return found;
+  if (!dir) return [];
   const stat = lstatSync(dir, { throwIfNoEntry: false });
-  if (!stat) return found;
-  if (!stat.isDirectory() || !isWriteTargetContained(dir, root)) throw unsafePartsDir(dir);
-  for (const name of readdirSync(dir).sort()) {
+  if (!stat) return [];
+  if (!stat.isDirectory() || !isWriteTargetContained(dir, root)) throw unexpectedPartsEntry(dir, dir);
+  return readdirSync(dir).sort().map(name => {
     const path = join(dir, name);
-    if (!lstatSync(path).isFile()) throw unsafePartsDir(dir);
-    found.set(path, hashFile(path)!);
-  }
-  return found;
+    if (!PART_FILE_RE.test(name) || !lstatSync(path).isFile()) throw unexpectedPartsEntry(dir, path);
+    return path;
+  });
+}
+
+/** Every part file in the parts directory beside `headPath`, with its SHA-256. */
+function currentParts(headPath: string, root: string): Map<string, string> {
+  return new Map(partFilesOnly(headPath, root).map(path => [path, hashFile(path)!]));
+}
+
+/** The parts directory beside `headPath` as prepareFileTarget finds it (no split head there): path to SHA-256. */
+export function preparedParts(headPath: string, root: string): Record<string, string> {
+  return Object.fromEntries(currentParts(headPath, root));
 }
 
 /** F as a byte stream for planSplit, whatever form the target holds it in. */
@@ -104,6 +130,44 @@ function splitRefusal(path: string, error: SplitLayoutError): OperationError {
     `The file of ${basename(path)} is larger than sync.max_file_bytes, so it is written as a head file plus part files, but ${error.message} (${error.code}). Nothing was written. Fix the page, then submit the write again with a new request_id (docs/guides/memory-boundaries.md#large-pages).`);
 }
 
+/** The leading bytes of a content in which a page's frontmatter block must close (a BOM, then FRONTMATTER_HEAD_MAX_BYTES). */
+const FRONTMATTER_PREFIX_BYTES = FRONTMATTER_HEAD_MAX_BYTES + 3;
+const lenient = new TextDecoder('utf-8');
+
+/** Whether `prefix` (a content's leading bytes) has a frontmatter block declaring a top-level `gbrain_parts` key. */
+function declaresPartsKey(prefix: Uint8Array): boolean {
+  const text = lenient.decode(prefix);
+  try { assertNoPartsKey(text.startsWith('\uFEFF') ? text.slice(1) : text); return false; }
+  catch (error) { if (error instanceof SplitLayoutError) return true; throw error; }
+}
+
+/**
+ * C1: a page publication whose content declares a top-level `gbrain_parts` key is a split page head, never a page file
+ * (a head read raw and written back: a file repair, a `put --file` of the head, an agent's read-modify-write). Writing
+ * it would make the head the page (its lead and notice) and drop every part, so it refuses before any file is planned.
+ */
+async function assertNotSplitHead(engine: BrainEngine, file: SplitTarget): Promise<void> {
+  if (file.content === null) return;
+  let prefix: Uint8Array;
+  if (!isStreamedContent(file.content)) {
+    const bytes = typeof file.content === 'string' ? Buffer.from(file.content.slice(0, FRONTMATTER_PREFIX_BYTES), 'utf8') : file.content;
+    prefix = bytes.subarray(0, FRONTMATTER_PREFIX_BYTES);
+  } else {
+    const pieces: Uint8Array[] = [];
+    let held = 0;
+    for await (const piece of file.content.pieces(engine)) {
+      pieces.push(piece.subarray(0, FRONTMATTER_PREFIX_BYTES - held));
+      held += pieces.at(-1)!.length;
+      if (held >= FRONTMATTER_PREFIX_BYTES) break;
+    }
+    prefix = Buffer.concat(pieces);
+  }
+  if (!declaresPartsKey(prefix)) return;
+  throw opError('split_head_content', 'The content is a split page head, not a page file, so it was not written.',
+    `The content for ${basename(file.path)} has a top-level gbrain_parts key: it is the head file of a split page (the first bytes of the page and the manifest of its part files), read and written back as if it were the whole page. Writing it would replace the page with its lead and remove every part, so nothing was written. Write the whole page instead (gbrain get gives it whole), or change how the page is stored with gbrain pages split-storage and the page slug, which previews before --apply.`,
+    { docs: 'docs/guides/write-refusals.md#split_head_content' });
+}
+
 /**
  * Whether a page target might take the split layout: its content is larger than the smallest threshold, or its path
  * already has a parts directory. A group publication leaves such a member to publishMutation (group-publish.ts).
@@ -111,7 +175,8 @@ function splitRefusal(path: string, error: SplitLayoutError): OperationError {
 export function mayTakeSplitLayout(file: Pick<MutationFile, 'path' | 'content'> | undefined): boolean {
   const dir = file ? partsDirOf(file.path) : null;
   if (!file || !dir) return false;
-  return (file.content !== null && fileContentBytes(file.content) > splitLimits.thresholdMin) || existsSync(dir);
+  if (file.content !== null && (fileContentBytes(file.content) > splitLimits.thresholdMin || isStreamedContent(file.content))) return true;
+  return existsSync(dir) || (file.content !== null && declaresPartsKey((typeof file.content === 'string' ? Buffer.from(file.content.slice(0, FRONTMATTER_PREFIX_BYTES), 'utf8') : file.content).subarray(0, FRONTMATTER_PREFIX_BYTES)));
 }
 
 /**
@@ -121,6 +186,7 @@ export function mayTakeSplitLayout(file: Pick<MutationFile, 'path' | 'content'> 
  */
 export async function splitPublicationTargets(engine: BrainEngine, file: SplitTarget): Promise<boolean> {
   if (file.split) return true;
+  await assertNotSplitHead(engine, file);
   const dir = partsDirOf(file.path);
   if (!dir) return false;
   const bytes = file.content === null ? 0 : fileContentBytes(file.content);
@@ -129,8 +195,10 @@ export async function splitPublicationTargets(engine: BrainEngine, file: SplitTa
   const existing = currentParts(file.path, file.root);
   if (bytes <= threshold && !existing.size) return false;
   const original = file.content;
-  const parts: MutationFile[] = [];
+  const parts: PartTarget[] = [];
+  const publishMode = file.publishMode === undefined ? {} : { publishMode: file.publishMode };
   const manifest: string[] = [];
+  const kept: Record<string, string> = {};
   let plan: SplitPlan | null = null;
   try {
     if (original !== null && bytes > threshold) {
@@ -140,20 +208,20 @@ export async function splitPublicationTargets(engine: BrainEngine, file: SplitTa
         const path = join(dirname(file.path), part.path);
         manifest.push(path);
         const current = existing.get(path) ?? null;
-        if (current === part.sha256) continue;
-        parts.push({ path, root: file.root, content: await plan.partContent(engine, part), expectedBeforeHash: current });
+        if (current === part.sha256) { kept[path] = current; continue; }
+        parts.push({ path, root: file.root, content: await plan.partContent(engine, part), expectedBeforeHash: current, ...publishMode });
       }
       file.content = plan.head();
     }
-    const kept = new Set(manifest);
-    for (const [path, hash] of existing) if (!kept.has(path)) parts.push({ path, root: file.root, content: null, expectedBeforeHash: hash });
+    const listed = new Set(manifest);
+    for (const [path, hash] of existing) if (!listed.has(path)) parts.push({ path, root: file.root, content: null, expectedBeforeHash: hash, ...publishMode });
   } catch (error) {
     plan?.dispose();
     file.content = original;
     throw error;
   }
   file.parts = parts;
-  file.split = { manifest, original, plan };
+  file.split = { manifest, original, plan, kept };
   return true;
 }
 
@@ -168,7 +236,7 @@ export function releaseSplitTargets(file: SplitTarget | undefined): void {
 }
 
 export function isSplitRecoveryRecord(record: RecoveryRecord | null | undefined): record is SplitRecoveryRecord {
-  return record?.version === 2 && (record as { target?: unknown }).target === 'page_split';
+  return record?.version === 3 && (record as { target?: unknown }).target === 'page_split';
 }
 
 /**
@@ -179,20 +247,37 @@ export function splitRecoveryRecord(row: WriteRequest, file: PageMutationFile & 
   recordOf: (row: WriteRequest, file: PageMutationFile, binding: WorktreeBinding) => { record: FileRecoveryRecord; bytes: number }): { record: SplitRecoveryRecord; bytes: number } {
   const records = [file, ...file.parts ?? []].map(target => recordOf(row, target, binding));
   return {
-    record: { version: 2, target: 'page_split', root: file.root, ownerEpoch: String(binding.owner_epoch), attempt: row.execution_token!, files: records.map(entry => entry.record) },
+    record: { version: 3, target: 'page_split', root: file.root, ownerEpoch: String(binding.owner_epoch), attempt: row.execution_token!, files: records.map(entry => entry.record) },
     bytes: records.reduce((sum, entry) => sum + entry.bytes, 0),
   };
 }
 
-/** Whether any file changed after preparation (its bytes are not the ones it expected), apart from a replay after its door commit landed. */
+/**
+ * Whether any file changed after preparation (its bytes are not the ones it expected), apart from a replay after its door
+ * commit landed. The parts directory must hold exactly the parts the write was prepared against (expectedParts): every
+ * part it rewrites, keeps or removes, at the hash prepared, and nothing else.
+ */
 export async function splitFilesChanged(files: MutationFile[], record: SplitRecoveryRecord,
   replayAfterDoorCommit: (record: FileRecoveryRecord) => Promise<boolean>): Promise<boolean> {
+  const head = files[0] as SplitTarget | undefined;
+  if (head?.expectedParts) {
+    const found = new Map<string, string | null>(Object.entries(head.split?.kept ?? {}));
+    for (const entry of record.files.slice(1)) found.set(entry.path, entry.beforeHash);
+    for (const path of new Set([...found.keys(), ...Object.keys(head.expectedParts)])) {
+      if ((found.get(path) ?? null) !== (head.expectedParts[path] ?? null)) return true;
+    }
+  }
   for (const [index, file] of files.entries()) {
     const entry = record.files[index]!;
     if (file.expectedBeforeHash !== undefined && entry.beforeHash !== file.expectedBeforeHash
       && !await replayAfterDoorCommit({ ...entry, ...(record.door ? { door: record.door } : {}) })) return true;
   }
   return false;
+}
+
+/** Whether a part the publication keeps (already on disk with its planned bytes) changed since it was planned; read under the lock. */
+export function splitKeptPartsChanged(file: SplitTarget | undefined): boolean {
+  return Object.entries(file?.split?.kept ?? {}).some(([path, hash]) => hashFile(path) !== hash);
 }
 
 /** Removes the parts directory beside `headPath` once it is empty (a page converted back to one file, or removed). */
@@ -207,7 +292,7 @@ export function removeEmptyPartsDir(headPath: string): void {
  * The comparison reading of a split head: the reassembled page file F' (null for a head whose body was edited by hand,
  * `split_head_modified`, which then compares as itself: drift), the head's own hash, and the parsed edited head.
  */
-export interface SplitHeadReading { reassembled: FileBytes | null; headHash: string; modified: ParsedHead | null; dispose(): void }
+export interface SplitHeadReading { reassembled: FileBytes | null; headHash: string; modified: ParsedHead | null; parts: Record<string, string>; dispose(): void }
 
 /**
  * When the file at `path` is a split head whose parts verify, the page file it stands for, reassembled into a private
@@ -224,9 +309,10 @@ export function readSplitHead(path: string, before: Buffer | FileBytes): SplitHe
   const headHash = before instanceof FileBytes ? before.hash() : createHash('sha256').update(bytes).digest('hex');
   const scratch = splitScratchPath();
   const verdict = reassemble(path, parsed, scratch);
-  if (!verdict.ok) return verdict.code === 'split_head_modified' ? { reassembled: null, headHash, modified: parsed, dispose: () => {} } : null;
+  const parts = Object.fromEntries(parsed.manifest.parts.map(part => [join(dirname(path), part.path), part.sha256]));
+  if (!verdict.ok) return verdict.code === 'split_head_modified' ? { reassembled: null, headHash, modified: parsed, parts, dispose: () => {} } : null;
   const reassembled = FileBytes.open(scratch);
-  return { reassembled, headHash, modified: null, dispose: () => { try { reassembled.close(); } finally { rmSync(scratch, { force: true }); } } };
+  return { reassembled, headHash, modified: null, parts, dispose: () => { try { reassembled.close(); } finally { rmSync(scratch, { force: true }); } } };
 }
 
 /** SHA-256 of the last `bytes` bytes of a content, and the bytes before them (at most `keepPrefix` of them kept). */
@@ -298,31 +384,40 @@ export function splitGitEffectData(file: MutationFile & SplitFileFields): { vers
 
 /**
  * The door commit that landed for a split record: the newest commit after `doorHead` (to HEAD) touching any of the
- * record's paths, provided it holds every one of them as published (each worktree file hashes to its `afterHash` and
- * is that commit's blob; a removal is absent from both). Null for an empty range, a commit that does not hold every
- * file, or when Git cannot answer: the record's files then resolve to no one commit.
+ * record's paths, which must hold every one of them as published (each worktree file hashes to its `afterHash` and is
+ * that commit's blob; a removal is absent from both). Null only for an empty range: no commit landed. A commit that
+ * does not hold every file refuses `recovery_required`, and a Git command that fails refuses `git_unavailable`
+ * (retryable): either way the record stays fenced and no file is restored over a commit that may have landed.
  */
 export async function splitLandedCommit(root: string, doorHead: string | null, files: ReadonlyArray<Pick<FileRecoveryRecord, 'path' | 'afterHash'>>): Promise<string | null> {
   if (!files.length) return null;
   const rels = files.map(file => relative(root, file.path).split(sep).join('/'));
-  try {
-    return await withSession(root, undefined, undefined, false, async session => {
-      const listed = await git(session, ['rev-list', '-1', doorHead ? `${doorHead}..HEAD` : 'HEAD', '--', ...rels.map(rel => `:(literal)${rel}`)], false);
-      const commit = listed.code === 0 ? listed.stdout.trim() : '';
-      if (!/^[0-9a-f]{40,64}$/.test(commit)) return null;
-      for (const [index, file] of files.entries()) {
-        const blob = await git(session, ['rev-parse', '--verify', '--quiet', `${commit}:./${rels[index]}`], false);
-        if (file.afterHash === null) {
-          if (blob.code === 0 || existsSync(file.path)) return null;
-          continue;
-        }
-        if (blob.code !== 0 || hashFile(file.path) !== file.afterHash) return null;
-        const worktree = await git(session, ['hash-object', '--', `./${rels[index]}`], false);
-        if (worktree.code !== 0 || worktree.stdout.trim() !== blob.stdout.trim()) return null;
+  const gitFailed = (what: string) => opError('git_unavailable', 'Git could not say whether the split page door commit landed; its files remain fenced.',
+    `${what} failed in ${root} while recovery checked whether the door commit of a split page landed, so recovery restored nothing and the request stays recovering; it retries. If it keeps failing, inspect the checkout with git status on the brain host. Never delete the files or the record to force progress.`,
+    { fix: ownersFix() });
+  return withSession(root, undefined, undefined, false, async session => {
+    const listed = await git(session, ['rev-list', '-1', doorHead ? `${doorHead}..HEAD` : 'HEAD', '--', ...rels.map(rel => `:(literal)${rel}`)], false);
+    if (listed.code !== 0) throw gitFailed('git rev-list');
+    const commit = listed.stdout.trim();
+    if (!commit) return null;
+    if (!/^[0-9a-f]{40,64}$/.test(commit)) throw gitFailed('git rev-list');
+    const unlike = () => opError('recovery_required', 'A commit after the split page door head does not hold its files as published; they remain fenced.',
+      `Commit ${commit} in ${root} touches the files of an interrupted split page publication but does not hold every one of them as that publication wrote it, so recovery neither kept nor restored them and the request stays recovering. Show the user the owner status and the commit; never delete the files or the record to force progress.`,
+      { fix: ownersFix() });
+    for (const [index, file] of files.entries()) {
+      const blob = await git(session, ['rev-parse', '--verify', '--quiet', `${commit}:./${rels[index]}`], false);
+      if (blob.code !== 0 && blob.code !== 1) throw gitFailed('git rev-parse');
+      if (file.afterHash === null) {
+        if (blob.code === 0 || existsSync(file.path)) throw unlike();
+        continue;
       }
-      return commit;
-    });
-  } catch { return null; }
+      if (blob.code !== 0 || hashFile(file.path) !== file.afterHash) throw unlike();
+      const worktree = await git(session, ['hash-object', '--', `./${rels[index]}`], false);
+      if (worktree.code !== 0) throw gitFailed('git hash-object');
+      if (worktree.stdout.trim() !== blob.stdout.trim()) throw unlike();
+    }
+    return commit;
+  }).catch(error => { throw error instanceof OperationError ? error : gitFailed('git'); });
 }
 
 /** Refuses a split record that does not belong to this owner and claim, or whose files are not one head and its parts. */

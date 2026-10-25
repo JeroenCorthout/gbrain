@@ -14,6 +14,10 @@
  * 2. Fails when: the upload publishes database-only on a bound source (no file, Git is not the parent), F differs from
  *    the render the page reads back as, the files are not in place when publication ends (before the row is applied), or a declared or private upload writes
  *    a file (or a private one is refused instead of classed).
+ *    (d) The file is built from the upload's own outputs, never a database apply: the prepared page applies exactly once
+ *    (one segmented:flipped), and the file matches the stored page's render byte for byte for a remote writer whose
+ *    frontmatter the gate strips and stamps, with a timeline region, and for a replace that keeps a tag frontmatter did
+ *    not set.
  * 3. PGLite always; PostgreSQL when DATABASE_URL is set. Production split limits (25 MiB uploads, 8 MiB parts).
  */
 import { afterEach, describe, expect, test } from 'bun:test';
@@ -52,9 +56,9 @@ function bigPage(bytes: number, extra = ''): string {
   return `---\ntype: note\ntitle: Field log\n${extra}---\n\n${lines.join('\n')}\n`;
 }
 
-async function upload(ctx: OperationContext, slug: string, text: string): Promise<Record<string, any>> {
+async function upload(ctx: OperationContext, slug: string, text: string, over: Record<string, unknown> = {}): Promise<Record<string, any>> {
   const call = async (name: string, params: Record<string, unknown>) => await op(name).handler(ctx, params) as Record<string, any>;
-  const session = await call('begin_page_upload', { slug, mode: 'create', total_bytes: Buffer.byteLength(text), sha256: sha(text), request_id: randomUUID() });
+  const session = await call('begin_page_upload', { slug, mode: 'create', total_bytes: Buffer.byteLength(text), sha256: sha(text), request_id: randomUUID(), ...over });
   for (let part = 0, at = 0; at < text.length; part++, at += PART_CHARS) {
     const piece = text.slice(at, at + PART_CHARS);
     await call('upload_page_part', { upload_id: session.upload_id, part, text: piece, part_sha256: sha(piece) });
@@ -109,6 +113,27 @@ for (const backend of testBackends()) describe(`[${backend}] uploads over the ce
     expect(git(root, 'status', '--porcelain')).toBe('');
   }, { databaseUrl, setup }), 600_000);
 
+  test('(a) not strict: at publication:before_commit, before the row commits, the head and every part are on disk with their planned hashes', () => managedBrain(async ({ engine, ctx, root }) => {
+    const text = bigPage(25 * MiB);
+    let planned: Array<{ path: string; afterHash: string | null }> = [];
+    let atCommit: Array<{ path: string; hash: string | null }> | undefined;
+    installFaultHook(async point => {
+      if (point === 'publication:prepared' && !planned.length) {
+        const [row] = await engine.executeRaw<{ recovery: unknown }>('SELECT recovery FROM persistence_requests WHERE recovery IS NOT NULL');
+        const record = (typeof row!.recovery === 'string' ? JSON.parse(row!.recovery) : row!.recovery) as { target?: string; files: typeof planned };
+        expect(record.target).toBe('page_split');
+        planned = record.files.map(file => ({ path: file.path, afterHash: file.afterHash }));
+      }
+      if (point === 'publication:before_commit' && !atCommit) atCommit = planned.map(file => ({ path: file.path, hash: existsSync(file.path) ? sha(readFileSync(file.path)) : null }));
+    });
+    expect(await upload(ctx, 'notes/order-log', text)).toMatchObject({ state: 'committed' });
+    expect(planned.length).toBeGreaterThan(2);
+    expect(planned[0]!.path).toBe(join(root, 'notes/order-log.md'));
+    expect(planned.every(file => file.afterHash !== null)).toBe(true);
+    expect(atCommit).toEqual(planned.map(file => ({ path: file.path, hash: file.afterHash })));
+    expect(headFileSha(join(root, 'notes/order-log.md'))).toBe(await renderSha(engine, 'notes/order-log'));
+  }, { databaseUrl, setup }), 600_000);
+
   test('(a) a strict source commits head + parts through the door before the row commits', () => managedBrain(async ({ engine, ctx, root }) => {
     await strict(engine);
     const text = bigPage(25 * MiB);
@@ -126,6 +151,40 @@ for (const backend of testBackends()) describe(`[${backend}] uploads over the ce
     expect(done!.outcome.persistence).toMatchObject({ git_state: 'committed', git_commit: seen.head });
     expect(headFileSha(join(root, 'notes/strict-log.md'))).toBe(await renderSha(engine, 'notes/strict-log'));
     expect(git(root, 'status', '--porcelain')).toBe('');
+  }, { databaseUrl, setup }), 600_000);
+
+  test('(d) F is built from the upload, not a database apply: a remote writer\'s stamped page with a timeline region renders byte for byte as the stored page; the apply runs once', () => managedBrain(async ({ engine, ctx, root }) => {
+    await engine.setConfig('write_gate.agent_mode', 'off');
+    await engine.executeRaw(`INSERT INTO oauth_clients(client_id,client_secret_hash,client_name,scope,source_id) VALUES('upload-remote','fixture-hash','example-client','read write','default')`);
+    const remote = { ...ctx, remote: true, transport: 'http', inboundFrameBytes: 4 * MiB,
+      auth: { token: 'fixture', clientId: 'upload-remote', principal: { kind: 'oauth_client', id: 'upload-remote' }, scopes: ['read', 'write'], sourceId: 'default', allowedSources: ['default'] } } as unknown as OperationContext;
+    const text = bigPage(25 * MiB, 'trust_tier: owner\nsummary: A field log.\ntags: [zeta, alpha]\n') + '\n<!-- timeline -->\n\n- **2026-01-01** | Met alice-example at acme-example.\n';
+    let flips = 0;
+    installFaultHook(async point => { if (point === 'segmented:flipped') flips++; });
+    expect(await upload(remote, 'notes/remote-log', text)).toMatchObject({ state: 'committed' });
+    expect(flips).toBe(1);
+    const path = join(root, 'notes/remote-log.md');
+    const head = readFileSync(path, 'utf8');
+    expect(head).not.toContain('trust_tier: owner');
+    expect(headFileSha(path)).toBe(await renderSha(engine, 'notes/remote-log'));
+    const reassembled = splitScratchPath();
+    const parsed = parseHead(head) as Exclude<ReturnType<typeof parseHead>, null | { error: unknown }>;
+    expect(reassemble(path, parsed, reassembled)).toMatchObject({ ok: true });
+    const tail = readFileSync(reassembled, 'utf8').slice(-200);
+    expect(tail).toContain('<!-- timeline -->');
+    expect(tail).toContain('Met alice-example at acme-example.');
+  }, { databaseUrl, setup }), 600_000);
+
+  test('(d) a replace keeps the tags frontmatter did not set: F renders byte for byte as the stored page; the apply runs once', () => managedBrain(async ({ engine, ctx, root }) => {
+    expect(await upload(ctx, 'notes/tagged-log', bigPage(25 * MiB, 'tags: [field]\n'))).toMatchObject({ state: 'committed' });
+    const revision = async () => (await engine.readPageSnapshot('notes/tagged-log', { sourceId: 'default' }))!.revision;
+    expect(await op('add_tag').handler(ctx, { slug: 'notes/tagged-log', tag: 'manual', request_id: randomUUID(), wait_ms: 30_000 })).toMatchObject({ state: 'committed' });
+    let flips = 0;
+    installFaultHook(async point => { if (point === 'segmented:flipped') flips++; });
+    expect(await upload(ctx, 'notes/tagged-log', bigPage(25 * MiB + 4096, 'tags: [log]\n'), { mode: 'replace', expected_revision: await revision() })).toMatchObject({ state: 'committed' });
+    expect(flips).toBe(1);
+    expect((await engine.readPageSnapshot('notes/tagged-log', { sourceId: 'default' }))!.tags).toEqual(['log', 'manual']);
+    expect(headFileSha(join(root, 'notes/tagged-log.md'))).toBe(await renderSha(engine, 'notes/tagged-log'));
   }, { databaseUrl, setup }), 600_000);
 
   test('(b) with sync.write_through false the source is database-only: the upload publishes database-only as today', () => managedBrain(async ({ engine, ctx, root }) => {

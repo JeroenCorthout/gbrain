@@ -18,12 +18,12 @@
  */
 import { afterEach, describe, expect, test } from 'bun:test';
 import { randomUUID } from 'node:crypto';
-import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { BrainEngine } from '../src/core/engine.ts';
 import { operations, type OperationContext } from '../src/core/operations.ts';
 import { submissionAuthority } from '../src/core/persistence/authority.ts';
-import { publishMutation, type PublicationHooks } from '../src/core/persistence/coordinator.ts';
+import { publishMutation, recoverPublication, type PublicationHooks } from '../src/core/persistence/coordinator.ts';
 import { installFaultHook } from '../src/core/persistence/fault-points.ts';
 import { localHostId } from '../src/core/persistence/identity.ts';
 import { admitWrite, claimNextWrite, prepareRecovery } from '../src/core/persistence/journal.ts';
@@ -170,6 +170,36 @@ for (const backend of testBackends()) describe(`[${backend}] split git layout: r
     expect((await snapshotOf(engine, 'notes/kept')).page.compiled_truth).toContain(lines(69, 70, 'second')[0]);
   }, { databaseUrl, setup }), 120_000);
 
+  test('strict, interrupted after the door commit while Git cannot answer: no file is restored and the record stays fenced; once Git answers every file is kept', () => managedBrain(async ({ engine, ctx, root }) => {
+    __setSplitLimitsForTests(LIMITS);
+    await engine.setConfig(SPLIT_MAX_FILE_BYTES_KEY, '2048');
+    await strict(engine);
+    const first = await put(ctx, 'notes/fenced', page(lines(0, 60)));
+    expect(first).toMatchObject({ state: 'committed' });
+    let landed = '';
+    const hidden = join(root, '.git-hidden');
+    const done = await publishByHand(engine, ctx, 'notes/fenced', page(lines(0, 70, 'second')), { boundary: async name => {
+      if (name !== 'before_commit' || landed) return;
+      landed = git(root, 'rev-parse', 'HEAD').trim();
+      renameSync(join(root, '.git'), hidden);
+      throw interruption('CONNECTION_CLOSED');
+    } });
+    expect(landed).not.toBe('');
+    expect(done.state).toBe('recovering');
+    const published = unit(root, 'notes/fenced.md');
+    expect(Object.keys(published).length).toBeGreaterThan(4);
+    const [held] = await engine.executeRaw<{ recovery: unknown }>('SELECT recovery FROM persistence_requests WHERE id=$1::uuid', [done.id]);
+    expect(held!.recovery).not.toBeNull();
+    renameSync(hidden, join(root, '.git'));
+    for (const [name, bytes] of Object.entries(published)) {
+      expect(git(root, 'show', `${landed}:${name === 'notes/fenced.md' ? name : `notes/.fenced.gbparts/${name}`}`)).toBe(bytes);
+    }
+    const recovered = await recoverPublication(engine, done.id, localHostId());
+    expect(recovered.recovery).toBeNull();
+    expect(unit(root, 'notes/fenced.md')).toEqual(published);
+    expect(git(root, 'status', '--porcelain')).toBe('');
+  }, { databaseUrl, setup }), 120_000);
+
   test('strict, interrupted before the door commit: every file is restored and the replay commits once', () => managedBrain(async ({ engine, ctx, root }) => {
     __setSplitLimitsForTests(LIMITS);
     await engine.setConfig(SPLIT_MAX_FILE_BYTES_KEY, '2048');
@@ -258,7 +288,7 @@ for (const backend of testBackends()) describe(`[${backend}] split git layout: r
     expect(unit(root, 'notes/owner.md')).toEqual(before);
   }, { databaseUrl, setup }), 120_000);
 
-  test('the request guard accepts a page_split record on a page request and refuses a skill bundle record there', () => managedBrain(async ({ engine, ctx }) => {
+  test('the request guard accepts a version 3 page_split record on a page request and refuses a skill bundle record or a version 2 page_split record there', () => managedBrain(async ({ engine, ctx }) => {
     expect(await put(ctx, 'notes/guarded', page(lines(0, 3)))).toMatchObject({ state: 'committed' });
     await disposePersistenceConsumer(engine);
     const hostId = localHostId();
@@ -269,10 +299,11 @@ for (const backend of testBackends()) describe(`[${backend}] split git layout: r
     await admitWrite(engine, { principal: authority.principal, authority, operation: 'put_page', sourceId: 'default', sourceIncarnation: binding.source_incarnation,
       slug: 'notes/guarded', pageId: current.page.id, requestId: randomUUID(), callerIntent: intent, intent, worktreeId: binding.worktree_id, topologyGeneration: binding.topology_generation });
     const row = (await claimNextWrite(engine, hostId))!;
-    const base = { version: 2 as const, root: binding.local_path!, ownerEpoch: String(binding.owner_epoch), attempt: row.execution_token!, files: [] };
-    await expect(prepareRecovery(engine, row, { ...base, target: 'skill_bundle' } as never, 1)).rejects.toThrow(/recovery target mismatch/);
-    await prepareRecovery(engine, row, { ...base, target: 'page_split' } as never, 1);
+    const base = { root: binding.local_path!, ownerEpoch: String(binding.owner_epoch), attempt: row.execution_token!, files: [] };
+    await expect(prepareRecovery(engine, row, { ...base, version: 2, target: 'skill_bundle' } as never, 1)).rejects.toThrow(/recovery target mismatch/);
+    await expect(prepareRecovery(engine, row, { ...base, version: 2, target: 'page_split' } as never, 1)).rejects.toThrow(/recovery target mismatch/);
+    await prepareRecovery(engine, row, { ...base, version: 3, target: 'page_split' } as never, 1);
     const [saved] = await engine.executeRaw<{ recovery: Record<string, unknown> }>('SELECT recovery FROM persistence_requests WHERE id=$1::uuid', [row.id]);
-    expect(saved!.recovery).toMatchObject({ version: 2, target: 'page_split' });
+    expect(saved!.recovery).toMatchObject({ version: 3, target: 'page_split' });
   }, { databaseUrl }), 120_000);
 });

@@ -55,7 +55,7 @@ import { markBeliefCommits } from '../belief/append.ts';
 import { classifyPgAccessError } from '../pg-access-classify.ts';
 import { commitThroughDoor, doorCommitLanded, doorMarker, replayAfterDoorCommit, sourceCanonicalGit, strictChanged } from './git-door.ts';
 import { assertNoPrivateCommit, declareStrictPublication } from './git-declared.ts';
-import { assertSplitRecoveryBinding, isSplitRecoveryRecord, releaseSplitTargets, removeEmptyPartsDir, splitFilesChanged, splitLandedCommit, splitPublicationTargets, splitRecoveryRecord, type SplitFileFields } from './split-files.ts';
+import { assertSplitRecoveryBinding, isSplitRecoveryRecord, releaseSplitTargets, removeEmptyPartsDir, splitFilesChanged, splitKeptPartsChanged, splitLandedCommit, splitPublicationTargets, splitRecoveryRecord, type SplitFileFields } from './split-files.ts';
 
 interface PreparedMutationBase {
   sourceExclusive?: boolean;
@@ -191,7 +191,7 @@ async function stageLargeFiles(engine: BrainEngine, row: WriteRequest, file: Pag
       phase => faultPoint(`large_file:${phase}`, { requestId: row.request_id, sourceId: row.source_id, operation: row.operation }))) throw localEditRefusal('The canonical file changed after preparation.', row, false, 'while its prior bytes were being staged');
     if (isStreamedContent(file.content)) {
       prepareParent(file);
-      await stageStreamedContent(engine, file.path, file.content, publication!, record.mode);
+      await stageStreamedContent(engine, file.path, file.content, publication!, file.publishMode ?? record.mode);
     }
   });
 }
@@ -601,6 +601,10 @@ export async function publishMutation(engine: BrainEngine, row: WriteRequest, pr
         for (const record of records) if ((skill ? bundleFileHash(record) : fileHash(record.path)) !== record.beforeHash) {
           throw localEditRefusal('The canonical file changed during preparation.', row, skill, 'while the write was being prepared');
         }
+        // Wave B PR 5: a split page's parts it keeps unwritten are rechecked under the lock like the files it writes.
+        if (isSplitRecoveryRecord(recovery) && splitKeptPartsChanged(prepared.file)) {
+          throw localEditRefusal('The canonical file changed during preparation.', row, skill, 'while the write was being prepared');
+        }
         await hooks.boundary?.('before_publication', row);
         // Mark before the call: a rename followed by an fsync error still needs recovery.
         published = true;
@@ -724,15 +728,15 @@ export async function recoverPublication(engine: BrainEngine, id: string, hostId
       const records = recoveryFiles(current.recovery);
       // Wave B PR 5: a split page's head and parts recover as one unit (split-files.ts); a skill bundle's files are bundle files.
       const split = isSplitRecoveryRecord(current.recovery) ? current.recovery : null;
-      const bundle = current.recovery.version === 2 && !split;
+      const bundle = current.recovery.version === 2;
       let landed: string | null = null;
-      if (current.recovery.version === 2) {
+      if (bundle || split) {
         const owner = await guardOwnership(tx, current, hostId);
         if (!owner) throw opError('owner_unavailable', `${split ? 'Split page' : 'Skill'} recovery requires its canonical owner.`,
           `This host no longer holds source ${current.source_id}'s current owner epoch, so ${split ? 'split page' : 'shared-skill'} request ${current.request_id} stays recovering until its owner finishes it. Inspect the owner; its resident writer finishes the recovery.`,
           { fix: ownerStatusFix(current.source_id) });
         if (isSplitRecoveryRecord(current.recovery)) assertSplitRecoveryBinding(current.recovery, owner, current.execution_token);
-        else assertBundleRecoveryBinding(current.recovery, owner, current.execution_token);
+        else if (current.recovery.version === 2) assertBundleRecoveryBinding(current.recovery, owner, current.execution_token);
       }
       for (const record of records) if (!isWriteTargetContained(record.path, record.root) || !binding.local_path || !isWriteTargetContained(record.path, binding.local_path)) throw opError('recovery_required', 'Recovery file binding is no longer confined to this owner.',
         `A recovery file of request ${current.request_id} now resolves outside source ${current.source_id}'s canonical worktree (a moved checkout or a symlink), so recovery stopped without touching it and the request stays recovering. Inspect the owner and tell the user; the checkout must be repaired before recovery can finish.`,
