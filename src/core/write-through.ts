@@ -31,6 +31,7 @@ import { isWriteTargetContained, msysToNativePath } from './path-confine.ts';
 import { readSlugRootMode, resolveSlugRootMode, type SlugRootMode } from './sync-anchor.ts';
 import { resolveSlugForPath } from './sync.ts';
 import { PUSH_SCAN_MAX_FILE_BYTES } from './page-size-policy.ts';
+import { partsDirFor } from './split-layout/paths.ts';
 import { canonicalFilesystemPath } from './persistence/root-registry.ts';
 import {
   isDurabilityHardened, commitWriteThroughFile, currentBranch, getLastPushOutcome,
@@ -97,8 +98,11 @@ export interface WriteThroughResult {
    *     the edit is kept and nothing is written.
    *   - over_push_scan_cap: the rendered file is over the pre-push secret-scan
    *     cap (PUSH_SCAN_MAX_FILE_BYTES), so committing it would block every push.
+   *   - split_page_unsupported: the file is a split page head (Wave B PR 5) with
+   *     its parts directory beside it; only the publication door lays a page out
+   *     as a head plus parts, so the head and its parts are left as they are.
    */
-  skipped?: 'disabled_by_config' | 'url_clone' | 'no_repo_configured' | 'repo_not_found' | 'source_repo_belongs_to_other_source' | 'page_not_found_after_write' | 'path_escapes_source_root' | 'case_insensitive_collision' | 'file_changed' | 'over_push_scan_cap';
+  skipped?: 'disabled_by_config' | 'url_clone' | 'no_repo_configured' | 'repo_not_found' | 'source_repo_belongs_to_other_source' | 'page_not_found_after_write' | 'path_escapes_source_root' | 'case_insensitive_collision' | 'file_changed' | 'over_push_scan_cap' | 'split_page_unsupported';
   /** Caller-visible advisory when a permitted DB-only outcome is still risky. */
   warning?: string;
   /** Set when the render/write/rename itself threw (EACCES, ENOTDIR, disk full). */
@@ -497,6 +501,7 @@ export async function writePageThrough(
     const fileChanged = () => opts.expectedFileBytes !== undefined
       && (existsSync(filePath) ? readFileSync(filePath, 'utf-8') : null) !== opts.expectedFileBytes;
     if (fileChanged()) return { written: false, skipped: 'file_changed' };
+    if (existsSync(partsDirFor(filePath))) return { written: false, path: filePath, skipped: 'split_page_unsupported' };
 
     await engine.transaction(tx => bindOrigin(tx, { sourceId, slug, sourcePath: sourcePathToBind, onlyIfUnset: true, liveOnly: true }));
     assertSourceFilesystemActive();
@@ -564,8 +569,10 @@ export interface DeleteThroughResult {
    *     already removed by hand) — a clean no-op, not a failure.
    *   - file_changed: the caller passed `expectedFileBytes` and the file no
    *     longer holds them (an edit landed after the caller read it) — kept.
+   *   - split_page_unsupported: the file is a split page head; unlinking it
+   *     alone would orphan its parts, so both are kept.
    */
-  skipped?: 'disabled_by_config' | 'url_clone' | 'file_not_present' | 'file_changed' | Extract<PageWriteTarget, { ok: false }>['skipped'];
+  skipped?: 'disabled_by_config' | 'url_clone' | 'file_not_present' | 'file_changed' | 'split_page_unsupported' | Extract<PageWriteTarget, { ok: false }>['skipped'];
   /** Set when the unlink itself threw (EACCES, EPERM, read-only mount). */
   error?: string;
 }
@@ -626,6 +633,7 @@ export async function deletePageThrough(
     if (opts.expectedFileBytes !== undefined && readFileSync(filePath, 'utf-8') !== opts.expectedFileBytes) {
       return { removed: false, path: filePath, skipped: 'file_changed' };
     }
+    if (existsSync(partsDirFor(filePath))) return { removed: false, path: filePath, skipped: 'split_page_unsupported' };
 
     assertSourceFilesystemActive();
     unlinkSync(filePath);
