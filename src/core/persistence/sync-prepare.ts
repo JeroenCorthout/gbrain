@@ -800,6 +800,11 @@ async function prepareSyncMutation(unbounded: BrainEngine, row: WriteRequest, _c
       throw syncPublicationRefusal('revision_conflict', 'The renamed page changed after sync admission.', row, p,
         `Page ${renamed.slug}, which this file was renamed from, changed or was deleted after the sync was admitted.`);
     }
+    // A remote sync carries over what remote reads hide (preserveProtectedTakes, the hidden-row merge) only over a body it holds as one string.
+    if (row.authority.remote && base && !base.page.deleted_at) {
+      const { assertNoHiddenFenceRows } = await import('../page-body/streamed-fences.ts');
+      await assertNoHiddenFenceRows(engine, { id: Number(base.page.id), slug: renamed?.slug ?? row.slug, source_id: row.source_id });
+    }
     return prepareManagedSyncStreamed(engine, row, { ...p, body_ref: p.body_ref, sourcePath: p.sourcePath, path: p.path }, { root, snapshot, base, ...(renamed ? { renamed } : {}),
       ...(pack?.manifest ? { activePack: pack.manifest } : {}), validate, releaseHold, clock, screening: !!screening,
       importProvenance: { source_id: row.source_id, incarnation: row.source_incarnation, origin: p.sourcePath, raw_sha256: p.body_ref.sha256,

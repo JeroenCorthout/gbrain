@@ -79,7 +79,7 @@ import { prepareSegmentedBody, segmentWriteScope, utf8Prefix, type SegmentedStag
 import { readGarbageCollector } from './segment-blocks.ts';
 import type { JsonObject } from './types.ts';
 import { regionTrust } from './segmenter.ts';
-import { FenceMarkerOutsideFence, FenceRegionRefused, FenceRegionTooLarge, streamedFences } from './streamed-fences.ts';
+import { FenceNeedsWholeSection, FenceRegionRefused, FenceRegionTooLarge, streamedFences } from './streamed-fences.ts';
 
 const READ_BYTES = 1024 * 1024;
 
@@ -97,6 +97,8 @@ type StreamedImportOptions = {
   forceRechunk?: boolean;
   activePack?: { page_types: ReadonlyArray<{ name: string; path_prefixes: ReadonlyArray<string>; aliases?: ReadonlyArray<string> }> };
   firstCommitAt?: Date;
+  /** A remote (MCP) writer's page, a commit_page_upload or a remote managed sync: a takes fence in it refuses `permission_denied` (streamed-fences.ts). */
+  remote?: boolean;
   /**
    * A page write of the file's content (`gbrain put|capture --file` on the trusted local CLI), not a file import: the
    * file records no origin (no source_path or file source_uri), no other file's slug claim applies, the staging is a
@@ -412,7 +414,7 @@ async function importScanned(engine: BrainEngine, input: { file: FileHandle; bom
   const inspect = (bytes: Uint8Array) => codeRefs.push(bytes);
   const flags = { fence_trust: scan.bodyFlags.fence_trust, timeline_fence_trust: scan.bodyFlags.timeline_fence_trust, timeline_split: scan.bodyFlags.timeline_split };
   const fences = streamedFences(engine, { sourceId, slug, pageId: existing ? Number(existing.id) : null, mode: opts.coordinated ? 'coordinated' : 'lenient',
-    ctx: screenFenceCtx(parsed, opts.activePack) });
+    ctx: screenFenceCtx(parsed, opts.activePack), remote: opts.remote === true });
   assertSourceFilesystemActive();
   let prepared: Awaited<ReturnType<typeof prepareSegmentedBody>>;
   try {
@@ -424,7 +426,7 @@ async function importScanned(engine: BrainEngine, input: { file: FileHandle; bom
       owner,
       chunking: { quarantined: disposition.quarantined, corpusGeneration, tier: mode === 'title' ? 'title' : 'none' } });
   } catch (error) {
-    if (error instanceof FenceRegionTooLarge || error instanceof FenceMarkerOutsideFence) {
+    if (error instanceof FenceRegionTooLarge || error instanceof FenceNeedsWholeSection) {
       const message = `File too large (${size} bytes, max ${PAGE_MAX_BYTES}): ${error.message}.`;
       return { slug, status: 'skipped', chunks: 0, error: message, refusal: { code: 'file_too_large', message }, skip_reason: 'file_too_large' };
     }
@@ -485,7 +487,8 @@ async function importScanned(engine: BrainEngine, input: { file: FileHandle; bom
   if (opts.coordinated) {
     let applied: { pageId: number; complete: boolean } | null = null;
     return opts.coordinated.prepare({ slug, observedRevision: opts.coordinated.snapshot?.revision ?? null, noop: false, contentHash: hash, result: imported, frontmatter: parsed.frontmatter,
-      validate: async () => {
+      validate: async tx => {
+        await fences.revalidate(tx);
         const now = await lstat(input.filePath);
         if (now.size !== size || now.mtimeMs !== input.stat.mtimeMs) throw opError('source_changed', 'The input file changed after import preparation.',
           `${relativePath} changed after its import request was prepared, so the request published nothing. Import it again to publish the current bytes.`);
@@ -498,6 +501,7 @@ async function importScanned(engine: BrainEngine, input: { file: FileHandle; bom
   }
   const applied = await maintenanceTransaction(engine, async tx => {
     await assertImportBase(tx, slug, sourceId, existing);
+    await fences.revalidate(tx);
     return apply(tx);
   }, writeTrustOfGate(writeGate)).catch(async error => { await abort(); throw error; });
   await afterCommit(engine, applied);

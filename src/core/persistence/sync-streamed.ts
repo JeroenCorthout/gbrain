@@ -101,7 +101,7 @@ export async function prepareManagedSyncStreamed(engine: BrainEngine, row: Write
   if (!filePath || !stat || stat.size !== ref.bytes) throw changed();
   let ready: StreamedPreparedImport | undefined;
   enterClaimStep(ctx.clock, 'import_content', undefined, 'fs');
-  const result = await importStreamedMarkdownFile(engine, filePath, p.sourcePath, { sourceId: row.source_id, noEmbed: true, ...(ctx.activePack ? { activePack: ctx.activePack } : {}),
+  const result = await importStreamedMarkdownFile(engine, filePath, p.sourcePath, { sourceId: row.source_id, noEmbed: true, remote: row.authority.remote === true, ...(ctx.activePack ? { activePack: ctx.activePack } : {}),
     coordinated: { snapshot: base, sha256: ref.sha256, slug: row.slug, moved: !!renamed, prepare: async value => { ready = value; return value.result; },
       owner: { kind: 'sync', principalKind: row.principal_kind, principalId: row.principal_id, baseRevision: base?.revision ?? null } } }, stat, policy)
     .catch(error => { throw error instanceof OperationError && error.code === 'source_changed' ? changed() : error; });

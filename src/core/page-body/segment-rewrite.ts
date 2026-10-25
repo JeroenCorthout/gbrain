@@ -197,6 +197,17 @@ export async function rewriteLiveSegmentedFences(tx: BrainEngine, pageId: number
   return { replaced: replacedShas(rows, units), sealed: applied.complete, derivations };
 }
 
+/**
+ * Each facts and takes region of a segmented page's live body, in body order, joined across forced cuts as
+ * `rewriteLiveSegmentedFences` joins it (refusing past FENCE_MAX_BYTES), read only where a segment holds one; nothing
+ * is written.
+ */
+export async function readLiveSegmentedFences(engine: BrainEngine, pageId: number, visit: (fence: string, at: { region: BodyRegion }) => void | Promise<void>): Promise<void> {
+  const [page] = await engine.executeRaw<{ source_id: string }>('SELECT source_id FROM pages WHERE id=$1', [pageId]);
+  if (!page) return;
+  await changedUnits(engine, page.source_id, await engine.readManifest(pageId), async (fence, at) => { await visit(fence, at); return fence; });
+}
+
 const MANIFEST_COLUMNS = `page_id,occurrence_id,seq,region,source_id,sha256,byte_start,byte_len,line_start,line_count,cut_kind,entry_state,
   protected_regions,facts_slots,static_proj_bytes,static_proj_lines,outline,date_min,date_max,hash_state`;
 

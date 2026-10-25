@@ -160,16 +160,22 @@ async function storedPageStep(engine: Pick<BrainEngine, 'executeRaw' | 'getConfi
 }
 
 /**
- * Tier 1 on one fence region of a streamed import (page-body/streamed-fences.ts): the region's text alone as its
- * section, with `importFromContent`'s rules (the switch read only when there is a fix, stored rows only for
- * `renumber`, a residual refused typed when `coordinated` and stored as written with warnings otherwise).
- * `lineOffset` is the number of section lines before the region, so locations name lines of the whole section.
+ * Tier 1 on one fence region of a streamed import (page-body/streamed-fences.ts), with `importFromContent`'s rules (the
+ * switch read only when there is a fix, stored rows only for `renumber`, a residual refused typed when `coordinated`
+ * and stored as written with warnings otherwise). A body region is its section alone. A timeline region is checked with
+ * `body`, the body's reader-visible fence regions as already settled, as its page's body, so the page-wide rules
+ * (`row_collision` across sections) see both sections as `importFromContent` does; `bodyChanged` reports a step that
+ * would rewrite those body regions, which the import has already stored. Fixes and warnings name the region's section
+ * only; `lineOffset` is the number of section lines before the region, so their locations name lines of the whole section.
  */
 export async function settleFenceRegion(engine: Pick<BrainEngine, 'executeRaw' | 'getConfig'>, input: {
   sourceId: string; slug: string; pageId: number | null; mode: 'coordinated' | 'lenient'; ctx: FenceCtx; section: FenceSection; text: string; lineOffset: number;
-}): Promise<{ text: string; fixes: FenceFix[]; warnings: FenceIssueWire[]; refusal?: ContentRefusal }> {
-  const page = input.section === 'body' ? { compiled_truth: input.text, timeline: '' } : { compiled_truth: '', timeline: input.text };
-  const shift = <L extends { line: number | null }>(at: L): L => (at.line === null ? at : { ...at, line: at.line + input.lineOffset });
+  body?: string;
+}): Promise<{ text: string; fixes: FenceFix[]; warnings: FenceIssueWire[]; refusal?: ContentRefusal; bodyChanged?: boolean }> {
+  const body = input.section === 'timeline' ? input.body ?? '' : input.text;
+  const page = input.section === 'body' ? { compiled_truth: input.text, timeline: '' } : { compiled_truth: body, timeline: input.text };
+  const shift = <L extends { section: FenceSection; line: number | null }>(at: L): L => (at.line === null || at.section !== input.section ? at : { ...at, line: at.line + input.lineOffset });
+  const own = (at: { section: FenceSection }) => at.section === input.section;
   let step = fenceStep(page, input.ctx, { normalize: true });
   if (step.status === 'normalized' && !await fencesNormalizeEnabled(engine)) step = fenceStep(page, input.ctx, { normalize: false });
   if (step.status === 'normalized' && step.fixes.some(f => f.class === 'renumber')) {
@@ -177,9 +183,10 @@ export async function settleFenceRegion(engine: Pick<BrainEngine, 'executeRaw' |
   }
   if (step.status === 'clean') return { text: input.text, fixes: [], warnings: [] };
   if (step.status === 'normalized') {
-    return { text: input.section === 'body' ? step.page.compiled_truth : step.page.timeline, fixes: step.fixes.map(shift), warnings: [] };
+    if (input.section === 'timeline' && step.page.compiled_truth !== body) return { text: input.text, fixes: [], warnings: [], bodyChanged: true };
+    return { text: input.section === 'body' ? step.page.compiled_truth : step.page.timeline, fixes: step.fixes.filter(own).map(shift), warnings: [] };
   }
-  const issues = fenceIssuesWire([...step.issues, ...step.fixable].map(shift));
+  const issues = fenceIssuesWire([...step.issues, ...step.fixable].filter(own).map(shift));
   if (input.mode === 'lenient') return { text: input.text, fixes: [], warnings: issues };
   return { text: input.text, fixes: [], warnings: [], refusal: { ...fenceRefusal(shift(step.location)), fence_issues: issues } };
 }

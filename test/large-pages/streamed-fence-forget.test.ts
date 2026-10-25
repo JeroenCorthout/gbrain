@@ -7,11 +7,15 @@
  *    end on the page: the fence row is struck in the stored body (content_hash of the reconstructed body), the fact
  *    leaves active memory, and the takes fence is untouched; a re-import (or an upload replace) of the original,
  *    unstruck bytes keeps the row struck; after purge_fact the row is gone from the stored fence and a re-import of
- *    the original bytes cannot bring it back. The upload arm creates the page and forgets the fact as a remote (MCP)
- *    caller; a remote replace of a page holding takes is refused by design (upload_protected_content), so the replace
- *    runs as the trusted local writer.
+ *    the original bytes cannot bring it back. In the upload arm a remote (MCP) create of the page is refused
+ *    `permission_denied` (remote writers change takes through the takes operations, as put_page enforces), so the
+ *    trusted local writer creates it and forgets the fact (a remote forget of its owner-written rows asks the owner),
+ *    and a remote replace is refused by design (the stored takes fence is hidden from remote reads), so the replace runs
+ *    locally. A remote upload replace of
+ *    a page whose quoted facts fence holds a private row is refused `upload_protected_content` and writes nothing.
  * 2. Fails when: the streamed importer holds a fenced body (master before GBRA-95: `fenced` set on the first
- *    `gbrain:facts:begin`, then `file_too_large`), or a re-import of the stale file revives the withdrawn or purged row.
+ *    `gbrain:facts:begin`, then `file_too_large`), a re-import of the stale file revives the withdrawn or purged row, a
+ *    remote upload adds a takes fence, or a remote replace drops a quoted fence's private row.
  * 3. Runs on PGLite, and on Postgres when DATABASE_URL is set. The page is the smallest that takes the streamed path:
  *    PAGE_MAX_BYTES plus 64 KiB.
  */
@@ -51,7 +55,8 @@ const hex = (text: string) => createHash('sha256').update(Buffer.from(text, 'utf
 const filler = conversationBody(PAGE_MAX_BYTES + 64 * 1024, { seed: 95 });
 
 /** A note just over the ceiling with a facts fence (two world rows) and a takes fence at its head. */
-const page = (title: string) => `---\ntitle: ${title}\ntype: note\n---\n\n# ${title}\n\n## Facts\n\n${FACTS_FENCE_BEGIN}
+const page = (title: string) => `---\ntitle: ${title}\ntype: note\n---\n\n# ${title}\n\n${fences}\n\n${filler}\n`;
+const fences = `## Facts\n\n${FACTS_FENCE_BEGIN}
 | # | claim | kind | confidence | visibility | notability | valid_from | valid_until | source | context |
 |---|-------|------|------------|------------|------------|------------|-------------|--------|---------|
 | 1 | ${FORGOTTEN} | preference | 1.0 | world | medium | 2026-01-01 |  | chat |  |
@@ -60,7 +65,7 @@ ${FACTS_FENCE_END}\n\n## Takes\n\n${TAKES_FENCE_BEGIN}
 | # | claim | kind | who | weight | since | source |
 |---|-------|------|-----|--------|-------|--------|
 | 1 | ${TAKE} | take | brain | 0.5 | 2026-07 | notes |
-${TAKES_FENCE_END}\n\n${filler}\n`;
+${TAKES_FENCE_END}`;
 
 const rowOf = (body: string, claim: string) => body.split('\n').find(line => line.includes(claim)) ?? null;
 
@@ -185,10 +190,13 @@ for (const kind of testBackends()) {
       await expectPurged(slug);
     }, 1_800_000);
 
-    test('upload (remote create and forget over MCP, local replace): the withdrawal survives the replace and the purge', async () => {
+    test('upload (remote create refused over MCP, local create, forget and replace): the withdrawal survives the replace and the purge', async () => {
       const slug = 'notes/fenced-upload';
       const text = page('Fenced upload');
-      const created = await upload(text, slug, true);
+      const remoteCreate = await upload(text, slug, true).then(() => null, (error: unknown) => error as OperationError);
+      expect(remoteCreate?.code).toBe('permission_denied');
+      expect(await engine.getPage(slug, { sourceId: 'default' })).toBeNull();
+      const created = await upload(text, slug, false);
       expect({ state: created.state, status: created.status }).toEqual({ state: 'committed', status: 'created_or_updated' });
       expect(rowOf(await storedTruth(slug), FORGOTTEN)).toStartWith(`| 1 | ${FORGOTTEN} |`);
       // The takes fence remote reads hide stays: a remote put_page cannot replace the page without carrying it over.
@@ -200,7 +208,8 @@ for (const kind of testBackends()) {
       expect(await storedTruth(slug)).toBe(before);
 
       const id = await forgottenFact(slug);
-      await call('forget_fact', { id, request_id: randomUUID() }, true);
+      // Owner-written rows: a remote forget asks the owner to confirm (forget_requires_owner), so the forget runs locally.
+      await call('forget_fact', { id, request_id: randomUUID() }, false);
       await expectWithdrawn(slug);
 
       const revision = async () => (await engine.readPageSnapshot(slug, { sourceId: 'default' }))!.revision;
@@ -212,6 +221,18 @@ for (const kind of testBackends()) {
       await expectPurged(slug);
       expect((await upload(text, slug, false, { mode: 'replace', expected_revision: await revision() })).state).toBe('committed');
       await expectPurged(slug);
+    }, 1_800_000);
+
+    test('a remote upload replace of a page whose quoted facts fence holds a private row is refused and writes nothing', async () => {
+      const slug = 'notes/quoted-private';
+      const quoted = `An example fence:\n\n\`\`\`\n${FACTS_FENCE_BEGIN}\n| # | claim | kind | confidence | visibility | notability | valid_from | valid_until | source | context |\n|---|-------|------|------------|------------|------------|------------|-------------|--------|---------|\n| 1 | ${KEPT} | preference | 1.0 | private | medium | 2026-01-01 |  | chat |  |\n${FACTS_FENCE_END}\n\`\`\`\n`;
+      expect((await importFile(slug, `---\ntitle: Quoted private\ntype: note\n---\n\n${quoted}\n${filler.slice(0, 2 * MiB)}\n`)).status).toBe('imported');
+      const before = await storedTruth(slug);
+      const replacement = `---\ntitle: Quoted private\ntype: note\n---\n\n${filler}\n`;
+      const refused = await upload(replacement, slug, true, { mode: 'replace', expected_revision: (await engine.readPageSnapshot(slug, { sourceId: 'default' }))!.revision })
+        .then(() => null, (error: unknown) => error as OperationError);
+      expect(refused?.code).toBe('upload_protected_content');
+      expect(await storedTruth(slug)).toBe(before);
     }, 1_800_000);
   });
 }

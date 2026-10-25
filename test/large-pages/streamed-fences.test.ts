@@ -5,15 +5,26 @@
  *    (`preserveWithdrawnFenceRows` strikes a withdrawn row, Tier 1 normalizes a fixable fence) and leaves every byte
  *    outside the regions as it was; a fence region over FENCE_MAX_BYTES, closed or unclosed, refuses
  *    (`FenceRegionTooLarge`) holding no more than the bound plus one input chunk; marker text outside a closed fence
- *    refuses (`FenceMarkerOutsideFence`); a coordinated import's residual fence refuses typed invalid_fence
- *    (`FenceRegionRefused`) while a lenient one is kept as written with its warnings, at the section's line numbers;
- *    `assertNoHiddenFenceRows` (the guard of a remote write over an unread segmented body) refuses a body holding a
- *    takes fence or a non-world facts row and admits a world-only facts fence.
+ *    refuses (`FenceNeedsWholeSection`); a coordinated import's residual fence refuses typed invalid_fence
+ *    (`FenceRegionRefused`) while a lenient one is kept as written with its warnings, at the section's line numbers.
+ *    Page-wide Tier 1 rules match `fenceStep` over the whole page: a timeline fence sharing a row number with the body's
+ *    is renumbered as the whole page renumbers it, and a second fence of one kind in a section (which the whole page
+ *    merges) holds the file. A remote writer's takes fence, closed or unclosed, refuses `permission_denied`.
+ *    `assertNoHiddenFenceRows` (the guard of a remote write the stored body cannot be merged into) refuses a body holding
+ *    a takes fence, a non-world facts row, in a quoted fence too, or an unclosed fence, inline or segmented, and admits a
+ *    world-only facts fence. A coordinated streamed import whose source gained a withdrawal after its fences were
+ *    rewritten refuses `revision_conflict` at publication (`validate`).
  * 2. Fails when: a region split across chunks is missed or rewritten twice, bytes between regions change, an oversized
- *    region is read whole before refusing, or a residual fence is stored in a coordinated import.
+ *    region is read whole before refusing, a residual fence is stored in a coordinated import, the streamed body differs
+ *    from whole-page Tier 1 without holding the file, a remote writer adds a takes fence, the guard reads only the first
+ *    reader-visible facts fence, or a withdrawal committed during preparation is published past.
  * 3. PGLite (the transforms read the withdrawal ledger); no provider calls.
  */
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
+import { createHash } from 'node:crypto';
+import { mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { BrainEngine } from '../../src/core/engine.ts';
 import { PGLiteEngine } from '../../src/core/pglite-engine.ts';
 import { FACTS_FENCE_BEGIN, FACTS_FENCE_END } from '../../src/core/facts-fence.ts';
@@ -22,7 +33,10 @@ import { preserveWithdrawnFenceRows } from '../../src/core/facts/withdrawal.ts';
 import { fenceStep } from '../../src/core/fence-repair/tier1.ts';
 import { withCoordinatedWrite } from '../../src/core/persistence/context.ts';
 import { FENCE_MAX_BYTES } from '../../src/core/page-body/limits.ts';
-import { assertNoHiddenFenceRows, FenceMarkerOutsideFence, FenceRegionRefused, FenceRegionTooLarge, streamedFences, streamedFenceWork } from '../../src/core/page-body/streamed-fences.ts';
+import { assertNoHiddenFenceRows, FenceNeedsWholeSection, FenceRegionRefused, FenceRegionTooLarge, hiddenFenceContent, streamedFences, streamedFenceWork } from '../../src/core/page-body/streamed-fences.ts';
+import { importStreamedMarkdownFile, type StreamedPreparedImport } from '../../src/core/page-body/streamed-import.ts';
+import { readPageBodyPolicy } from '../../src/core/page-body/limits.ts';
+import { maintenanceAttribution } from '../../src/core/persistence/attribution.ts';
 import { importFromContent } from '../../src/core/import-file.ts';
 import { TEST_WRITE_ATTRIBUTION } from '../helpers/write-attribution.ts';
 
@@ -45,11 +59,22 @@ afterAll(async () => { await engine.disconnect(); });
 async function* chunks(bytes: Uint8Array, size: number): AsyncIterable<Uint8Array> {
   for (let at = 0; at < bytes.length; at += size) yield bytes.subarray(at, Math.min(at + size, bytes.length));
 }
-async function rewritten(text: string, size: number, mode: 'coordinated' | 'lenient' = 'lenient', region: 'truth' | 'timeline' = 'truth') {
-  const fences = streamedFences(engine, { sourceId: 'default', slug: 'notes/streamed', pageId: null, mode, ctx });
+async function rewritten(text: string, size: number, mode: 'coordinated' | 'lenient' = 'lenient', region: 'truth' | 'timeline' = 'truth', remote = false) {
+  const fences = streamedFences(engine, { sourceId: 'default', slug: 'notes/streamed', pageId: null, mode, ctx, remote });
   const parts: Buffer[] = [];
   for await (const part of fences.rewrite(chunks(Buffer.from(text, 'utf8'), size), region, true)) parts.push(Buffer.from(part));
   return { text: Buffer.concat(parts).toString('utf8'), fields: fences.fields() };
+}
+/** Both sections through one pass, the body first (as the streamed import stages them). */
+async function rewrittenPage(page: { compiled_truth: string; timeline: string }, size: number) {
+  const fences = streamedFences(engine, { sourceId: 'default', slug: 'notes/streamed', pageId: null, mode: 'coordinated', ctx, remote: false });
+  const out: string[] = [];
+  for (const [region, text] of [['truth', page.compiled_truth], ['timeline', page.timeline]] as const) {
+    const parts: Buffer[] = [];
+    for await (const part of fences.rewrite(chunks(Buffer.from(text, 'utf8'), size), region, true)) parts.push(Buffer.from(part));
+    out.push(Buffer.concat(parts).toString('utf8'));
+  }
+  return { compiled_truth: out[0]!, timeline: out[1]! };
 }
 async function refusalOf(run: () => Promise<unknown>): Promise<unknown> {
   try { await run(); } catch (error) { return error; }
@@ -91,24 +116,87 @@ describe('streamed fence pass', () => {
 
   test('marker text outside a closed fence refuses', async () => {
     for (const body of [`${prose('g')}<!-- gbrain:takes:begin -->\n| 1 | x |\n<!-- gbrain:takes:end -->\n`, `${prose('h')}${FACTS_FENCE_END}\n${prose('i')}`]) {
-      expect(await refusalOf(() => rewritten(body, 11))).toBeInstanceOf(FenceMarkerOutsideFence);
+      expect(await refusalOf(() => rewritten(body, 11))).toBeInstanceOf(FenceNeedsWholeSection);
     }
   }, 60_000);
 
-  test('a remote write over a segmented page refuses while its body holds a takes fence or a non-world facts row', async () => {
+  test('a remote write refuses while the stored body hides a takes fence or facts rows (quoted or unclosed too), inline or segmented', async () => {
     await engine.setConfig('pages.segmented_storage', 'on');
     const filler = prose('j').repeat(400);
-    const pages = {
-      'notes/world-only': facts([row(1, 'Drinks tea')]),
-      'notes/private-row': facts([row(1, 'Drinks tea').replace('| world |', '| private |')]),
-      'notes/with-takes': takes,
+    const privateRow = facts([row(1, 'Drinks tea').replace('| world |', '| private |')]);
+    const pages: Record<string, { fence: string; hidden: 'takes' | 'facts' | null }> = {
+      'world-only': { fence: facts([row(1, 'Drinks tea')]), hidden: null },
+      'private-row': { fence: privateRow, hidden: 'facts' },
+      'with-takes': { fence: takes, hidden: 'takes' },
+      // Remote reads hide a quoted fence's private rows too; a canonical facts reader skips the quoted fence.
+      'quoted-private-row': { fence: `${facts([row(1, 'Walks to work')])}\n\nAn example:\n\n\`\`\`\n${privateRow}\n\`\`\``, hidden: 'facts' },
+      // Stored as written with `fences.normalize` off (Tier 1 closes it otherwise); remote reads drop the unclosed tail.
+      'unclosed': { fence: `${FACTS_FENCE_BEGIN}\n${HEADER}${row(1, 'Drinks tea')}\n`, hidden: 'facts' },
     };
-    for (const [slug, fence] of Object.entries(pages)) {
-      await importFromContent(engine, slug, `---\ntitle: Remote merge\ntype: note\n---\n\n${filler}\n\n${fence}\n\n${filler}`, { noEmbed: true, sourceId: 'default' });
-      const [page] = await engine.executeRaw<{ id: number; body_storage: string }>('SELECT id, body_storage FROM pages WHERE slug=$1', [slug]);
-      expect(page!.body_storage).toBe('segmented');
-      const outcome = await assertNoHiddenFenceRows(engine, { id: Number(page!.id), slug, source_id: 'default' }).then(() => 'kept', (error: { code?: string }) => error.code);
-      expect([slug, outcome]).toEqual([slug, slug === 'notes/world-only' ? 'kept' : 'page_body_segmented']);
+    for (const [storage, around] of [['segmented', filler], ['inline', 'A short note.']] as const) {
+      for (const [name, { fence, hidden }] of Object.entries(pages)) {
+        const slug = `notes/${storage}-${name}`;
+        await engine.setConfig('fences.normalize', name === 'unclosed' ? 'false' : 'true');
+        await importFromContent(engine, slug, `---\ntitle: Remote merge\ntype: note\n---\n\n${around}\n\n${fence}${name === 'unclosed' ? '' : `\n\n${around}`}`, { noEmbed: true, sourceId: 'default' });
+        await engine.setConfig('fences.normalize', 'true');
+        const [page] = await engine.executeRaw<{ id: number; body_storage: string }>('SELECT id, body_storage FROM pages WHERE slug=$1', [slug]);
+        expect([slug, page!.body_storage === 'segmented' ? 'segmented' : 'inline']).toEqual([slug, storage]);
+        expect([slug, await hiddenFenceContent(engine, Number(page!.id))]).toEqual([slug, hidden]);
+        const outcome = await assertNoHiddenFenceRows(engine, { id: Number(page!.id), slug, source_id: 'default' }).then(() => 'kept', (error: { code?: string }) => error.code);
+        expect([slug, outcome]).toEqual([slug, hidden ? 'page_body_segmented' : 'kept']);
+      }
+    }
+  }, 120_000);
+
+  test('page-wide Tier 1 rules: the streamed body equals whole-page fenceStep, or the file is held', async () => {
+    const cases = {
+      'row number shared by body and timeline': { compiled_truth: `${prose('k')}${facts([row(1, 'Drinks tea')])}\n\n${prose('l')}`, timeline: `- 2026-01-01 Launch\n\n${facts([row(1, 'Walks to work')])}\n` },
+      'timeline row past the body rows': { compiled_truth: facts([row(2, 'Drinks tea')]), timeline: facts([row(2, 'Walks to work'), row(1, 'Reads at night')]) },
+      'two facts fences in the body': { compiled_truth: `${prose('m')}${facts([row(1, 'Drinks tea')])}\n\n${prose('n')}${facts([row(2, 'Walks to work')])}\n`, timeline: '' },
+      'two facts fences in the timeline': { compiled_truth: prose('o'), timeline: `${facts([row(1, 'Drinks tea')])}\n\n- 2026-01-01 Launch\n\n${facts([row(2, 'Walks to work')])}\n` },
+    };
+    const held: string[] = [];
+    for (const [name, page] of Object.entries(cases)) {
+      const whole = fenceStep(page, ctx, { normalize: true });
+      expect([name, whole.status]).toEqual([name, 'normalized']);
+      for (const size of [3, 97, 4096]) {
+        const streamed = await rewrittenPage(page, size).catch((error: unknown) => error);
+        if (streamed instanceof FenceNeedsWholeSection) { held.push(name); continue; }
+        expect({ name, size, page: streamed }).toEqual({ name, size, page: whole.status === 'normalized' ? whole.page : page });
+      }
+    }
+    expect([...new Set(held)]).toEqual(['two facts fences in the body', 'two facts fences in the timeline']);
+  }, 120_000);
+
+  test('a remote writer\'s takes fence, closed or unclosed, refuses permission_denied; a trusted writer\'s is kept', async () => {
+    for (const body of [`${prose('p')}${takes}\n${prose('q')}`, `${prose('r')}${takes.slice(0, takes.indexOf(TAKES_FENCE_END))}`]) {
+      expect(((await refusalOf(() => rewritten(body, 211, 'coordinated', 'truth', true))) as { code?: string }).code).toBe('permission_denied');
+      const kept = await rewritten(body, 211, 'lenient', 'truth', false);
+      if (body.includes(TAKES_FENCE_END)) expect(kept.text).toBe(body);
+      else expect(kept.fields.fences_normalized?.map(fix => fix.class)).toEqual(['close_fence']);
+    }
+  }, 60_000);
+
+  test('a forget committed while a coordinated streamed import is prepared refuses its publication (revision_conflict)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'gbrain-streamed-race-'));
+    try {
+      const claim = 'Keeps a paper notebook';
+      const text = `---\ntitle: Race\ntype: note\n---\n\n${prose('s')}${facts([row(1, claim)])}\n\n${prose('t')}`;
+      const path = join(dir, 'race.md');
+      writeFileSync(path, text);
+      const { principal } = await maintenanceAttribution(engine);
+      let prepared: StreamedPreparedImport | undefined;
+      await importStreamedMarkdownFile(engine, path, 'notes/race.md', { sourceId: 'default', noEmbed: true,
+        coordinated: { snapshot: null, sha256: createHash('sha256').update(text).digest('hex'), owner: { kind: 'import', principalKind: principal.kind, principalId: principal.id, baseRevision: null },
+          prepare: async value => { prepared = value; return value.result; } } }, statSync(path), await readPageBodyPolicy(engine));
+      expect(prepared?.noop).toBe(false);
+      await engine.transaction(tx => prepared!.validate(tx));
+      await engine.transaction(tx => withCoordinatedWrite(tx, ['default'], () => tx.executeRaw(
+        `INSERT INTO fact_withdrawals(source_id,visibility,subject,fact_hash) VALUES ('default','world','*',gbrain_fact_fingerprint($1))`, [claim]), TEST_WRITE_ATTRIBUTION));
+      const refused = await engine.transaction(tx => prepared!.validate(tx)).then(() => null, (error: { code?: string }) => error.code);
+      expect(refused).toBe('revision_conflict');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
     }
   }, 120_000);
 
