@@ -679,15 +679,17 @@ export async function prepareManagedAtomMutation(engine: BrainEngine, row: Write
   }
   // GBRA-161 PR 1b: an overwrite or retirement member runs only after its activation: the activation rechecked the input
   // and the planned identities under the locks, so the member checks its item is pending on that live generation instead.
+  // G6: that check runs under the publication locks only. A member is prepared before its activation publishes when both
+  // are claimed in one generation group (journal.ts publicationGroupKey), where the activation applies first in the same transaction.
   const gated = Boolean(p.activationId) && (p.kind === 'managed_atom_delete' || p.phase === 'overwrite');
-  const validate = async (tx: BrainEngine) => {
+  const validate = async (tx: BrainEngine, publishing = true) => {
     // A connector preflighted as unbound publishes database-only; one claimed since then must use its owner.
     if (row.authority.databaseOnlyReason === 'connector_database' && await getWorktreeBinding(tx, row.source_id)) {
       throw opError('source_changed', 'The connector source gained a canonical owner after atom preflight; the next run extracts through its owner.',
         `Connector source ${row.source_id} was claimed by a canonical owner after this database-only atom run started; request ${row.request_id} changed nothing. Run the atom drain on the owning host.`,
         { fix: ownerStatusFix(row.source_id) });
     }
-    if (gated) { await assertMemberPending(tx, row, p.activationId!, 'atom'); return; }
+    if (gated) { if (publishing) await assertMemberPending(tx, row, p.activationId!, 'atom'); return; }
     if (p.origin.kind === 'transcript') {
       if (sha256(readFileSync(p.origin.locator)) !== p.origin.textHash) throw opError('source_changed', 'The accepted atom transcript changed.',
         `The transcript behind atom request ${row.request_id} in source ${row.source_id} was edited after acceptance, so the request published nothing. Run the atom drain again to extract the current file.`,
@@ -702,7 +704,7 @@ export async function prepareManagedAtomMutation(engine: BrainEngine, row: Write
       }
     }
   };
-  await validate(engine);
+  await validate(engine, false);
   const additionalPageKeys = p.origin.kind === 'page' ? [{ sourceId: row.source_id, slug: p.origin.locator }] : [];
   if (p.kind === 'managed_atom_delete') {
     if (!p.activationId) await replacementPublished(engine, row, p);

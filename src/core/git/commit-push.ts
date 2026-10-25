@@ -34,6 +34,7 @@ import { GIT_ENV, GIT_ENV_AUTH, GIT_SSRF_SUBCOMMAND_FLAGS, durableSsrfFlags } fr
 import { assertManagedFilesystemWrite, hasFilesystemPublication, managedFilesystemRootFor, type ManagedFilesystemRoot } from '../persistence/filesystem-guard.ts';
 import { acquireNativeLock, acquireNativeLockSync, type NativeLockSyncHandle } from '../persistence/native-lock.ts';
 import { OperationError, opError } from '../ops/contract.ts';
+import { shellQuote } from '../agent-output.ts';
 
 export const COMMIT_LOCK_NAME = 'brain-commit.lock';
 /** Taken by pre-#6530 helpers and hooks; held too so they still exclude us during the mixed-version window. */
@@ -57,7 +58,7 @@ export type CheckoutState = 'advanced' | 'unchanged' | 'lagging';
 export interface CommitPushResult {
   /**
    * `push_deferred`: an unattended publish found another publish running and left it a request to publish HEAD too.
-   * `committed_local`: a managed canonical worktree, where commit-push only commits the named paths and never pushes.
+   * `committed_local`: a managed canonical worktree, or a checkout with no Git remote (`no_remote`), where commit-push only commits the named paths and never pushes.
    */
   outcome: 'pushed' | 'nothing_to_commit' | 'pushed_checkout_lagging' | 'push_deferred' | 'committed_local';
   /** The commit now on the remote branch (the caller's commit or the merge built over it). */
@@ -74,6 +75,8 @@ export interface CommitPushResult {
   lagging_reason?: string;
   /** Opt-in quarantine (git config gbrain.quarantine): the local versions of conflicting files, parked under a ref; the remote's version was published. */
   quarantined?: QuarantineEntry;
+  /** The checkout has no Git remote: the paths were committed locally (or were already committed) and nothing was pushed. */
+  no_remote?: true;
   /** Conflicted files where the remote held a version this checkout had already replaced: this checkout's version was published. */
   superseded_remote_paths?: string[];
 }
@@ -186,6 +189,11 @@ function absGitPath(root: string, rel: string): string {
 }
 
 /** The checkout's toplevel; throws `commit_paths_invalid` outside a work tree. */
+/** The operator step that commits and pushes only `paths` (relative to `root`) with one -m per message paragraph: the fix text doctor and repair print instead of a bare git add/commit. */
+export function commitPushCommand(root: string, paths: readonly string[], messages: readonly string[]): string {
+  return shellQuote(['gbrain', 'git', 'commit-push', '--path', root, ...messages.flatMap(m => ['-m', m]), '--', ...paths]);
+}
+
 export function checkoutRoot(dir: string): string {
   const r = git(dir, ['rev-parse', '--show-toplevel']);
   if (r.code !== 0 || !r.stdout.trim()) {
@@ -1042,17 +1050,41 @@ function commitManagedPaths(root: string, opts: CommitPushOptions, managed: Mana
     throw opError('commit_paths_invalid', `${where}: commit-push there only commits the paths you name.`,
       `Run gbrain git commit-push with only -m and the page paths after --; gbrain sources refresh${managed.sourceId ? ` ${managed.sourceId}` : ''} brings remote commits in.`);
   }
+  return commitPathsOnly(root, opts, where, configuredSourceRoots(root), 'Leave the checkout to its owner; gbrain sources writer status names its state.');
+}
+
+/** A checkout with no Git remote at all: no remote is configured and the branch names none (a named but missing remote is refused by resolveCtx). A git command that fails is not proof of "no remote". */
+function hasNoRemote(root: string): boolean {
+  const branch = git(root, ['symbolic-ref', '--quiet', '--short', 'HEAD']);
+  if (branch.code !== 0 || git(root, ['rev-parse', '--verify', '--quiet', 'HEAD']).code !== 0) return false;
+  const remotes = git(root, ['remote']);
+  if (remotes.code !== 0 || remotes.stdout.trim()) return false;
+  return git(root, ['config', '--get', `branch.${branch.stdout.trim()}.remote`]).code === 1;
+}
+
+/** GBRA-133: with no remote there is nothing to publish to, so commit-push only commits the named paths, like a managed worktree. */
+function commitRemotelessPaths(root: string, opts: CommitPushOptions): CommitPushResult {
+  const where = `${root} has no Git remote, so there is nothing to publish to`;
+  if (opts.pushOnly || opts.pending || opts.branch || opts.resolutions || opts.expectRemote || opts.advanceOnlyWhenClean) {
+    throw opError('commit_paths_invalid', `${where}; commit-push there only commits the paths you name.`,
+      'Run gbrain git commit-push -m <msg> -- <paths> to commit them locally, or add a remote (git remote add origin <url>) and set the branch upstream to publish.');
+  }
+  return { ...commitPathsOnly(root, opts, where, opts.allowOutsideSourceRoot ? [''] : configuredSourceRoots(root), 'Check out a branch (git switch <branch>), then rerun.'), no_remote: true };
+}
+
+/** Commit only the named paths under the commit lock and nothing more: no fetch, merge, push or checkout move. */
+function commitPathsOnly(root: string, opts: CommitPushOptions, where: string, roots: string[], detachedFix: string): CommitPushResult {
   if (!opts.message?.trim()) throw opError('commit_paths_invalid', 'A commit message is required.', 'Pass the commit message with -m.');
   const rel = scopePaths(root, opts.paths ?? [], opts.cwd ?? process.cwd());
   if (!rel.length) throw opError('commit_paths_invalid', `${where}: name the paths to commit.`, 'Pass -- <paths> after the message.');
   const branch = git(root, ['symbolic-ref', '--quiet', '--short', 'HEAD']).stdout.trim();
-  if (!branch) throw opError('git_detached_head', `${root} is on a detached HEAD, so there is no branch to commit to.`, 'Leave the checkout to its owner; gbrain sources writer status names its state.');
+  if (!branch) throw opError('git_detached_head', `${root} is on a detached HEAD, so there is no branch to commit to.`, detachedFix);
   assertNoOperationInProgress(root);
   const lock = acquireCommitLock(root, opts.lockWaitMs);
   let committed: string | null;
   try {
     assertNoOperationInProgress(root);
-    committed = commitPaths(root, rel, opts.message.trim(), { roots: configuredSourceRoots(root), lockPath: lock.lockPath, markHeld: true });
+    committed = commitPaths(root, rel, opts.message.trim(), { roots, lockPath: lock.lockPath, markHeld: true });
   } finally {
     lock.release();
   }
@@ -1066,6 +1098,7 @@ export function commitAndPush(opts: CommitPushOptions): CommitPushResult {
   const managed = opts.keepCheckout || opts.pushOnly ? null : managedFilesystemRootFor(root);
   if (managed && !hasFilesystemPublication(root)) return commitManagedPaths(root, opts, managed);
   if (!opts.keepCheckout) assertManagedFilesystemWrite(root);
+  if (hasNoRemote(root)) return commitRemotelessPaths(root, opts);
   const cwd = opts.cwd ?? process.cwd();
   const roots = configuredSourceRoots(root);
   const rel = opts.pushOnly ? [] : opts.pending

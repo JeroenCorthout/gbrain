@@ -11,6 +11,9 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { acquireCommitLock, commitAndPush, commitPathsLocked, pullShared, readIntegrateConflict, readPendingWriteThrough } from '../src/core/git/commit-push.ts';
 import { getLastPushOutcome } from '../src/core/brain-repo-durability.ts';
+import { runGit } from '../src/commands/git.ts';
+import { argvFromCommand } from '../src/core/agent-output.ts';
+import { legacyCommitStep } from '../src/core/fence-repair/uncommitted.ts';
 
 let root: string;
 
@@ -582,4 +585,121 @@ describe('many writers, two clones, one remote', () => {
       expect(read(dir, `foreign-${dir === a ? 'a' : 'b'}.md`)).toBe('never committed\n');
     }
   }, 180_000);
+});
+
+describe('CLI: repeated -m, --path <subdir>, and the printed repair step', () => {
+  /** A checkout whose source root is the subdirectory brain/, cloned from a bare remote. */
+  function subdirSetup(): { bare: string; a: string; brain: string } {
+    const { bare, a } = setup();
+    mkdirSync(join(a, 'brain', 'notes'), { recursive: true });
+    for (const f of ['model.md', 'other.md']) writeFileSync(join(a, 'brain', 'notes', f), `${f} v1\n`);
+    git(a, 'add', 'brain'); git(a, 'commit', '-qm', 'brain'); git(a, 'push', '-q', 'origin', 'main');
+    return { bare, a, brain: join(a, 'brain') };
+  }
+
+  test('each -m is a new paragraph of the commit message, like git commit', async () => {
+    const { bare, a } = setup();
+    writeFileSync(join(a, 'x.md'), 'mine\n');
+    expect(await runGit(['commit-push', '--path', a, '-m', 'subject line', '-m', 'trailer-key: value', '--', 'x.md'])).toBe(0);
+    expect(git(bare, 'log', '-1', '--format=%B', 'main').startsWith('subject line\n\ntrailer-key: value')).toBe(true);
+    expect(git(bare, 'log', '-1', '--format=%(trailers:key=trailer-key,valueonly)', 'main')).toBe('value');
+  });
+
+  test('--path <subdir>: paths are relative to that directory (like git -C), not the checkout top', async () => {
+    const { bare, a, brain } = subdirSetup();
+    writeFileSync(join(brain, 'notes', 'model.md'), 'edited\n');
+    expect(await runGit(['commit-push', '--path', brain, '-m', 'edit model', '--', 'notes/model.md'])).toBe(0);
+    expect(git(bare, 'show', 'main:brain/notes/model.md')).toBe('edited');
+    expect(git(bare, 'log', '-1', '--format=%s', 'main')).toBe('edit model');
+    expect(status(a)).toBe('');
+  });
+
+  test('the legacy fence-repair commit step runs as printed: only that path, subject and trailer, on the remote', async () => {
+    const { bare, a, brain } = subdirSetup();
+    writeFileSync(join(brain, 'notes', 'model.md'), 'repaired\n');
+    writeFileSync(join(brain, 'notes', 'other.md'), 'another writer\n');
+    const step = legacyCommitStep(brain, 'notes/model.md', ['no_header'], 'llm');
+    expect(step).toBe(`gbrain git commit-push --path ${brain} -m 'gbrain: repair fence in notes/model.md (no_header)' -m 'gbrain-repair: invalid_fence llm high' -- notes/model.md`);
+    const argv = argvFromCommand(step)!;
+    expect(argv.slice(0, 2)).toEqual(['gbrain', 'git']);
+    expect(await runGit(argv.slice(2))).toBe(0);
+    expect(git(bare, 'log', '-1', '--format=%B', 'main').startsWith('gbrain: repair fence in notes/model.md (no_header)\n\ngbrain-repair: invalid_fence llm high')).toBe(true);
+    expect(git(bare, 'log', '-1', '--format=%(trailers:key=gbrain-repair,valueonly)', 'main')).toBe('invalid_fence llm high');
+    expect(git(bare, 'show', '--name-only', '--format=', 'main')).toBe('brain/notes/model.md');
+    expect(git(bare, 'show', 'main:brain/notes/model.md')).toBe('repaired');
+    expect(git(bare, 'show', 'main:brain/notes/other.md')).toBe('other.md v1');
+    expect(remoteHead(bare)).toBe(git(a, 'rev-parse', 'HEAD'));
+    expect(status(a)).toBe(' M brain/notes/other.md');
+  });
+});
+
+describe('a checkout with no Git remote', () => {
+  /** A local-only repository (no remotes) on main whose source root is brain/. */
+  function localOnly(): { repo: string; brain: string } {
+    const repo = join(root, 'local');
+    execFileSync('git', ['init', '-q', '-b', 'main', repo], { stdio: 'ignore', env: process.env });
+    git(repo, 'config', 'user.email', 'local@example.com'); git(repo, 'config', 'user.name', 'local');
+    mkdirSync(join(repo, 'brain', 'notes'), { recursive: true });
+    for (const f of ['model.md', 'other.md']) writeFileSync(join(repo, 'brain', 'notes', f), `${f} v1\n`);
+    git(repo, 'add', 'brain'); git(repo, 'commit', '-qm', 'seed');
+    return { repo, brain: join(repo, 'brain') };
+  }
+  const refusalOf = (fn: () => unknown): { code?: string; message?: string; fix?: unknown } => {
+    try { fn(); } catch (e) { return e as { code?: string; message?: string }; }
+    throw new Error('expected a refusal');
+  };
+
+  test('the printed legacy fence-repair step commits only the named path locally and says nothing was pushed', async () => {
+    const { repo, brain } = localOnly();
+    const seed = git(repo, 'rev-parse', 'HEAD');
+    writeFileSync(join(brain, 'notes', 'model.md'), 'repaired\n');
+    writeFileSync(join(brain, 'notes', 'other.md'), 'another writer\n');
+    const step = legacyCommitStep(brain, 'notes/model.md', ['no_header'], 'llm');
+    const printed: string[] = [];
+    const original = console.log;
+    console.log = (...parts: unknown[]) => { printed.push(parts.map(String).join(' ')); };
+    let code: number;
+    try { code = await runGit(argvFromCommand(step)!.slice(2)); } finally { console.log = original; }
+    expect(code).toBe(0);
+    expect(git(repo, 'rev-parse', 'HEAD^')).toBe(seed);
+    expect(git(repo, 'log', '-1', '--format=%s')).toBe('gbrain: repair fence in notes/model.md (no_header)');
+    expect(git(repo, 'log', '-1', '--format=%(trailers:key=gbrain-repair,valueonly)')).toBe('invalid_fence llm high');
+    expect(git(repo, 'show', '--name-only', '--format=', 'HEAD')).toBe('brain/notes/model.md');
+    expect(status(repo)).toBe(' M brain/notes/other.md');
+    expect(printed.join('\n')).toContain(`not pushed: ${repo} has no Git remote`);
+  });
+
+  test('commitAndPush reports committed_local with no_remote, then nothing_to_commit', () => {
+    const { repo, brain } = localOnly();
+    writeFileSync(join(brain, 'notes', 'model.md'), 'edited\n');
+    const r = commitAndPush({ repo: brain, cwd: brain, paths: ['notes/model.md'], message: 'edit' });
+    expect(r).toMatchObject({ outcome: 'committed_local', no_remote: true, branch: 'main', remote: '', paths: ['brain/notes/model.md'], checkout: 'unchanged' });
+    expect(r.sha).toBe(git(repo, 'rev-parse', 'HEAD'));
+    expect(commitAndPush({ repo: brain, cwd: brain, paths: ['notes/model.md'], message: 'again' })).toMatchObject({ outcome: 'nothing_to_commit', no_remote: true, sha: null });
+  });
+
+  test('a branch configured to a remote that does not exist still refuses git_unavailable and commits nothing', () => {
+    const { repo, brain } = localOnly();
+    const head = git(repo, 'rev-parse', 'HEAD');
+    git(repo, 'config', 'branch.main.remote', 'origin');
+    writeFileSync(join(brain, 'notes', 'model.md'), 'edited\n');
+    const err = refusalOf(() => commitAndPush({ repo: brain, cwd: brain, paths: ['notes/model.md'], message: 'edit' }));
+    expect(err.code).toBe('git_unavailable');
+    expect(String(err.message)).toContain('has no usable remote (origin); nothing was committed');
+    expect(git(repo, 'rev-parse', 'HEAD')).toBe(head);
+    expect(status(repo)).toBe(' M brain/notes/model.md');
+  });
+
+  test('publishing modes and paths-free commits refuse: there is no remote to publish to', () => {
+    const { repo, brain } = localOnly();
+    const head = git(repo, 'rev-parse', 'HEAD');
+    writeFileSync(join(brain, 'notes', 'model.md'), 'edited\n');
+    for (const opts of [{ pushOnly: true }, { pushOnly: true, keepCheckout: true }, { pending: true, message: 'm' }, { paths: ['notes/model.md'], message: 'm', advanceOnlyWhenClean: true }]) {
+      const err = refusalOf(() => commitAndPush({ repo: brain, cwd: brain, ...opts }));
+      expect(err.code).toBe('commit_paths_invalid');
+      expect(String(err.message)).toContain('has no Git remote, so there is nothing to publish to');
+    }
+    expect(refusalOf(() => commitAndPush({ repo: brain, cwd: brain, paths: [], message: 'm' })).code).toBe('commit_paths_invalid');
+    expect(git(repo, 'rev-parse', 'HEAD')).toBe(head);
+  });
 });

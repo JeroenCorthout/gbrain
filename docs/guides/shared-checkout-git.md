@@ -106,7 +106,9 @@ gbrain git commit-push --dry-run -m "people: add alice-example" -- people/alice-
 ```
 
 Flags: `--path <dir>` acts on a checkout other than the one containing the
-current directory, `--json` prints one JSON result (or the error envelope),
+current directory (the paths are then relative to `<dir>`, like `git -C`),
+`-m` repeats like `git commit` (each one is a new paragraph, so a second `-m`
+carries a trailer), `--json` prints one JSON result (or the error envelope),
 `--require-clean` makes `--pull` skip when the checkout has any local edit
 (the rule the unattended pull cron uses). The command is local only: it pushes
 with this machine's git credentials and is never exposed over MCP.
@@ -127,6 +129,16 @@ fetches, merges, pushes or moves the checkout, and refuses `--pending`,
 (`commit_paths_invalid`). The commit reaches the remote on the owner's next Git
 publish. `--push-only` without `--keep-checkout` is still refused with
 `writer_coordinator_required`.
+
+A checkout with no Git remote at all (`git remote` prints nothing and the
+branch names none) has nothing to publish to: `gbrain git commit-push -m "<msg>" -- <paths>`
+commits only the named paths under the commit lock and reports
+`committed_local` with `no_remote: true`, saying nothing was pushed.
+`--push-only`, `--pending`, `--branch`, `--resolve`/`--expect-remote` and
+`--require-clean` are refused there (`commit_paths_invalid`). Add a remote and
+set the branch upstream, then `gbrain git commit-push --push-only` publishes the
+local commits. A branch that names a remote which does not exist still refuses
+(`git_unavailable`).
 
 The one form a managed worktree accepts is `--push-only --keep-checkout`. It
 publishes the commits already on the branch, merging a moved remote in memory,
@@ -153,7 +165,8 @@ Follow the error's `fix.next` as the
 | --- | --- | --- |
 | `pushed` | 0 | Done. Report the commit; a hosted link to the file works now. |
 | `push_deferred` | 0 | Only with `--require-clean` (the post-commit hook): another push was running in this checkout and was asked to publish HEAD too when it finishes. Nothing to do. |
-| `nothing_to_commit` | 0 | The paths had no change. Any earlier local commit on the branch was still pushed, so nothing is waiting. |
+| `nothing_to_commit` | 0 | The paths had no change. Any earlier local commit on the branch was still pushed, so nothing is waiting (with `no_remote: true`, nothing is pushed). |
+| `committed_local` | 0 | A managed canonical worktree, or a checkout with no Git remote (`no_remote: true`): the paths were committed locally and nothing was pushed. Report the commit; it reaches a remote on the owner's next publish, or after a remote is added and `--push-only` runs. |
 | `pushed_checkout_lagging` | 0 | The push landed but this checkout was not advanced; a `[gbrain notice]` names the files that blocked it. Change nothing: the next commit-push or `--pull` catches the checkout up. Never stash or reset to "fix" it. |
 | `commit_lock_busy` | 1 | Another writer held the lock for the whole wait; nothing was committed. Retry once. If it is still busy, tell the user which checkout and lock path the message names and stop. |
 | `commit_paths_invalid` | 1 | No paths, a path outside the checkout, the checkout root itself, or a path git would not stage. Name the explicit files you wrote and rerun. |
@@ -166,7 +179,7 @@ Follow the error's `fix.next` as the
 | `integrate_conflict` | 1 | Local and remote commits changed the same file; nothing was merged and the checkout is unchanged. Stop, relay the question to the user, then [resolve](#conflicts). |
 | `push_unconfirmed` | 4 | The commit is durable locally but no push destination confirmed it (network, credentials, branch protection, a remote that kept moving, or another push that held the push lock for the whole wait). Fix what the message names, then run `gbrain git commit-push --push-only`. Never force-push. |
 | `writer_coordinator_required` | 1 | This is a managed worktree. Stop using git for pages; save them through `put_page` and the other gbrain write tools. |
-| `git_unavailable` | 1 | A git command failed, often a missing `user.name`/`user.email` or a refusing pre-commit hook. Read the message, fix that, rerun. When the branch has no usable remote at all, the run stops before committing: add the remote, or commit locally with `git add <paths> && git commit -m "<msg>" -- <paths>`. |
+| `git_unavailable` | 1 | A git command failed, often a missing `user.name`/`user.email` or a refusing pre-commit hook. Read the message, fix that, rerun. When the branch names a remote that does not exist (a typo or a broken clone), the run stops before committing: fix the name or add the remote, then rerun. A checkout with no remote at all commits locally instead (`committed_local`). |
 
 `--pull` reports `up_to_date`, `advanced`, `ahead` (local commits not yet
 pushed; run `--push-only`), `skipped_dirty` (only with `--require-clean`) or

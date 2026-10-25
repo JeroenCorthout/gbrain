@@ -113,7 +113,7 @@ src/core/cycle/concept-publication.ts	preserveCanonicalFences	call:serializeMark
 src/core/cycle/concept-publication.ts	preserveCanonicalFences	field	INLINE	assertInlineBody: refuses a segmented page (concept pages inline; enrich/connector callers SEGW)
 src/core/cycle/concept-publication.ts	publishClassicConcept	call:serializeMarkdown	INLINE	
 src/core/cycle/concept-publication.ts	publishClassicConcept	field	INLINE	
-src/core/cycle/concept-publication.ts	publishManagedConcept	call:serializeMarkdown	INLINE	
+src/core/cycle/concept-publication.ts	prepareManagedConcept	call:serializeMarkdown	INLINE	
 src/core/cycle/drift.ts	runPhaseDrift	call:serializeMarkdown	INLINE	
 src/core/cycle/edge-contradictions.ts	removeTimelineLine	call:serializeMarkdown	SEGW	
 src/core/cycle/edge-contradictions.ts	removeTimelineLine	field	SEGW	
@@ -140,6 +140,8 @@ src/core/cycle/patterns.ts	loadGroundingSources	field	STREAM	segmented reflectio
 src/core/cycle/patterns.ts	loadGroundingSources	sql	STREAM	inline body columns plus body_storage/body_bytes; a segmented row's NULL columns are replaced by the segment reader
 src/core/cycle/patterns.ts	renderPageToMarkdown	call:serializeMarkdown	SEGW	
 src/core/cycle/patterns.ts	renderPageToMarkdown	field	LEAD	
+src/core/cycle/patterns.ts	stagedSnapshot	field	INLINE	GBRA-60: the body is the staged markdown from the child ledger (one put_page string, size-checked at staging); the current page supplies only its revision and identity
+src/core/cycle/patterns.ts	stampProvenance	call:serializePageToMarkdown	SEGW	G6: the managed stamp batch, as stampMaintenancePage (prepared-maintenance.ts)
 src/core/cycle/phantom-redirect-managed.ts	redirectManagedPhantom	call:serializePageToMarkdown	SEGW	spread of a segmented page throws
 src/core/cycle/phantom-redirect-managed.ts	redirectManagedPhantom	field	SEGW	segmented page: getter throws page_body_segmented in preparation (nothing written)
 src/core/cycle/phantom-redirect.ts	fenceDbDrift	field	SEGW	segmented page: getter throws page_body_segmented
@@ -153,6 +155,9 @@ src/core/cycle/phantom-redirect.ts	tryRedirectPhantom	field	SEGW	canonical targe
 src/core/cycle/propose-takes.ts	ProposeTakesPhase.process	call:contentHash	META	
 src/core/cycle/propose-takes.ts	ProposeTakesPhase.process	field	STREAM	
 src/core/cycle/propose-takes.ts	listCandidatePages	sql	STREAM	
+src/core/cycle/synthesize-child-verify.ts	readTranscript	field	INLINE	a segmented conversation transcript is skipped: the child writes unverified and postprocessing verifies
+src/core/cycle/synthesize-child-verify.ts	verifyChildPages	call:serializeMarkdown	INLINE	serializes the child's own model output, never a stored body
+src/core/cycle/synthesize-child-verify.ts	verifyChildPages	field	INLINE	a segmented page it would replace skips child verification: postprocessing verifies
 src/core/cycle/synthesize-concepts.ts	runPhaseSynthesizeConcepts	field	INLINE	
 src/core/cycle/synthesize-concepts.ts	runPhaseSynthesizeConcepts	sql	INLINE	
 src/core/cycle/synthesize-generations.ts	pages	sql	INLINE	reads the synthesis outputs of one re-synthesized transcript for the predecessor coverage match (generations/synthesis-coverage.ts); segmented pages are excluded in SQL, so a segmented earlier output is never compared and stays live as an unreadable unmatched predecessor
@@ -197,8 +202,9 @@ src/core/engine-sql/pages.ts	revertToVersion	sql	SEGW	lane 1e: refuses a segment
 src/core/engine-sql/pages.ts	toDomainBankRow	field	LEAD	maps sampled rows; segmented pages are never sampled
 src/core/engine-sql/salience.ts	listEnrichCandidates	sql	META	
 src/core/engine-sql/timeline.ts	getTimeline	sql	NONE	not the page body: SELECT * FROM pages inside a LATERAL used for the page id only
-src/core/enrichment-service.ts	enrichEntity	call:putPage	INLINE	
-src/core/enrichment-service.ts	enrichEntity	call:serializeMarkdown	INLINE	
+src/core/enrichment-service.ts	planEntity	call:putPage	INLINE	
+src/core/enrichment-service.ts	planEntity	call:serializeMarkdown	INLINE	
+src/core/enrichment-service.ts	stubMarkdown	call:serializeMarkdown	INLINE	G6: a new stub's markdown built from its own short template, never read from a stored body
 src/core/export-snapshot.ts	inlineExportMarkdown	call:serializeMarkdown	SEGW	
 src/core/export-snapshot.ts	inlineExportMarkdown	field	STREAM	
 src/core/export-snapshot.ts	segmentedExportHead	call:serializeMarkdown	NONE	not the page body: the frontmatter head, rendered with an empty body
@@ -329,7 +335,7 @@ src/core/mentions/pass.ts	pagesMatchingNames	sql	STREAM	segmented pages are sele
 src/core/mentions/pass.ts	reconcileSource	sql	INLINE	reads body_storage; a segmented row is scanned block by block (pageMentions)
 src/core/mentions/pass.ts	refreshAliases	sql	STREAM	segmented pages excluded in SQL
 src/core/minions/handlers/facts-absorb.ts	makeFactsAbsorbHandler	field	STREAM	
-src/core/minions/handlers/subagent-oneshot.ts	runSubagentOneshot	call:serializeMarkdown	SEGW	
+src/core/minions/handlers/subagent-oneshot.ts	planOneshotWrites	call:serializeMarkdown	SEGW	
 src/core/ops/admin.ts	get_versions	field	SEGW	lane 1e: segmented versions return metadata only
 src/core/ops/attribution.ts	get_write_attribution	field	NONE	not the page body: timeline entry id param
 src/core/ops/attribution.ts	rowTarget	field	NONE	not the page body: timeline entry id param

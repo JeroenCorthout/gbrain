@@ -4035,6 +4035,16 @@ Reasons: `database_contention`.
 
 Override: reason `database_contention`: retryable, exit 1, retryable.
 
+### strict_requires_managed
+
+<a id="strict_requires_managed"></a>
+
+| Meaning | Why | Next step | Who acts · consent | Verify | Exit | Retryable |
+|---|---|---|---|---|---|---|
+| A git-canonical source (config canonical: git) was written on a brain without managed persistence; nothing was written. | A strict source is committed to Git before the database indexes it, and only managed persistence (the writer coordinator) does that; the legacy writer of an unmanaged brain writes the database first. | Ask the user whether to turn on managed persistence for this brain, or to remove canonical: git from the source. | user | `repeat the read that failed` | 1 | no |
+
+More: [docs/designs/GIT_CANONICAL_MEMORY.md#the-model](../../docs/designs/GIT_CANONICAL_MEMORY.md#the-model)
+
 ### sync_admission_restricted
 
 <a id="sync_admission_restricted"></a>

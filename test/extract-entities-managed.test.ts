@@ -5,7 +5,9 @@
  * source page's derived tier; a refusal reaches the caller as its envelope. G5 lane B: the timeline row is an
  * `add_timeline_entry` page mutation, so the existing entity page is seeded through the page door (a managed page has
  * its canonical file) and the stub's journal holds both requests; the backlink is the edge the bullet's markdown link
- * derives at publication, not a direct database row. Synthetic content only.
+ * derives at publication, not a direct database row. G6: a new entity's stub carries its timeline bullet in its own
+ * put_page (one request, one commit), and one call's entity writes are submitted as one batch, which Postgres publishes
+ * as one group. Synthetic content only.
  */
 import { afterAll, afterEach, beforeAll, describe, expect, test } from 'bun:test';
 import type { BrainEngine } from '../src/core/engine.ts';
@@ -96,7 +98,8 @@ describe(`extract_entities on a managed brain (#6262, ${databaseUrl ? 'postgres'
       });
       const journal = await engine.executeRaw<{ operation: string; state: string }>(
         "SELECT operation, state FROM persistence_requests WHERE slug='people/cedar-example' ORDER BY sequence");
-      expect(journal).toEqual([{ operation: 'put_page', state: 'committed' }, { operation: 'add_timeline_entry', state: 'committed' }]);
+      // G6: the stub's timeline bullet rides in its put_page, so the new entity is one request and one commit.
+      expect(journal).toEqual([{ operation: 'put_page', state: 'committed' }]);
     }, { databaseUrl, setup: ({ engine }) => seed(engine) });
   }, 180_000);
 
@@ -138,10 +141,28 @@ describe(`extract_entities on a managed brain (#6262, ${databaseUrl ? 'postgres'
         .then(() => null, e => e as { code?: string; why?: string })
         .finally(() => { installFaultHook(undefined); release(); });
       expect(error?.code).toBe('write_pending');
-      expect(error?.why).toContain('1 of 2 entities were written before Cedar Example: people/alice-example');
-      // The accepted stub publishes on its own; its timeline row and backlink wait for the rerun.
-      expect(await timeline(engine, 'people/cedar-example')).toEqual([]);
-      expect(await backlinks(engine, 'people/cedar-example')).toEqual([]);
+      if (!databaseUrl) {
+        expect(error?.why).toContain('1 of 2 entities were written before Cedar Example: people/alice-example');
+        // The accepted stub publishes on its own; its timeline row and backlink wait for the rerun.
+        expect(await timeline(engine, 'people/cedar-example')).toEqual([]);
+        expect(await backlinks(engine, 'people/cedar-example')).toEqual([]);
+        return;
+      }
+      // G6 on Postgres: Alice's bullet and Cedar's stub are one publication group, so the held stub holds Alice's bullet
+      // too: nothing was written yet, and the reply claims no entity as written.
+      expect(error?.why ?? '').not.toContain('were written before');
+      expect(await timeline(engine, 'people/alice-example')).toEqual([]);
+      expect(await page(engine, 'people/cedar-example')).toBeUndefined();
+      // Released, both accepted writes publish together, each committed, in one transaction.
+      let rows: Array<{ slug: string; state: string; published: string | null }> = [];
+      for (const start = Date.now(); Date.now() - start < 30_000; await new Promise(r => setTimeout(r, 200))) {
+        rows = await engine.executeRaw("SELECT slug,state,published_at::text AS published FROM persistence_requests WHERE slug IN ('people/alice-example','people/cedar-example') AND operation IN ('put_page','add_timeline_entry') AND intent ? 'page_batch' ORDER BY slug");
+        if (rows.length === 2 && rows.every(row => row.state === 'committed')) break;
+      }
+      expect(rows.map(row => [row.slug, row.state])).toEqual([['people/alice-example', 'committed'], ['people/cedar-example', 'committed']]);
+      expect(rows[0]!.published).toBe(rows[1]!.published);
+      expect(await timeline(engine, 'people/alice-example')).toHaveLength(1);
+      expect(await timeline(engine, 'people/cedar-example')).toHaveLength(1);
     }, { databaseUrl, setup: ({ engine }) => seed(engine) });
   }, 180_000);
 });

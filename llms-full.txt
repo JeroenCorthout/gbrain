@@ -7482,7 +7482,7 @@ vars — incident-time escape hatches, not everyday knobs.
    never holds it. The fence repair still repairs such a file: on a legacy
    source it re-reads the file, backs it up under `~/.gbrain/backups/`,
    writes and imports it, and leaves the change for you to commit
-   (`gbrain sources status` names the `git add`/`git commit` command until
+   (`gbrain sources status` names the `gbrain git commit-push` command until
    you do). Holds never count toward the
    legacy auto-skip streak below. A source blocked by such a file before this
    release recovers on its next sync, or now with

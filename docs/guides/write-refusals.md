@@ -595,9 +595,11 @@ and the same detail and fix). What works:
 
 1. **Write the file, commit, sync** (the classic write path). Write or edit
    `<checkout>/<slug>.md`, check generated frontmatter with
-   `gbrain frontmatter validate --stdin --path <slug>.md`, `git commit` it, then
+   `gbrain frontmatter validate --stdin --path <slug>.md`, commit it with
+   `gbrain git commit-push --path <checkout> -m <msg> -- <slug>.md`, then
    run `gbrain sync --source <id>`. Sync imports commits; `--working-tree`
-   imports uncommitted edits for one run. Delete with `git rm`, commit, sync.
+   imports uncommitted edits for one run. Delete the file, commit the deletion
+   the same way, sync.
    Tags and timeline entries are frontmatter and `## Timeline` lines in the
    same file.
 2. **Database-only pages**, if the user accepts that new pages never reach the
