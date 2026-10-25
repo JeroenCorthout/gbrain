@@ -22,6 +22,7 @@ import { assertSyncPageOrigin, sameSyncOrigin, sharedOriginExit, syncOriginScope
 import { activeManagedBrainId, assertManagedSyncActive, assertSyncDispatchActive, managedSyncAuthority, validateSyncAuthority, validateManagedSyncOptions, syncProcessingOptions, SYNC_PROCESSING_KEYS, type SyncAuthority, type SyncProcessingOptions } from './sync-authority.ts';
 import { prepareManagedSyncMutation, type SyncCursorOptions, type SyncIntent } from './sync-prepare.ts';
 import { streamedSyncBodyRef, type SyncBodyRef } from './sync-streamed.ts';
+import { freezeSplitEntry, splitBodyRef, type SyncSplitMark } from './sync-split.ts';
 import { startClaimPhase } from './claim-phase.ts';
 import { screeningRequest } from './noop-kernel.ts';
 import { noopWaiversEnabled, prescreenedHead, raceSyncBudget, screenWaiver, syncPreparationBudgetMs, unfinishedPageRequestParams, UNFINISHED_PAGE_REQUEST_SQL, waiveNoopEntry, waiveNoopRun, waivePrescreenedRun, waiverBatchEnabled, type NoopWaiver, type WaiverRunEntry } from './sync-waivers.ts';
@@ -47,7 +48,7 @@ import { laneApplyMsPerMember, lanePolicy, openLanes } from './sync-lanes.ts';
 import { isRetryableConnError, isStatementTimeoutError } from '../retry-matcher.ts';
 import { SYNC_READ_BOUND, type TreeBlob } from './sync-blobs.ts';
 import { readDryRunWriterState } from './sync-dry-run-writer.ts';
-import { driftBaselineContent, dryRunScreen, heldImageEntry, isSyncReadBound, loadSyncScreenRun, originConflictHold, oversizeHold, pinnedBlob, pinnedContent, pinnedImageBytes, preparationStalledHold, prepareTimeFenceHold, screenFrozenImport, streamedRefusalHold, unreadableFileHold, type HeldEntry, type SyncScreenRun } from './sync-screen.ts';
+import { driftBaselineContent, dryRunScreen, heldImageEntry, isSyncReadBound, loadSyncScreenRun, originConflictHold, oversizeHold, pinnedBlob, pinnedContent, pinnedImageBytes, preparationStalledHold, prepareTimeFenceHold, screenFrozenImport, splitHold, streamedRefusalHold, unreadableFileHold, type HeldEntry, type SyncScreenRun } from './sync-screen.ts';
 import { frozenImageIntent, sameImageBytes } from './sync-image.ts';
 import { fenceReceiptLocation } from '../fence-repair/refusal.ts';
 import { managedSyncWriteDiagnostic, writeWaitOf } from './sync-write-diagnostic.ts';
@@ -343,7 +344,7 @@ async function freezeEntryOnce(engine: BrainEngine, cursor: Cursor, key: string,
   let frozenSnapshot: PageSnapshot | null | undefined;
   // #5988: company-profile sources never hold; their approved manifest keeps refusing.
   const screening = entry?.action === 'import' && !cursor.companyPlan ? run.screen ?? null : null;
-  let blob: TreeBlob | null = null, oversize: { size: number | null } | undefined, bodyRef: SyncBodyRef | null = null;
+  let blob: TreeBlob | null = null, oversize: { size: number | null } | undefined, bodyRef: SyncBodyRef | null = null, headOid: string | null = null, split: SyncSplitMark | undefined;
   // #6529: an image entry is frozen as its bytes (base64) for the coordinated image importer when multimodal embedding is on.
   const image = !!entry && entry.action === 'import' && !cursor.companyPlan && isImageFilePath(entry.path);
   let imageBytes: Buffer | null = null;
@@ -414,10 +415,14 @@ async function freezeEntryOnce(engine: BrainEngine, cursor: Cursor, key: string,
     // Uncommitted bytes keep the pinned content and reach the publication screen (idea from PR #6323).
     if (entry.action === 'import' && !cursor.companyPlan && !image && !entry.working && content !== null && rawHash !== null && rawHash !== sha256(content)) {
       const head = headCommittedBytes(cursor, entry.path);
-      if (head && head.rawHash === rawHash) { content = head.content; blob = { oid: head.oid, size: bytes!.length }; }
+      if (head && head.rawHash === rawHash) { content = head.content; blob = { oid: head.oid, size: bytes!.length }; headOid = head.oid; }
     }
     lineEndingOnly = !image && bytes !== null && content !== null && bytes.equals(Buffer.from(bytes.toString('utf8'))) &&
       bytes.toString('utf8').replace(/\r\n/g, '\n') === content.replace(/\r\n/g, '\n');
+    // Wave B PR 5: a split page head imports as the page its parts (of the same commit) reassemble to, or is held (sync-split.ts).
+    const splitPage = entry.action === 'import' && !cursor.companyPlan && !image && content !== null ? freezeSplitEntry(cursor, entry, content, headOid) : null;
+    if (splitPage && 'refusal' in splitPage) { if (!screening) throw syncRunRefusal(splitPage.refusal.code, 'A split page head does not match its part files.', retry, splitPage.refusal.message); return { hold: splitHold(entry, entry.slug!, entry.pageId ?? null, splitPage.refusal, content, blob) }; }
+    if (splitPage) { ({ split, content } = splitPage); bodyRef = content === null ? splitBodyRef(splitPage.split) : bodyRef; if (split!.tree_oid) blob = { oid: split!.tree_oid, size: split!.bytes }; }
     slug = entry.slug!; pageId = occupant?.page.id ?? entry.pageId ?? null; revision = occupant ? occupant.revision : entry.revision ?? null;
     frozenSnapshot = snapshot;
     // #6340: a page that moved under the manifest holds the page, not the run (sync-page-fault.ts); `sync.holds=fail`
@@ -431,7 +436,7 @@ async function freezeEntryOnce(engine: BrainEngine, cursor: Cursor, key: string,
       assertActive();
       return { hold: pageChangedHold(entry, slug, observedPageId ?? pageId, frozenIntent, { proof, revision: observedRevision, why }), overtaken: true };
     };
-    if (occupant && (content === null || !(image ? sameImageBytes(imageBytes, occupant.page) : await sameContentAtOrigin(engine, cursor, entry, key, snapshot, content, rawHash, lineEndingOnly, run.signal)))) {
+    if (occupant && (content === null || !(image ? sameImageBytes(imageBytes, occupant.page) : await sameContentAtOrigin(engine, cursor, entry, key, snapshot, content, rawHash, lineEndingOnly, run.signal, false, split)))) {
       if (holdsOn) return pageHold(`another run of this source imported page ${slug} from ${entry.path} with different content`, occupant.page.id, occupant.revision);
       throw syncRunRefusal('page_identity_changed', 'The imported origin no longer identifies exactly the accepted page.', retry,
         `Page ${slug} was imported from ${entry.path} by another run of source ${cursor.sourceId} with different content after this run enumerated it, so the run stopped before admitting it.`);
@@ -445,7 +450,7 @@ async function freezeEntryOnce(engine: BrainEngine, cursor: Cursor, key: string,
       // The page moved but still holds exactly what this import carries: re-bind the entry to it (the waiver screen passes it).
       const rebind = entry.action === 'import' && !moved && !foreignOrigin && snapshot !== null && snapshot.page.deleted_at == null
         && (snapshot.page.id === pageId || pageId === null) && content !== null
-        && (image ? sameImageBytes(imageBytes, snapshot.page) : await sameContentAtOrigin(engine, cursor, entry, key, snapshot, content, rawHash, lineEndingOnly, run.signal));
+        && (image ? sameImageBytes(imageBytes, snapshot.page) : await sameContentAtOrigin(engine, cursor, entry, key, snapshot, content, rawHash, lineEndingOnly, run.signal, false, split));
       assertActive();
       if (!rebind) return pageHold(`page ${slug} was ${snapshot === null || snapshot.page.deleted_at != null ? 'deleted' : foreignOrigin ? 're-bound to another file' : 'edited'} in the database`,
         snapshot?.page.id ?? null, snapshot?.revision ?? null);
@@ -465,7 +470,7 @@ async function freezeEntryOnce(engine: BrainEngine, cursor: Cursor, key: string,
     }
     // #6712 PR 1: an import whose page moved since its file was last imported runs only as a proven no-op (sync-prescreen.ts).
     if (entry.drift && !occupantRebound && content !== null && snapshot && !(image ? sameImageBytes(imageBytes, snapshot.page)
-      : await sameContentAtOrigin(engine, cursor, entry, key, snapshot, content, rawHash, lineEndingOnly, run.signal) || await sameContentAtOrigin(engine, cursor, entry, key, snapshot, driftBaselineContent(cursor.gitRoot, entry), null, false, run.signal, true))) {
+      : await sameContentAtOrigin(engine, cursor, entry, key, snapshot, content, rawHash, lineEndingOnly, run.signal, false, split) || await sameContentAtOrigin(engine, cursor, entry, key, snapshot, driftBaselineContent(cursor.gitRoot, entry), null, false, run.signal, true))) {
       if (!holdsOn) throw syncRunRefusal('file_drift', 'An import would overwrite a database version of the page that sync never saw.', retry, `Page ${slug} in source ${cursor.sourceId} ${entry.drift === 'unknown' ? `differs from ${entry.path} and has no import record to tell whether the file or the database changed` : `changed in the database since ${entry.path} was last imported, and the file differs from it`}, so the run stopped before admitting it (sync.holds=fail).`);
       const proof = await pageChangeProof(engine, { sourceId: cursor.sourceId, incarnation: cursor.incarnation, pageId, expectedRevision: null }); assertActive();
       return { hold: fileDriftHold(entry, slug, pageId, frozenIntent, { sides: entry.drift, revision: snapshot.revision, proof, sharedOrigin: await sharedOriginSurvivor(engine, cursor.sourceId, entry.sourcePath) }) };
@@ -482,7 +487,7 @@ async function freezeEntryOnce(engine: BrainEngine, cursor: Cursor, key: string,
   if (entry?.action === 'import') await faultPoint('sync:after_freeze', { sourceId: cursor.sourceId, slug, path: entry.path });
   const passLevel = cursor.passId ? (entry as PassEntry | undefined)?.level ?? (entry ? null : cursor.target) : undefined;
   return remember(frozenSnapshot, { requestId: cursor.passId ? passRequestId(cursor.passId, entry?.path ?? slug, passLevel!) : randomUUID(), slug, pageId, ...(occupantRebound ? { rebound: true as const } : {}), intent: { kind: !entry ? 'managed_sync_checkpoint' : entry.action === 'import' ? 'managed_sync_import' : 'managed_sync_delete',
-    expected_revision: revision, sourcePath: entry?.sourcePath ?? null, path: entry?.path ?? null, rawHash, content, lineEndingOnly, ...(bodyRef ? { body_ref: bodyRef } : {}),
+    expected_revision: revision, sourcePath: entry?.sourcePath ?? null, path: entry?.path ?? null, rawHash, content, lineEndingOnly, ...(bodyRef ? { body_ref: bodyRef } : {}), ...(split ? { split } : {}),
     ...(entry?.unownedDeletion ? { unownedDeletion: true } : {}), ...(entry?.heldDeletion ? { heldDeletion: entry.heldDeletion } : {}),
     ...(entry?.committedOnly ? { committedOnly: true } : {}),
     ...(entry?.renameFrom ? { renameFrom: entry.renameFrom } : {}),
@@ -834,9 +839,9 @@ async function alreadyImportedAtOrigin(engine: BrainEngine, cursor: Cursor, entr
  * #6278: the preparation races the sync budget; past it the origin refusal stands, and a cancelled run propagates. #6712 `pageOnly`: the page holds what `content` (a `both` entry's recorded disk blob) imports, a canonical writeback aside.
  */
 async function sameContentAtOrigin(engine: BrainEngine, cursor: Cursor, entry: Cursor['entries'][number], key: string,
-  snapshot: Awaited<ReturnType<BrainEngine['readPageSnapshot']>>, content: string | null, rawHash: string | null, lineEndingOnly: boolean, signal?: AbortSignal, pageOnly = false): Promise<boolean> {
+  snapshot: Awaited<ReturnType<BrainEngine['readPageSnapshot']>>, content: string | null, rawHash: string | null, lineEndingOnly: boolean, signal?: AbortSignal, pageOnly = false, split?: SyncSplitMark): Promise<boolean> {
   if (!snapshot || snapshot.page.deleted_at != null || content === null) return false;
-  const intent: SyncIntent = { kind: 'managed_sync_import', expected_revision: snapshot.revision, sourcePath: entry.sourcePath, path: entry.path, rawHash: pageOnly ? sha256(content) : rawHash, content, lineEndingOnly,
+  const intent: SyncIntent = { kind: 'managed_sync_import', expected_revision: snapshot.revision, sourcePath: entry.sourcePath, path: entry.path, rawHash: pageOnly ? sha256(content) : rawHash, content, lineEndingOnly, ...(split && !pageOnly ? { split } : {}),
     processingOptions: cursor.processingOptions, ownerEpoch: String(cursor.binding.owner_epoch), syncAuthority: cursor.authority,
     ...cursorIntent(cursor, key), slugMode: cursor.slugMode, from: cursor.from, target: cursor.target, working: entry.working ?? false };
   try {

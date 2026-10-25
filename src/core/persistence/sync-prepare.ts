@@ -25,6 +25,10 @@ import { assertPageRevision } from '../page-state/types.ts';
 import { sealImportedPage, sealPageTextProjection } from '../page-state/projections.ts';
 import { abortSegmentedStaging, materializedSnapshot, sealSegmentedPage } from './segmented-apply.ts';
 import { prepareManagedSyncStreamed, type SyncBodyRef } from './sync-streamed.ts';
+import { frozenFileHash, workingSplitPage, type SyncSplitMark } from './sync-split.ts';
+import { SYNC_READ_BOUND } from './sync-blobs.ts';
+import { parseHead } from '../split-layout/head.ts';
+import { PARTS_KEY } from '../split-layout/types.ts';
 import { fenceBody, withoutBody } from '../page-body/page-shape.ts';
 import { pipelined, transactionMemo } from '../page-state/transactions.ts';
 import { prepareCanonicalProjections } from './canonical-projections.ts';
@@ -83,6 +87,8 @@ export interface SyncIntent extends Record<string, unknown> {
   rawHash: string | null; content: string | null; ownerEpoch: string;
   /** Wave B: a Markdown file over the single-string ceiling, frozen by reference (`content` is null); the owner streams it. */
   body_ref?: SyncBodyRef;
+  /** Wave B PR 5: `content` (or `body_ref`) is the page a split head stands for; `rawHash` stays the head's bytes (sync-split.ts). */
+  split?: SyncSplitMark;
   lineEndingOnly?: boolean;
   /** #5565: the deleted file is no page's origin; publication only re-proves that and commits a no-op. */
   unownedDeletion?: boolean;
@@ -285,7 +291,7 @@ function syncContentRefusal(refusal: ContentRefusal, row: WriteRequest, p: SyncI
 
 type Snapshot = Awaited<ReturnType<BrainEngine['readPageSnapshot']>>;
 export interface SyncImportScreenInput {
-  content: string; rawHash: string | null; lineEndingOnly: boolean; slug: string; sourcePath: string; path: string; root: string;
+  content: string; rawHash: string | null; lineEndingOnly: boolean; slug: string; sourcePath: string; path: string; root: string; split?: SyncSplitMark;
   /** The page at the entry's slug, and the page the import is prepared against (the rename source for a renamed page). */
   snapshot: Snapshot; base: Snapshot; renamed: boolean;
   activePack?: ParseOpts['activePack']; companyApproval?: boolean; sanity?: ImportSanityConfig;
@@ -321,7 +327,7 @@ export function screenSyncImport(input: SyncImportScreenInput): { screen: Import
   // carries them is imported as a no-op by a later run. This is checked before any content
   // refusal, so a file already repaired and published is never refused for its pinned bytes.
   // The checkpoint may advance past the pinned commit's bytes because the working tree wins, as for any local edit.
-  const newerWorkingTree = !input.companyApproval && !!base && !input.lineEndingOnly && input.rawHash !== sha256(content) && !sameCanonicalImport(base, parsedInput);
+  const newerWorkingTree = !input.companyApproval && !!base && !input.lineEndingOnly && input.rawHash !== frozenFileHash(input) && !sameCanonicalImport(base, parsedInput);
   const gateSource = input.writeGateSource;
   const gateTrust = gateSource ? ownerPageTrust({ frontmatter: parsedInput.frontmatter, sourceConfig: gateSource.config, channel: 'managed_sync_import', sourceUri: sourcePath }) : null;
   const screen = screenImportContent({ content, path: `${slug}.md`, activePack, expectedSlug: resolveSlugForPath(sourcePath), fences: 'coordinated',
@@ -335,7 +341,8 @@ export function screenSyncImport(input: SyncImportScreenInput): { screen: Import
         && !!matchTrustAllowRule(gateSource.allowRules, { sourceId: gateSource.sourceId, sourceUri: gateTrust!.origin?.source_uri ?? null, families: gate.families as never }) } : {}),
     ...(newerWorkingTree ? { published: () => {
       const working = input.renamed ? null : readSyncFile(input.root, input.path);
-      return !!working && sha256(working) === input.rawHash && sameCanonicalImport(base!, parseMarkdown(working.toString('utf8'), `${slug}.md`, { activePack }));
+      const text = !working || sha256(working) !== input.rawHash ? null : input.split ? workingSplitPage(input.root, input.path, working.toString('utf8'), SYNC_READ_BOUND) : working.toString('utf8');
+      return text !== null && sameCanonicalImport(base!, parseMarkdown(text, `${slug}.md`, { activePack }));
     } } : {}) });
   return { screen, parsedInput, newerWorkingTree };
 }
@@ -499,8 +506,19 @@ function publishedSyncNoop(row: WriteRequest, p: SyncIntent, root: string, snaps
 }
 
 /** The bytes on disk of an import that writes no file back: its frozen content when that is the file (raw hash), else the file read now (null: absent). */
-export function syncDiskBytes(root: string, path: string, content: string, rawHash: string | null): Uint8Array | null {
-  return rawHash !== null && rawHash === sha256(content) ? Buffer.from(content) : readSyncFile(root, path);
+export function syncDiskBytes(root: string, path: string, content: string, rawHash: string | null, split?: SyncSplitMark): Uint8Array | null {
+  return !split && rawHash !== null && rawHash === sha256(content) ? Buffer.from(content) : readSyncFile(root, path);
+}
+
+/**
+ * An inline import's frozen content and paths are present. Wave B PR 5: a split page head imports only as the page its
+ * parts reassemble (sync-split.ts, which marks the intent `split`), never as its short self.
+ */
+function assertFrozenImport(row: WriteRequest, p: SyncIntent): asserts p is SyncIntent & { content: string; sourcePath: string; path: string } {
+  if (typeof p.content !== 'string' || typeof p.sourcePath !== 'string' || typeof p.path !== 'string') throw syncPublicationRefusal('storage_error', 'The frozen import content is missing.', row, p,
+    'The stored intent has no frozen file content to import.');
+  if (!p.split && p.content.includes(PARTS_KEY) && parseHead(p.content) !== null) throw syncPublicationRefusal('split_page_incomplete', 'A split page head reached the import without its parts.', row, p,
+    `${p.path} is a split page head, and this request froze the head alone instead of the page its parts reassemble, so nothing was imported from it.`);
 }
 
 /** A pass's stamp is refused because the pass no longer holds the source (its lease went, or another pass pinned since). */
@@ -637,7 +655,7 @@ async function applyManagedSyncCheckpoint(tx: BrainEngine, row: WriteRequest, p:
  */
 function canonicalWritebackNeeded(row: WriteRequest, p: SyncIntent, pinned: string, canonicalFile: string | null): canonicalFile is string {
   if (canonicalFile === null) return false;
-  if (p.lineEndingOnly || p.rawHash === sha256(pinned)) return true;
+  if (p.lineEndingOnly || p.rawHash === frozenFileHash({ content: pinned, split: p.split })) return true;
   if (p.rawHash === sha256(canonicalFile)) return false;
   throw syncPublicationRefusal('source_changed', 'Canonical sanitization cannot overwrite newer working-tree bytes.', row, p,
     `The canonical correction for ${row.slug} would overwrite newer working-tree bytes; preserve the local edit and commit it.`);
@@ -738,7 +756,7 @@ async function prepareSyncMutation(unbounded: BrainEngine, row: WriteRequest, _c
       },
       async () => {
         // GBRA-133 S-22: a deletion whose name became a directory has no file to compare.
-        if (p.path !== null && !p.body_ref && !p.committedOnly && (p.kind === 'managed_sync_delete' && directoryAt(root, p.path) ? null : syncRawHash(root, p.path)) !== p.rawHash) throw syncPublicationRefusal('source_changed', 'The imported file changed after sync admission.', row, p,
+        if (p.path !== null && (!p.body_ref || p.split) && !p.committedOnly && (p.kind === 'managed_sync_delete' && directoryAt(root, p.path) ? null : syncRawHash(root, p.path)) !== p.rawHash) throw syncPublicationRefusal('source_changed', 'The imported file changed after sync admission.', row, p,
           `The file of ${row.slug} changed on disk after this sync was admitted; review the change and commit it.`);
       },
       async () => {
@@ -806,8 +824,7 @@ async function prepareSyncMutation(unbounded: BrainEngine, row: WriteRequest, _c
         ...(p.blobOid ? { blob_oid: p.blobOid } : {}), working: p.working === true, gbrain_version: VERSION, parser: syncImportParser(pack?.identity ?? null) },
       refuse: (code, message, cause) => syncPublicationRefusal(code, message, row, p, cause), contentRefusal: refusal => syncContentRefusal(refusal, row, p, false) });
   }
-  if (typeof p.content !== 'string' || typeof p.sourcePath !== 'string' || typeof p.path !== 'string') throw syncPublicationRefusal('storage_error', 'The frozen import content is missing.', row, p,
-    'The stored intent has no frozen file content to import.');
+  assertFrozenImport(row, p);
   // #6529: an image entry (frozen as base64 bytes) takes the coordinated image importer; its text embedding waits for embed --stale.
   if (isImageFilePath(p.sourcePath)) {
     return prepareManagedSyncImage(engine, row, { content: p.content, sourcePath: p.sourcePath, path: p.path, rawHash: p.rawHash, lineEndingOnly: p.lineEndingOnly },
@@ -834,7 +851,7 @@ async function prepareSyncMutation(unbounded: BrainEngine, row: WriteRequest, _c
   }
   // The screen hashes the frozen bytes and, for a newer working tree, reads the file (raw hash).
   enterClaimStep(clock, 'import_screen', undefined, 'fs');
-  const { screen, parsedInput, newerWorkingTree } = await settledSyncScreen(engine, { content: p.content, rawHash: p.rawHash, lineEndingOnly: p.lineEndingOnly === true,
+  const { screen, parsedInput, newerWorkingTree } = await settledSyncScreen(engine, { content: p.content, rawHash: p.rawHash, lineEndingOnly: p.lineEndingOnly === true, ...(p.split ? { split: p.split } : {}),
     slug: row.slug, sourcePath: p.sourcePath, path: p.path, root, snapshot, base, renamed: !!renamed, activePack, companyApproval: !!p.companyApproval,
     purgedPages: await readPagePurgeTombstones(engine, row.source_id) });
   if (screen.status === 'published') return publishedSyncNoop(row, p, root, snapshot, pack?.identity ?? null, validate, releaseHold);
@@ -894,7 +911,7 @@ async function prepareSyncMutation(unbounded: BrainEngine, row: WriteRequest, _c
   // #5409: a read-only mirror keeps its canonical metadata in the database only; its checkout stays the remote's bytes.
   enterClaimStep(clock, 'mirror_check', undefined, 'db');
   const mirrorReadOnly = overlay && await sourceMirrorReadOnly(engine, row.source_id);
-  const canonicalFile = overlay && !mirrorReadOnly ? serializePageToMarkdown(renderedPage, tags) : null;
+  const canonicalFile = overlay && !mirrorReadOnly && !p.split ? serializePageToMarkdown(renderedPage, tags) : null;
   const writeback = canonicalWritebackNeeded(row, p, p.content, canonicalFile);
   // A rename projects against the moved page (same id), so its pinned timeline rows carry over.
   enterClaimStep(clock, 'canonical_projections', undefined, 'db');
@@ -955,7 +972,7 @@ async function prepareSyncMutation(unbounded: BrainEngine, row: WriteRequest, _c
         },
         () => releaseHold(tx),
         async () => { if (final) await recordSyncImportProvenance(tx, { ...importProvenance, page_id: Number(final.page.id), revision: final.revision,
-          ...syncDiskProvenance(writeback ? Buffer.from(canonicalFile) : syncDiskBytes(root, p.path!, p.content!, p.rawHash), p.target) }); },
+          ...syncDiskProvenance(writeback ? Buffer.from(canonicalFile) : syncDiskBytes(root, p.path!, p.content!, p.rawHash, p.split), p.target) }); },
       ]);
       preparedImport.postimage = final;
       const writeState = applied.noop ? {} : await syncWriteState(tx, row, live?.page, installed?.segmented, applied.parsedPage?.frontmatter);

@@ -14,7 +14,7 @@ import { parseHead, type ParsedHead } from './head.ts';
 import { partsDirFor } from './paths.ts';
 import { splitScratchPath } from './plan.ts';
 import { PARTS_KEY } from './types.ts';
-import { reassemble, verifyParts, type SplitVerdict } from './verify.ts';
+import { reassemble, verifyParts, type PartsSource, type SplitVerdict } from './verify.ts';
 import { slugifyPath } from '../sync.ts';
 
 export type SplitRefusalCode = 'split_page_incomplete' | 'split_head_modified';
@@ -61,16 +61,20 @@ export function screenSplitHead(headPath: string, relPath: string, text: string)
   return verdict.ok ? null : refusalFor(relPath, verdict);
 }
 
+/** A split page opened for import: its reassembled file F' (a private scratch file `dispose` removes), with F''s size and SHA-256. */
+export interface OpenedSplitPage { path: string; bytes: number; sha256: string; dispose: () => void }
+
 /**
- * Opens the page a split head at `headPath` names: its reassembled file F' in a private scratch file (`dispose`
- * removes it), a refusal, or null when `text` (the head's content as import read it) is an ordinary page.
+ * Opens the page a split head names, its parts read beside `headPath` on disk or from `parts` (a commit's tree,
+ * git-parts.ts): F' in a private scratch file, a refusal, or null when `text` (the head's content as import read it)
+ * is an ordinary page.
  */
-export function openSplitPage(headPath: string, relPath: string, text: string): { refusal: SplitRefusal } | { path: string; dispose: () => void } | null {
+export function openSplitPage(headPath: string | PartsSource, relPath: string, text: string): { refusal: SplitRefusal } | OpenedSplitPage | null {
   const head = parseSplitHead(relPath, text);
   if (!head || 'refusal' in head) return head;
   const path = splitScratchPath();
   const verdict = reassemble(headPath, head.parsed, path);
-  return verdict.ok ? { path, dispose: () => rmSync(path, { force: true }) } : { refusal: refusalFor(relPath, verdict) };
+  return verdict.ok ? { path, bytes: verdict.bytes, sha256: verdict.sha256, dispose: () => rmSync(path, { force: true }) } : { refusal: refusalFor(relPath, verdict) };
 }
 
 /**

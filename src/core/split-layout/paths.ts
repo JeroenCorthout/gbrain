@@ -42,6 +42,17 @@ export function headPathForPartsDir(rel: string): string | null {
   return match ? trimmed.slice(0, slash + 1) + match[1] + HEAD_EXTENSION : null;
 }
 
+/** The head of the parts directory that holds Git path `rel`, and `rel`'s path inside it; null outside any parts directory. */
+export function splitPartOf(rel: string): { head: string; part: string } | null {
+  const segments = rel.split('/');
+  for (let i = segments.length - 2; i >= 0; i--) {
+    if (!PARTS_DIR_RE.test(segments[i]!)) continue;
+    const head = headPathForPartsDir(segments.slice(0, i + 1).join('/'));
+    return head ? { head, part: segments.slice(i + 1).join('/') } : null;
+  }
+  return null;
+}
+
 /** Whether a directory name is a parts directory name. */
 export function isPartsDirName(name: string): boolean {
   return PARTS_DIR_RE.test(name);

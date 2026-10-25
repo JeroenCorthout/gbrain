@@ -28,6 +28,8 @@ import type { AutoDecision } from './reconcile-additive.ts';
 import { publishesDatabaseOnly, readCanonicalAsImported } from './page-prepare.ts';
 import { isMirrorOnlyPage } from './mirror-read-only.ts';
 import { hardenedGitSync } from '../hardened-git.ts';
+import { parseHead } from '../split-layout/head.ts';
+import { PARTS_KEY } from '../split-layout/types.ts';
 
 export interface ReconcilePins {
   brain_id: string; source_id: string; source_incarnation: string; slug: string; page_id: number;
@@ -152,6 +154,7 @@ export async function readDeletedDriftTarget(engine: BrainEngine, sourceId: stri
     throw error;
   }
   const raw = readFileSync(path);
+  refuseSplitHead(raw.toString('utf8'), sourceId, input.path);
   const pin = { root, path, relative_path: input.path, source_path: input.sourcePath, raw, raw_file_hash: sha256(raw) };
   const claims = await engine.executeRaw<{ id: number; slug: string; deleted: boolean }>(
     `SELECT id, slug, deleted_at IS NOT NULL AS deleted FROM pages WHERE source_id=$1 AND source_path=$2 ORDER BY deleted_at DESC NULLS FIRST, id DESC`, [sourceId, input.sourcePath]);
@@ -168,6 +171,16 @@ export async function readDeletedDriftTarget(engine: BrainEngine, sourceId: stri
   const held = Array.isArray(marker.value.blob_oids) ? marker.value.blob_oids : [];
   if (held.includes(gitBlobOid(raw, 'sha1')) || held.includes(gitBlobOid(raw, 'sha256'))) return { changed: 'deleted_same' };
   return { state: 'purged_differs', ...pin, tombstone: null, marker_digest: digest(marker.value) };
+}
+/**
+ * Wave B PR 5: a split page head is not its page (its parts carry the body), so reconcile never reads it as the file
+ * side: a merge would import the short head, and a file write would collapse the split layout. Sync imports it whole.
+ */
+function refuseSplitHead(text: string, sourceId: string, rel: string): void {
+  if (!text.includes(PARTS_KEY) || parseHead(text) === null) return;
+  throw opError('invalid_params', 'Reconcile does not read split page heads.',
+    `Nothing changed. ${rel} in '${sourceId}' is a split page head whose parts carry the body; run gbrain sync --source ${sourceId} --no-pull to import the whole page instead.`,
+    { fix: readFix('Lists the source\'s held files and sync state, read-only.', { argv: ['gbrain', 'sources', 'status', sourceId] }) });
 }
 /** Whether `root` or an ancestor holds a `.git` entry (a checkout Git should answer for). */
 function insideGitCheckout(root: string): boolean {
@@ -274,6 +287,7 @@ export async function readReconcileState(engine: BrainEngine, sourceId: string, 
   await assertSoleFileClaim(engine, { sourceId, slug, pageId: snapshot.page.id, root, mode, path, canonicalPath,
     recordedUri: recorded ? snapshot.page.source_uri ?? null : null });
   const raw = readFileSync(path), text = raw.toString('utf8');
+  refuseSplitHead(text, sourceId, relative(root, path));
   if (!Buffer.from(text).equals(raw)) throw opError('invalid_params', 'The canonical file must contain valid UTF-8.',
     `Nothing changed. Re-save the canonical file of ${slug} in '${sourceId}' as UTF-8, then preview the page again.`);
   try { parseDataFrontmatter(text); }
