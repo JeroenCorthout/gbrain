@@ -169,9 +169,8 @@ for (const backend of testBackends()) {
 
     // GBRA-60/GBRA-95/GBRA-176: a file-backed world concept whose edges do not yet cover its members takes the #5525 private
     // step, G7a's visibility transition (a door commit that removes the file and clears source_path/source_uri); its world
-    // promotion restores the file at the recorded path. Master records no path yet, so the promotion publishes
-    // database-only; this stays a todo until GBRA-95's withheld-path record lands. `bun test --todo` runs it.
-    test.todo('three file-backed concepts without provenance edges republished: the private step removes the file, the world promotion restores it',
+    // promotion restores the file at the path the transition recorded (pages.withheld_source_path, #7586).
+    test('three file-backed concepts without provenance edges republished: the private step removes the file, the world promotion restores it',
       () => republish({ banked: false }), 180_000);
   });
 
