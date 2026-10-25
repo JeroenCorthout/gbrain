@@ -37,7 +37,7 @@ export interface TimelineRechunkPage {
   /** Chunk texts no stored row of the page holds: each needs a vector from the embed sweep. */
   new_chunk_texts: number;
   new_chunk_chars: number;
-  /** Apply only. `stamped`: the chunks were already identical; `moved`: the page changed while it was read, run again. */
+  /** `stamped` (apply): the chunks were already identical; `moved`: the page changed or went while it was read, run again (counts are 0). */
   state?: 'rechunked' | 'stamped' | 'moved' | 'failed';
   error?: string;
 }
@@ -57,7 +57,14 @@ const chunkKey = (c: { chunk_source: string; chunk_text: string; projected_byte_
   JSON.stringify([c.chunk_source, c.chunk_text, c.projected_byte_start ?? null, c.projected_byte_end ?? null]);
 
 async function rechunkPage(engine: BrainEngine, row: CandidateRow, apply: boolean): Promise<TimelineRechunkPage | null> {
-  const read = await readProjectionSnapshot(engine, row.slug, row.source_id, { requireLiveSource: true, preview: !apply });
+  const moved = (chunkerVersion: number): TimelineRechunkPage => ({ source_id: row.source_id, slug: row.slug, chunker_version: chunkerVersion, chunks: 0, chunks_after: 0,
+    new_chunk_texts: 0, new_chunk_chars: 0, state: 'moved' });
+  // A preview reads without the page guard, statement by statement: a page that changes or goes while it is read is reported moved.
+  const read = await readProjectionSnapshot(engine, row.slug, row.source_id, { requireLiveSource: true, preview: !apply }).catch(error => {
+    if (!apply && error instanceof PageRevisionConflictError) return 'moved' as const;
+    throw error;
+  });
+  if (read === 'moved') return moved(0);
   if (!read || read.pageKind !== 'markdown') return null;
   const stored = read.storedChunkerVersion ?? 0;
   if (stored < MARKDOWN_CHUNKER_VERSION || stored >= INLINE_TIMELINE_CHUNKER_VERSION) return null;
@@ -67,7 +74,12 @@ async function rechunkPage(engine: BrainEngine, row: CandidateRow, apply: boolea
   const fresh = chunks.filter(c => !texts.has(`${c.chunk_source}\0${c.chunk_text}`));
   const out: TimelineRechunkPage = { source_id: row.source_id, slug: row.slug, chunker_version: stored, chunks: read.chunks.length,
     chunks_after: chunks.length, new_chunk_texts: fresh.length, new_chunk_chars: fresh.reduce((sum, c) => sum + c.chunk_text.length, 0) };
-  if (!apply) return out;
+  if (!apply) {
+    const [now] = await engine.executeRaw<{ revision: string; projection: string | null; chunker_version: number | null }>(
+      'SELECT knowledge_revision AS revision, text_projection_revision AS projection, chunker_version FROM pages WHERE id=$1 AND deleted_at IS NULL', [Number(read.snapshot.page.id)]);
+    const same = now?.revision === read.snapshot.revision && now.projection === read.snapshot.revision && Number(now.chunker_version) === stored;
+    return same ? out : moved(stored);
+  }
   const same = read.chunks.length === chunks.length && chunks.every((c, i) => chunkKey(c) === chunkKey(read.chunks[i]!));
   try {
     await installPageProjection(engine, prepared, chunks, { seal: true, preserveEmbeddings: true, chunkerVersion: INLINE_TIMELINE_CHUNKER_VERSION });
@@ -117,6 +129,6 @@ export function formatTimelineRechunkReceipt(r: TimelineRechunkReceipt): string[
   if (r.pages.length > LISTED_PAGES) lines.push(`  ... ${r.pages.length - LISTED_PAGES} more (--json lists every page)`);
   if (r.commands.apply) lines.push(`Apply: ${r.commands.apply.join(' ')}`);
   if (r.commands.embed) lines.push(`New chunk texts get vectors from the embed sweep: ${r.commands.embed.join(' ')}`);
-  if (r.pages.some(p => p.state === 'moved')) lines.push(`A page changed while it was re-chunked; run again: ${r.commands.preview.join(' ')} --apply`);
+  if (r.pages.some(p => p.state === 'moved')) lines.push(`A page changed while it was read; run again: ${r.commands.preview.join(' ')}${r.dry_run ? '' : ' --apply'}`);
   return lines;
 }

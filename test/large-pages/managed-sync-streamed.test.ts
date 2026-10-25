@@ -44,6 +44,9 @@ import { isolatedPersistencePostgres } from '../helpers/persistence-postgres.ts'
 import { withEnv } from '../helpers/with-env.ts';
 import { conversationPage } from '../helpers/conversation-page.ts';
 import { reconstructedPage } from '../helpers/segmented-page-checks.ts';
+import { parseFactsFence } from '../../src/core/facts-fence.ts';
+import { withCoordinatedWrite } from '../../src/core/persistence/context.ts';
+import { TEST_WRITE_ATTRIBUTION } from '../helpers/write-attribution.ts';
 
 const home = mkdtempSync(join(tmpdir(), 'gbrain-sync-streamed-'));
 const engines: BrainEngine[] = [];
@@ -230,6 +233,41 @@ describe('managed sync over the single-string ceiling', () => {
       const refused = await prepareManagedSyncMutation(engine, remote, { engine: engine.kind } as GBrainConfig)
         .then(() => null, (error: { code?: string }) => error.code ?? String(error));
       expect(refused).toBe('page_body_segmented');
+      await disposePersistenceConsumer(engine);
+    }
+  }), 600_000);
+
+  test('a rename with an edit keeps a withdrawal scoped to the old slug: the row stays withdrawn and the withdrawal moves with the page', async () => withEnv(env, async () => {
+    for (const engine of engines) {
+      await engine.setConfig('pages.segmented_storage', 'on');
+      const claim = 'Prefers the window seat';
+      const fenced = `${huge.trimEnd()}
+
+## Facts
+
+<!--- gbrain:facts:begin -->
+| # | claim | kind | confidence | visibility | notability | valid_from | valid_until | source | context |
+|---|---|---|---|---|---|---|---|---|---|
+| 1 | ${claim} | preference | 1.0 | world | high | | | test | |
+<!--- gbrain:facts:end -->
+`;
+      const f = await fixture(engine, { 'notes/seat.md': fenced });
+      expect((await sync(engine, { sourceId: f.sourceId })).status).toBe('first_sync');
+      const before = await reconstructedPage(engine, 'notes/seat', f.sourceId);
+      await engine.transaction(tx => withCoordinatedWrite(tx, [f.sourceId], () => tx.executeRaw(
+        `INSERT INTO fact_withdrawals(source_id,visibility,subject,fact_hash) VALUES ($1,'world','notes/seat',gbrain_fact_fingerprint($2))`, [f.sourceId, claim]), TEST_WRITE_ATTRIBUTION));
+      git(f.repo, 'mv', 'notes/seat.md', 'notes/aisle.md');
+      writeFileSync(join(f.root, 'notes/aisle.md'), `${fenced}
+**alice-example**: a remark after the move.
+`);
+      commit(f.repo);
+      // The publication moves the old slug's withdrawals to the new slug before it imports: its own move is no concurrent change.
+      expect(await sync(engine, { sourceId: f.sourceId })).toMatchObject({ status: 'synced', renamed: 1 });
+      const moved = await reconstructedPage(engine, 'notes/aisle', f.sourceId);
+      expect(moved.page.id).toBe(before.page.id);
+      expect(moved.body.compiled_truth).toContain('a remark after the move');
+      expect(parseFactsFence(moved.body.compiled_truth).facts.map(fact => [fact.claim, fact.forgotten])).toEqual([[claim, true]]);
+      expect(await engine.executeRaw('SELECT subject FROM fact_withdrawals WHERE source_id=$1', [f.sourceId])).toEqual([{ subject: 'notes/aisle' }]);
       await disposePersistenceConsumer(engine);
     }
   }), 600_000);

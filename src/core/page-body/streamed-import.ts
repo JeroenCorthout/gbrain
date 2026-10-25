@@ -90,6 +90,9 @@ const READ_BYTES = 1024 * 1024;
  */
 export const streamedImportWork = { blocks: 0, bytes: 0, scanUncollected: 0 };
 
+/** @internal Test seam: runs once a coordinated streamed import is prepared, before it reaches its publisher. */
+export const streamedImportSeams: { prepared?: () => Promise<void> | void } = {};
+
 type StreamedImportOptions = {
   noEmbed?: boolean;
   inferFrontmatter?: boolean;
@@ -414,7 +417,8 @@ async function importScanned(engine: BrainEngine, input: { file: FileHandle; bom
   const inspect = (bytes: Uint8Array) => codeRefs.push(bytes);
   const flags = { fence_trust: scan.bodyFlags.fence_trust, timeline_fence_trust: scan.bodyFlags.timeline_fence_trust, timeline_split: scan.bodyFlags.timeline_split };
   const fences = streamedFences(engine, { sourceId, slug, pageId: existing ? Number(existing.id) : null, mode: opts.coordinated ? 'coordinated' : 'lenient',
-    ctx: screenFenceCtx(parsed, opts.activePack), remote: opts.remote === true });
+    ctx: screenFenceCtx(parsed, opts.activePack), remote: opts.remote === true,
+    ...(opts.coordinated?.moved && opts.coordinated.snapshot ? { renamedFrom: opts.coordinated.snapshot.page.slug } : {}) });
   assertSourceFilesystemActive();
   let prepared: Awaited<ReturnType<typeof prepareSegmentedBody>>;
   try {
@@ -460,7 +464,6 @@ async function importScanned(engine: BrainEngine, input: { file: FileHandle; bom
       : { source_path: relativePath, source_kind: null, source_uri: fileOriginUri(existing?.source_uri, sourceRoot, relativePath), ingested_via: null }) };
   const refs = prepared.body.body_flags.has_protected ? [] : [...codeRefs.refs.values()];
   const apply = async (tx: BrainEngine, preimage?: PageSnapshot | null) => {
-    await fences.revalidate(tx);
     if (existing) await tx.createVersion(slug, preimage ? { sourceId, preimage } : { sourceId });
     const result = await applySegmentedBody(tx, { slug, sourceId, pageId: live?.id ?? null, prepared, meta, promotion: live?.storage === 'inline', retireMaxRows: input.policy.flipRetireMaxRows });
     await tx.updatePageContextualRetrievalState(slug, sourceId, mode, corpusGeneration);
@@ -486,9 +489,14 @@ async function importScanned(engine: BrainEngine, input: { file: FileHandle; bom
     ...(disposition.quarantined ? { quarantined: true } : {}), ...(disposition.flagged ? { flagged: true, flag_reason: disposition.flagReason } : {}),
     ...(disposition.gate ? { gate: disposition.gate } : {}), ...(typeWarning ? { type_warning: typeWarning } : {}) };
   if (opts.coordinated) {
+    await streamedImportSeams.prepared?.();
     let applied: { pageId: number; complete: boolean } | null = null;
     return opts.coordinated.prepare({ slug, observedRevision: opts.coordinated.snapshot?.revision ?? null, noop: false, contentHash: hash, result: imported, frontmatter: parsed.frontmatter,
-      validate: async () => {
+      // The ledger check runs before a rename's own ledger move (sync applies the move first). An upload's spool is removed
+      // before publication; its bytes were checked against the admitted sha256 as they were staged.
+      validate: async tx => {
+        await fences.revalidate(tx);
+        if (opts.content) return;
         const now = await lstat(input.filePath);
         if (now.size !== size || now.mtimeMs !== input.stat.mtimeMs) throw opError('source_changed', 'The input file changed after import preparation.',
           `${relativePath} changed after its import request was prepared, so the request published nothing. Import it again to publish the current bytes.`);
@@ -501,6 +509,7 @@ async function importScanned(engine: BrainEngine, input: { file: FileHandle; bom
   }
   const applied = await maintenanceTransaction(engine, async tx => {
     await assertImportBase(tx, slug, sourceId, existing);
+    await fences.revalidate(tx);
     return apply(tx);
   }, writeTrustOfGate(writeGate)).catch(async error => { await abort(); throw error; });
   await afterCommit(engine, applied);

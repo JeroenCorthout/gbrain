@@ -25,7 +25,8 @@ import { assertPageRevision } from '../page-state/types.ts';
 import { sealImportedPage, sealPageTextProjection } from '../page-state/projections.ts';
 import { abortSegmentedStaging, materializedSnapshot, sealSegmentedPage } from './segmented-apply.ts';
 import { prepareManagedSyncStreamed, type SyncBodyRef } from './sync-streamed.ts';
-import { bodyUnread, fenceBody, withoutBody } from '../page-body/page-shape.ts';
+import { fenceBody, withoutBody } from '../page-body/page-shape.ts';
+import { remoteFenceBody } from '../page-body/streamed-fences.ts';
 import { pipelined, transactionMemo } from '../page-state/transactions.ts';
 import { prepareCanonicalProjections } from './canonical-projections.ts';
 import { sliceMemo } from './slice-memo.ts';
@@ -800,11 +801,6 @@ async function prepareSyncMutation(unbounded: BrainEngine, row: WriteRequest, _c
       throw syncPublicationRefusal('revision_conflict', 'The renamed page changed after sync admission.', row, p,
         `Page ${renamed.slug}, which this file was renamed from, changed or was deleted after the sync was admitted.`);
     }
-    // A remote sync carries over what remote reads hide (preserveProtectedTakes, the hidden-row merge) only over a body it holds as one string.
-    if (row.authority.remote && base && !base.page.deleted_at) {
-      const { assertNoHiddenFenceRows } = await import('../page-body/streamed-fences.ts');
-      await assertNoHiddenFenceRows(engine, { id: Number(base.page.id), slug: renamed?.slug ?? row.slug, source_id: row.source_id });
-    }
     return prepareManagedSyncStreamed(engine, row, { ...p, body_ref: p.body_ref, sourcePath: p.sourcePath, path: p.path }, { root, snapshot, base, ...(renamed ? { renamed } : {}),
       ...(pack?.manifest ? { activePack: pack.manifest } : {}), validate, releaseHold, clock, screening: !!screening,
       importProvenance: { source_id: row.source_id, incarnation: row.source_incarnation, origin: p.sourcePath, raw_sha256: p.body_ref.sha256,
@@ -852,11 +848,7 @@ async function prepareSyncMutation(unbounded: BrainEngine, row: WriteRequest, _c
   }
   let importContent = p.content;
   if (row.authority.remote) {
-    if (base && !base.page.deleted_at && bodyUnread(base.page)) {
-      const { assertNoHiddenFenceRows } = await import('../page-body/streamed-fences.ts');
-      await assertNoHiddenFenceRows(engine, { id: Number(base.page.id), slug: row.slug, source_id: row.source_id });
-    }
-    const stored = base ? fenceBody(base.page) : null;
+    const stored = base ? await remoteFenceBody(engine, base.page) : null;
     const compiled_truth = preserveProtectedTakes(parsedInput.compiled_truth, stored?.compiled_truth ?? '');
     const timeline = preserveProtectedTakes(parsedInput.timeline ?? '', stored?.timeline ?? '');
     if (compiled_truth !== parsedInput.compiled_truth || timeline !== (parsedInput.timeline ?? '')) {

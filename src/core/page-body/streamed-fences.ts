@@ -10,7 +10,8 @@
  *    reader-visible regions as its page's body, so a row number the two sections share is renumbered as
  *    `importFromContent` renumbers it;
  * 2. the purge and withdrawal overlay (`preserveWithdrawnFenceRows`: purged rows dropped, withdrawn rows struck), the
- *    transform forget and purge apply to a segmented page's stored regions (segment-rewrite.ts);
+ *    transform forget and purge apply to a segmented page's stored regions (segment-rewrite.ts), under the page's slug
+ *    and, for a rename, its old slug too (the publication moves that subject's rows to the new slug);
  * 3. the malformed-fence check (`assertFenceRegionWithdrawals`).
  *
  * Tier 1 rules that rewrite more than one region need the whole section, which a streamed import never holds, so the
@@ -24,7 +25,8 @@
  * grounds).
  *
  * The overlay reads the withdrawal and purge ledgers while the body is staged; `revalidate` runs in the publication
- * transaction (the prepared import's `apply`, which every publisher runs) and refuses `revision_conflict`, as
+ * transaction (the prepared import's `validate`, before a rename moves the ledger rows, and the direct import's
+ * transaction) and refuses `revision_conflict`, as
  * `assertPreparedFactWithdrawals` does for an inline import, when the source's ledgers changed since the first region
  * was rewritten (a forget or purge that committed meanwhile could not see the bytes still in flight).
  *
@@ -48,6 +50,8 @@ import type { BodyRegion } from './types.ts';
 import { readLiveSegmentedFences } from './segment-rewrite.ts';
 import { inlineRegions } from './tail-digest.ts';
 import { OperationError, opError } from '../ops/contract.ts';
+import type { Page } from '../types.ts';
+import { bodyUnread, fenceBody } from './page-shape.ts';
 import { PAGE_MAX_BYTES } from '../page-size-policy.ts';
 
 /** A fence region (or an unclosed fence's tail) longer than FENCE_MAX_BYTES: `bytes` is how much of it was read. */
@@ -124,6 +128,12 @@ export async function assertNoHiddenFenceRows(engine: BrainEngine, page: { id: n
     'Ask the user to write this page locally on the brain host, where the hidden rows are kept.');
 }
 
+/** `fenceBody` of the stored page a remote write merges into, after `assertNoHiddenFenceRows` when its body was not read back. */
+export async function remoteFenceBody(engine: BrainEngine, page: Page): Promise<{ compiled_truth: string; timeline: string }> {
+  if (!page.deleted_at && bodyUnread(page)) await assertNoHiddenFenceRows(engine, { id: Number(page.id), slug: page.slug, source_id: page.source_id });
+  return fenceBody(page);
+}
+
 /** The source's withdrawal and purge ledgers, as a value that changes whenever a row is added, moved or removed. */
 async function ledgerGeneration(engine: BrainEngine, sourceId: string): Promise<string> {
   const [row] = await engine.executeRaw<{ generation: string }>(`SELECT concat_ws('/',
@@ -181,7 +191,9 @@ export interface StreamedFences {
   revalidate(tx: BrainEngine): Promise<void>;
 }
 
-export function streamedFences(engine: BrainEngine, input: { sourceId: string; slug: string; pageId: number | null; mode: 'coordinated' | 'lenient'; ctx: FenceCtx; remote: boolean }): StreamedFences {
+export function streamedFences(engine: BrainEngine, input: { sourceId: string; slug: string; pageId: number | null; mode: 'coordinated' | 'lenient'; ctx: FenceCtx; remote: boolean;
+  /** A managed sync rename: the old slug, whose subject-scoped withdrawals and purges the publication moves to `slug`. */
+  renamedFrom?: string }): StreamedFences {
   const fixes: FenceFix[] = [];
   const warnings: FenceIssueWire[] = [];
   const visible = { truth: new Set<number>(), timeline: new Set<number>() };
@@ -208,8 +220,9 @@ export function streamedFences(engine: BrainEngine, input: { sourceId: string; s
       fence = settled.text;
       if (region === 'truth') body.push(fence);
     }
-    fence = await preserveWithdrawnFenceRows(engine, input.sourceId, fence, input.slug);
-    await assertFenceRegionWithdrawals(engine, input.sourceId, fence, section, input.slug);
+    const subjects = input.renamedFrom ? [input.slug, input.renamedFrom] : [input.slug];
+    for (const subject of subjects) fence = await preserveWithdrawnFenceRows(engine, input.sourceId, fence, subject);
+    for (const subject of subjects) await assertFenceRegionWithdrawals(engine, input.sourceId, fence, section, subject);
     return fence;
   }
 

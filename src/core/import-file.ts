@@ -463,10 +463,7 @@ export async function importFromContent(
   // against its own existing counterpart (fences don't migrate between
   // columns here; splitBody keeps them where the caller wrote them).
   // #6188 (E7): Tier 1 in place before the hidden-row merge and withdrawal preservation; the hash covers the normalized body.
-  if (opts.remote === true && existing && !existing.deleted_at && bodyUnread(existing)) {
-    const { assertNoHiddenFenceRows } = await import('./page-body/streamed-fences.ts');
-    await assertNoHiddenFenceRows(engine, { id: Number(existing.id), slug, source_id: sourceId ?? 'default' });
-  }
+  if (opts.remote === true && existing && !existing.deleted_at && bodyUnread(existing)) await (await import('./page-body/streamed-fences.ts')).assertNoHiddenFenceRows(engine, { id: Number(existing.id), slug, source_id: sourceId ?? 'default' });
   const fences = await applyImportFences({ engine, sourceId: sourceId ?? 'default', slug, mode: opts.fences ?? 'lenient', screened: opts.fenceScreen, screen, parsed, activePack: opts.activePack, remote: opts.remote === true, existing });
   if (fences.refused) return fences.refused;
   if (opts.remote === true && existing) {
@@ -635,8 +632,7 @@ export async function importFromContent(
   // dispositions) in the provider-free path used by background rebuilds too.
   const bodyBytes = Buffer.byteLength(parsed.compiled_truth, 'utf-8') + Buffer.byteLength(parsed.timeline ?? '', 'utf-8');
   const storage = await stringWriteStorage(engine, bodyBytes, bodyStorageOf(existing));
-  const { chunks, chunkerVersion: chunkerSeal } = storage.storage === 'segmented' ? { chunks: [], chunkerVersion: MARKDOWN_CHUNKER_VERSION }
-    : await prepareFenceAwareMarkdownChunks(engine, sourceId ?? 'default', slug, parsed, existing);
+  const { chunks, chunkerVersion: chunkerSeal } = storage.storage === 'segmented' ? { chunks: [], chunkerVersion: MARKDOWN_CHUNKER_VERSION } : await prepareFenceAwareMarkdownChunks(engine, sourceId ?? 'default', slug, parsed, existing);
 
   // Embedding failures propagate unless onPostCommitEmbedding lets the caller
   // report enrichment separately from the already-persisted content.

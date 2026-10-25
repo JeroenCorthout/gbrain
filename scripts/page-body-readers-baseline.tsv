@@ -266,6 +266,7 @@ src/core/fence-repair/import-step.ts	applyImportFences	field	STREAM
 src/core/fence-repair/import-step.ts	hiddenFenceRows	field	STREAM	
 src/core/fence-repair/import-step.ts	resolveImportFences	field	STREAM	
 src/core/fence-repair/import-step.ts	settleImportFences	field	STREAM	
+src/core/fence-repair/import-step.ts	settleFenceRegion	field	NONE	the FencePage of one streamed fence region and its Tier 1 step, never a stored page
 src/core/fence-repair/import-step.ts	storedPageStep	field	STREAM	
 src/core/fence-repair/normalize.ts	withSections	field	STREAM	
 src/core/fence-repair/page-checks.ts	sectionsOf	field	STREAM	

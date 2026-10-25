@@ -195,8 +195,9 @@ describe('streamed fence pass', () => {
       await engine.transaction(tx => prepared!.validate(tx));
       await engine.transaction(tx => withCoordinatedWrite(tx, ['default'], () => tx.executeRaw(
         `INSERT INTO fact_withdrawals(source_id,visibility,subject,fact_hash) VALUES ('default','world','*',gbrain_fact_fingerprint($1))`, [claim]), TEST_WRITE_ATTRIBUTION));
-      // Every publisher (the coordinated sync and import, the upload adapter) runs the prepared apply in its publication transaction.
-      const refused = await engine.transaction(tx => prepared!.apply(tx)).then(() => null, (error: { code?: string }) => error.code);
+      // Every publisher (the coordinated sync and import, the upload adapter) runs the prepared validate, then its apply, in its
+      // publication transaction; the ledger check is in validate, ahead of a rename's own ledger move.
+      const refused = await engine.transaction(async tx => { await prepared!.validate(tx); await prepared!.apply(tx); }).then(() => null, (error: { code?: string }) => error.code);
       expect(refused).toBe('revision_conflict');
       expect(await engine.getPage('notes/race', { sourceId: 'default' })).toBeNull();
     } finally {

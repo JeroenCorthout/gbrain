@@ -125,6 +125,7 @@ export async function prepareStreamedUpload(engine: BrainEngine, row: WriteReque
   const mutation: PreparedMutation = { observedRevision: prepared.observedRevision, noop: prepared.noop, ...(pageTrust ? { trust: pageTrust } : {}),
     ...await pageDatabaseOnlyPublication(engine, row, undefined),
     ...(prepared.afterCommit ? { afterCommit: prepared.afterCommit } : {}),
+    validate: tx => prepared.validate(tx),
     apply: async (tx, preimage) => {
       await prepared.apply(tx, preimage);
       const final = await tx.readPageSnapshot(row.slug, { sourceId: row.source_id, includeDeleted: true });

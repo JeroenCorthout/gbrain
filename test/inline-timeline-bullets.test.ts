@@ -161,6 +161,34 @@ for (const backend of process.env.DATABASE_URL ? ['pglite', 'postgres'] : ['pgli
       expect(await snapshot()).toEqual(before);
     }), 120_000);
 
+    test('a preview reports a page that changes or is purged while it is read as moved, and writes nothing', async () => {
+      const changes: Array<[string, (e: BrainEngine, slug: string) => Promise<unknown>]> = [
+        ['companies/acme-preview-edit', (e, slug) => importFromContent(e, slug, pageMarkdown(41), { sourceId: 'default', noEmbed: true })],
+        ['companies/acme-preview-purge', (e, slug) => e.executeRaw('DELETE FROM pages WHERE source_id=$1 AND slug=$2', ['default', slug])],
+      ];
+      for (const [slug, change] of changes) {
+        await importFromContent(engine(), slug, pageMarkdown(40), { sourceId: 'default', noEmbed: true });
+        await sealAtPreBulletChunker(engine(), slug);
+        const real = engine();
+        let fired = false;
+        // The change lands between the preview's page read and its page_kind read (statements of no one snapshot).
+        const racing = new Proxy(real, { get(target, key) {
+          const value = Reflect.get(target, key, target);
+          if (key !== 'executeRaw') return typeof value === 'function' ? value.bind(target) : value;
+          return async (sql: string, params?: unknown[]) => {
+            if (!fired && sql === 'SELECT page_kind FROM pages WHERE id=$1') { fired = true; await change(real, slug); }
+            return target.executeRaw(sql, params);
+          };
+        } }) as BrainEngine;
+        const preview = await runTimelineRechunk(racing, { slug });
+        expect(fired).toBe(true);
+        expect(preview.pages).toEqual([{ source_id: 'default', slug, chunker_version: expect.any(Number), chunks: 0, chunks_after: 0, new_chunk_texts: 0, new_chunk_chars: 0, state: 'moved' }]);
+        // The edit is the only write: it chunks the page at bullets as any new write does; the preview stamps nothing.
+        if (slug.endsWith('edit')) expect((await pageState(engine(), slug)).chunker_version).toBe(INLINE_TIMELINE_CHUNKER_VERSION);
+        else expect(await rows(engine(), slug)).toEqual([]);
+      }
+    }, 120_000);
+
     test('reindex --timeline-bullets previews without writing; its apply re-chunks to the inline timeline version', async () => {
       const slug = 'companies/acme-reindex';
       const content = pageMarkdown(30);
