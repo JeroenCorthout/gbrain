@@ -7140,7 +7140,9 @@ difference (tests and the nightly freshness cell).
 - **Tunables** you set and keep: `sync.bulk_size`, `sync.lanes`, `sync.exclude`, `sync.include_hidden`,
   `sync.include_working_tree`, `sync.holds`, `sync.write_through`, `sync.cost_gate_min_usd`, `sync.on_commit`,
   `sync.freshness_target_seconds` ([on-commit sync](on-commit-sync.md)), `sync.metafile_pages`
-  ([what gets synced](#what-gets-synced)), `sync.level_reuse` ([level reuse](#level-reuse)).
+  ([what gets synced](#what-gets-synced)), `sync.level_reuse` ([level reuse](#level-reuse)), `sync.max_file_bytes`
+  (a page whose file would be larger is written as a head file plus hidden part files; default 24 MiB, accepted
+  from 1 MiB to 25 MiB).
 - **Rollback keys**, the way back a notice or migration promised: `sync.job_drain`, `sync.foreground_priority`,
   `sync.federated_v2`, `sync.waive_batch`, `sync.bulk`. Each one set to `false` restores the earlier behavior, and
   stays honored until at least 2027-01-14 (`CONFIG_ROLLBACK_WINDOWS` in `src/core/wire-skew.ts`). They are not

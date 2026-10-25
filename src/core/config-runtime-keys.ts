@@ -19,5 +19,6 @@ export const RUNTIME_READER_CONFIG_KEYS: readonly string[] = [
   'writer.lint_on_put_page', // output/post-write.ts lint after put_page, default off
   'context.hot_memory.session_only', // facts/meta-hook.ts, read by the turn_context and context_pack IPC handlers: hot memory never falls back to other sessions' facts, default off
   'serve.cli_socket', // config.ts loadConfigWithEngine (snapshot only) → serve.ts: a Postgres serve answers CLI reads over a private Unix socket, default off
+  'sync.max_file_bytes', // split-layout/limits.ts: canonical files above this many bytes are written as a head plus part files, default 24 MiB (1 MiB to 25 MiB)
   'serve.vector_prewarm', // config.ts loadConfigWithEngine (snapshot only) → serve.ts: a Postgres serve prewarms the HNSW indexes into shared_buffers at start when they fit, default off
 ];
