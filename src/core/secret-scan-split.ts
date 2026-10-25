@@ -16,7 +16,7 @@ import { pathAllowlisted } from './secret-scan-allowlist.ts';
 import { SCAN_MAX_FILE_BYTES, scanTextSpans, type ScanOpts, type SecretFinding } from './secret-scan.ts';
 
 /** Bytes of each side of a seam the boundary scan joins. */
-export const SPLIT_SEAM_SCAN_BYTES = 4 * 1024;
+export const SPLIT_SEAM_SCAN_BYTES = 64 * 1024;
 
 export interface SplitSeamFinding extends SecretFinding {
   file: string;
