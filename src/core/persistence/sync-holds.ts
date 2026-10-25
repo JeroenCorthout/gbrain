@@ -54,6 +54,7 @@ import { chunkerStamp } from '../chunkers/code.ts';
 import { gitBlobOid, sha256 } from './digest.ts';
 import { HOLD_ATTEMPTS_NEEDS_HUMAN, HOLD_ESCALATE_MS } from './sync-fault-class.ts';
 import { retiredSyncSetting, type RetiredSyncKeyName } from '../sync-config-keys.ts';
+import { partsDirFor } from '../split-layout/paths.ts';
 
 export const GIT_HOLD_OP = 'sync-hold';
 export const GIT_HOLD_SUMMARY_OP = 'sync-hold-summary';
@@ -597,14 +598,16 @@ export async function holdBasisMoved(engine: Pick<BrainEngine, 'executeRaw'>, so
  * hold, which rests on pages (tombstones, a page at the slug) or spellings a person changes. A `frontmatter_alias_limit` hold
  * rests on the file's bytes alone (the bound is intended, not transient), so like `invalid_frontmatter` it re-screens when
  * the file changes. GBRA-133: a `git_object_missing` hold rests on the repository's objects (a fetch restores them
- * under the same blob id), so it re-screens on every sync; a `page_write_failed` hold of a freeze fault (origin `freeze`,
- * S-63) is re-tested by every sync until it has been held `HOLD_ATTEMPTS_NEEDS_HUMAN` times, so a transient fault clears.
+ * under the same blob id), so it re-screens on every sync. So do the split-layout holds (`split_page_incomplete`,
+ * `split_head_modified`): their verdict rests on the part files beside the head, which a restore changes without
+ * touching the head. A `page_write_failed` hold of a freeze fault (origin `freeze`, S-63) is re-tested by every sync
+ * until it has been held `HOLD_ATTEMPTS_NEEDS_HUMAN` times, so a transient fault clears.
  */
 /** GBRA-133: the `file_drift` screen version; 1 is #7340's rule (a page with no import record compares its file at the baseline commit). */
 export const FILE_DRIFT_VERSION = 1;
 
 export function holdRescreenDue(record: Pick<GitHoldRecord, 'code' | 'meta'>, retried: boolean): boolean {
-  return retried || ['frontmatter_slug_conflict', 'file_too_large', 'rename_held', 'parser_regression', 'content_rejected', 'write_gate_rejected', 'purged_content', 'legacy_slug_conflict', 'origin_conflict', 'page_identity_changed', 'git_object_missing'].includes(record.code)
+  return retried || ['frontmatter_slug_conflict', 'file_too_large', 'rename_held', 'parser_regression', 'content_rejected', 'write_gate_rejected', 'purged_content', 'legacy_slug_conflict', 'origin_conflict', 'page_identity_changed', 'git_object_missing', 'split_page_incomplete', 'split_head_modified'].includes(record.code)
     // #6712: a transient hold (the write owner stalled, not the file) is retried by every sync until it has been held HOLD_ATTEMPTS_NEEDS_HUMAN times.
     || (outOfAttemptsHold(record.code) && (record.meta.attempts ?? 1) < HOLD_ATTEMPTS_NEEDS_HUMAN)
     || (record.code === 'managed_image_sync_unsupported' && isMultimodalEnabled())
@@ -746,6 +749,8 @@ export function gitHoldFix(record: Pick<GitHoldRecord, 'source_id' | 'path' | 'c
   switch (record.code) {
     case 'invalid_fence':
       return fenceHoldFix(record, auto);
+    case 'split_page_incomplete': case 'split_head_modified':
+      return splitHoldFix(record);
     case 'page_write_failed': {
       const failure = record.meta.write_failure;
       const verify = { argv: ['gbrain', 'sources', 'status', source, '--json'] };
@@ -971,7 +976,27 @@ export function gitHoldFix(record: Pick<GitHoldRecord, 'source_id' | 'path' | 'c
   }
 }
 
+/** Wave B PR 5: a split page head sync held (split-layout/read.ts); the stored page keeps its last good version. */
+function splitHoldFix(record: Pick<GitHoldRecord, 'source_id' | 'path' | 'code'> & Partial<Pick<GitHoldRecord, 'slug'>>): Action {
+  const source = record.source_id, verify = { argv: ['gbrain', 'sources', 'status', source, '--json'] };
+  const then: Action = { argv: ['gbrain', 'sync', '--source', source, '--no-pull'], consent: [], actor: 'agent', requires_exclusive: false, verify,
+    why: `Re-screens ${record.path} (every sync re-screens this hold); once its parts verify, the page imports and the hold clears.` };
+  if (record.code === 'split_head_modified') {
+    const resolve = `gbrain pages split-storage ${record.slug ?? '<slug>'} --source ${source} --resolve-head keep-edit|discard`;
+    return { argv: verify.argv, consent: [], actor: 'user', requires_exclusive: false, docs: gitHoldDocs(record.code), then, verify,
+      user_message: `The body of the split page head ${record.path} was edited, so sync held it and kept the stored page. Decide whether the edit is kept (keep-edit: the edited lead `
+        + `replaces the start of the page) or dropped (discard: the head is rewritten from the stored page); ${resolve} previews either, and --apply writes it.`,
+      why: 'A split head repeats only the first bytes of its page; an edit there cannot be merged into the part files without a decision, and sync never imports the short head as the page.' };
+  }
+  const partsDir = partsDirFor(record.path).split('\\').join('/');
+  return { argv: verify.argv, consent: [], actor: 'user', requires_exclusive: false, docs: gitHoldDocs(record.code), then, verify,
+    user_message: `The part files of the split page ${record.path} (in ${partsDir}) are missing, unlisted or changed, so sync held it and kept the stored page. Restore the head and its parts `
+      + `from Git (git checkout -- ${record.path} ${partsDir}, or from the commit that last wrote them), then run gbrain sync --source ${source} --no-pull.`,
+    why: 'A split page is its head plus every part its manifest lists, byte for byte; sync never imports a page from an incomplete set.' };
+}
+
 export function gitHoldDocs(code: GitHoldCode, reason?: GitHoldReason, meta?: Pick<GitHoldMeta, 'content_repair'>): string {
+  if (code === 'split_page_incomplete' || code === 'split_head_modified') return `docs/guides/troubleshooting.md#${code.replace(/_/g, '-')}`;
   // #6188: fence reasons carry their own anchors (`#fence-<reason>`).
   if (code === 'invalid_fence') return reason && reason in FENCE_REASONS ? FENCE_REASONS[reason as FenceReason].docs : 'docs/guides/write-refusals.md#invalid_fence';
   // #6377: a judged slug conflict points at its verdict's anchor.

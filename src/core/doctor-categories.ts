@@ -230,6 +230,9 @@ export const BRAIN_CHECK_NAMES: ReadonlySet<string> = new Set([
   'undeclared_db_only_pages',
   // #6696 B5: live pages whose canonical file is missing on the owner host (doctor/checks/ghost-pages.ts).
   'ghost_pages',
+  // Wave B PR 5: split git layout: stray parts dirs and held split pages; single canonical files over sync.max_file_bytes (doctor/checks/split-layout.ts).
+  'split_layout',
+  'oversize_canonical_file',
   // #6948: files recorded by several live pages (origin twins) and the pages_live_origin_key index (doctor/checks/origin-twins.ts).
   'origin_twins',
   // #7305: live pages whose slug their recorded file path does not derive, and whose file lacks the slug: stamp (doctor/checks/slug-path-mismatch.ts).

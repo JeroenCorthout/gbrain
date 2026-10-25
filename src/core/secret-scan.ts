@@ -29,7 +29,7 @@
  */
 
 import { existsSync, readFileSync, statSync } from 'fs';
-import { isAbsolute, join, relative } from 'path';
+import { isAbsolute, join, relative, resolve } from 'path';
 import { createHash } from 'crypto';
 import {
   LABELED_CREDENTIAL_PATTERNS,
@@ -97,6 +97,7 @@ export {
 import { valueAllowlisted, pathAllowlisted } from './secret-scan-allowlist.ts';
 import { PUSH_SCAN_MAX_FILE_BYTES } from './page-size-policy.ts';
 import type { ScanWork } from './secret-scan-work.ts';
+import { scanSplitHeadOnDisk } from './secret-scan-split.ts';
 export { createScanWork, type ScanWork } from './secret-scan-work.ts';
 
 // ── Patterns ────────────────────────────────────────────────────────────────
@@ -1163,11 +1164,16 @@ function looksBinary(path: string): boolean {
  * When `opts.workspaceRoot` is set, allowlist path-globs are matched against
  * each file's path relative to that root; fingerprint entries apply as in
  * `scanText`. `finding.file` carries the path exactly as the caller gave it.
+ * A split page head also scans its part files (each whole, under the same cap)
+ * and the seams between them (secret-scan-split.ts).
  */
 export function scanFiles(paths: string[], opts: ScanOpts = {}): SecretFinding[] {
   const allowlist = opts.allowlist ?? [];
   const out: SecretFinding[] = [];
-  for (const p of paths) {
+  // Wave B PR 5: a split head brings its part files (each scanned whole) and their seams into the scan (secret-scan-split.ts).
+  const queue = [...paths], queued = new Set(paths.map((p) => resolve(p)));
+  for (let i = 0; i < queue.length; i++) {
+    const p = queue[i]!;
     try {
       if (!existsSync(p)) continue;
       const st = statSync(p);
@@ -1188,6 +1194,10 @@ export function scanFiles(paths: string[], opts: ScanOpts = {}): SecretFinding[]
     for (const f of scanText(text, opts)) {
       out.push({ ...f, file: p });
     }
+    const split = scanSplitHeadOnDisk(p, text, opts);
+    if (!split) continue;
+    out.push(...split.findings);
+    for (const part of split.parts) if (!queued.has(resolve(part))) { queued.add(resolve(part)); queue.push(part); }
   }
   return out;
 }

@@ -56,7 +56,7 @@ import { OperationError } from './ops/contract.ts';
 import {
   existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync,
 } from 'fs';
-import { dirname, join, resolve } from 'path';
+import { dirname, join, posix, resolve } from 'path';
 import { createHash, randomBytes } from 'crypto';
 import { execFileSync, spawn } from './spawn.ts';
 import { GIT_ENV, GIT_ENV_AUTH, GIT_SSRF_SUBCOMMAND_FLAGS, detectDefaultBranch, divergenceSafePull, type PullStrategy } from './git-remote.ts';
@@ -76,6 +76,8 @@ import {
   type SecretFinding,
 } from './secret-scan.ts';
 import { scanTextStream } from './secret-scan-stream.ts';
+import { scanSplitSeams, splitHeadParts } from './secret-scan-split.ts';
+import { headPathForPartsDir, isPartPath } from './split-layout/paths.ts';
 import { shellQuote } from './mcp-registration.ts';
 import { gitChildEnv } from './git-env.ts';
 
@@ -468,6 +470,44 @@ async function scanStagedBlob(
   // still fire; invalid byte sequences become U+FFFD and simply don't match.
   const text = blob.toString('utf-8');
   return scanText(text, { allowlist });
+}
+
+/**
+ * Wave B PR 5: the seams of every split page this push changes (a staged head, or a staged part of a head in the index),
+ * read from the index (secret-scan-split.ts). The parts themselves are scanned as staged files; a part over
+ * PUSH_MAX_SCAN_BYTES is not read whole for its seams, so it is unscannable (fail closed). Appends to the gate's
+ * `findings` and `unscannable`.
+ */
+function scanStagedSplitSeams(root: string, staged: readonly string[], gate: {
+  allowlist: string[]; allowlistPath: string; retryCommand: string; findings: PushSecretFinding[]; unscannable: string[];
+}): void {
+  const { allowlist, unscannable } = gate;
+  const heads = new Set(staged.filter((rel) => rel.endsWith('.md')));
+  for (const rel of staged) {
+    const head = isPartPath(rel) ? headPathForPartsDir(posix.dirname(rel)) : null;
+    if (head) heads.add(head);
+  }
+  for (const head of heads) {
+    const blob = stagedBlobSizes(root, [head]).get(head);
+    let rels: string[] | null = null;
+    try { rels = blob && blob.size <= PUSH_MAX_SCAN_BYTES ? splitHeadParts(gitBuffer(root, ['cat-file', 'blob', blob.oid]).toString('utf-8')) : null; } catch { rels = null; }
+    if (!rels) continue;
+    const parts = rels.map((rel) => posix.join(posix.dirname(head), rel));
+    const blobs = stagedBlobSizes(root, parts);
+    const seams = scanSplitSeams(parts, (index) => {
+      const part = parts[index]!, entry = blobs.get(part);
+      if (!entry || pathAllowlisted(part, allowlist)) return null;
+      if (entry.size > PUSH_MAX_SCAN_BYTES) {
+        unscannable.push(`${part} (split page seam: ${entry.size}B exceeds the ${PUSH_MAX_SCAN_BYTES}B whole-read cap)`);
+        return null;
+      }
+      try { return gitBuffer(root, ['cat-file', 'blob', entry.oid]); } catch (e) {
+        unscannable.push(`${part} (split page seam unreadable: ${(e as Error).message.slice(0, 80)})`);
+        return null;
+      }
+    }, { allowlist });
+    for (const f of seams) gate.findings.push(...buildPushFindings({ ...gate, file: f.file, findings: [f] }));
+  }
 }
 
 /**
@@ -1013,6 +1053,7 @@ export async function workspacePush(opts: WorkspacePushOpts): Promise<WorkspaceP
         findings.push(f);
       }
     }
+    scanStagedSplitSeams(root, stagedForScan.filter((rel) => !stagedDeletions.has(rel)), { allowlist, allowlistPath, retryCommand, findings, unscannable });
     if (findings.length > 0) {
       // Restore the index to HEAD (disk files untouched) — a blocked push
       // leaves nothing staged and nothing committed, same as before.
