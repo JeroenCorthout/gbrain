@@ -37,6 +37,7 @@ import type { FenceCtx, FenceFix, FencePage, FenceReason } from './fence-repair/
 import { effectiveVisibility } from './search/private-visibility.ts';
 import { CODE_FILE_MAX_BYTES, PAGE_MAX_BYTES } from './page-size-policy.ts';
 import { sliceMemo } from './persistence/slice-memo.ts';
+import type { SplitRefusalCode } from './split-layout/read.ts';
 
 /** Largest Markdown page import admits: the Wave A ceiling (page-size-policy.ts). */
 export const MAX_FILE_SIZE = PAGE_MAX_BYTES;
@@ -350,7 +351,7 @@ export function assessImportSanity(page: Pick<ParsedMarkdown, 'compiled_truth' |
  * with its location-only `fence`.
  */
 export interface ContentRefusal extends Omit<ContentHold, 'code' | 'reason'> {
-  code: ContentHold['code'] | 'content_rejected' | 'invalid_fence' | 'purged_content' | 'write_gate_rejected';
+  code: ContentHold['code'] | 'content_rejected' | 'invalid_fence' | 'purged_content' | 'write_gate_rejected' | SplitRefusalCode;
   reason?: ContentHold['reason'] | FenceReason;
   fence?: FenceMessageLocation;
   /** #6188 (D18): every issue that blocks the write, location and class only. */

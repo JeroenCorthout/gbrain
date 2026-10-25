@@ -68,6 +68,7 @@ import type { SegmentedStagingOwner } from './page-body/ingest.ts';
 import type { PageBodyPolicy } from './page-body/limits.ts';
 import { parseFactsFence, renderFactsTable, restoreHiddenFactRows, factsGapWarning, replaceOrInsertFactsFence } from './facts-fence.ts';
 import { assertOriginUnclaimed, isOriginClaimRefusal } from './persistence/origin-guard.ts';
+import { openSplitPage, oversizeSplitHead, splitBodyStat, splitRefusalResult } from './split-layout/read.ts';
 import { fileBodyMatchesStored, readStoredBody } from './facts/file-body-guard.ts';
 
 /**
@@ -1030,6 +1031,8 @@ export async function importFromFile(
     firstCommitAt?: Date;
     /** Wave B: the segmented-storage policy, read once per command; with the switch on, a Markdown file over the single-string ceiling imports streamed. Absent: it refuses as before. */
     bodyPolicy?: PageBodyPolicy;
+    /** Wave B PR 5: the reassembled file of the split page whose head is `filePath` (split-layout/read.ts); its bytes are imported as the head's path. */
+    splitBody?: string;
   } = {},
 ): Promise<ImportResult> {
   // Defense-in-depth: reject symlinks before reading content.
@@ -1038,16 +1041,17 @@ export async function importFromFile(
     return { slug: relativePath, status: 'skipped', chunks: 0, error: `Skipping symlink: ${filePath}` };
   }
 
-  const stat = statSync(filePath);
+  const stat = splitBodyStat(filePath, opts.splitBody);
   const maxBytes = importSizeLimit(relativePath);
   if (stat.size > maxBytes) {
-    const policy = opts.bodyPolicy;
+    const policy = opts.bodyPolicy, split = opts.splitBody || isCodeFilePath(relativePath) ? null : oversizeSplitHead(filePath, relativePath, stat.size);
+    if (split) return splitRefusalResult(relativePath, split);
     if (policy?.segmented && !isCodeFilePath(relativePath) && stat.size <= policy.maxBytes) return (await import('./page-body/streamed-import.ts')).importStreamedMarkdownFile(engine, filePath, relativePath, opts, stat, policy);
     return { slug: relativePath, status: 'skipped', chunks: 0, error: `File too large (${stat.size} bytes)`,
       refusal: { code: 'file_too_large', message: `File too large (${stat.size} bytes, max ${maxBytes}).` }, skip_reason: 'file_too_large' };
   }
 
-  let content = readSourceFileSync(filePath, 'utf-8').replace(/^\uFEFF/, ''); // #4798: a BOM is encoding noise, not content
+  let content = (opts.splitBody ? readFileSync(opts.splitBody, 'utf-8') : readSourceFileSync(filePath, 'utf-8')).replace(/^\uFEFF/, ''); // #4798: a BOM is encoding noise, not content
 
   // Defense-in-depth for callers that bypass the sync/import classifiers
   // (direct importFromFile, reindex, capture paths): a malformed filename is
@@ -1078,6 +1082,8 @@ export async function importFromFile(
     });
   }
 
+  const split = opts.splitBody ? null : openSplitPage(filePath, relativePath, content);
+  if (split) return 'refusal' in split ? splitRefusalResult(relativePath, split.refusal) : importFromFile(engine, filePath, relativePath, { ...opts, splitBody: split.path }).finally(split.dispose);
   const preInferenceParsed = parseMarkdown(content, relativePath, { validate: true });
   const preInferenceHold = classifyImportHold(preInferenceParsed);
   if (preInferenceHold) {

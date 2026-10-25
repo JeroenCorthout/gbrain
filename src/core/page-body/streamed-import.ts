@@ -95,6 +95,8 @@ type StreamedImportOptions = {
   forceRechunk?: boolean;
   activePack?: { page_types: ReadonlyArray<{ name: string; path_prefixes: ReadonlyArray<string>; aliases?: ReadonlyArray<string> }> };
   firstCommitAt?: Date;
+  /** Wave B PR 5: the private reassembled file of the split page whose head is `filePath`; its bytes are read instead (split-layout/read.ts). */
+  splitBody?: string;
   /**
    * A page write of the file's content (`gbrain put|capture --file` on the trusted local CLI), not a file import: the
    * file records no origin (no source_path or file source_uri), no other file's slug claim applies, the staging is a
@@ -312,7 +314,7 @@ export async function importStreamedMarkdownFile(engine: BrainEngine, filePath: 
   }
   if (!opts.coordinated) await assertUnmanagedCanonicalWriter(engine, 'direct content import', { sourceId: opts.sourceId ?? 'default' });
   const expectedSlug = slugifyPath(relativePath);
-  const file = await open(assertSourceFilePath(filePath), constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+  const file = await open(opts.splitBody ?? assertSourceFilePath(filePath), constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
   try {
     const opened = await file.stat();
     if (!opened.isFile() || opened.size !== stat.size || opened.mtimeMs !== stat.mtimeMs) return hold(expectedSlug, stat.size, 'the file changed while it was opened');

@@ -18,6 +18,7 @@ import { SLUG_WORD_CHARS, SLUG_VARIATION_SELECTORS_RE } from './cjk.ts';
 import { existsSync, statSync, realpathSync } from 'fs';
 import { join as pathJoin, resolve as pathResolve } from 'path';
 import type { BrainEngine } from './engine.ts';
+import { isPartPath } from './split-layout/paths.ts';
 
 export interface SyncManifest {
   added: string[];
@@ -464,6 +465,8 @@ export function pruneDir(name: string, parentDir?: string): boolean {
  * importing a bare (non-git) directory.
  */
 export function isPathPruned(path: string, includeHidden?: string[]): boolean {
+  // Wave B PR 5: a split page's parts directory holds part files, never a page; `--include-hidden` cannot waive it.
+  if (isPartPath(path)) return true;
   const segments = path.split('/');
   if (segments.some((seg) => PRUNE_DIR_NAMES.has(seg) || seg.endsWith('.raw'))) return true;
   const dotPruned = segments.some((seg) => seg.startsWith('.'));

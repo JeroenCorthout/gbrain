@@ -37,6 +37,8 @@
 | After a database change some processes still use the old server, or a URL variable silently keeps its old value | a shell-sourced env file has an unquoted `&` (the assignment ends there), or a process kept the environment it started with. Quote every value, keep Postgres URLs to `?sslmode=require` (driver options as variables, such as `GBRAIN_PREPARE=false`), update every URL variable the tooling reads, restart every gbrain process, and prove the switch from the database side ([switching a database](../../INSTALL_FOR_AGENTS.md#switching-a-database)). Never paste `env` output into a transcript while debugging | agent, after the user agrees | none | a row written after the restart appears on the new server |
 | Doctor `parked_effects` lists `git_target_ignored` effects | a `.gitignore` rule excludes those pages' files, so their Git effects cannot commit. The user decides: un-ignore (narrow the rule, commit it, then `gbrain sources writer retry-effects <source> --parked-code git_target_ignored`) or keep the pages database-only and leave the effects parked ([gitignored paths](shared-checkout-git.md#scripts-and-the-managed-checkout)) | agent, after the user decides | none | `gbrain sources writer status --source <id> --json` |
 | Sync and the maintenance cycle re-read a whole source on every run after its Git history was rewritten (force-push, `git filter-repo`) | the recorded base commit no longer exists. Move the checkout onto the new history ([upstream rewritten](#upstream-rewritten)); before the next rewrite, run `gbrain sources set-sync <id> off` and `gbrain sources mirror-readonly <id>` first | agent; the reset after the user agrees | `destructive` (the reset keeps a backup ref) | `gbrain doctor --only sync_failures --json` |
+| Sync holds a head file `split_page_incomplete`: a large page's part files are missing, changed or unlisted | restore the head and its `.<name>.gbparts` directory from Git, then `gbrain sync --source <id> --no-pull` ([split page incomplete](#split-page-incomplete)) | user | none | `gbrain sources status <id> --json` no longer lists it |
+| Sync holds a head file `split_head_modified` after the lead of a large page was edited | preview `gbrain pages split-storage <slug> --resolve-head keep-edit` or `discard`, then `--apply` ([split head modified](#split-head-modified)) | agent, after the user agrees | none | `gbrain sources status <id> --json` no longer lists it |
 | [Database unreachable or `GBRAIN_DB_ACCESS <reason>`](#database-unreachable) | `gbrain engine status --probe`, then `gbrain db-repair` (diagnose); `gbrain db-repair --yes` applies safe fixes | agent; `--yes` after the user agrees | none to diagnose; `--apply-rewrites` rewrites the config URL (undoable) | `gbrain engine status --probe --json` |
 | [PGLite `RuntimeError: Aborted()` at startup](#pglite-aborted) | automatic repair on the next command; else `gbrain pglite-repair --dry-run`, then `gbrain pglite-repair --yes` | agent; `--yes` after the user agrees | `destructive` (a WAL backup is kept and the restore command printed) | `gbrain doctor --only connection --json` |
 | [`expected N dimensions, not M` on import](#embedding-dimensions) | `gbrain doctor` prints the exact `gbrain config set …` or `gbrain migrate embeddings --to <provider:model>` command | agent, after the user agrees | `migrate embeddings`: `paid`, needs the brain's writer lock | `gbrain doctor --only embeddings,embedding_width_consistency --json` |
@@ -820,3 +822,64 @@ syncs keep ending `partial` or failing has none, however many pages it imported.
   - `last_attempt_unsuccessful`: read the job (`gbrain jobs get <id> --json`)
     or the managed failure, then retry.
   - `no_attempt`: run `gbrain sync --source <id>` (`--no-pull` on a managed brain).
+
+## Split page incomplete
+
+<a id="split-page-incomplete"></a>
+
+**Say to your agent:** *"Sync says a big page is held as split_page_incomplete. Get it importing again without losing anything."*
+
+**Symptom.** `gbrain sync` prints `Held notes/big-page.md (split_page_incomplete)`, and
+`gbrain sources status <id> --json` lists the head with that code. The page still answers searches with its last good version.
+
+**Cause.** A page whose canonical file would exceed `sync.max_file_bytes` (24 MiB by default) is stored as a
+head file at the page's path plus hidden part files in a `.<name>.gbparts` directory beside it. The head's
+`gbrain_parts` manifest lists every part with its size and SHA-256. Sync reassembles the page only from exactly
+that set, so it holds the head when a part is missing (a sparse or partial checkout, a part deleted by hand), changed
+(edited, or truncated by a tool), or unlisted (a stray file in the parts directory), or when the manifest itself does
+not parse. It never imports the short head as the page and never changes the stored page. A part changed in a commit
+that leaves the head alone is caught by the next full sync (`gbrain sync --full`), not by an incremental one.
+
+**Who acts.** The user, in the checkout: restoring files is their call. The agent relays the hold's message, which
+names the missing, changed and unlisted part files.
+
+**Fix.**
+
+1. Restore the head and its parts from Git: `git checkout -- notes/big-page.md notes/.big-page.gbparts` (or
+   from the commit that last wrote them, `git checkout <commit> -- ...`), and remove any file in the parts directory
+   that the manifest does not list.
+2. Run `gbrain sync --source <id> --no-pull`. Every sync re-screens this hold, so the restore needs no new commit
+   of the head; once the parts verify, the page imports and the hold clears.
+
+**Verify.** `gbrain sources status <id> --json` no longer lists the head, and `gbrain get <slug>` shows the whole
+page (no `> [gbrain] This page continues in` notice line).
+
+## Split head modified
+
+<a id="split-head-modified"></a>
+
+**Say to your agent:** *"Sync held a big page as split_head_modified after I edited it. Keep my edit."* (or *"…throw my edit away."*)
+
+**Symptom.** `gbrain sync` prints `Held notes/big-page.md (split_head_modified)`; the page keeps its last good
+version.
+
+**Cause.** The head of a split page repeats only the first bytes of the page (the lead) and ends with one notice line,
+`> [gbrain] This page continues in N part files …`. Its manifest hashes that body (`lead_sha256`), so an edit
+to the lead or the notice is detected. Sync cannot fold the edit into the part files without a decision, and it never
+imports the short head as the page. Frontmatter edits in the head (a tag, a title) are fine and import normally.
+
+**Who acts.** The user decides whether the edit is kept; the agent runs the preview and, after the user agrees, the
+apply.
+
+**Fix.** Preview first (writes nothing):
+
+- Keep the edit: `gbrain pages split-storage <slug> --source <id> --resolve-head keep-edit`. The edited lead
+  (without the notice line) replaces the start of the page and the rest of the page follows unchanged.
+- Drop the edit: `gbrain pages split-storage <slug> --source <id> --resolve-head discard`. The head is rewritten
+  from the stored page.
+
+Then run the same command with `--apply`, and `gbrain sync --source <id> --no-pull`. Editing a large page through
+`gbrain put` or your agent, rather than the head file, avoids the hold.
+
+**Verify.** `gbrain sources status <id> --json` no longer lists the head, and `gbrain get <slug>` shows the page
+with the change you chose.

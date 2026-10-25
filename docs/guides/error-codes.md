@@ -4029,6 +4029,26 @@ More: [docs/guides/write-refusals.md#slug_page_mismatch](../../docs/guides/write
 |---|---|---|---|---|---|---|
 | Split bad ratio. | The request itself was wrong or no longer matches the brain; nothing was changed. | Correct the request using the message above, then retry. | agent | `repeat the read that failed` | 1 | no |
 
+### split_head_modified
+
+<a id="split_head_modified"></a>
+
+| Meaning | Why | Next step | Who acts · consent | Verify | Exit | Retryable |
+|---|---|---|---|---|---|---|
+| Sync held a split page head whose body (the lead and the gbrain notice line) was edited, so the page it names cannot be reassembled from it; the stored page keeps its last good version. | A page whose canonical file would exceed sync.max_file_bytes is stored as a head file plus hidden part files, and the head repeats only the first bytes of the page. Its manifest hashes the head body (lead_sha256), so an edit there is detected; sync cannot merge it into the parts without a decision, and it never imports the short head as the page. Frontmatter edits in the head are fine. | Decide with the user whether the edit is kept or dropped: gbrain pages split-storage with the page slug and --resolve-head keep-edit (the edited lead replaces the start of the page) or --resolve-head discard (the head is rewritten from the stored page) previews the change; add --apply to write it, then sync again. Run: gbrain sources status '{source_id}' --json | user | `repeat the read that failed` | 1 | no |
+
+More: [docs/guides/troubleshooting.md#split-head-modified](../../docs/guides/troubleshooting.md#split-head-modified)
+
+### split_page_incomplete
+
+<a id="split_page_incomplete"></a>
+
+| Meaning | Why | Next step | Who acts · consent | Verify | Exit | Retryable |
+|---|---|---|---|---|---|---|
+| Sync held a split page head whose part files are missing, unlisted or changed (or whose gbrain_parts manifest does not parse), so the page was not imported; the stored page keeps its last good version. | A page whose canonical file would exceed sync.max_file_bytes is stored as a head file plus hidden part files in a .<name>.gbparts directory beside it, and the head's manifest lists every part with its size and SHA-256. Sync reassembles the page only from exactly that set; a partial checkout, a part edited or deleted by hand, or a stray file in the parts directory would otherwise import a short or wrong page. Every sync re-screens the hold, so restoring the parts clears it without touching the head. | Restore the head and its part files from Git (git checkout -- followed by the head path and its .gbparts directory, or from the commit that last wrote them), remove any file the manifest does not list, then run gbrain sync --source with the source id and --no-pull. Run: gbrain sources status '{source_id}' --json | user | `repeat the read that failed` | 1 | no |
+
+More: [docs/guides/troubleshooting.md#split-page-incomplete](../../docs/guides/troubleshooting.md#split-page-incomplete)
+
 ### split_unparseable
 
 <a id="split_unparseable"></a>

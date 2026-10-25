@@ -34,6 +34,7 @@ import { isPathContained } from '../../core/path-confine.ts';
 import { bytePathHoldGone } from '../../core/sync-byte-paths.ts';
 import { bindOrigin } from '../../core/persistence/origin-guard.ts';
 import { CLASSIC_FILE_HOLD_CODES, classifyClassicFile, type ClassicFileHold } from '../../core/classic-file-holds.ts';
+import { screenSplitHead } from '../../core/split-layout/read.ts';
 
 /** The file at a repo-relative path from git or a hold row, or null when it is missing or resolves outside the source root. */
 function fileUnderRoot(root: string, path: string): string | null {
@@ -169,7 +170,9 @@ export function screenLegacyFile(filePath: string, relPath: string, activePack?:
   if (!read) return { refusal: { code: 'file_too_large', message: `File too large (${lstatSync(filePath).size} bytes, max ${importSizeLimit(filePath)}).` }, upstreamVersion: null };
   if (hasMalformedPathSegment(relPath) || isCodeFilePath(relPath)) return { refusal: null, upstreamVersion: read.upstreamVersion };
   const parsed = parseMarkdown(read.content, relPath, { validate: true, ...(activePack ? { activePack } : {}) });
-  const refusal = classifyImportHold(parsed, { expectedSlug: slugifyPath(relPath) || null, slugConflictMessage: (_found, expected) => slugConflictHoldMessage(relPath, expected) });
+  // Wave B PR 5: a split head screens by its parts, never as the short page it is on its own.
+  const refusal = screenSplitHead(filePath, relPath, read.content)
+    ?? classifyImportHold(parsed, { expectedSlug: slugifyPath(relPath) || null, slugConflictMessage: (_found, expected) => slugConflictHoldMessage(relPath, expected) });
   return { refusal, upstreamVersion: read.upstreamVersion };
 }
 
