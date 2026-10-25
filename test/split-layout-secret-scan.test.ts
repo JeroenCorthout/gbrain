@@ -13,7 +13,7 @@
  */
 import { afterAll, afterEach, beforeAll, expect, test } from 'bun:test';
 import { execFileSync } from 'node:child_process';
-import { appendFileSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdtempSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SCAN_MAX_FILE_BYTES, scanFiles } from '../src/core/secret-scan.ts';
@@ -161,3 +161,15 @@ test('scanFiles never follows a symlinked part file out of the parts directory',
   expect(findings.filter(f => f.pattern === 'openai' || f.file === page.abs(linked.rel))).toEqual([]);
   expect(scanFiles([outside]).map(f => f.pattern)).toContain('openai');
 });
+
+test('scanFiles and the push gate follow a head moved together with its parts directory', async () => {
+  const { work, env } = pushWorkspace();
+  const page = await splitPage(cutLineBody(GITHUB), work);
+  renameSync(page.abs(HEAD), page.abs('notes/moved-page.md'));
+  renameSync(page.abs(page.partsDir), page.abs('notes/.moved-page.gbparts'));
+  const moved = page.parts.map(part => part.rel.replace('.big-page.gbparts', '.moved-page.gbparts'));
+  expect(scanFiles([page.abs('notes/moved-page.md')]).map(f => [f.pattern, f.file])).toEqual([['github_token', page.abs(moved[0]!)]]);
+  const result = await withEnv(env, () => workspacePush({ dir: work, branch: 'main', allowUnverifiedRemote: true }));
+  expect(result.status).toBe('blocked_secrets');
+  expect(result.findings?.map(f => [f.pattern, f.file])).toEqual([['github_token', moved[0]]]);
+}, T);

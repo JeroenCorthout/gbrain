@@ -18,7 +18,7 @@
  */
 import type { Dirent } from 'node:fs';
 import { readdirSync } from 'node:fs';
-import { basename, join, posix } from 'node:path';
+import { join, posix } from 'node:path';
 import type { Check } from '../../doctor.ts';
 import type { BrainEngine } from '../../../core/engine.ts';
 import type { Action } from '../../../core/agent-output.ts';
@@ -39,7 +39,7 @@ export function __setSplitWalkLimitForTests(limit: number | null): void { walkLi
 const SAMPLE = 5;
 export const SPLIT_HOLD_CODES = ['split_page_incomplete', 'split_head_modified'] as const;
 
-export interface StrayPartsDir { source_id: string; path: string; reason: 'no_head' | 'head_not_split' | 'not_in_manifest' }
+export interface StrayPartsDir { source_id: string; path: string; reason: 'no_head' | 'head_not_split' }
 export interface OversizeFile { source_id: string; path: string; bytes: number; slug: string }
 export interface HeldSplitPage { source_id: string; path: string; slug: string | null; code: string }
 interface Walk { stray: StrayPartsDir[]; oversize: OversizeFile[]; sources: string[]; entries: number; truncated: boolean }
@@ -48,9 +48,7 @@ function strayReason(root: string, rel: string): StrayPartsDir['reason'] | null 
   const head = readHead(join(root, headPathForPartsDir(rel)!));
   if (head.kind === 'missing') return 'no_head';
   if (head.kind === 'single') return 'head_not_split';
-  if (head.kind === 'invalid_head') return null;
-  const dir = head.parsed.manifest.parts[0]!.path.split('/')[0];
-  return dir === basename(rel) ? null : 'not_in_manifest';
+  return null;
 }
 
 /** One source checkout: stray parts directories and oversize single files, within the shared entry budget. */

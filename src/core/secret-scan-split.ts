@@ -8,10 +8,11 @@
  * byte offset in part k where the match starts. A part the caller cannot read (missing, or over its scan cap) leaves
  * the seams on either side of it to the caller's cap rule.
  */
-import { dirname, isAbsolute, join, relative } from 'path';
+import { basename, dirname, isAbsolute, join, relative } from 'path';
 import { closeSync, constants, fstatSync, openSync, readFileSync } from 'fs';
 import { parseHead } from './split-layout/head.ts';
 import { PARTS_KEY } from './split-layout/types.ts';
+import { partPathFor } from './split-layout/paths.ts';
 import { pathAllowlisted } from './secret-scan-allowlist.ts';
 import { SCAN_MAX_FILE_BYTES, scanTextSpans, type ScanOpts, type SecretFinding } from './secret-scan.ts';
 
@@ -24,11 +25,11 @@ export interface SplitSeamFinding extends SecretFinding {
   seam: { next: string; offset: number };
 }
 
-/** The part paths (relative to the head's directory, in manifest order) of a split head with a readable manifest; otherwise null. */
-export function splitHeadParts(text: string): string[] | null {
+/** The part paths (relative to the head's directory, in manifest order) of the split head named `headName` with a readable manifest; otherwise null. */
+export function splitHeadParts(text: string, headName: string): string[] | null {
   if (!text.includes(PARTS_KEY)) return null;
   const parsed = parseHead(text);
-  return parsed && !('error' in parsed) ? parsed.manifest.parts.map(part => part.path) : null;
+  return parsed && !('error' in parsed) ? parsed.manifest.parts.map(part => partPathFor(headName, part.path)) : null;
 }
 
 function newlines(bytes: Uint8Array, end: number): number {
@@ -64,7 +65,7 @@ export function scanSplitSeams(parts: readonly string[], read: (index: number) =
 
 /** `scanFiles`' rule for a split head on disk: its part paths beside it, and the seam findings of the parts within the scan cap. */
 export function scanSplitHeadOnDisk(headPath: string, text: string, opts: ScanOpts = {}): { parts: string[]; findings: SplitSeamFinding[] } | null {
-  const rels = headPath.endsWith('.md') ? splitHeadParts(text) : null;
+  const rels = headPath.endsWith('.md') ? splitHeadParts(text, basename(headPath)) : null;
   if (!rels) return null;
   const parts = rels.map(rel => join(dirname(headPath), rel));
   const read = (index: number): Buffer | null => {

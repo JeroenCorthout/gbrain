@@ -2,7 +2,8 @@
  * Split git layout (Wave B PR 5): checking and reassembling a split page from disk, or from a commit's tree through a
  * `PartsSource` (git-parts.ts). Part files on disk are read in manifest
  * order through `O_NOFOLLOW` descriptors: a symlink, a directory or any other non-regular entry is never read, and the
- * manifest's paths (validated by parseHead) cannot leave the head's directory. Every entry of the parts directory the
+ * manifest's paths (validated by parseHead) cannot leave the head's directory; each part is read by its file name in
+ * the head's own parts directory (paths.ts `partPathFor`), so a head and directory moved together still verify. Every entry of the parts directory the
  * manifest does not list (a subdirectory included) is `extra`, except, on disk, a regular file named as gbrain's own
  * in-flight atomic write stages a sibling (`.<sha256>.tmp.<uuid>`, atomic-write.ts): a write of the next version.
  *
@@ -14,7 +15,7 @@ import { closeSync, constants, fstatSync, lstatSync, openSync, readdirSync, read
 import { basename, dirname, isAbsolute, join, relative } from 'node:path';
 import { SEGMENT_MAX_BYTES } from '../page-body/limits.ts';
 import type { ParsedHead } from './head.ts';
-import { partsDirName } from './paths.ts';
+import { partPathFor, partsDirName } from './paths.ts';
 
 export type SplitVerdict =
   | { ok: true; bytes: number; sha256: string }
@@ -103,12 +104,11 @@ export function feedPart(content: Buffer, bytes: number, sha256: string, sinks: 
 /** The shared check; `write` receives F' (the frontmatter without `gbrain_parts`, then the parts) while every part matches. */
 function check(source: PartsSource, parsed: ParsedHead, write: PartFeed | null): SplitVerdict {
   const { manifest } = parsed;
-  const listed = manifest.parts.map(part => part.path);
   const fail = (reason: string, sets: { missing?: string[]; extra?: string[]; mismatched?: string[] }): SplitVerdict =>
     ({ ok: false, code: 'split_page_incomplete', missing: sets.missing ?? [], extra: sets.extra ?? [], mismatched: sets.mismatched ?? [], reason });
   let dirName: string;
-  try { dirName = partsDirName(source.headName); } catch { return fail('the head is not a .md file', { missing: listed }); }
-  if (listed.some(path => path.slice(0, path.indexOf('/')) !== dirName)) return fail(`the manifest's parts are not in ${dirName}`, { missing: listed });
+  try { dirName = partsDirName(source.headName); } catch { return fail('the head is not a .md file', { missing: manifest.parts.map(part => part.path) }); }
+  const listed = manifest.parts.map(part => partPathFor(source.headName, part.path));
   const entries = source.list(dirName);
   if (entries === 'not_a_directory') return fail(`${dirName} is not a directory`, { mismatched: listed });
   if (entries === 'missing') return fail(`${dirName} does not exist`, { missing: listed });
@@ -121,10 +121,10 @@ function check(source: PartsSource, parsed: ParsedHead, write: PartFeed | null):
   const frontmatter = Buffer.from(parsed.frontmatterWithoutParts, 'utf8');
   file.update(frontmatter);
   write?.(frontmatter);
-  for (const part of manifest.parts) {
-    const fault = source.read(part.path, part.bytes, part.sha256, [body, file], missing.length || mismatched.length ? null : write);
-    if (fault === 'missing') missing.push(part.path);
-    else if (fault === 'mismatched') mismatched.push(part.path);
+  for (const [i, part] of manifest.parts.entries()) {
+    const fault = source.read(listed[i]!, part.bytes, part.sha256, [body, file], missing.length || mismatched.length ? null : write);
+    if (fault === 'missing') missing.push(listed[i]!);
+    else if (fault === 'mismatched') mismatched.push(listed[i]!);
   }
   if (missing.length || mismatched.length || extra.length) {
     return fail(`${missing.length} missing, ${mismatched.length} mismatched and ${extra.length} unlisted part files`, { missing, extra, mismatched });

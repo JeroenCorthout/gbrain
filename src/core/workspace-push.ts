@@ -493,7 +493,7 @@ function scanStagedSplitSeams(root: string, staged: readonly string[], gate: {
     let rels: string[] | null = null, why = 'its head is not in the index';
     if (blob && blob.size > PUSH_MAX_SCAN_BYTES) why = `its head exceeds the ${PUSH_MAX_SCAN_BYTES}B scan cap`;
     else if (blob) {
-      try { rels = splitHeadParts(gitBuffer(root, ['cat-file', 'blob', blob.oid]).toString('utf-8')); why = 'its head has no valid gbrain_parts manifest'; }
+      try { rels = splitHeadParts(gitBuffer(root, ['cat-file', 'blob', blob.oid]).toString('utf-8'), posix.basename(head)); why = 'its head has no valid gbrain_parts manifest'; }
       catch (e) { why = `its head is unreadable: ${(e as Error).message.slice(0, 80)}`; }
     }
     if (!rels) {

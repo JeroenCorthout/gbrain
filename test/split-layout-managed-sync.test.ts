@@ -203,3 +203,18 @@ test('the URL-clone fence repair never restores a split head as its page', () =>
   const head = ordinary.replace('title: Split fixture\n', 'title: Split fixture\ngbrain_parts:\n  version: 1\n');
   expect(proveFenceRowsOnly(head, appended(head))).toMatchObject({ ok: false, class: 'split_page_head' });
 });
+
+test('a head moved together with its parts directory (git mv) imports whole at its new path', () => brain(async b => {
+  const { engine, root } = b;
+  const written = await syncedV1(b);
+  git(root, 'mv', HEAD, 'notes/moved.md');
+  git(root, 'mv', written.partsDir, 'notes/.moved.gbparts');
+  git(root, 'commit', '-qm', 'Synthetic move of a split page');
+  await sync(engine);
+  const [source] = await engine.executeRaw<{ incarnation: string }>("SELECT incarnation::text AS incarnation FROM sources WHERE id='default'");
+  expect(await readGitHold(engine, 'default', source!.incarnation, 'notes/moved.md')).toBeNull();
+  const moved = (await engine.readPageSnapshot('notes/moved', { sourceId: 'default' }))?.page;
+  expect(moved?.compiled_truth).toContain('Line 79 of v1');
+  expect(moved?.frontmatter).not.toHaveProperty('gbrain_parts');
+  expect(await stored(engine)).toBeNull();
+}), 120_000);
