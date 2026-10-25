@@ -271,14 +271,6 @@ async function mirrorPage(engine: BrainEngine, effect: PersistenceEffect, bindin
   const target = { kind: 'withdrawal-mirror' as const, path: file.path, root: file.root, beforeHash: file.expectedBeforeHash ?? null,
     mode: statSync(file.path).mode & 0o7777, ownerEpoch: String(binding!.owner_epoch), pageId: snapshot.page.id,
     sourceIncarnation: snapshot.sourceIncarnation, slug: snapshot.page.slug, revision: snapshot.revision };
-  if (isStreamedContent(content)) {
-    // Version 2: the file is staged by path and digest, never embedded; the reservation counts its one staged copy.
-    const record: EffectRecovery = { ...target, version: 2, afterHash: content.hash, after: null,
-      staging: { publication: { path: atomicStagingPath(file.path), hash: content.hash, bytes: content.bytes } } };
-    await reserveEffectRecovery(engine, effect, record, Buffer.byteLength(JSON.stringify(record)) + content.bytes + 4096, opts.hostId);
-    await recoverEffectPublication(engine, effect, opts.hostId, { boundary: opts.boundary, content, between: keep });
-    return;
-  }
   // Wave B PR 5: a split page, or a render over the threshold, is mirrored as one unit (head plus parts, split-mirror.ts).
   const unit: MutationFile & SplitFileFields = { path: file.path, root: file.root, content, expectedBeforeHash: file.expectedBeforeHash };
   if (await splitPublicationTargets(engine, unit)) {
@@ -289,6 +281,14 @@ async function mirrorPage(engine: BrainEngine, effect: PersistenceEffect, bindin
       await faultPoint('effect_recovery:split_staged', { effectId: effect.id, requestId: effect.request_id, sourceId: effect.source_id, slug: target.slug });
       await recoverEffectPublication(engine, effect, opts.hostId, { boundary: opts.boundary, between: keep });
     } finally { releaseSplitTargets(unit); }
+    return;
+  }
+  if (isStreamedContent(content)) {
+    // Version 2: the file is staged by path and digest, never embedded; the reservation counts its one staged copy.
+    const record: EffectRecovery = { ...target, version: 2, afterHash: content.hash, after: null,
+      staging: { publication: { path: atomicStagingPath(file.path), hash: content.hash, bytes: content.bytes } } };
+    await reserveEffectRecovery(engine, effect, record, Buffer.byteLength(JSON.stringify(record)) + content.bytes + 4096, opts.hostId);
+    await recoverEffectPublication(engine, effect, opts.hostId, { boundary: opts.boundary, content, between: keep });
     return;
   }
   const after = Buffer.from(content);
