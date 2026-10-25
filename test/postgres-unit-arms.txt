@@ -404,6 +404,7 @@ test/repair-embedding-effects.test.ts
 test/repair-failed-writes-conflict-6429.test.ts
 test/repair-failed-writes-drift-w411.test.ts
 test/repair-fences.test.ts
+test/repair-file-drift-consumer-env-7506.test.ts
 test/repair-file-drift-deleted-6712.test.ts
 test/repair-file-drift-held-6712.test.ts
 test/repair-file-drift-held-window-gbra133.test.ts
