@@ -273,8 +273,9 @@ function partsTailSha256(path: string, parsed: ParsedHead): string | null {
  * allowed to replace it; every other write compares the edited head as itself and is refused as drift.
  * - discard: the split relayout maintenance intent bound to `resolve_head: 'discard'`, whose content (the stored page)
  *   ends with the page body the manifest hashes (`content_hash`), so it replaces only the head's edit.
- * - keep-edit: a write whose content is the page file that keeps the edit: the head frontmatter without `gbrain_parts`,
- *   the lead the edited head body holds before its notice line, then B[lead_bytes:] from the parts.
+ * - keep-edit: a write whose content's body (after its frontmatter block, which the write path renders) is the page body
+ *   that keeps the edit: the lead the edited head body holds before its notice line, then B[lead_bytes:] from the parts.
+ *   A head is `split_head_modified` only for an edit to its body (`lead_sha256`); a frontmatter edit verifies as is.
  */
 export async function resolvesModifiedHead(engine: BrainEngine, row: object, path: string, parsed: ParsedHead,
   content: string | Uint8Array | StreamedFileContent | null): Promise<boolean> {
@@ -286,10 +287,10 @@ export async function resolvesModifiedHead(engine: BrainEngine, row: object, pat
   }
   const tailBytes = manifest.total_bytes - manifest.lead_bytes;
   const tail = await contentTail(engine, content, tailBytes, HEAD_READ_MAX_BYTES);
-  const frontmatter = Buffer.from(parsed.frontmatterWithoutParts, 'utf8');
-  if (!tail || tail.prefix.length < frontmatter.length || !tail.prefix.subarray(0, frontmatter.length).equals(frontmatter)) return false;
+  const close = tail && tail.prefix.subarray(0, 4).toString('latin1') === '---\n' ? tail.prefix.indexOf('\n---\n', 3) : -1;
+  if (!tail || close < 0) return false;
   let lead: string;
-  try { lead = utf8.decode(tail.prefix.subarray(frontmatter.length)); } catch { return false; }
+  try { lead = utf8.decode(tail.prefix.subarray(close + 5)); } catch { return false; }
   return parsed.headBody === headBodyFor(lead, splitNotice(manifest.parts.length, manifest.total_bytes)) && partsTailSha256(path, parsed) === tail.sha256;
 }
 

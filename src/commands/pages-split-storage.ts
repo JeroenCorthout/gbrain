@@ -307,7 +307,7 @@ async function publish(engine: BrainEngine, report: SplitStorageReport, source: 
     if (!authority) throw opError('owner_unavailable', 'Laying out a page file needs the managed write path.',
       `Managed persistence is off for this brain, so the file of ${report.slug} was not written. Check the source with gbrain sources status ${report.source_id} --json.`, { docs: DOCS });
     const { SPLIT_RELAYOUT_INTENT } = await import('../core/split-layout/relayout.ts');
-    return submitMaintenanceIntent(engine, authority, report.slug, { kind: SPLIT_RELAYOUT_INTENT, expected_revision: report.revision }, request_id);
+    return submitMaintenanceIntent(engine, authority, report.slug, { kind: SPLIT_RELAYOUT_INTENT, expected_revision: report.revision, ...(report.mode === 'discard' ? { resolve_head: 'discard' } : {}) }, request_id);
   }
   const [{ operationsByName }, { uploadPageBody }] = await Promise.all([import('../core/operations.ts'), import('../core/mcp-client.ts')]);
   const call = async (tool: string, args: Record<string, unknown>) => await operationsByName[tool]!.handler(ctx, args) as Record<string, unknown>;
@@ -366,7 +366,12 @@ export async function runPagesSplitStorage(engine: BrainEngine, args: string[]):
         if (await reportPersistenceCliError(error, parsed.json)) return;
         throw error;
       }
-      const placed = laidOut(preview.at!, report.target);
+      // keep-edit is a page write, whose file the write path renders (frontmatter keys and stamps as it writes them), so
+      // it is laid out when the files are in the planned layout and a head's parts verify, not byte for byte the planned F.
+      const placed = report.mode !== 'keep-edit' ? laidOut(preview.at!, report.target) : (() => {
+        const after = readCanonicalLayout(preview.at!.path);
+        return after.kind === report.target!.layout && (after.kind !== 'split' || after.verdict.ok);
+      })();
       report.applied = { request_id: typeof receipt.request_id === 'string' ? receipt.request_id : null, status: typeof receipt.status === 'string' ? receipt.status : null, laid_out: placed };
       if (!placed) setCliExitVerdict(1);
     }

@@ -13,8 +13,10 @@
  *    or plans different parts than planSplit, the keep-edit page differs from head frontmatter + edited lead + rest of
  *    the body, a blocked state applies, or --apply on an unchanged page publishes nothing (a no-op page write).
  * 3. PGLite always; PostgreSQL when DATABASE_URL is set. KB-sized fixtures through __setSplitLimitsForTests.
- *    The --apply cases depend on lane 5b (the write path laying out head + parts in the publication): until 5b is
- *    merged they are `test.failing`; the integrator flips them to `test`.
+ *    The --apply cases run through lane 5b's write path (persistence/split-files.ts): an oversize single file becomes a
+ *    head + parts, a split page under a raised threshold one file again, and an edited head is replaced only by its
+ *    resolution (keep-edit's page write carrying the edit, or the relayout intent bound to resolve_head: discard);
+ *    a plain page write or relayout over it refuses file_database_drift and changes nothing.
  */
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from 'bun:test';
 import { createHash, randomUUID } from 'node:crypto';
@@ -106,8 +108,10 @@ describe('parseSplitStorageArgs', () => {
 for (const backend of testBackends()) {
   const databaseUrl = backend === 'postgres' ? requirePostgresTestDatabase() : undefined;
   const inBrain = (fn: (brain: ManagedBrain) => Promise<void>) => managedBrain(async brain => {
-    await brain.engine.setConfig(SPLIT_MAX_FILE_BYTES_KEY, String(THRESHOLD));
+    // Written under a raised threshold, so the page starts as one oversize file; the write path (lane 5b) would split it.
+    await brain.engine.setConfig(SPLIT_MAX_FILE_BYTES_KEY, String(1024 ** 2));
     await submitPageMutation(brain.ctx, { operation: 'put_page', params: { slug: SLUG, content: pageText(120), request_id: randomUUID() } });
+    await brain.engine.setConfig(SPLIT_MAX_FILE_BYTES_KEY, String(THRESHOLD));
     await fn(brain);
   }, { databaseUrl });
 
@@ -236,8 +240,7 @@ for (const backend of testBackends()) {
       });
     });
 
-    // Lane 5b (write path) lays out head + parts in the publication. Until it is merged these fail; flip to `test`.
-    test.failing('--apply converts an oversize single file to head + parts through the write door', async () => {
+    test('--apply converts an oversize single file to head + parts through the write door', async () => {
       await inBrain(async brain => {
         const render = await stored(brain);
         const revision = (await brain.engine.readPageSnapshot(SLUG, { sourceId: 'default' }))!.revision;
@@ -252,7 +255,42 @@ for (const backend of testBackends()) {
       });
     });
 
-    test.failing('--resolve-head keep-edit --apply publishes the edit; discard --apply rewrites the head from the stored page', async () => {
+    test('--apply converts a split page under a raised threshold back to one file through the write door', async () => {
+      await inBrain(async brain => {
+        const render = await stored(brain);
+        await writeSplit(brain, render);
+        const revision = (await brain.engine.readPageSnapshot(SLUG, { sourceId: 'default' }))!.revision;
+        await brain.engine.setConfig(SPLIT_MAX_FILE_BYTES_KEY, String(Buffer.byteLength(render) + 10));
+        const report = await captureJson(() => runPagesSplitStorage(brain.engine, [SLUG, '--source', 'default', '--apply', '--json']));
+        expect(report.applied?.laid_out).toBe(true);
+        expect(readFileSync(join(brain.root, SLUG + '.md'), 'utf8')).toBe(render);
+        expect(existsSync(partsDirFor(join(brain.root, SLUG + '.md')))).toBe(false);
+        expect((await brain.engine.readPageSnapshot(SLUG, { sourceId: 'default' }))!.revision).toBe(revision);
+      });
+    });
+
+    test('an edited head refuses every other write: a page write and a relayout without --resolve-head', async () => {
+      await inBrain(async brain => {
+        const render = await stored(brain);
+        await writeSplit(brain, render);
+        const headPath = join(brain.root, SLUG + '.md');
+        const edited = readFileSync(headPath, 'utf8').replace('Line 0000', 'Line ZERO');
+        writeFileSync(headPath, edited);
+        const revision = (await brain.engine.readPageSnapshot(SLUG, { sourceId: 'default' }))!.revision;
+        const put = await submitPageMutation(brain.ctx, { operation: 'put_page', params: { slug: SLUG, content: pageText(121), expected_revision: revision, request_id: randomUUID() } })
+          .then(receipt => receipt, (error: unknown) => error) as Record<string, any>;
+        expect([put.code, put.message]).toEqual(['source_changed', 'The canonical file contains an uncoordinated local edit.']);
+        const { maintenancePreflight, submitMaintenanceIntent } = await import('../src/core/persistence/prepared-maintenance.ts');
+        const authority = (await maintenancePreflight(brain.engine, 'default'))!;
+        const relayout = await submitMaintenanceIntent(brain.engine, authority, SLUG, { kind: 'managed_maintenance_split_relayout', expected_revision: revision }, randomUUID())
+          .then(receipt => receipt, (error: unknown) => error) as Record<string, any>;
+        expect([relayout.code, relayout.detail]).toEqual(['source_changed', 'file_database_drift']);
+        expect(readFileSync(headPath, 'utf8')).toBe(edited);
+        expect(await stored(brain)).toBe(render);
+      });
+    });
+
+    test('--resolve-head keep-edit --apply publishes the edit; discard --apply rewrites the head from the stored page', async () => {
       await inBrain(async brain => {
         const render = await stored(brain);
         await writeSplit(brain, render);
