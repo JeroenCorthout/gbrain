@@ -28,8 +28,8 @@ import { OperationError, opError } from '../ops/contract.ts';
 import { readFix } from '../ops/op-fix.ts';
 import type { Action } from '../agent-output.ts';
 import { isWriteTargetContained } from '../path-confine.ts';
-import { SEGMENT_MAX_BYTES } from '../page-body/limits.ts';
-import { headBodyFor, parseHead, partsDirFor, planSplit, PART_FILE_RE, reassemble, splitLimits, SplitLayoutError, splitNotice, splitScratchPath, splitThresholdBytes, type ParsedHead, type SplitPlan } from '../split-layout/index.ts';
+import { FRONTMATTER_HEAD_MAX_BYTES, SEGMENT_MAX_BYTES } from '../page-body/limits.ts';
+import { assertNoPartsKey, headBodyFor, parseHead, partsDirFor, planSplit, PART_FILE_RE, reassemble, splitLimits, SplitLayoutError, splitNotice, splitScratchPath, splitThresholdBytes, type ParsedHead, type SplitPlan } from '../split-layout/index.ts';
 import type { MutationFile } from './bundle-files.ts';
 import type { PageMutationFile } from './coordinator.ts';
 import { git, withSession } from './effect-git.ts';
@@ -130,6 +130,44 @@ function splitRefusal(path: string, error: SplitLayoutError): OperationError {
     `The file of ${basename(path)} is larger than sync.max_file_bytes, so it is written as a head file plus part files, but ${error.message} (${error.code}). Nothing was written. Fix the page, then submit the write again with a new request_id (docs/guides/memory-boundaries.md#large-pages).`);
 }
 
+/** The leading bytes of a content in which a page's frontmatter block must close (a BOM, then FRONTMATTER_HEAD_MAX_BYTES). */
+const FRONTMATTER_PREFIX_BYTES = FRONTMATTER_HEAD_MAX_BYTES + 3;
+const lenient = new TextDecoder('utf-8');
+
+/** Whether `prefix` (a content's leading bytes) has a frontmatter block declaring a top-level `gbrain_parts` key. */
+function declaresPartsKey(prefix: Uint8Array): boolean {
+  const text = lenient.decode(prefix);
+  try { assertNoPartsKey(text.startsWith('\uFEFF') ? text.slice(1) : text); return false; }
+  catch (error) { if (error instanceof SplitLayoutError) return true; throw error; }
+}
+
+/**
+ * C1: a page publication whose content declares a top-level `gbrain_parts` key is a split page head, never a page file
+ * (a head read raw and written back: a file repair, a `put --file` of the head, an agent's read-modify-write). Writing
+ * it would make the head the page (its lead and notice) and drop every part, so it refuses before any file is planned.
+ */
+async function assertNotSplitHead(engine: BrainEngine, file: SplitTarget): Promise<void> {
+  if (file.content === null) return;
+  let prefix: Uint8Array;
+  if (!isStreamedContent(file.content)) {
+    const bytes = typeof file.content === 'string' ? Buffer.from(file.content.slice(0, FRONTMATTER_PREFIX_BYTES), 'utf8') : file.content;
+    prefix = bytes.subarray(0, FRONTMATTER_PREFIX_BYTES);
+  } else {
+    const pieces: Uint8Array[] = [];
+    let held = 0;
+    for await (const piece of file.content.pieces(engine)) {
+      pieces.push(piece.subarray(0, FRONTMATTER_PREFIX_BYTES - held));
+      held += pieces.at(-1)!.length;
+      if (held >= FRONTMATTER_PREFIX_BYTES) break;
+    }
+    prefix = Buffer.concat(pieces);
+  }
+  if (!declaresPartsKey(prefix)) return;
+  throw opError('split_head_content', 'The content is a split page head, not a page file, so it was not written.',
+    `The content for ${basename(file.path)} has a top-level gbrain_parts key: it is the head file of a split page (the first bytes of the page and the manifest of its part files), read and written back as if it were the whole page. Writing it would replace the page with its lead and remove every part, so nothing was written. Write the whole page instead (gbrain get gives it whole), or change how the page is stored with gbrain pages split-storage <slug>, which previews before --apply.`,
+    { docs: 'docs/guides/write-refusals.md#split_head_content' });
+}
+
 /**
  * Whether a page target might take the split layout: its content is larger than the smallest threshold, or its path
  * already has a parts directory. A group publication leaves such a member to publishMutation (group-publish.ts).
@@ -137,7 +175,8 @@ function splitRefusal(path: string, error: SplitLayoutError): OperationError {
 export function mayTakeSplitLayout(file: Pick<MutationFile, 'path' | 'content'> | undefined): boolean {
   const dir = file ? partsDirOf(file.path) : null;
   if (!file || !dir) return false;
-  return (file.content !== null && fileContentBytes(file.content) > splitLimits.thresholdMin) || existsSync(dir);
+  if (file.content !== null && (fileContentBytes(file.content) > splitLimits.thresholdMin || isStreamedContent(file.content))) return true;
+  return existsSync(dir) || (file.content !== null && declaresPartsKey((typeof file.content === 'string' ? Buffer.from(file.content.slice(0, FRONTMATTER_PREFIX_BYTES), 'utf8') : file.content).subarray(0, FRONTMATTER_PREFIX_BYTES)));
 }
 
 /**
@@ -147,6 +186,7 @@ export function mayTakeSplitLayout(file: Pick<MutationFile, 'path' | 'content'> 
  */
 export async function splitPublicationTargets(engine: BrainEngine, file: SplitTarget): Promise<boolean> {
   if (file.split) return true;
+  await assertNotSplitHead(engine, file);
   const dir = partsDirOf(file.path);
   if (!dir) return false;
   const bytes = file.content === null ? 0 : fileContentBytes(file.content);

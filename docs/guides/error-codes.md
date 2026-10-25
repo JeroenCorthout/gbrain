@@ -4029,6 +4029,16 @@ More: [docs/guides/write-refusals.md#slug_page_mismatch](../../docs/guides/write
 |---|---|---|---|---|---|---|
 | Split bad ratio. | The request itself was wrong or no longer matches the brain; nothing was changed. | Correct the request using the message above, then retry. | agent | `repeat the read that failed` | 1 | no |
 
+### split_head_content
+
+<a id="split_head_content"></a>
+
+| Meaning | Why | Next step | Who acts · consent | Verify | Exit | Retryable |
+|---|---|---|---|---|---|---|
+| A page write's content has a top-level gbrain_parts key: it is the head file of a split page read and written back as the whole page, so nothing was written. | A page larger than sync.max_file_bytes is stored as a head file (its frontmatter with the gbrain_parts manifest, the first bytes of the page and a notice) plus part files. Writing the head back as the page would make its lead the whole page and remove every part. A file repair, a put of the head file or a read-modify-write of the head file does exactly that, so every page publication refuses such content. | Write the whole page instead (gbrain get returns it whole, never the head), or change how it is stored on disk with gbrain pages split-storage, which previews before --apply. Submit the write again with a new request_id. Run: gbrain pages split-storage '{slug}' --source '{source_id}' --json | agent | `repeat the read that failed` | 1 | no |
+
+More: [docs/guides/write-refusals.md#split_head_content](../../docs/guides/write-refusals.md#split_head_content)
+
 ### split_head_modified
 
 <a id="split_head_modified"></a>
