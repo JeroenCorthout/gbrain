@@ -9,8 +9,8 @@
 import { opError, type OperationError } from '../ops/contract.ts';
 import type { Action } from '../agent-output.ts';
 
-/** `persistence_effects.recovery` (effect-model.ts `EffectRecovery`): 1 embeds the file, 2 names a streamed stage. */
-export const EFFECT_RECOVERY_VERSIONS: readonly number[] = [1, 2];
+/** `persistence_effects.recovery` (effect-model.ts `EffectRecovery`): 1 embeds the file, 2 names a streamed stage, 3 a split page's head and parts. */
+export const EFFECT_RECOVERY_VERSIONS: readonly number[] = [1, 2, 3];
 /** `persistence_requests.recovery` (model.ts `RecoveryRecord`): 1 one file, 2 a shared-skill bundle. */
 export const REQUEST_RECOVERY_VERSIONS: readonly number[] = [1, 2];
 
