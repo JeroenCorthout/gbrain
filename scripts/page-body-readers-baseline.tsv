@@ -224,6 +224,8 @@ src/core/facts/backstop.ts	runPipeline	field	STREAM
 src/core/facts/conversation-window-extract.ts	regularPageVersionToken	field	STREAM	
 src/core/facts/drain.ts	estimateBacklogUsd	sql	META	
 src/core/facts/eligibility.ts	isFactsBackstopEligible	field	LEAD	
+src/core/facts/fence-fact-append.ts	prepareFenceFactAppend	call:serializePageToMarkdown	SEGW	assertInlineBody first
+src/core/facts/fence-fact-append.ts	prepareFenceFactAppend	field	SEGW	assertInlineBody before the fence write
 src/core/facts/file-body-guard.ts	fileBodyMatchesStored	field	SEGW	a segmented page reads NULL inline columns, never matches, and the caller holds it (nothing written)
 src/core/facts/file-body-guard.ts	mirroredBody	field	NONE	the parsed checkout file body, not a page row
 src/core/facts/file-body-guard.ts	readStoredBody	sql	SEGW	reads the inline columns only; a segmented page reads NULL and every caller holds it
@@ -445,8 +447,6 @@ src/core/persistence/loop-fact-retirement.ts	prepareLoopFactRetirement	field	SEG
 src/core/persistence/manual-links.ts	prepareManualLinkMutation	call:serializePageToMarkdown	SEGW	wholeBodySnapshot first: a segmented page within 24 MiB is read back whole, a larger one refuses
 src/core/persistence/memory-mutations.ts	planRememberTarget	call:serializePageToMarkdown	SEGW	
 src/core/persistence/memory-mutations.ts	planRememberTarget	field	STREAM	
-src/core/persistence/memory-prepare.ts	prepareMemoryMutation	call:serializePageToMarkdown	SEGW	assertInlineBody first
-src/core/persistence/memory-prepare.ts	prepareMemoryMutation	field	SEGW	assertInlineBody before the fence write
 src/core/persistence/origin-twins.ts	readOriginClaimants	sql	STREAM	#6948 twin verdict: md5 of an inline body; a segmented page (compiled_truth NULL) reads NULL and holds content_differs, so missing evidence never matches
 src/core/persistence/overwritten-edits.ts	CONTENT_COLUMNS	sql	STREAM	selects body_storage beside the inline body columns; a segmented version or page has NULL bodies and its overwrite is reported unknown (reason segmented), never compared or restored
 src/core/persistence/overwritten-edits.ts	overwriteContent	field	STREAM	returns null for a segmented row (body_storage segmented or NULL compiled_truth); the scan reports that overwrite unknown (reason segmented)

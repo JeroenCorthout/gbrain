@@ -2061,7 +2061,8 @@ gbrain repair duplicate-facts --apply --expect <hash> --yes
 
 A group is the active facts of one source, visibility and speaker whose text
 normalizes to the same fingerprint (the rule `forget` uses: case, punctuation
-and runs of whitespace do not matter). The oldest row is kept; every other copy gets
+and runs of whitespace do not matter). The row in a page's Facts table is kept (the
+oldest one if several are), else the oldest row; every other copy gets
 `expired_at` and `superseded_by` pointing at it, so it leaves recall but is not
 deleted or withdrawn, and the claim can be saved again. Groups whose copies all
 sit on one entity are `same_entity`. Groups spread over several entities are

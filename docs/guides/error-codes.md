@@ -1445,6 +1445,16 @@ More: [docs/guides/retrieval-feedback.md#feedback_disabled](../../docs/guides/re
 
 More: [docs/guides/retrieval-feedback.md#feedback_not_authorized](../../docs/guides/retrieval-feedback.md#feedback_not_authorized)
 
+### fence_row_changed
+
+<a id="fence_row_changed"></a>
+
+| Meaning | Why | Next step | Who acts · consent | Verify | Exit | Retryable |
+|---|---|---|---|---|---|---|
+| A fact was not indexed from the facts fence row its request names because that row no longer reads back as the fact (removed, struck, emptied, another visibility or other text); nothing was written. | A facts row derives from its fence row, which Git holds. Indexing a fact at a row that now says something else would make the database disagree with the file, so the write stops and the file stays as it is. | Read the page (gbrain get <slug>) to see the row as it stands; if the fact is still wanted, remember it again, which writes it as a new row. | agent | `repeat the read that failed` | 1 | no |
+
+Reasons: `row_missing`, `struck`, `empty`, `visibility`, `text`.
+
 ### fence_unrenderable
 
 <a id="fence_unrenderable"></a>
