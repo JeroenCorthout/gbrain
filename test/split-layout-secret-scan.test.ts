@@ -3,13 +3,13 @@
  *
  * Protects: a split head brings its part files into `scanFiles` (each scanned whole) so a secret inside one part is
  * found and attributed to that part; a secret cut across a part boundary (a forced cut inside a long line), which no
- * part shows whole, is found by the seam scan (the last 4 KiB of part k joined with the first 4 KiB of part k+1) and
+ * part shows whole, is found by the seam scan (the last 64 KiB of part k joined with the first 64 KiB of part k+1) and
  * reported against part k with the next part and the match's byte offset; a part over the per-file scan cap follows
  * the cap rules: `scanFiles` skips it whole (as it skips any file over SCAN_MAX_FILE_BYTES), and the push gate streams
  * it whole and refuses its seams as unscannable (fail closed).
  * Regression it catches: a scan that sees only the files a caller listed (the head) or only whole parts, or a push
  * gate that commits a split page whose seam hides a secret.
- * Seam: __setSplitLimitsForTests (16 KiB parts, so a 4 KiB seam window is a strict part of each part).
+ * Seam: __setSplitLimitsForTests (256 KiB parts, so a 64 KiB seam window is a strict part of each part).
  */
 import { afterAll, afterEach, beforeAll, expect, test } from 'bun:test';
 import { execFileSync } from 'node:child_process';
@@ -24,7 +24,7 @@ import { writeSplitPage } from './helpers/split-page.ts';
 import { withEnv } from './helpers/with-env.ts';
 
 const T = 120_000;
-const LIMITS = { thresholdMin: 1, partTarget: 8 * 1024, partMax: 16 * 1024, leadMax: 1024, partCountMax: 500 };
+const LIMITS = { thresholdMin: 1, partTarget: 128 * 1024, partMax: 256 * 1024, leadMax: 1024, partCountMax: 500 };
 const GITHUB = 'gh' + 'p_' + 'Z9y8X7w6V5u4T3s2R1q0P9o8N7m6L5k4J3i2';
 const OPENAI = 'sk-' + 'A1b2C3d4E5f6G7h8I9j0K1l2M3n4P5q6R7s8';
 const HEAD = 'notes/big-page.md';
@@ -40,7 +40,7 @@ function linesBody(lines: number, secretLine?: { at: number; text: string }): st
   return Array.from({ length: lines }, (_, i) => (i === secretLine?.at ? secretLine.text : `${i} ${FILLER}`)).join('\n') + '\n';
 }
 
-/** One line longer than a part, so the planner cuts it at exactly 16 KiB of the body, with `token` across that cut. */
+/** One line longer than a part, so the planner cuts it at exactly 256 KiB of the body, with `token` across that cut. */
 function cutLineBody(token: string, before = 20): string {
   const cut = LIMITS.partMax, start = cut - before;
   let line = '';
@@ -55,7 +55,7 @@ async function splitPage(body: string, root = mkdtempSync(join(home, 'repo-'))) 
 }
 
 test('scanFiles on a split head scans its parts whole: a secret inside one part is found and attributed to that part', async () => {
-  const page = await splitPage(linesBody(600, { at: 300, text: `deploy token ${GITHUB} for the acme-example bot` }));
+  const page = await splitPage(linesBody(12_000, { at: 6_000, text: `deploy token ${GITHUB} for the acme-example bot` }));
   const holder = page.parts.find(part => part.content.includes(GITHUB));
   expect(page.parts.length).toBeGreaterThan(3);
   expect(holder).toBeDefined();
@@ -77,11 +77,11 @@ test('a secret spanning a part boundary is found by the seam scan, reported agai
       seam: { next: page.abs(second!.rel), offset: first!.content.indexOf(GITHUB.slice(0, 10)) - 1 },
     }]);
   }
-  expect(SPLIT_SEAM_SCAN_BYTES).toBe(4096);
+  expect(SPLIT_SEAM_SCAN_BYTES).toBe(65536);
 });
 
 test('scanFiles skips a part over the per-file scan cap, as it skips any file over it, and still scans the other parts', async () => {
-  const page = await splitPage(linesBody(600, { at: 590, text: `second key ${OPENAI} in a later part` }));
+  const page = await splitPage(linesBody(12_000, { at: 11_800, text: `second key ${OPENAI} in a later part` }));
   const [oversize] = page.parts;
   writeFileSync(page.abs(oversize!.rel), Buffer.alloc(SCAN_MAX_FILE_BYTES + 1, 0x20));
   appendFileSync(page.abs(oversize!.rel), `\nkey ${GITHUB}\n`);
@@ -121,7 +121,7 @@ test('the push gate blocks a split page whose secret spans a part boundary, nami
 test('the push gate streams a part over the whole-read cap and refuses its seams as unscannable (fail closed)', async () => {
   for (const secret of [true, false]) {
     const { work, env } = pushWorkspace();
-    const page = await splitPage(linesBody(600), work);
+    const page = await splitPage(linesBody(12_000), work);
     const oversize = page.parts[1]!;
     writeFileSync(page.abs(oversize.rel), Buffer.alloc(PUSH_MAX_SCAN_BYTES + 1, 0x20));
     if (secret) appendFileSync(page.abs(oversize.rel), `\nkey ${GITHUB}\n`);
