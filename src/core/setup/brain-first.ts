@@ -31,7 +31,7 @@ import { probeBlock, removeBlock, spliceBlock, type BlockMarkers } from '../mana
 import { ensureGitExcluded } from '../context/compiled-core.ts';
 import type { McpSurface } from '../../mcp/surface.ts';
 
-export const BRAIN_FIRST_VERSION = 1;
+export const BRAIN_FIRST_VERSION = 2;
 export const BRAIN_FIRST_BEGIN = '<!-- gbrain:brain-first:begin -->';
 export const BRAIN_FIRST_END = '<!-- gbrain:brain-first:end -->';
 export const BRAIN_FIRST_OPT_OUT_ENV = 'GBRAIN_AGENT_INSTRUCTIONS';
@@ -53,8 +53,8 @@ export function renderBrainFirstBlock(harness: string, access: BrainFirstAccess,
   const tool = (mcp: string, cli: string) => (access.kind === 'mcp' ? `\`${mcp}\`` : `\`${access.launcher} ${cli}\``);
   const where = access.kind === 'mcp' ? `the \`${access.server}\` MCP server` : `the \`${access.launcher}\` command`;
   const lookup = access.kind === 'mcp' && access.surface === 'verbs'
-    ? '- Check the brain before reading files, mail or other sources one by one: `recall` for what was said or decided, `entity` for a person or company.'
-    : `- Search the brain before reading files, mail or other sources one by one: ${tool('search', 'search "<names or phrases>"')} for names and phrases, ${tool('query', 'query "<question>"')} for questions. Then read the best hit with ${tool('get_page', 'get <slug>')}.`;
+    ? '- Before answering any turn, check GBrain first, before files, mail or other sources: `recall` for what was said or decided, `entity` for a person or company.'
+    : `- Before answering any turn, check GBrain first, before files, mail or other sources: ${tool('search', 'search "<names or phrases>"')} for names and phrases, ${tool('query', 'query "<question>"')} for questions. Then read the best hit with ${tool('get_page', 'get <slug>')}.`;
   return [
     `<!-- gbrain brain-first v${BRAIN_FIRST_VERSION}: managed by gbrain and replaced on upgrade; edit outside these markers. Opt out: ${optOut} -->`,
     '## Memory: check GBrain first',
@@ -75,6 +75,34 @@ export function renderBrainFirstBlock(harness: string, access: BrainFirstAccess,
 /** The full block as it appears in a file, markers included (for printing to paste by hand). */
 export function renderBrainFirstSnippet(harness: string, access: BrainFirstAccess, optOut?: string): string {
   return `${BRAIN_FIRST_BEGIN}\n${renderBrainFirstBlock(harness, access, optOut)}\n${BRAIN_FIRST_END}\n`;
+}
+
+/**
+ * The per-turn rule: one line a harness's per-turn hook puts beside every user
+ * turn (Claude Code and Codex UserPromptSubmit, Hermes pre_llm_call, OpenClaw's
+ * context engine). An instruction in the system prompt alone left agents
+ * mostly answering without the brain; the same rule next to the turn did not.
+ */
+export function renderBrainFirstTurnRule(access: BrainFirstAccess): string {
+  const how = access.kind === 'cli' ? `\`${access.launcher} search "<names>"\` or \`${access.launcher} query "<question>"\``
+    : access.surface === 'verbs' ? `\`recall\` or \`entity\` on the \`${access.server}\` MCP server`
+      : `\`search\` or \`query\` on the \`${access.server}\` MCP server`;
+  return `GBrain: before answering this turn, check GBrain first (${how}) for the people, companies, projects, meetings and decisions it touches. Then answer and finish the task.`;
+}
+
+/**
+ * The per-turn rule for one harness, or null. Off under GBRAIN_AGENT_INSTRUCTIONS=0
+ * and after a recorded decline; an installed block's access names the tools.
+ * `fallback` is the access for a lane that turns the rule on without a ledger
+ * entry (OpenClaw's context engine, Hermes's hook); without one, only a
+ * recorded install turns it on.
+ */
+export function brainFirstTurnRule(harness: string, fallback?: BrainFirstAccess): string | null {
+  if (process.env[BRAIN_FIRST_OPT_OUT_ENV] === '0') return null;
+  const entries = readBrainFirstLedger().filter((e) => e.harness === harness);
+  const installed = entries.filter((e) => e.status === 'installed' && e.access).sort((a, b) => (a.updated_at < b.updated_at ? 1 : -1))[0];
+  if (installed) return renderBrainFirstTurnRule(installed.access);
+  return entries.length === 0 && fallback ? renderBrainFirstTurnRule(fallback) : null;
 }
 
 export const CURSOR_HEAD = '---\ndescription: GBrain memory, managed by gbrain\nalwaysApply: true\n---\n';

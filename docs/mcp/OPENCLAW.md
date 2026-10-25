@@ -86,7 +86,9 @@ workspace, else `agents.defaults.workspace`, else `~/.openclaw/workspace`; with
 several agents, pass `--workspace`). Text outside the markers is never touched,
 a re-run upgrades the block in place, `--no-instructions` opts out and is
 remembered, and `--remove` takes it out. A thin-client install puts the same
-block at the top of `GBRAIN-INSTRUCTIONS.md`.
+block at the top of `GBRAIN-INSTRUCTIONS.md`. With gbrain's context engine plugin, the
+same rule also rides every turn in its per-turn addition (off after
+`--no-instructions` or under `GBRAIN_AGENT_INSTRUCTIONS=0`).
 
 ## Scheduled jobs and workspace scripts
 

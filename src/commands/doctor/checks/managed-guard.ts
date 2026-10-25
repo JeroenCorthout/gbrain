@@ -23,7 +23,7 @@ export const GUARDED_TABLE_COLUMNS: Readonly<Record<string, readonly string[]>> 
   facts: ['attributed_to', 'claim_metric', 'claim_period', 'claim_unit', 'claim_value', 'confidence', 'consolidated_at', 'consolidated_into', 'context', 'created_at',
     'dim_status', 'dimension', 'embedded_at', 'embedded_text_hash', 'embedding', 'embedding_model', 'entity_slug', 'event_type', 'expired_at', 'fact',
     'id', 'kind', 'last_write_principal_id', 'last_write_principal_kind', 'last_write_request_id', 'last_written_at', 'notability', 'row_num', 'source',
-    'source_id', 'source_markdown_slug', 'source_session', 'superseded_by', 'trust_tier', 'valid_from', 'valid_until', 'value', 'value_hash', 'visibility',
+    'source_id', 'source_markdown_slug', 'source_session', 'source_window', 'superseded_by', 'trust_tier', 'valid_from', 'valid_until', 'value', 'value_hash', 'visibility',
     'write_origin', 'write_principal_id', 'write_principal_kind', 'write_request_id'],
   takes: ['active', 'claim', 'created_at', 'embedded_at', 'embedded_text_hash', 'embedding', 'embedding_model', 'holder', 'id', 'kind',
     'last_write_principal_id', 'last_write_principal_kind', 'last_write_request_id', 'last_written_at', 'page_id', 'resolved_at', 'resolved_by',

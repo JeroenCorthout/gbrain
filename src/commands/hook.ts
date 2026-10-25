@@ -120,6 +120,7 @@ import { isClaudeCliSelfTranscriptPath } from '../core/ai/providers/claude-cli-s
 import { withoutPhysicalRootMetadata } from '../core/persistence/root-metadata.ts';
 import { HOOK_SUBCOMMANDS as HOOK_EVENTS, ROUTERS, subcommandHelpRequested } from '../cli/subcommands.ts';
 import { isManagedFilesystemPath } from '../core/persistence/filesystem-guard.ts';
+import { brainFirstTurnRule } from '../core/setup/brain-first.ts';
 
 // ── Tunables ────────────────────────────────────────────────────────────────
 
@@ -226,6 +227,12 @@ export interface HookIo {
    */
   disablePushBanner?: boolean;
   /**
+   * TEST SEAM: the per-turn brain-first rule user-prompt leads every turn
+   * with. `undefined` = read it from the brain-first ledger; `null` = none
+   * (BrainBench and bootstrap verify measure the context block alone).
+   */
+  turnRule?: string | null;
+  /**
    * TEST SEAM (v0.46.15, codex ship-review): suppress hook telemetry WRITES
    * (heartbeat JSONL). Telemetry paths resolve from GBRAIN_HOME/homedir —
    * NOT from configOverride — so a hermetic bench replay would otherwise
@@ -260,6 +267,9 @@ Events (wired into .claude/settings.local.json by gbrain bootstrap):
   compact         (PreCompact) bank the window's standing entities into the
                   session cursor so the post-compaction session-start serves
                   a warm context pack; emits nothing
+  turn-rule       (Hermes pre_llm_call) print the per-turn brain-first rule as
+                  {"context": ...}; nothing after --no-instructions or under
+                  GBRAIN_AGENT_INSTRUCTIONS=0
 
 Env: GBRAIN_HOOKS=0 disables all events (immediate exit 0).
 All events fail open: errors exit 0 with empty stdout and a heartbeat entry at
@@ -344,6 +354,8 @@ export async function runHook(args: string[], io: HookIo = {}): Promise<number> 
       return hookSessionEnd(io);
     case 'compact':
       return hookCompact(io);
+    case 'turn-rule':
+      return hookTurnRule(io);
     default:
       return 1; // unreachable
   }
@@ -1110,12 +1122,15 @@ async function hookUserPrompt(io: HookIo): Promise<number> {
   // budgeted by the 800ms deadline, not free-ride before the race starts.
   let banner: ReturnType<typeof pendingPushFailureBanner> = null;
   let wrotePayload = false;
+  // Per-turn brain-first rule (brain-first.ts): every turn, with or without a block.
+  let turnRule: string | null = null;
 
   const work = (async (): Promise<UserPromptOutcome> => {
     // Push failure wins the single banner slot; the monthly backup notice
     // rides the same rail (systemMessage + additionalContext) when no push
     // failure is pending. Both are cache/file readers, budgeted by the race.
     banner = io.disablePushBanner ? null : (pendingPushFailureBanner() ?? pendingBackupBanner());
+    turnRule = io.turnRule !== undefined ? io.turnRule : brainFirstTurnRule(io.harness ?? 'claude-code');
     const j = await readStdinJson(io, 300);
     if (!j) return { outcome: 'degraded', reason: 'no_stdin' };
 
@@ -1220,7 +1235,7 @@ async function hookUserPrompt(io: HookIo): Promise<number> {
     // trim defensively rather than letting the harness divert-and-drop. The
     // banner (≤300 chars, fixed) rides inside the same payload [D5] — only
     // blockText is trimmed, so the failure notice survives the cap loop.
-    const bannerPrefix = banner ? `${banner.text}\n\n` : '';
+    const bannerPrefix = [banner?.text, turnRule].filter(Boolean).map((t) => `${t}\n\n`).join('');
     const buildPayload = (block: string) =>
       JSON.stringify({
         hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: bannerPrefix + block },
@@ -1265,16 +1280,19 @@ async function hookUserPrompt(io: HookIo): Promise<number> {
   // (no_serve, ipc_unavailable, no_pglite_path, empty windows, transcript
   // aborts, …) still surfaces the push failure — unless the deadline expired,
   // in which case record() was never called and the banner re-fires next turn.
-  // (Local copy: TS cannot track the closure-side assignment of `banner`.)
-  const pendingBanner = banner as { text: string; record: () => void } | null;
-  if (pendingBanner && !wrotePayload && !expired) {
-    guardedWrite(
+  // The per-turn rule rides the same fallback on every path, the deadline included.
+  // (Local copies: TS cannot track the closure-side assignments.)
+  const pendingBanner = (expired ? null : banner) as { text: string; record: () => void } | null;
+  const rule = turnRule as string | null;
+  if (!wrotePayload && (pendingBanner || rule)) {
+    write(
+      io,
       JSON.stringify({
-        hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: pendingBanner.text },
-        systemMessage: pendingBanner.text,
+        hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: [pendingBanner?.text, rule].filter(Boolean).join('\n\n') },
+        ...(pendingBanner ? { systemMessage: pendingBanner.text } : {}),
       }) + '\n',
     );
-    pendingBanner.record();
+    pendingBanner?.record();
   }
   await writeHeartbeat(io, {
     ts: new Date().toISOString(),
@@ -1285,6 +1303,15 @@ async function hookUserPrompt(io: HookIo): Promise<number> {
     ...(result.turns !== undefined ? { turns: result.turns } : {}),
     ...(result.pressure_pct !== undefined ? { pressure_pct: result.pressure_pct } : {}),
   });
+  return 0;
+}
+
+// ── turn-rule (Hermes pre_llm_call) ───────────────────────────────────────────
+
+/** Hermes `hooks.pre_llm_call`: Hermes appends stdout `{"context": ...}` to each user message. File reads only. */
+function hookTurnRule(io: HookIo): number {
+  const rule = io.turnRule !== undefined ? io.turnRule : brainFirstTurnRule('hermes', { kind: 'mcp', server: 'gbrain' });
+  if (rule) write(io, `${JSON.stringify({ context: rule })}\n`);
   return 0;
 }
 

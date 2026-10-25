@@ -174,12 +174,15 @@ brain nobody told them about, so finish the install with:
 gbrain setup claude-code --instructions-only
 ```
 
-It writes one short marked block into `~/.claude/CLAUDE.md` (with `--scope project`, `./CLAUDE.local.md`): search the brain before reading
-sources one by one, read the best hit, fill gaps with other tools, apply your own
+It writes one short marked block into `~/.claude/CLAUDE.md` (with `--scope project`, `./CLAUDE.local.md`): before answering any turn,
+search the brain first, read the best hit, fill gaps with other tools, apply your own
 access rules, then finish the task. Text outside the markers is never touched, a
 re-run upgrades the block in place, `--dry-run` previews it,
 `--no-instructions` opts out (and is remembered) and `--remove` takes it out.
 `gbrain setup claude-code` and `gbrain connect --install` write it for you.
+While the block is installed, setup's UserPromptSubmit hook also leads every turn
+with the same rule, beside the user's message, whether or not `gbrain serve` has
+context to add (`--no-hooks` installs no hook).
 `gbrain doctor` warns when the block is missing or out of date.
 
 ## Verify

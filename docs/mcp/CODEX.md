@@ -192,13 +192,14 @@ gbrain setup codex --instructions-only
 ```
 
 It writes one short marked block into `$CODEX_HOME/AGENTS.md` (or a non-empty `AGENTS.override.md`, since Codex
-then reads only the override): search the brain before reading
-sources one by one, read the best hit, fill gaps with other tools, apply your own
+then reads only the override): before answering any turn,
+search the brain first, read the best hit, fill gaps with other tools, apply your own
 access rules, then finish the task. Text outside the markers is never touched, a
 re-run upgrades the block in place, `--dry-run` previews it,
 `--no-instructions` opts out (and is remembered) and `--remove` takes it out.
 `gbrain setup codex` and `gbrain connect --agent codex --install` write it for
-you; the Codex plugin and a hand-run `codex mcp add` do not.
+you; the Codex plugin and a hand-run `codex mcp add` do not. While the block is
+installed, setup's UserPromptSubmit hook also leads every turn with the same rule.
 `gbrain doctor` warns when the block is missing or out of date.
 
 ## Always-loaded core memory

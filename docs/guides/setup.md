@@ -153,7 +153,7 @@ Registering MCP makes the tools available; it does not make agents use them.
 Without a line in the harness's own instructions, sessions rarely call the
 brain. So setup also writes one short marked block (`<!-- gbrain:brain-first:begin -->`
 … `<!-- gbrain:brain-first:end -->`) into the file the harness loads every
-session: search the brain before reading sources one by one, read the best hit,
+session: before answering any turn, search the brain first, read the best hit,
 fill gaps with other tools, apply your own access rules (`source_ids` narrows a
 search to what the current requester may see), then finish the task.
 
@@ -178,6 +178,14 @@ block printed to paste. `gbrain connect --install` and
 install, and the thin-client `GBRAIN-INSTRUCTIONS.md` starts with it.
 `gbrain doctor` (`harness_wiring`) warns when a registered harness's block is
 missing, stale or damaged, with a fix that rewrites only the block.
+
+A rule in the system prompt is easy for a model to pass over, so the same rule
+also rides each turn where the harness has a per-turn hook: Claude Code and
+Codex get it from setup's UserPromptSubmit hook while the block is installed,
+OpenClaw from gbrain's context engine, and Hermes from a marked `pre_llm_call`
+hook (`gbrain hook turn-rule`) that `gbrain setup hermes` adds to its config.yaml.
+Cursor's rule is always applied; opencode reads its AGENTS.md on every request.
+The opt-out turns the per-turn rule off with the block.
 
 ## Skill loading (opt-in)
 

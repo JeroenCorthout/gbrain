@@ -40,14 +40,32 @@ gbrain setup hermes --instructions-only
 ```
 
 It writes one short marked block into `$HERMES_HOME/SOUL.md` (default `~/.hermes/SOUL.md`), after your identity
-text, which stays first and unchanged: search the brain before reading
-sources one by one, read the best hit, fill gaps with other tools, apply your own
+text, which stays first and unchanged: before answering any turn,
+search the brain first, read the best hit, fill gaps with other tools, apply your own
 access rules, then finish the task. Text outside the markers is never touched, a
 re-run upgrades the block in place, `--dry-run` previews it,
 `--no-instructions` opts out (and is remembered) and `--remove` takes it out.
 `gbrain doctor` warns when the block is missing or out of date. Setup never
 creates `SOUL.md`: Hermes uses a non-empty one instead of its default identity,
 so start Hermes once (it seeds the file) or write your identity there first.
+
+The same rule also rides every turn. Setup appends a marked `pre_llm_call` shell
+hook to `$HERMES_HOME/config.yaml` and records its approval in Hermes's
+`shell-hooks-allowlist.json` for that exact command:
+
+```yaml
+hooks:
+  pre_llm_call:
+    - command: "/absolute/path/to/gbrain hook turn-rule"
+```
+
+Hermes appends the hook's `{"context": ...}` output to each user message, so the
+rule reaches the model next to the turn instead of only in the system prompt.
+Text outside the markers is never touched. When config.yaml already has a
+`hooks:` section, or setup has no absolute gbrain path (`--gbrain-bin`), setup
+prints the entry to add yourself instead; approve it when Hermes asks (or set
+`HERMES_ACCEPT_HOOKS=1`). `--no-instructions` and `--remove` take the hook and its
+approval out, and the hook prints nothing under `GBRAIN_AGENT_INSTRUCTIONS=0`.
 
 ## Direct config (equally supported)
 

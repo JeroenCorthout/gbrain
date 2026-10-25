@@ -22,6 +22,7 @@ import { backupNagReadOnlyConsult, backupNoticeText, loadBackupStatus } from './
 import { estimateMessageTokens, openClawCoreLane } from './context/openclaw-core.ts';
 import { TURN_CONTEXT_ENVELOPE } from './context/turn-context-envelope.ts';
 import { loadContextModule } from './context/load-warning.ts';
+import { brainFirstTurnRule } from './setup/brain-first.ts';
 // Types inlined from openclaw/plugin-sdk to avoid hard dependency during development.
 // At runtime inside OpenClaw, the real SDK is available; these types ensure build compat.
 
@@ -1383,6 +1384,13 @@ export function createGBrainContextEngine(ctx: {
       const parts = [contextBlock, ...await openClawCoreLane(workspaceDir, CHECKPOINT_POLL_TIMEOUT_MS).additions({
         sessionId: sanitizeEngineSessionId(sessionId ?? sessionKey ?? null), messages: msgs, tokenBudget, availableTools })];
       if (checkpointBlock) parts.push(checkpointBlock);
+      // The per-turn brain-first rule (brain-first.ts): on unless the block was declined for OpenClaw.
+      try {
+        const turnRule = brainFirstTurnRule('openclaw', { kind: 'mcp', server: 'gbrain' });
+        if (turnRule) parts.push(turnRule);
+      } catch {
+        /* a rule must never break context assembly */
+      }
       if (memoryAddition) parts.push(memoryAddition);
       if (reflexAddition) parts.push(reflexAddition);
 

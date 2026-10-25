@@ -90,7 +90,7 @@ for (const lane of LANES) {
       const text = read(path);
       expect(text.startsWith(lane.existing)).toBe(true);
       expect(blocks(text)).toBe(1);
-      expect(text).toContain('Search the brain before reading files');
+      expect(text).toContain('Before answering any turn, check GBrain first, before files, mail or other sources');
       expect(text).toContain('apply your own access rules');
       expect(text).toContain('finish the whole task');
       expect(ledger(b)).toEqual([expect.objectContaining({ harness: lane.harness, path, status: 'installed', created_file: false })]);
@@ -229,6 +229,25 @@ describe('brain-first block: placement rules', () => {
     writeFileSync(join(b.home, '.hermes', 'SOUL.md'), soul);
     await setup(b, ['hermes']);
     expect(read(join(b.home, '.hermes', 'SOUL.md')).startsWith(soul)).toBe(true);
+  });
+
+  test('hermes: setup adds the pre_llm_call hook that carries the rule on every turn; the opt-out and --remove take it out', async () => {
+    const b = box();
+    mkdirSync(join(b.home, '.hermes'), { recursive: true });
+    writeFileSync(join(b.home, '.hermes', 'SOUL.md'), 'You are Hermes.\n');
+    writeFileSync(join(b.home, '.hermes', 'config.yaml'), 'model:\n  default: x\n');
+    const config = () => read(join(b.home, '.hermes', 'config.yaml'));
+    const first = await setup(b, ['hermes', '--gbrain-bin', b.bin]);
+    expect(first.doc.turn_hook).toMatchObject({ action: 'write', path: join(b.home, '.hermes', 'config.yaml') });
+    expect(config()).toContain(`  pre_llm_call:\n    - command: ${JSON.stringify(`${b.bin} hook turn-rule`)}`);
+    expect(read(join(b.home, '.hermes', 'SOUL.md'))).toContain(BRAIN_FIRST_BEGIN);
+    const declined = await setup(b, ['hermes', '--no-instructions']);
+    expect(declined.doc.turn_hook.action).toBe('remove');
+    expect(config()).toBe('model:\n  default: x\n');
+    await setup(b, ['hermes', '--instructions', '--gbrain-bin', b.bin]);
+    expect(config()).toContain('pre_llm_call');
+    expect((await setup(b, ['hermes', '--remove'])).doc.turn_hook.action).toBe('remove');
+    expect(config()).toBe('model:\n  default: x\n');
   });
 
   test('a damaged block is preserved and reported, never guessed through', async () => {

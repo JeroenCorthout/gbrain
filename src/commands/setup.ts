@@ -23,6 +23,8 @@
  * Engine-free: setup never opens the database itself.
  */
 import { realpathSync } from 'node:fs';
+import { dirname } from 'node:path';
+import { removeHermesTurnHook, syncHermesTurnHook } from '../core/setup/hermes-turn-hook.ts';
 import { opError, OperationError } from '../core/ops/contract.ts';
 import { cliRenderContext, renderCliError, renderNotice, type Action, type Notice } from '../core/agent-output.ts';
 import { writeCliNotices } from '../core/interop-notices.ts';
@@ -141,7 +143,8 @@ Flags:
                        existing block is removed and the opt-out is remembered.
                        GBRAIN_AGENT_INSTRUCTIONS=0 does the same.
   --instructions       Opt back in after an earlier --no-instructions.
-  --instructions-only  Manage only the brain-first block: no brain, MCP or hook changes.
+  --instructions-only  Manage only the brain-first block (on Hermes, with its per-turn
+                       hook): no brain, MCP or other hook changes.
                        Works for a hosted connection too, and for any harness below.
   --workspace DIR      OpenClaw: the agent workspace whose AGENTS.md gets the block
                        (default: agents.defaults.workspace, then ~/.openclaw/workspace).
@@ -157,9 +160,13 @@ Flags:
 
 Brain-first instructions: registering MCP is not enough; agents use a brain they
 are told about. By default setup also writes one short marked block into the
-harness's own instruction file (search the brain first, read the hit, fill gaps
-with other tools, apply your own access rules, finish the task). Text outside the
-markers is never touched; a re-run upgrades the block in place.
+harness's own instruction file (before answering any turn, search the brain
+first, read the hit, fill gaps with other tools, apply your own access rules,
+finish the task). Text outside the markers is never touched; a re-run upgrades
+the block in place. The same rule rides each turn where the harness has a per-turn
+hook: Claude Code and Codex get it from setup's UserPromptSubmit hook, OpenClaw
+from gbrain's context engine, Hermes from a marked pre_llm_call hook setup adds
+to $HERMES_HOME/config.yaml (gbrain hook turn-rule); Cursor's rule is always applied.
   claude-code  ~/.claude/CLAUDE.md (project scope: ./CLAUDE.local.md)
   codex        $CODEX_HOME/AGENTS.md (a non-empty AGENTS.override.md instead)
   opencode     ~/.config/opencode/AGENTS.md
@@ -783,12 +790,17 @@ async function runInstructionsOnly(flags: SetupFlags, out: Out): Promise<number>
     instructions = syncBrainFirst({ target, access, decision, writer: `gbrain setup ${harness}`, dryRun: flags.dryRun });
     skills = skillsFor(harness, flags, flags.gbrainBin ?? indexLauncher() ?? 'gbrain', where, instructions);
   }
+  const hermesHome = harness === 'hermes' ? dirname(target.path) : null;
+  const turnHook = !hermesHome ? null : flags.remove || instructions?.decision.value === 'declined'
+    ? removeHermesTurnHook({ hermesHome, dryRun: flags.dryRun })
+    : syncHermesTurnHook({ hermesHome, launcher: flags.gbrainBin ?? resolveGbrainBin(), dryRun: flags.dryRun });
   const code = instructions?.action === 'preserve' || skillsFailed(skills) ? 1 : 0;
   if (out.json) {
-    await writeJsonDocument(`${JSON.stringify({ harness, dry_run: flags.dryRun, remove: flags.remove, instructions_only: true, instructions, skills, mcp }, null, 2)}\n`, (t) => process.stdout.write(t));
+    await writeJsonDocument(`${JSON.stringify({ harness, dry_run: flags.dryRun, remove: flags.remove, instructions_only: true, instructions, ...(turnHook ? { turn_hook: turnHook } : {}), skills, mcp }, null, 2)}\n`, (t) => process.stdout.write(t));
     return code;
   }
   if (instructions) say(out, flags.remove ? describeBrainFirstOutcome(instructions, flags.dryRun) : describeInstructions(instructions, flags.dryRun));
+  if (turnHook) say(out, `  ${(flags.dryRun && (turnHook.action === 'write' || turnHook.action === 'remove') ? `would ${turnHook.action}` : turnHook.action).padEnd(8)} ${'turn hook'.padEnd(7)} ${turnHook.detail}${turnHook.snippet ? `:\n${turnHook.snippet.replace(/^/gm, '    ')}` : ''}`);
   if (skills && (skills.decision.value === 'spring' || skills.action !== 'skip')) say(out, describeSkillsBlockOutcome(skills, flags.dryRun));
   if (mcp.setup === 'manual' && !flags.remove) say(out, `MCP: setup does not register ${adapter.label}'s MCP server. Follow ${adapter.guide} (one command), then start a new session.`);
   if (!flags.remove && instructions?.decision.value === 'accepted') say(out, 'Next: start a new session; the harness reads its instruction file at session start.');
