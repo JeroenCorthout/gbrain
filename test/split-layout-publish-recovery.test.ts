@@ -258,7 +258,7 @@ for (const backend of testBackends()) describe(`[${backend}] split git layout: r
     expect(unit(root, 'notes/owner.md')).toEqual(before);
   }, { databaseUrl, setup }), 120_000);
 
-  test('the request guard accepts a page_split record on a page request and refuses a skill bundle record there', () => managedBrain(async ({ engine, ctx }) => {
+  test('the request guard accepts a version 3 page_split record on a page request and refuses a skill bundle record or a version 2 page_split record there', () => managedBrain(async ({ engine, ctx }) => {
     expect(await put(ctx, 'notes/guarded', page(lines(0, 3)))).toMatchObject({ state: 'committed' });
     await disposePersistenceConsumer(engine);
     const hostId = localHostId();
@@ -269,10 +269,11 @@ for (const backend of testBackends()) describe(`[${backend}] split git layout: r
     await admitWrite(engine, { principal: authority.principal, authority, operation: 'put_page', sourceId: 'default', sourceIncarnation: binding.source_incarnation,
       slug: 'notes/guarded', pageId: current.page.id, requestId: randomUUID(), callerIntent: intent, intent, worktreeId: binding.worktree_id, topologyGeneration: binding.topology_generation });
     const row = (await claimNextWrite(engine, hostId))!;
-    const base = { version: 2 as const, root: binding.local_path!, ownerEpoch: String(binding.owner_epoch), attempt: row.execution_token!, files: [] };
-    await expect(prepareRecovery(engine, row, { ...base, target: 'skill_bundle' } as never, 1)).rejects.toThrow(/recovery target mismatch/);
-    await prepareRecovery(engine, row, { ...base, target: 'page_split' } as never, 1);
+    const base = { root: binding.local_path!, ownerEpoch: String(binding.owner_epoch), attempt: row.execution_token!, files: [] };
+    await expect(prepareRecovery(engine, row, { ...base, version: 2, target: 'skill_bundle' } as never, 1)).rejects.toThrow(/recovery target mismatch/);
+    await expect(prepareRecovery(engine, row, { ...base, version: 2, target: 'page_split' } as never, 1)).rejects.toThrow(/recovery target mismatch/);
+    await prepareRecovery(engine, row, { ...base, version: 3, target: 'page_split' } as never, 1);
     const [saved] = await engine.executeRaw<{ recovery: Record<string, unknown> }>('SELECT recovery FROM persistence_requests WHERE id=$1::uuid', [row.id]);
-    expect(saved!.recovery).toMatchObject({ version: 2, target: 'page_split' });
+    expect(saved!.recovery).toMatchObject({ version: 3, target: 'page_split' });
   }, { databaseUrl }), 120_000);
 });

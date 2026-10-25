@@ -728,15 +728,15 @@ export async function recoverPublication(engine: BrainEngine, id: string, hostId
       const records = recoveryFiles(current.recovery);
       // Wave B PR 5: a split page's head and parts recover as one unit (split-files.ts); a skill bundle's files are bundle files.
       const split = isSplitRecoveryRecord(current.recovery) ? current.recovery : null;
-      const bundle = current.recovery.version === 2 && !split;
+      const bundle = current.recovery.version === 2;
       let landed: string | null = null;
-      if (current.recovery.version === 2) {
+      if (bundle || split) {
         const owner = await guardOwnership(tx, current, hostId);
         if (!owner) throw opError('owner_unavailable', `${split ? 'Split page' : 'Skill'} recovery requires its canonical owner.`,
           `This host no longer holds source ${current.source_id}'s current owner epoch, so ${split ? 'split page' : 'shared-skill'} request ${current.request_id} stays recovering until its owner finishes it. Inspect the owner; its resident writer finishes the recovery.`,
           { fix: ownerStatusFix(current.source_id) });
         if (isSplitRecoveryRecord(current.recovery)) assertSplitRecoveryBinding(current.recovery, owner, current.execution_token);
-        else assertBundleRecoveryBinding(current.recovery, owner, current.execution_token);
+        else if (current.recovery.version === 2) assertBundleRecoveryBinding(current.recovery, owner, current.execution_token);
       }
       for (const record of records) if (!isWriteTargetContained(record.path, record.root) || !binding.local_path || !isWriteTargetContained(record.path, binding.local_path)) throw opError('recovery_required', 'Recovery file binding is no longer confined to this owner.',
         `A recovery file of request ${current.request_id} now resolves outside source ${current.source_id}'s canonical worktree (a moved checkout or a symlink), so recovery stopped without touching it and the request stays recovering. Inspect the owner and tell the user; the checkout must be repaired before recovery can finish.`,

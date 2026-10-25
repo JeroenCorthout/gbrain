@@ -508,7 +508,7 @@ export async function scanStuckRecoveries(engine: BrainEngine, sourceIds: string
         residual('newer_recovery_record');
         continue;
       }
-      if (row.recovery?.version === 2 && (!filesOf(row.recovery) || isSplitRecoveryRecord(row.recovery))) {
+      if ((row.recovery?.version === 2 && !filesOf(row.recovery)) || isSplitRecoveryRecord(row.recovery)) {
         const refused = bundleRefusal(row);
         if (opts.requestId) throw refusalError(refused);
         scan.refused.push(refused);

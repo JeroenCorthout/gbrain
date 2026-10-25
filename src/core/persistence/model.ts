@@ -67,7 +67,7 @@ export interface BundleRecoveryRecord {
  * `recoveryFiles` throws `unsupported_mutation_protocol` before any file is touched.
  */
 export interface SplitRecoveryRecord {
-  version: 2;
+  version: 3;
   target: 'page_split';
   root: string;
   ownerEpoch: string;
@@ -85,7 +85,7 @@ export function recoveryFiles(record: RecoveryRecord): FileRecoveryRecord[] {
   if (record.version === 1) return [record];
   if (record.version === 2 && record.target === 'skill_bundle' && Array.isArray(record.files)
     && record.files.length > 0 && record.files.length <= 128 && record.files.every(file => file.version === 1)) return record.files;
-  if (record.version === 2 && record.target === 'page_split' && Array.isArray(record.files)
+  if (record.version === 3 && record.target === 'page_split' && Array.isArray(record.files)
     && record.files.length > 0 && record.files.length <= SPLIT_RECOVERY_FILES_MAX && record.files.every(file => file.version === 1)) return record.files;
   throw new Error('unsupported_mutation_protocol');
 }

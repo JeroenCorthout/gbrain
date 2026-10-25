@@ -236,7 +236,7 @@ export function releaseSplitTargets(file: SplitTarget | undefined): void {
 }
 
 export function isSplitRecoveryRecord(record: RecoveryRecord | null | undefined): record is SplitRecoveryRecord {
-  return record?.version === 2 && (record as { target?: unknown }).target === 'page_split';
+  return record?.version === 3 && (record as { target?: unknown }).target === 'page_split';
 }
 
 /**
@@ -247,7 +247,7 @@ export function splitRecoveryRecord(row: WriteRequest, file: PageMutationFile & 
   recordOf: (row: WriteRequest, file: PageMutationFile, binding: WorktreeBinding) => { record: FileRecoveryRecord; bytes: number }): { record: SplitRecoveryRecord; bytes: number } {
   const records = [file, ...file.parts ?? []].map(target => recordOf(row, target, binding));
   return {
-    record: { version: 2, target: 'page_split', root: file.root, ownerEpoch: String(binding.owner_epoch), attempt: row.execution_token!, files: records.map(entry => entry.record) },
+    record: { version: 3, target: 'page_split', root: file.root, ownerEpoch: String(binding.owner_epoch), attempt: row.execution_token!, files: records.map(entry => entry.record) },
     bytes: records.reduce((sum, entry) => sum + entry.bytes, 0),
   };
 }
