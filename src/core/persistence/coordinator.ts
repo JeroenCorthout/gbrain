@@ -55,7 +55,7 @@ import { markBeliefCommits } from '../belief/append.ts';
 import { classifyPgAccessError } from '../pg-access-classify.ts';
 import { commitThroughDoor, doorCommitLanded, doorMarker, replayAfterDoorCommit, sourceCanonicalGit, strictChanged } from './git-door.ts';
 import { assertNoPrivateCommit, declareStrictPublication } from './git-declared.ts';
-import { assertSplitRecoveryBinding, isSplitRecoveryRecord, releaseSplitTargets, removeEmptyPartsDir, splitFilesChanged, splitLandedCommit, splitPublicationTargets, splitRecoveryRecord, type SplitFileFields } from './split-files.ts';
+import { assertSplitRecoveryBinding, isSplitRecoveryRecord, releaseSplitTargets, removeEmptyPartsDir, splitFilesChanged, splitKeptPartsChanged, splitLandedCommit, splitPublicationTargets, splitRecoveryRecord, type SplitFileFields } from './split-files.ts';
 
 interface PreparedMutationBase {
   sourceExclusive?: boolean;
@@ -599,6 +599,10 @@ export async function publishMutation(engine: BrainEngine, row: WriteRequest, pr
       if (recovery) {
         const records = recoveryFiles(recovery);
         for (const record of records) if ((skill ? bundleFileHash(record) : fileHash(record.path)) !== record.beforeHash) {
+          throw localEditRefusal('The canonical file changed during preparation.', row, skill, 'while the write was being prepared');
+        }
+        // Wave B PR 5: a split page's parts it keeps unwritten are rechecked under the lock like the files it writes.
+        if (isSplitRecoveryRecord(recovery) && splitKeptPartsChanged(prepared.file)) {
           throw localEditRefusal('The canonical file changed during preparation.', row, skill, 'while the write was being prepared');
         }
         await hooks.boundary?.('before_publication', row);

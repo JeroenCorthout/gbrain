@@ -45,9 +45,16 @@ export interface SplitLayout {
   /** The content the target had before it became the head (F, or null for a removal). */
   original: MutationFile['content'];
   plan: SplitPlan | null;
+  /** The new manifest's parts already on disk with their planned bytes, not rewritten (absolute path to SHA-256). */
+  kept: Record<string, string>;
 }
 /** Fields a page file target gains when its publication touches the split layout. */
 export interface SplitFileFields {
+  /**
+   * The files of the parts directory beside the target when the write was prepared (absolute path to SHA-256): a verified
+   * head's manifest, or the directory as found. Publication refuses as drift when the directory differs from it.
+   */
+  expectedParts?: Record<string, string>;
   /** Part files written (content) or removed (null) beside the head: the new manifest's changed parts, then removals. */
   parts?: MutationFile[];
   split?: SplitLayout;
@@ -92,6 +99,11 @@ function currentParts(headPath: string, root: string): Map<string, string> {
   return found;
 }
 
+/** The parts directory beside `headPath` as prepareFileTarget finds it (no split head there): path to SHA-256. */
+export function preparedParts(headPath: string, root: string): Record<string, string> {
+  return Object.fromEntries(currentParts(headPath, root));
+}
+
 /** F as a byte stream for planSplit, whatever form the target holds it in. */
 async function* contentSource(engine: BrainEngine, content: string | Uint8Array | StreamedFileContent): AsyncIterable<Uint8Array> {
   if (isStreamedContent(content)) { yield* content.pieces(engine); return; }
@@ -131,6 +143,7 @@ export async function splitPublicationTargets(engine: BrainEngine, file: SplitTa
   const original = file.content;
   const parts: MutationFile[] = [];
   const manifest: string[] = [];
+  const kept: Record<string, string> = {};
   let plan: SplitPlan | null = null;
   try {
     if (original !== null && bytes > threshold) {
@@ -140,20 +153,20 @@ export async function splitPublicationTargets(engine: BrainEngine, file: SplitTa
         const path = join(dirname(file.path), part.path);
         manifest.push(path);
         const current = existing.get(path) ?? null;
-        if (current === part.sha256) continue;
+        if (current === part.sha256) { kept[path] = current; continue; }
         parts.push({ path, root: file.root, content: await plan.partContent(engine, part), expectedBeforeHash: current });
       }
       file.content = plan.head();
     }
-    const kept = new Set(manifest);
-    for (const [path, hash] of existing) if (!kept.has(path)) parts.push({ path, root: file.root, content: null, expectedBeforeHash: hash });
+    const listed = new Set(manifest);
+    for (const [path, hash] of existing) if (!listed.has(path)) parts.push({ path, root: file.root, content: null, expectedBeforeHash: hash });
   } catch (error) {
     plan?.dispose();
     file.content = original;
     throw error;
   }
   file.parts = parts;
-  file.split = { manifest, original, plan };
+  file.split = { manifest, original, plan, kept };
   return true;
 }
 
@@ -184,15 +197,32 @@ export function splitRecoveryRecord(row: WriteRequest, file: PageMutationFile & 
   };
 }
 
-/** Whether any file changed after preparation (its bytes are not the ones it expected), apart from a replay after its door commit landed. */
+/**
+ * Whether any file changed after preparation (its bytes are not the ones it expected), apart from a replay after its door
+ * commit landed. The parts directory must hold exactly the parts the write was prepared against (expectedParts): every
+ * part it rewrites, keeps or removes, at the hash prepared, and nothing else.
+ */
 export async function splitFilesChanged(files: MutationFile[], record: SplitRecoveryRecord,
   replayAfterDoorCommit: (record: FileRecoveryRecord) => Promise<boolean>): Promise<boolean> {
+  const head = files[0] as SplitTarget | undefined;
+  if (head?.expectedParts) {
+    const found = new Map<string, string | null>(Object.entries(head.split?.kept ?? {}));
+    for (const entry of record.files.slice(1)) found.set(entry.path, entry.beforeHash);
+    for (const path of new Set([...found.keys(), ...Object.keys(head.expectedParts)])) {
+      if ((found.get(path) ?? null) !== (head.expectedParts[path] ?? null)) return true;
+    }
+  }
   for (const [index, file] of files.entries()) {
     const entry = record.files[index]!;
     if (file.expectedBeforeHash !== undefined && entry.beforeHash !== file.expectedBeforeHash
       && !await replayAfterDoorCommit({ ...entry, ...(record.door ? { door: record.door } : {}) })) return true;
   }
   return false;
+}
+
+/** Whether a part the publication keeps (already on disk with its planned bytes) changed since it was planned; read under the lock. */
+export function splitKeptPartsChanged(file: SplitTarget | undefined): boolean {
+  return Object.entries(file?.split?.kept ?? {}).some(([path, hash]) => hashFile(path) !== hash);
 }
 
 /** Removes the parts directory beside `headPath` once it is empty (a page converted back to one file, or removed). */
@@ -207,7 +237,7 @@ export function removeEmptyPartsDir(headPath: string): void {
  * The comparison reading of a split head: the reassembled page file F' (null for a head whose body was edited by hand,
  * `split_head_modified`, which then compares as itself: drift), the head's own hash, and the parsed edited head.
  */
-export interface SplitHeadReading { reassembled: FileBytes | null; headHash: string; modified: ParsedHead | null; dispose(): void }
+export interface SplitHeadReading { reassembled: FileBytes | null; headHash: string; modified: ParsedHead | null; parts: Record<string, string>; dispose(): void }
 
 /**
  * When the file at `path` is a split head whose parts verify, the page file it stands for, reassembled into a private
@@ -224,9 +254,10 @@ export function readSplitHead(path: string, before: Buffer | FileBytes): SplitHe
   const headHash = before instanceof FileBytes ? before.hash() : createHash('sha256').update(bytes).digest('hex');
   const scratch = splitScratchPath();
   const verdict = reassemble(path, parsed, scratch);
-  if (!verdict.ok) return verdict.code === 'split_head_modified' ? { reassembled: null, headHash, modified: parsed, dispose: () => {} } : null;
+  const parts = Object.fromEntries(parsed.manifest.parts.map(part => [join(dirname(path), part.path), part.sha256]));
+  if (!verdict.ok) return verdict.code === 'split_head_modified' ? { reassembled: null, headHash, modified: parsed, parts, dispose: () => {} } : null;
   const reassembled = FileBytes.open(scratch);
-  return { reassembled, headHash, modified: null, dispose: () => { try { reassembled.close(); } finally { rmSync(scratch, { force: true }); } } };
+  return { reassembled, headHash, modified: null, parts, dispose: () => { try { reassembled.close(); } finally { rmSync(scratch, { force: true }); } } };
 }
 
 /** SHA-256 of the last `bytes` bytes of a content, and the bytes before them (at most `keepPrefix` of them kept). */

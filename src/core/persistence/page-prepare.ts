@@ -38,7 +38,7 @@ import { engineMutationPrecondition, parseMutationPrecondition } from './precond
 import { assertPurgeParams } from './purge-params.ts';
 import { authorizeWrite, slugDisclosable } from './authority.ts';
 import { findLiveFileClaimants, refusePartFileTarget, type FileClaimant, type FileClaimTarget } from './file-claims.ts';
-import { readSplitHead, resolvesModifiedHead, type SplitHeadReading } from './split-files.ts';
+import { preparedParts, readSplitHead, resolvesModifiedHead, type SplitHeadReading } from './split-files.ts';
 import { digest, sha256 } from './digest.ts';
 import { replaceableFile } from '../facts/file-body-guard.ts';
 import { getWorktreeBinding } from './ownership.ts';
@@ -333,9 +333,10 @@ export async function prepareFileTarget(engine: BrainEngine, row: Pick<WriteRequ
   let head: SplitHeadReading | null = null;
   try {
     head = before ? readSplitHead(path, before) : null;
-    if (head?.modified && await resolvesModifiedHead(engine, row, path, head.modified, content)) return { path, root, content, expectedBeforeHash: head.headHash };
+    if (head?.modified && await resolvesModifiedHead(engine, row, path, head.modified, content)) return { path, root, content, expectedBeforeHash: head.headHash, expectedParts: head.parts };
     const target = await compareFileTarget(engine, row, snapshot, content, options, { root, path, mode, capturedPath, before: head?.reassembled ?? before });
-    return target && head ? { ...target, expectedBeforeHash: head.headHash } : target;
+    if (!target) return target;
+    return head ? { ...target, expectedBeforeHash: head.headHash, expectedParts: head.parts } : { ...target, expectedParts: preparedParts(path, root) };
   } finally { try { head?.dispose(); } finally { if (before instanceof FileBytes) before.close(); } }
 }
 
