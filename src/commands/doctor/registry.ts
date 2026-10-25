@@ -122,6 +122,7 @@ import { chatFallbackChainEntry } from './checks/chat-fallback.ts';
 import { providerConsentEntry } from './checks/provider-consent.ts';
 import { behaviorChangesEntry } from './checks/behavior-changes.ts';
 import { fenceIntegrityEntry } from './checks/fence-integrity.ts';
+import { inlineTimelineChunksEntry } from './checks/inline-timeline-chunks.ts';
 import { dbAheadOfGitEntry } from './checks/db-ahead-of-git.ts';
 import { gitIndexLagEntry } from './checks/git-index-lag.ts';
 import { syncConfigKeysEntry } from './checks/sync-config-keys.ts';
@@ -295,6 +296,8 @@ export const DOCTOR_CHECK_REGISTRY: readonly DoctorEntry[] = [
   dbAheadOfGitEntry,
   // Git-canonical G3: how far each strict source's index trails the commit at HEAD.
   gitIndexLagEntry,
+  // Inline pages whose bulleted timeline the pre-bullet chunker sealed (informational, always ok; preview-first reindex).
+  inlineTimelineChunksEntry,
   fenceIntegrityEntry,
   searchModeEntry,
 ];
