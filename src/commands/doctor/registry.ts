@@ -126,6 +126,7 @@ import { dbAheadOfGitEntry } from './checks/db-ahead-of-git.ts';
 import { gitIndexLagEntry } from './checks/git-index-lag.ts';
 import { syncConfigKeysEntry } from './checks/sync-config-keys.ts';
 import { ghostPagesEntry } from './checks/ghost-pages.ts';
+import { splitLayoutEntry } from './checks/split-layout.ts';
 import { originTwinsEntry } from './checks/origin-twins.ts';
 import { slugPathMismatchEntry } from './checks/slug-path-mismatch.ts';
 import { renameIdentityDowngradesEntry } from './checks/rename-identity-downgrades.ts';
@@ -296,6 +297,8 @@ export const DOCTOR_CHECK_REGISTRY: readonly DoctorEntry[] = [
   // Git-canonical G3: how far each strict source's index trails the commit at HEAD.
   gitIndexLagEntry,
   fenceIntegrityEntry,
+  // Wave B PR 5: stray parts directories, held split pages and oversize single canonical files (warn at most).
+  splitLayoutEntry,
   searchModeEntry,
 ];
 

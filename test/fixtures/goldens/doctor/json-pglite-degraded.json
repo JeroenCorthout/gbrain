@@ -3333,6 +3333,42 @@
           "status": "ok"
         },
         {
+          "category": "brain",
+          "details": {
+            "docs": "docs/guides/memory-boundaries.md#large-pages-in-git",
+            "entries_read": 12,
+            "exact": true,
+            "held_sample": [],
+            "held_split_pages": 0,
+            "sources_walked": [
+              "default"
+            ],
+            "stray_parts_dirs": 0,
+            "stray_sample": [],
+            "truncated": false
+          },
+          "elapsed_ms": "<volatile>",
+          "message": "No stray parts directory and no held split page (12 entries read in 1 checkout(s)).",
+          "name": "split_layout",
+          "status": "ok"
+        },
+        {
+          "category": "brain",
+          "details": {
+            "count": 0,
+            "docs": "docs/guides/memory-boundaries.md#large-pages-in-git",
+            "exact": true,
+            "sample": [],
+            "threshold_bytes": 25165824,
+            "threshold_key": "sync.max_file_bytes",
+            "truncated": false
+          },
+          "elapsed_ms": "<volatile>",
+          "message": "No single canonical file is over sync.max_file_bytes (25165824 bytes).",
+          "name": "oversize_canonical_file",
+          "status": "ok"
+        },
+        {
           "category": "ops",
           "elapsed_ms": "<volatile>",
           "message": "Mode: conservative (no per-key overrides — mode bundle is canonical).",

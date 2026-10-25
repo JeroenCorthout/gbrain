@@ -261,6 +261,80 @@ held by an older writer), new pages are stored inline up to 24 MiB as before.
 Pages already stored in segments stay readable and exportable; a write that
 would leave one over 24 MiB is refused until the switch is on again.
 
+<a id="large-pages-in-git"></a>
+### Large pages in Git: head and part files
+
+**Say to your agent:** *"Which of my pages are too big for one file in Git, and
+what would gbrain write for one of them?"* The agent runs `gbrain doctor --json`
+(check `oversize_canonical_file`), then
+`gbrain pages split-storage <slug> --source <id>` on the brain host, and runs it
+again with `--apply` only after you agree.
+
+A page's canonical file is the Markdown gbrain writes for it: its frontmatter,
+then its body. A page whose file would be larger than `sync.max_file_bytes`
+(24 MiB, 25,165,824 bytes, by default; `gbrain config set sync.max_file_bytes
+<bytes>` takes 1 MiB to 25 MiB) is stored in Git as two kinds of file:
+
+- **The head**, at the page's usual path (`notes/alice-example.md`). It holds
+  the page's frontmatter with one extra key, `gbrain_parts`, the manifest: the
+  body's size and SHA-256 and, for each part file, its path, size and SHA-256.
+  Its body is the first 64 KiB of the page body (cut at a line break), then one
+  notice line saying the page continues in part files.
+- **The part files**, in a hidden folder beside the head
+  (`notes/.alice-example.gbparts/0001-<hash>.gbpart`, `0002-...`). Each holds
+  up to 16 MiB of the body, cut at a line break near 8 MiB. Joined in order they
+  are the body, byte for byte.
+
+The page stays one page: one slug, one search entry, one set of links. gbrain
+writes the head and every changed part in one publication (one commit on a
+`canonical: git` source), and sync reads them back as the whole page. An append
+changes only the last part and the head. Edit the head's frontmatter (a tag, a
+title) like any page; an edit to the head's body or to a part file is not
+imported: sync holds the page (`split_head_modified` or
+`split_page_incomplete`) and keeps the last imported content until you resolve
+it.
+
+**What older versions see.** A gbrain from before this layout imports the head
+as a short page: the first 64 KiB, the notice line and a `gbrain_parts`
+frontmatter key. It never reads the part files (they are in a hidden folder and
+are not `.md` files). Upgrade every machine that syncs the brain before a page
+grows past the threshold, or keep large pages on a source only current versions
+sync.
+
+**Git history keeps every part.** Each part file is a normal file in Git, so
+every version of every part stays in the history after the page changes, is
+moved or is deleted, exactly as a single large file would. Removing a page from
+history needs a history rewrite outside gbrain.
+
+**Private pages.** A page that keeps no file in Git (a private page on a
+`canonical: git` source, a `db_only` folder) keeps no head and no parts either.
+When a page turns private, its head and every part are removed together;
+when it returns, they are written again.
+
+<a id="split-storage"></a>
+**`gbrain pages split-storage <slug> [--source <id>] [--apply] [--json] [--resolve-head keep-edit|discard]`.**
+Run it on the source's owner host. Without `--apply` it writes nothing and
+reports the page's current layout (one file, or a head with its parts and
+whether they check out), the threshold, and what `--apply` would write: the
+head, each part with its name and size, the parts that stay as they are, and
+the files it would remove. `--apply` republishes the page's file through the
+ordinary write path, so a single file over the threshold becomes a head plus
+parts, and a split page now under it becomes one file again; it then reads the
+files back and exits 1 if they are not in the planned layout. It never runs on
+upgrade or migration and is not an MCP operation.
+
+To resolve a head whose body was edited (`split_head_modified`), choose one:
+`--resolve-head keep-edit` publishes the page as an edit made of the head's
+frontmatter, the edited head body without the notice line, and the rest of the
+body from the parts; `--resolve-head discard` rewrites the head from the stored
+page. Preview first, then add `--apply`. A page with missing or changed part
+files (`split_page_incomplete`) is not rewritten: restore its part files from
+Git (`git checkout -- <parts folder>`) and sync.
+
+Doctor reports `split_layout` (stray parts folders no head names, and split
+pages sync holds, with a sample and the fix) and `oversize_canonical_file` (a
+single canonical file over the threshold); both warn, never fail.
+
 <a id="large-page-limits"></a>
 ### Limits per entry point
 

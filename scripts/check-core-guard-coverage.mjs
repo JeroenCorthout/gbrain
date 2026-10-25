@@ -34,6 +34,7 @@ const EXEMPT = {
   'src/core/persistence/connector-sync.ts': 'connector-owned pages; core marking is owner-written frontmatter the connector never sets',
   'src/core/persistence/connector-google-receipts.ts': 'connector receipt rows, not page text',
   'src/core/persistence/projection-reindex.ts': 'rebuilds derived projections; page text is unchanged',
+  'src/core/split-layout/relayout.ts': 'republishes the stored page\'s own file (gbrain pages split-storage --apply, owner-run local CLI); page text, tags and core marking are unchanged',
   'src/core/persistence/noop-kernel.ts': 'decides that nothing would change; publishes nothing',
   'src/core/generations/repair.ts': 'the managed restore of a database-only generation (chronicle event pages, never core pages) revives and retires derived items through the adapter inside the coordinated request',
   'src/core/generations/managed.ts': 'the generation activation flips the derived ledger; it writes no page text (its member page writes go through preparePageMutation)',
