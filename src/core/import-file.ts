@@ -61,7 +61,7 @@ import { warnOncePerProcess, validateSlug, contentHash, contentHashLegacy, ATOMS
 import { decorateEmbeddingDimError } from './embedding-dim-check.ts';
 import { resolveImportContextualMode } from './import-contextual-mode.ts';
 import { runGuardrails } from './guardrails.ts';
-import { fenceBody, pageBodySegmentedError } from './page-body/page-shape.ts';
+import { bodyUnread, fenceBody, pageBodySegmentedError } from './page-body/page-shape.ts';
 import { abortSegmentedStaging, bodyStorageOf, demoteSegmentedPage, materializedPage, materializedSnapshot, sealSegmentedPage, stageSegmentedImport,
   stringWriteStorage, type SegmentedImport } from './persistence/segmented-apply.ts';
 import type { SegmentedStagingOwner } from './page-body/ingest.ts';
@@ -463,6 +463,10 @@ export async function importFromContent(
   // against its own existing counterpart (fences don't migrate between
   // columns here; splitBody keeps them where the caller wrote them).
   // #6188 (E7): Tier 1 in place before the hidden-row merge and withdrawal preservation; the hash covers the normalized body.
+  if (opts.remote === true && existing && !existing.deleted_at && bodyUnread(existing)) {
+    const { assertNoHiddenFenceRows } = await import('./page-body/streamed-fences.ts');
+    await assertNoHiddenFenceRows(engine, { id: Number(existing.id), slug, source_id: sourceId ?? 'default' });
+  }
   const fences = await applyImportFences({ engine, sourceId: sourceId ?? 'default', slug, mode: opts.fences ?? 'lenient', screened: opts.fenceScreen, screen, parsed, activePack: opts.activePack, remote: opts.remote === true, existing });
   if (fences.refused) return fences.refused;
   if (opts.remote === true && existing) {

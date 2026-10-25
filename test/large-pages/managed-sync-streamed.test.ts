@@ -10,9 +10,10 @@
  *    commits with `searchable: 'pending'` on its receipt (#7106: a new page over
  *    4 MiB is projected after commit) and seals once the build the owner tracks
  *    ends (the consumer's stop waits for it); an edit or a rename with an edit
- *    is sealed when it commits. A file the
- *    streamed path refuses (a facts fence) is held `file_too_large` and the
- *    run checkpoints, as before. A dry run lists the file as screened only by
+ *    is sealed when it commits. A file with a facts fence imports with the
+ *    fence (GBRA-95: fences are checked one region at a time); a file the
+ *    streamed path refuses (an unclosed fence whose tail passes the
+ *    FENCE_MAX_BYTES bound) is held `file_too_large` and the run checkpoints. A dry run lists the file as screened only by
  *    its owner (`page_body_segmented`), not as a hold. With the switch off the
  *    hold is unchanged. The crash window: managed-sync-streamed-crash.test.ts.
  * 2. Fails when: managed sync holds such a file, the journal carries its body,
@@ -183,17 +184,22 @@ describe('managed sync over the single-string ceiling', () => {
     }
   }), 600_000);
 
-  test('a file the streamed path refuses (a facts fence) is held file_too_large and the run checkpoints', async () => withEnv(env, async () => {
+  test('a fenced file imports with its fence; a file the streamed path refuses (an unclosed fence past the bound) is held file_too_large and the run checkpoints', async () => withEnv(env, async () => {
     for (const engine of engines) {
       await engine.setConfig('pages.segmented_storage', 'on');
-      const fenced = `${huge.trimEnd()}\n\n## Facts\n\n<!--- gbrain:facts:begin -->\n| # | claim | kind | confidence | visibility | notability | valid_from | valid_until | source | context |\n|---|---|---|---|---|---|---|---|---|---|\n| 1 | Example fact | fact | 1.0 | world | high | | | test | |\n<!--- gbrain:facts:end -->\n`;
-      const f = await fixture(engine, { 'notes/fenced.md': fenced, 'notes/small.md': '---\ntitle: Small\n---\nA small note.\n' });
+      const row = '| 1 | Example fact | fact | 1.0 | world | high | | | test | |';
+      const fenced = `${huge.trimEnd()}\n\n## Facts\n\n<!--- gbrain:facts:begin -->\n| # | claim | kind | confidence | visibility | notability | valid_from | valid_until | source | context |\n|---|---|---|---|---|---|---|---|---|---|\n${row}\n<!--- gbrain:facts:end -->\n`;
+      const unclosed = `---\ntitle: Unclosed\ntype: note\n---\n\n## Facts\n\n<!--- gbrain:facts:begin -->\n${huge.slice(huge.indexOf('\n---\n') + 5)}`;
+      const f = await fixture(engine, { 'notes/fenced.md': fenced, 'notes/unclosed.md': unclosed, 'notes/small.md': '---\ntitle: Small\n---\nA small note.\n' });
       const result = await sync(engine, { sourceId: f.sourceId });
       expect(result.status).toBe('first_sync');
       const holds = (await readGitSourceHolds(engine, { sourceIds: [f.sourceId] }))[0]?.holds ?? [];
-      expect(holds.map(hold => [hold.path, hold.code])).toEqual([['notes/fenced.md', 'file_too_large']]);
-      expect(holds[0]!.message).toContain('facts and takes fences');
-      expect(await engine.getPage('notes/fenced', { sourceId: f.sourceId })).toBeNull();
+      expect(holds.map(hold => [hold.path, hold.code])).toEqual([['notes/unclosed.md', 'file_too_large']]);
+      expect(holds[0]!.message).toContain('-byte bound one fence is normalized and checked against withdrawals within');
+      expect(await engine.getPage('notes/unclosed', { sourceId: f.sourceId })).toBeNull();
+      const stored = await reconstructedPage(engine, 'notes/fenced', f.sourceId);
+      expect(stored.page.body_storage).toBe('segmented');
+      expect(stored.body.compiled_truth).toContain(row);
       expect(await engine.getPage('notes/small', { sourceId: f.sourceId })).not.toBeNull();
       await disposePersistenceConsumer(engine);
     }

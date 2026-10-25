@@ -25,7 +25,7 @@ import { assertPageRevision } from '../page-state/types.ts';
 import { sealImportedPage, sealPageTextProjection } from '../page-state/projections.ts';
 import { abortSegmentedStaging, materializedSnapshot, sealSegmentedPage } from './segmented-apply.ts';
 import { prepareManagedSyncStreamed, type SyncBodyRef } from './sync-streamed.ts';
-import { fenceBody, withoutBody } from '../page-body/page-shape.ts';
+import { bodyUnread, fenceBody, withoutBody } from '../page-body/page-shape.ts';
 import { pipelined, transactionMemo } from '../page-state/transactions.ts';
 import { prepareCanonicalProjections } from './canonical-projections.ts';
 import { sliceMemo } from './slice-memo.ts';
@@ -847,6 +847,10 @@ async function prepareSyncMutation(unbounded: BrainEngine, row: WriteRequest, _c
   }
   let importContent = p.content;
   if (row.authority.remote) {
+    if (base && !base.page.deleted_at && bodyUnread(base.page)) {
+      const { assertNoHiddenFenceRows } = await import('../page-body/streamed-fences.ts');
+      await assertNoHiddenFenceRows(engine, { id: Number(base.page.id), slug: row.slug, source_id: row.source_id });
+    }
     const stored = base ? fenceBody(base.page) : null;
     const compiled_truth = preserveProtectedTakes(parsedInput.compiled_truth, stored?.compiled_truth ?? '');
     const timeline = preserveProtectedTakes(parsedInput.timeline ?? '', stored?.timeline ?? '');

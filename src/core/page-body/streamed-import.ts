@@ -26,11 +26,12 @@
  *   effective date, tags, frontmatter aliases; the content hash (resumed per
  *   segment); the no-op skip; identity dedup by hash (an external `id` holds);
  *   code-reference edges (per line, skipped when the body has protected
- *   regions); the read-back check and the gate receipt.
+ *   regions); facts and takes fences, one region at a time (streamed-fences.ts:
+ *   Tier 1 normalization, purge and withdrawal preservation, the malformed-fence
+ *   withdrawal check; a region over FENCE_MAX_BYTES holds); the read-back check
+ *   and the gate receipt.
  * - holds: a registered guardrail (it reads the whole payload); a write gate
- *   that applies to the source's tier; facts or takes
- *   fences (fence normalization, withdrawal and purge preservation parse the
- *   whole body); derived entity aliases (a linkable page type); NUL bytes (the
+ *   that applies to the source's tier; derived entity aliases (a linkable page type); NUL bytes (the
  *   size check needs the stored byte count before the hash); invalid UTF-8
  *   (the string path decodes it lossily); a deleted existing page (a restore
  *   rewrites it through the inline writer); a file that changes between passes.
@@ -48,7 +49,7 @@ import { BodyScanner, type BodyPiece, type BodyScan } from './body-scan.ts';
 import { FRONTMATTER_HEAD_MAX_BYTES, SEGMENT_MAX_BYTES, type PageBodyPolicy } from './limits.ts';
 import { PAGE_MAX_BYTES } from '../page-size-policy.ts';
 import { classifyImportHold, resolveParsedSubtype, type ParsedMarkdown } from '../markdown.ts';
-import { loadImportSanityConfig, settleContentDisposition, stripGateOwnedMarkers } from '../import-screen.ts';
+import { loadImportSanityConfig, screenFenceCtx, settleContentDisposition, stripGateOwnedMarkers } from '../import-screen.ts';
 import { JUNK_SAMPLE_CHARS } from '../content-sanity.ts';
 import { QUARANTINE_OVERRIDE_KEY } from '../quarantine-override.ts';
 import { hasGuardrails } from '../guardrails.ts';
@@ -77,9 +78,10 @@ import { buildSegmentedProjection } from './projection.ts';
 import { prepareSegmentedBody, segmentWriteScope, utf8Prefix, type SegmentedStagingOwner } from './ingest.ts';
 import { readGarbageCollector } from './segment-blocks.ts';
 import type { JsonObject } from './types.ts';
+import { regionTrust } from './segmenter.ts';
+import { FenceMarkerOutsideFence, FenceRegionRefused, FenceRegionTooLarge, streamedFences } from './streamed-fences.ts';
 
 const READ_BYTES = 1024 * 1024;
-const FENCE_MARKER = /gbrain:(facts|takes):begin/;
 
 /**
  * @internal Work the checked reads after pass 1 do, for the drift test: file blocks read and hashed against their
@@ -406,33 +408,38 @@ async function importScanned(engine: BrainEngine, input: { file: FileHandle; bom
     owner = { kind: opts.content ? 'put' : 'import', principalKind: principal.kind, principalId: principal.id, baseRevision: existing?.knowledge_revision ?? null };
   }
   const live = existing ? await segmentedLivePage(engine, Number(existing.id)) : null;
-  let fenced = false;
   const codeRefs = new CodeRefLines();
-  let carry = '';
-  const inspect = (bytes: Uint8Array) => {
-    const text = carry + Buffer.from(bytes).toString('latin1');
-    if (FENCE_MARKER.test(text)) fenced = true;
-    carry = text.slice(-24);
-    codeRefs.push(bytes);
-  };
+  const inspect = (bytes: Uint8Array) => codeRefs.push(bytes);
+  const flags = { fence_trust: scan.bodyFlags.fence_trust, timeline_fence_trust: scan.bodyFlags.timeline_fence_trust, timeline_split: scan.bodyFlags.timeline_split };
+  const fences = streamedFences(engine, { sourceId, slug, pageId: existing ? Number(existing.id) : null, mode: opts.coordinated ? 'coordinated' : 'lenient',
+    ctx: screenFenceCtx(parsed, opts.activePack) });
   assertSourceFilesystemActive();
-  const prepared = await prepareSegmentedBody(engine, { sourceId, slug, live, title: parsed.title, type: parsed.type, frontmatter: parsed.frontmatter as JsonObject,
-    tags: parsed.tags, truth: regionStream(scan.truth, read, inspect),
-    timeline: (async function* () { codeRefs.end(); carry = ''; yield* regionStream(scan.timeline, read, inspect); })(),
-    hasTimeline: scan.timelineBytes > 0, flags: { fence_trust: scan.bodyFlags.fence_trust, timeline_fence_trust: scan.bodyFlags.timeline_fence_trust, timeline_split: scan.bodyFlags.timeline_split },
-    declaredBytes: scan.truthBytes + scan.timelineBytes,
-    owner,
-    chunking: { quarantined: disposition.quarantined, corpusGeneration, tier: mode === 'title' ? 'title' : 'none' } });
+  let prepared: Awaited<ReturnType<typeof prepareSegmentedBody>>;
+  try {
+    prepared = await prepareSegmentedBody(engine, { sourceId, slug, live, title: parsed.title, type: parsed.type, frontmatter: parsed.frontmatter as JsonObject,
+      tags: parsed.tags, truth: fences.rewrite(regionStream(scan.truth, read, inspect), 'truth', regionTrust(flags, 'truth') === 'trusted'),
+      timeline: fences.rewrite((async function* () { codeRefs.end(); yield* regionStream(scan.timeline, read, inspect); })(), 'timeline', regionTrust(flags, 'timeline') === 'trusted'),
+      hasTimeline: scan.timelineBytes > 0, flags,
+      declaredBytes: scan.truthBytes + scan.timelineBytes,
+      owner,
+      chunking: { quarantined: disposition.quarantined, corpusGeneration, tier: mode === 'title' ? 'title' : 'none' } });
+  } catch (error) {
+    if (error instanceof FenceRegionTooLarge || error instanceof FenceMarkerOutsideFence) {
+      const message = `File too large (${size} bytes, max ${PAGE_MAX_BYTES}): ${error.message}.`;
+      return { slug, status: 'skipped', chunks: 0, error: message, refusal: { code: 'file_too_large', message }, skip_reason: 'file_too_large' };
+    }
+    if (error instanceof FenceRegionRefused) return { slug, status: 'error', chunks: 0, error: error.refusal.message, refusal: error.refusal, skip_reason: 'invalid_fence' };
+    throw error;
+  }
   codeRefs.end();
   const abort = async () => { await engine.setBodyStagingState(prepared.stagingId, 'aborted').catch(() => undefined); };
   const after = await file.stat();
   if (drift.changed || after.size !== size || after.mtimeMs !== input.stat.mtimeMs) { await abort(); return hold(slug, size, 'the file changed while it was imported (import it again)'); }
-  if (fenced) { await abort(); return hold(slug, size, 'facts and takes fences are normalized and checked against withdrawals over the whole body'); }
   const hash = prepared.body.content_hash;
   if (existing && !existing.deleted_at && !opts.forceRechunk && existing.content_hash === hash && existing.text_projection_revision === existing.knowledge_revision
     && isEmbedSkipped(existing.frontmatter) === isEmbedSkipped(parsed.frontmatter) && !trustMarkerChanged(existing.frontmatter, parsed.frontmatter)) {
     await abort();
-    const skipped: ImportResult = { slug, status: 'skipped', chunks: 0, ...(typeWarning ? { type_warning: typeWarning } : {}) };
+    const skipped: ImportResult = { slug, status: 'skipped', chunks: 0, ...fences.fields(), ...(typeWarning ? { type_warning: typeWarning } : {}) };
     return opts.coordinated ? opts.coordinated.prepare({ slug, observedRevision: opts.coordinated.snapshot?.revision ?? null, noop: true, result: skipped, frontmatter: parsed.frontmatter,
       validate: async () => {}, apply: async () => {} }) : skipped;
   }
@@ -472,7 +479,7 @@ async function importScanned(engine: BrainEngine, input: { file: FileHandle; bom
     if (!applied.complete) await buildSegmentedProjection(target, { sourceId, slug }).catch(() => undefined);
     await segmentWriteScope(target, sourceId).then(writes => writes(exec => exec.sweepSegments({ pageId: applied.pageId }))).catch(() => undefined);
   };
-  const imported: ImportResult = { slug, status: 'imported', chunks: prepared.rows.chunks,
+  const imported: ImportResult = { slug, status: 'imported', chunks: prepared.rows.chunks, ...fences.fields(),
     ...(disposition.quarantined ? { quarantined: true } : {}), ...(disposition.flagged ? { flagged: true, flag_reason: disposition.flagReason } : {}),
     ...(disposition.gate ? { gate: disposition.gate } : {}), ...(typeWarning ? { type_warning: typeWarning } : {}) };
   if (opts.coordinated) {

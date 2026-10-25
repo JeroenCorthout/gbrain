@@ -21,7 +21,7 @@ import { fencesNormalizeEnabled } from './config.ts';
 import { fenceRefusal, scanCanonicalFences, targetFenceRefusal } from './refusal.ts';
 import { effectiveVisibility } from '../search/private-visibility.ts';
 import { fenceIssuesWire, fenceStep, residualLocation, type FenceIssueWire, type FenceStep } from './tier1.ts';
-import type { FenceCtx, FenceFix, FenceKind, FencePage, StoredRowMap } from './types.ts';
+import type { FenceCtx, FenceFix, FenceKind, FencePage, FenceSection, StoredRowMap } from './types.ts';
 
 /** Row numbers a remote caller never saw on the stored page: non-world facts rows and every takes row (remote reads hide takes). */
 export function hiddenFenceRows(existing: FencePage): Set<number> {
@@ -157,6 +157,31 @@ async function storedPageStep(engine: Pick<BrainEngine, 'executeRaw' | 'getConfi
     step = fenceStep(page, { ...ctx, storedRows: await storedFenceRows(engine, input.sourceId, input.slug, input.page.id) }, { normalize: true });
   }
   return { page, step };
+}
+
+/**
+ * Tier 1 on one fence region of a streamed import (page-body/streamed-fences.ts): the region's text alone as its
+ * section, with `importFromContent`'s rules (the switch read only when there is a fix, stored rows only for
+ * `renumber`, a residual refused typed when `coordinated` and stored as written with warnings otherwise).
+ * `lineOffset` is the number of section lines before the region, so locations name lines of the whole section.
+ */
+export async function settleFenceRegion(engine: Pick<BrainEngine, 'executeRaw' | 'getConfig'>, input: {
+  sourceId: string; slug: string; pageId: number | null; mode: 'coordinated' | 'lenient'; ctx: FenceCtx; section: FenceSection; text: string; lineOffset: number;
+}): Promise<{ text: string; fixes: FenceFix[]; warnings: FenceIssueWire[]; refusal?: ContentRefusal }> {
+  const page = input.section === 'body' ? { compiled_truth: input.text, timeline: '' } : { compiled_truth: '', timeline: input.text };
+  const shift = <L extends { line: number | null }>(at: L): L => (at.line === null ? at : { ...at, line: at.line + input.lineOffset });
+  let step = fenceStep(page, input.ctx, { normalize: true });
+  if (step.status === 'normalized' && !await fencesNormalizeEnabled(engine)) step = fenceStep(page, input.ctx, { normalize: false });
+  if (step.status === 'normalized' && step.fixes.some(f => f.class === 'renumber')) {
+    step = fenceStep(page, { ...input.ctx, storedRows: await storedFenceRows(engine, input.sourceId, input.slug, input.pageId) }, { normalize: true });
+  }
+  if (step.status === 'clean') return { text: input.text, fixes: [], warnings: [] };
+  if (step.status === 'normalized') {
+    return { text: input.section === 'body' ? step.page.compiled_truth : step.page.timeline, fixes: step.fixes.map(shift), warnings: [] };
+  }
+  const issues = fenceIssuesWire([...step.issues, ...step.fixable].map(shift));
+  if (input.mode === 'lenient') return { text: input.text, fixes: [], warnings: issues };
+  return { text: input.text, fixes: [], warnings: [], refusal: { ...fenceRefusal(shift(step.location)), fence_issues: issues } };
 }
 
 /** #6188: Tier 1 before a maintenance writer compiles a body (synthesize verify); null when nothing changed or a fence stays residual. */
