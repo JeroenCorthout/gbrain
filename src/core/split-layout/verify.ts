@@ -3,7 +3,8 @@
  * `PartsSource` (git-parts.ts). Part files on disk are read in manifest
  * order through `O_NOFOLLOW` descriptors: a symlink, a directory or any other non-regular entry is never read, and the
  * manifest's paths (validated by parseHead) cannot leave the head's directory. Every entry of the parts directory the
- * manifest does not list (a subdirectory included) is `extra`.
+ * manifest does not list (a subdirectory included) is `extra`, except, on disk, a regular file named as gbrain's own
+ * in-flight atomic write stages a sibling (`.<sha256>.tmp.<uuid>`, atomic-write.ts): a write of the next version.
  *
  * Verdicts: ok; `split_page_incomplete` (missing, extra or mismatched parts, or a body hash that differs), checked
  * first; then `split_head_modified` when the head's body is no longer the one the manifest hashed (`lead_sha256`).
@@ -66,6 +67,8 @@ function readPart(path: string, bytes: number, sha256: string, sinks: Hash[], wr
   }
 }
 
+const STAGING_NAME = /^\.[0-9a-f]{64}\.tmp\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
 /** The part files beside a head on disk, read through `O_NOFOLLOW` descriptors. */
 export function diskParts(headPath: string): PartsSource {
   const headDir = dirname(headPath);
@@ -74,7 +77,8 @@ export function diskParts(headPath: string): PartsSource {
     list: dirName => {
       const partsDir = join(headDir, dirName);
       try {
-        return lstatSync(partsDir).isDirectory() ? readdirSync(partsDir) : 'not_a_directory';
+        if (!lstatSync(partsDir).isDirectory()) return 'not_a_directory';
+        return readdirSync(partsDir).filter(name => !STAGING_NAME.test(name) || lstatSync(join(partsDir, name), { throwIfNoEntry: false })?.isFile() === false);
       } catch (error) {
         if (missingCode(error)) return 'missing';
         throw error;

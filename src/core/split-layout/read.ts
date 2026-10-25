@@ -36,8 +36,9 @@ function refusalFor(relPath: string, verdict: Exclude<SplitVerdict, { ok: true }
   }
   const sets = [['missing', verdict.missing], ['changed', verdict.mismatched], ['unlisted', verdict.extra]] as const;
   const named = sets.filter(([, paths]) => paths.length).map(([label, paths]) => `${label}: ${sample(paths)}`).join('; ');
+  const untracked = verdict.extra.length ? `Move or delete the files the manifest does not list (${sample(verdict.extra)}), which git checkout leaves in place, and restore ` : 'Restore ';
   return { code: verdict.code, message: `${relPath} is a split page head whose part files in ${partsDirOf(relPath)} do not match its manifest (${named || verdict.reason}); `
-    + `sync held it and kept the stored page. Restore them from Git (git checkout -- ${relPath} ${partsDirOf(relPath)}), then sync again.` };
+    + `sync held it and kept the stored page. ${untracked}the listed parts from Git (git checkout -- ${relPath} ${partsDirOf(relPath)}), then sync again.` };
 }
 
 function unreadable(relPath: string, reason: string): SplitRefusal {
