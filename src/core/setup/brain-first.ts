@@ -79,9 +79,10 @@ export function renderBrainFirstSnippet(harness: string, access: BrainFirstAcces
 
 /**
  * The per-turn rule: one line a harness's per-turn hook puts beside every user
- * turn (Claude Code and Codex UserPromptSubmit, Hermes pre_llm_call, OpenClaw's
- * context engine). An instruction in the system prompt alone left agents
- * mostly answering without the brain; the same rule next to the turn did not.
+ * turn (Claude Code and Codex UserPromptSubmit, Hermes pre_llm_call, OpenClaw
+ * before_prompt_build). The block in the system prompt or identity file alone
+ * left chat bots answering without the brain (harness-evals: 0 of 80 on
+ * OpenClaw and Hermes); the same rule next to the turn was followed.
  */
 export function renderBrainFirstTurnRule(access: BrainFirstAccess): string {
   const how = access.kind === 'cli' ? `\`${access.launcher} search "<names>"\` or \`${access.launcher} query "<question>"\``
@@ -91,18 +92,15 @@ export function renderBrainFirstTurnRule(access: BrainFirstAccess): string {
 }
 
 /**
- * The per-turn rule for one harness, or null. Off under GBRAIN_AGENT_INSTRUCTIONS=0
- * and after a recorded decline; an installed block's access names the tools.
- * `fallback` is the access for a lane that turns the rule on without a ledger
- * entry (OpenClaw's context engine, Hermes's hook); without one, only a
- * recorded install turns it on.
+ * The per-turn rule the Claude Code and Codex user-prompt hook adds, or null:
+ * on only while a block is recorded as installed for that harness (its access
+ * names the tools), off under GBRAIN_AGENT_INSTRUCTIONS=0.
  */
-export function brainFirstTurnRule(harness: string, fallback?: BrainFirstAccess): string | null {
+export function brainFirstTurnRule(harness: string): string | null {
   if (process.env[BRAIN_FIRST_OPT_OUT_ENV] === '0') return null;
-  const entries = readBrainFirstLedger().filter((e) => e.harness === harness);
-  const installed = entries.filter((e) => e.status === 'installed' && e.access).sort((a, b) => (a.updated_at < b.updated_at ? 1 : -1))[0];
-  if (installed) return renderBrainFirstTurnRule(installed.access);
-  return entries.length === 0 && fallback ? renderBrainFirstTurnRule(fallback) : null;
+  const installed = readBrainFirstLedger().filter((e) => e.harness === harness && e.status === 'installed' && e.access)
+    .sort((a, b) => (a.updated_at < b.updated_at ? 1 : -1))[0];
+  return installed ? renderBrainFirstTurnRule(installed.access) : null;
 }
 
 export const CURSOR_HEAD = '---\ndescription: GBrain memory, managed by gbrain\nalwaysApply: true\n---\n';
@@ -132,7 +130,7 @@ export function codexInstructionFile(overridePath: string, agentsPath: string): 
 }
 
 /** OpenClaw's state directory: OPENCLAW_STATE_DIR, else ~/.openclaw (or ~/.openclaw-<profile>). */
-function openclawStateDir(): string {
+export function openclawStateDir(): string {
   const explicit = process.env.OPENCLAW_STATE_DIR?.trim();
   if (explicit) return expandHome(explicit);
   const profile = process.env.OPENCLAW_PROFILE?.trim();

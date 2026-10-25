@@ -16,6 +16,7 @@ import { afterAll, describe, expect, test } from 'bun:test';
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
+import { load } from 'js-yaml';
 import { runCli } from './helpers/cli-spawn.ts';
 import { withEnv } from './helpers/with-env.ts';
 import {
@@ -239,7 +240,9 @@ describe('brain-first block: placement rules', () => {
     const config = () => read(join(b.home, '.hermes', 'config.yaml'));
     const first = await setup(b, ['hermes', '--gbrain-bin', b.bin]);
     expect(first.doc.turn_hook).toMatchObject({ action: 'write', path: join(b.home, '.hermes', 'config.yaml') });
-    expect(config()).toContain(`  pre_llm_call:\n    - command: ${JSON.stringify(`${b.bin} hook turn-rule`)}`);
+    const hook = (load(config()) as any).hooks.pre_llm_call[0];
+    expect(hook.command.startsWith("/bin/echo '")).toBe(true);
+    expect(JSON.parse(hook.command.slice("/bin/echo '".length, -1)).context).toContain('check GBrain first');
     expect(read(join(b.home, '.hermes', 'SOUL.md'))).toContain(BRAIN_FIRST_BEGIN);
     const declined = await setup(b, ['hermes', '--no-instructions']);
     expect(declined.doc.turn_hook.action).toBe('remove');
@@ -248,6 +251,32 @@ describe('brain-first block: placement rules', () => {
     expect(config()).toContain('pre_llm_call');
     expect((await setup(b, ['hermes', '--remove'])).doc.turn_hook.action).toBe('remove');
     expect(config()).toBe('model:\n  default: x\n');
+  });
+
+  test('openclaw: setup writes the before_prompt_build plugin and installs it with the openclaw CLI; the opt-out and --remove uninstall it', async () => {
+    const b = box();
+    mkdirSync(join(b.home, '.openclaw', 'workspace'), { recursive: true });
+    const log = join(b.root, 'openclaw.log');
+    writeFileSync(join(b.root, 'bin', 'openclaw'), `#!/bin/sh\necho "$*" >> '${log}'\n`);
+    chmodSync(join(b.root, 'bin', 'openclaw'), 0o755);
+    const path = { PATH: `${join(b.root, 'bin')}:${process.env.PATH ?? ''}` };
+    const dir = join(b.home, '.openclaw', 'gbrain', 'gbrain-turn-rule');
+    const first = await setup(b, ['openclaw'], path);
+    expect(first.doc.turn_hook).toMatchObject({ action: 'write', path: dir });
+    expect(read(join(dir, 'index.js'))).toContain('before_prompt_build');
+    expect(read(log).trim().split('\n')).toEqual([
+      `plugins install --link ${dir} --force --accept-capabilities`,
+      'plugins enable gbrain-turn-rule',
+      'config set plugins.entries.gbrain-turn-rule.hooks.allowConversationAccess true',
+    ]);
+    const declined = await setup(b, ['openclaw', '--no-instructions'], path);
+    expect(declined.doc.turn_hook.action).toBe('remove');
+    expect(existsSync(dir)).toBe(false);
+    expect(read(log).trim().split('\n').at(-1)).toBe('plugins uninstall gbrain-turn-rule --force');
+    await setup(b, ['openclaw', '--instructions'], path);
+    expect(existsSync(dir)).toBe(true);
+    expect((await setup(b, ['openclaw', '--remove'], path)).doc.turn_hook.action).toBe('remove');
+    expect(existsSync(join(b.home, '.openclaw', 'gbrain'))).toBe(false);
   });
 
   test('a damaged block is preserved and reported, never guessed through', async () => {

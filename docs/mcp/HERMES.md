@@ -56,16 +56,19 @@ hook to `$HERMES_HOME/config.yaml` and records its approval in Hermes's
 ```yaml
 hooks:
   pre_llm_call:
-    - command: "/absolute/path/to/gbrain hook turn-rule"
+    - command: "/bin/echo '{\"context\":\"GBrain: before answering this turn, check GBrain first ...\"}'"
+      timeout: 10
 ```
 
-Hermes appends the hook's `{"context": ...}` output to each user message, so the
-rule reaches the model next to the turn instead of only in the system prompt.
-Text outside the markers is never touched. When config.yaml already has a
-`hooks:` section, or setup has no absolute gbrain path (`--gbrain-bin`), setup
-prints the entry to add yourself instead; approve it when Hermes asks (or set
-`HERMES_ACCEPT_HOOKS=1`). `--no-instructions` and `--remove` take the hook and its
-approval out, and the hook prints nothing under `GBRAIN_AGENT_INSTRUCTIONS=0`.
+The command is self-contained: it echoes the rule as Hermes's `{"context": ...}`
+wire shape, starts no gbrain process and needs no path on the Hermes host but
+`/bin/echo`. Hermes appends that context to each user message, so the rule
+reaches the model next to the turn instead of only in the system prompt. Text
+outside the markers is never touched, and a re-run after an upgrade rewrites the
+command and moves its approval. When config.yaml already has a `hooks:` section,
+setup prints the entry to add yourself instead; approve it when Hermes asks (or
+set `HERMES_ACCEPT_HOOKS=1`). `hermes hooks doctor` checks it.
+`--no-instructions` and `--remove` take the hook and its approval out.
 
 ## Direct config (equally supported)
 

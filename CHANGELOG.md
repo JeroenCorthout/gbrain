@@ -10,6 +10,26 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.457.0] - 2026-10-25
+
+**Remote MCP callers and thin clients that write to a git-canonical source (`canonical: git`, off by default) are now proven to commit through the owner's door, and a door commit that landed before its row stays on the write's receipt.**
+
+When a remote OAuth client or legacy token writes to a strict source, the write becomes a journal request, and the owner's door commits it to Git before the database row commits. The new suite covers every page-content operation a remote caller has, on PGLite and Postgres. If the owner is down, the caller gets `write_pending` with its request id. A grant revoked while the request waits is refused with no commit and no row.
+
+One gap is closed. A door commit can land and the transaction then fail; if the grant is revoked before the replay, the replay ends `permission_denied`. Until now its receipt said nothing, though Git holds the bytes and the indexer will import them. The receipt now names that commit with `landed_before_row: true`. They were authorized when they were committed, and a later revocation does not take committed content back.
+
+### What to watch for after you upgrade
+
+- Nothing changes for sources without `canonical: git`.
+- A tool that reads a failed write's `outcome` may now see `outcome.persistence` with `landed_before_row: true`: the content is in Git and will be indexed.
+
+### Itemized changes
+
+- `src/core/persistence/pending-import.ts` `landedCommit`: the newest commit in the recovery record's `door.head..HEAD` that touched the path; an empty range stamps nothing.
+- `src/core/persistence/coordinator.ts` `recoverPublication` stamps the landed commit on the requeued request; `src/core/persistence/journal.ts` `completeWrite` keeps it on a receipt that ends without committing. Group members name the one group commit.
+- `test/git-door-remote-g7b.test.ts` (both engines): remote OAuth and legacy-token writes through the door, owner down, revoked grant, landed commit on the receipt, group commit.
+- Docs: `docs/designs/GIT_CANONICAL_MEMORY.md` "Remote and hosted writes", `docs/architecture/thin-client.md`, the key-files entry.
+
 ## [0.60.456.0] - 2026-10-25
 
 **In an OpenClaw workspace, `gbrain bootstrap render` writes the due-job list as SCHEDULES.md, and the OpenClaw skill scaffold installs five brain-first skills instead of the full bundle. `list_brain_skillpack` names each skill `name` instead of `slug`.**

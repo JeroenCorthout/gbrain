@@ -267,9 +267,6 @@ Events (wired into .claude/settings.local.json by gbrain bootstrap):
   compact         (PreCompact) bank the window's standing entities into the
                   session cursor so the post-compaction session-start serves
                   a warm context pack; emits nothing
-  turn-rule       (Hermes pre_llm_call) print the per-turn brain-first rule as
-                  {"context": ...}; nothing after --no-instructions or under
-                  GBRAIN_AGENT_INSTRUCTIONS=0
 
 Env: GBRAIN_HOOKS=0 disables all events (immediate exit 0).
 All events fail open: errors exit 0 with empty stdout and a heartbeat entry at
@@ -354,8 +351,6 @@ export async function runHook(args: string[], io: HookIo = {}): Promise<number> 
       return hookSessionEnd(io);
     case 'compact':
       return hookCompact(io);
-    case 'turn-rule':
-      return hookTurnRule(io);
     default:
       return 1; // unreachable
   }
@@ -1303,15 +1298,6 @@ async function hookUserPrompt(io: HookIo): Promise<number> {
     ...(result.turns !== undefined ? { turns: result.turns } : {}),
     ...(result.pressure_pct !== undefined ? { pressure_pct: result.pressure_pct } : {}),
   });
-  return 0;
-}
-
-// ── turn-rule (Hermes pre_llm_call) ───────────────────────────────────────────
-
-/** Hermes `hooks.pre_llm_call`: Hermes appends stdout `{"context": ...}` to each user message. File reads only. */
-function hookTurnRule(io: HookIo): number {
-  const rule = io.turnRule !== undefined ? io.turnRule : brainFirstTurnRule('hermes', { kind: 'mcp', server: 'gbrain' });
-  if (rule) write(io, `${JSON.stringify({ context: rule })}\n`);
   return 0;
 }
 

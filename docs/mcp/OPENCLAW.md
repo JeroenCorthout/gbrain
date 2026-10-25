@@ -86,9 +86,26 @@ workspace, else `agents.defaults.workspace`, else `~/.openclaw/workspace`; with
 several agents, pass `--workspace`). Text outside the markers is never touched,
 a re-run upgrades the block in place, `--no-instructions` opts out and is
 remembered, and `--remove` takes it out. A thin-client install puts the same
-block at the top of `GBRAIN-INSTRUCTIONS.md`. With gbrain's context engine plugin, the
-same rule also rides every turn in its per-turn addition (off after
-`--no-instructions` or under `GBRAIN_AGENT_INSTRUCTIONS=0`).
+block at the top of `GBRAIN-INSTRUCTIONS.md`.
+
+A rule in `AGENTS.md` reaches the system prompt only, so setup also puts it next
+to every user turn with a hook-only OpenClaw plugin, `gbrain-turn-rule`: its
+`before_prompt_build` handler returns the rule as `prependContext`. The plugin is
+self-contained (the rule text is in its code; it reads and calls nothing) and
+lives in `<OpenClaw state dir>/gbrain/gbrain-turn-rule`. Setup installs it with
+OpenClaw's own CLI:
+
+```bash
+openclaw plugins install --link <state dir>/gbrain/gbrain-turn-rule --force --accept-capabilities
+openclaw plugins enable gbrain-turn-rule
+openclaw config set plugins.entries.gbrain-turn-rule.hooks.allowConversationAccess true
+```
+
+OpenClaw requires `allowConversationAccess` before a non-bundled plugin's
+`before_prompt_build` runs. With no `openclaw` on PATH, setup writes the plugin
+and prints those commands to run on the OpenClaw host; restart a running gateway
+afterwards. `--no-instructions` and `--remove` uninstall the plugin and delete
+its directory. A re-run after an upgrade rewrites the plugin with the new text.
 
 ## Scheduled jobs and workspace scripts
 

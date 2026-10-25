@@ -2,9 +2,9 @@
  * The per-turn brain-first rule (src/core/setup/brain-first.ts): one line a
  * harness's per-turn hook puts beside every user turn. Pins who gets it and
  * when it is off: Claude Code / Codex UserPromptSubmit (only while a block is
- * installed for that harness), Hermes `gbrain hook turn-rule` and the
- * config.yaml hook setup writes for it, OpenClaw's context engine (on unless
- * declined), and the opt-out for all of them.
+ * installed for that harness), the self-contained Hermes pre_llm_call hook
+ * setup writes into config.yaml, the hook-only OpenClaw plugin setup installs
+ * with OpenClaw's CLI, and the opt-out.
  */
 import { afterAll, describe, expect, test } from 'bun:test';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -14,8 +14,8 @@ import { load } from 'js-yaml';
 import { withEnv } from './helpers/with-env.ts';
 import { brainFirstTurnRule, renderBrainFirstTurnRule, type BrainFirstAccess } from '../src/core/setup/brain-first.ts';
 import { runHook } from '../src/commands/hook.ts';
-import { createGBrainContextEngine } from '../src/core/context-engine.ts';
-import { removeHermesTurnHook, syncHermesTurnHook } from '../src/core/setup/hermes-turn-hook.ts';
+import { hermesTurnHookCommand, removeHermesTurnHook, syncHermesTurnHook } from '../src/core/setup/hermes-turn-hook.ts';
+import { OPENCLAW_TURN_PLUGIN_ID, openclawTurnPluginDir, removeOpenclawTurnPlugin, syncOpenclawTurnPlugin } from '../src/core/setup/openclaw-turn-plugin.ts';
 
 const roots: string[] = [];
 afterAll(() => { for (const r of roots) rmSync(r, { recursive: true, force: true }); });
@@ -54,22 +54,19 @@ describe('per-turn rule: text and decision', () => {
     expect(renderBrainFirstTurnRule({ kind: 'cli', launcher: '/opt/gbrain' })).toContain('`/opt/gbrain search "<names>"`');
   });
 
-  test('a recorded install turns it on with its access; a decline or the opt-out turns it off, fallback or not', async () => {
-    const fallback: BrainFirstAccess = { kind: 'mcp', server: 'gbrain' };
+  test('a recorded install turns it on with its access; no record, a decline or the opt-out turns it off', async () => {
     await withEnv(env(home(null)), async () => {
       expect(brainFirstTurnRule('claude-code')).toBeNull();
-      expect(brainFirstTurnRule('openclaw', fallback)).toBe(renderBrainFirstTurnRule(fallback));
     });
     await withEnv(env(home([{ harness: 'claude-code', status: 'installed', access: { kind: 'mcp', server: 'brain', surface: 'verbs' } }])), async () => {
       expect(brainFirstTurnRule('claude-code')).toBe(renderBrainFirstTurnRule({ kind: 'mcp', server: 'brain', surface: 'verbs' }));
       expect(brainFirstTurnRule('codex')).toBeNull();
     });
     await withEnv(env(home([{ harness: 'openclaw', status: 'declined' }])), async () => {
-      expect(brainFirstTurnRule('openclaw', fallback)).toBeNull();
+      expect(brainFirstTurnRule('openclaw')).toBeNull();
     });
     await withEnv(env(home([{ harness: 'claude-code', status: 'installed' }]), { GBRAIN_AGENT_INSTRUCTIONS: '0' }), async () => {
       expect(brainFirstTurnRule('claude-code')).toBeNull();
-      expect(brainFirstTurnRule('openclaw', fallback)).toBeNull();
     });
   });
 });
@@ -100,50 +97,9 @@ describe('per-turn rule: Claude Code and Codex user-prompt hook', () => {
   });
 });
 
-describe('per-turn rule: Hermes turn-rule hook', () => {
-  async function turnRule(root: string, extra: Record<string, string | undefined> = {}): Promise<string> {
-    let out = '';
-    await withEnv(env(root, extra), async () => {
-      expect(await runHook(['turn-rule'], { write: (s) => { out += s; } })).toBe(0);
-    });
-    return out;
-  }
-
-  test('prints Hermes\'s {"context": ...} wire shape by default and with an installed block', async () => {
-    expect(JSON.parse(await turnRule(home(null)))).toEqual({ context: renderBrainFirstTurnRule({ kind: 'mcp', server: 'gbrain' }) });
-    expect(JSON.parse(await turnRule(home([{ harness: 'hermes', status: 'installed', access: { kind: 'mcp', server: 'brain' } }])))).toEqual({ context: renderBrainFirstTurnRule({ kind: 'mcp', server: 'brain' }) });
-  });
-
-  test('prints nothing after a decline, under the opt-out or with hooks off', async () => {
-    expect(await turnRule(home([{ harness: 'hermes', status: 'declined' }]))).toBe('');
-    expect(await turnRule(home(null), { GBRAIN_AGENT_INSTRUCTIONS: '0' })).toBe('');
-    expect(await turnRule(home(null), { GBRAIN_HOOKS: '0' })).toBe('');
-  });
-});
-
-describe('per-turn rule: OpenClaw context engine', () => {
-  async function addition(root: string, extra: Record<string, string | undefined> = {}): Promise<string> {
-    const ws = mkdtempSync(join(tmpdir(), 'gbrain-turn-rule-ws-'));
-    roots.push(ws);
-    let text = '';
-    await withEnv(env(root, extra), async () => {
-      const result = await createGBrainContextEngine({ workspaceDir: ws }).assemble({ sessionId: 's1', messages: [], tokenBudget: 100000 });
-      text = result.systemPromptAddition ?? '';
-    });
-    return text;
-  }
-
-  test('every assemble carries the rule unless OpenClaw\'s block was declined or the opt-out is set', async () => {
-    const rule = renderBrainFirstTurnRule({ kind: 'mcp', server: 'gbrain' });
-    expect(await addition(home(null))).toContain(rule);
-    expect(await addition(home([{ harness: 'openclaw', status: 'declined' }]))).not.toContain('check GBrain first');
-    expect(await addition(home(null), { GBRAIN_AGENT_INSTRUCTIONS: '0' })).not.toContain('check GBrain first');
-  });
-});
-
 describe('per-turn rule: Hermes pre_llm_call hook in config.yaml', () => {
-  const launcher = '/opt/gbrain/bin/gbrain';
-  const cmd = `${launcher} hook turn-rule`;
+  const access: BrainFirstAccess = { kind: 'mcp', server: 'gbrain' };
+  const cmd = hermesTurnHookCommand(access);
   function hermes(config?: string, approvals: unknown[] = []): string {
     const dir = mkdtempSync(join(tmpdir(), 'gbrain-hermes-home-'));
     roots.push(dir);
@@ -154,16 +110,27 @@ describe('per-turn rule: Hermes pre_llm_call hook in config.yaml', () => {
   const cfg = (d: string) => readFileSync(join(d, 'config.yaml'), 'utf8');
   const approvals = (d: string) => JSON.parse(readFileSync(join(d, 'shell-hooks-allowlist.json'), 'utf8')).approvals as Array<Record<string, unknown>>;
 
+  test('the command echoes Hermes\'s {"context": ...} wire shape on its own: no shell, no gbrain process', () => {
+    const quoted: BrainFirstAccess = { kind: 'cli', launcher: "/opt/it's/gbrain" };
+    const c = hermesTurnHookCommand(quoted);
+    expect(c.startsWith("/bin/echo '")).toBe(true);
+    expect(c.endsWith("'")).toBe(true);
+    const inner = c.slice("/bin/echo '".length, -1);
+    expect(inner).not.toContain("'");
+    expect(JSON.parse(inner)).toEqual({ context: renderBrainFirstTurnRule(quoted) });
+    expect(JSON.parse(cmd.slice("/bin/echo '".length, -1))).toEqual({ context: renderBrainFirstTurnRule(access) });
+  });
+
   test('appends a marked hook after the user\'s text, approves exactly that command, keeps on a re-run, and removal undoes both', () => {
     const mine = '# my config\nmodel:\n  default: alice-example-model\n';
     const other = { event: 'pre_tool_call', command: '/usr/bin/true', approved_at: 'x', script_mtime_at_approval: null };
     const d = hermes(mine, [other]);
-    expect(syncHermesTurnHook({ hermesHome: d, launcher, dryRun: false }).action).toBe('write');
+    expect(syncHermesTurnHook({ hermesHome: d, access, dryRun: false }).action).toBe('write');
     const text = cfg(d);
     expect(text.startsWith(mine)).toBe(true);
     expect(load(text)).toEqual({ model: { default: 'alice-example-model' }, hooks: { pre_llm_call: [{ command: cmd, timeout: 10 }] } });
-    expect(approvals(d)).toEqual([other, expect.objectContaining({ event: 'pre_llm_call', command: cmd })]);
-    expect(syncHermesTurnHook({ hermesHome: d, launcher, dryRun: false }).action).toBe('keep');
+    expect(approvals(d)).toEqual([other, expect.objectContaining({ event: 'pre_llm_call', command: cmd, script_mtime_at_approval: null })]);
+    expect(syncHermesTurnHook({ hermesHome: d, access, dryRun: false }).action).toBe('keep');
     expect(cfg(d)).toBe(text);
     expect(approvals(d)).toHaveLength(2);
     expect(removeHermesTurnHook({ hermesHome: d, dryRun: false }).action).toBe('remove');
@@ -171,33 +138,99 @@ describe('per-turn rule: Hermes pre_llm_call hook in config.yaml', () => {
     expect(approvals(d)).toEqual([other]);
   });
 
-  test('a new launcher path rewrites the block in place', () => {
+  test('new rule text rewrites the block in place and moves the approval to the new command', () => {
     const d = hermes('');
-    syncHermesTurnHook({ hermesHome: d, launcher, dryRun: false });
-    expect(syncHermesTurnHook({ hermesHome: d, launcher: '/usr/local/bin/gbrain', dryRun: false }).action).toBe('write');
-    expect(load(cfg(d))).toEqual({ hooks: { pre_llm_call: [{ command: '/usr/local/bin/gbrain hook turn-rule', timeout: 10 }] } });
+    syncHermesTurnHook({ hermesHome: d, access, dryRun: false });
+    const next: BrainFirstAccess = { kind: 'mcp', server: 'brain', surface: 'verbs' };
+    expect(syncHermesTurnHook({ hermesHome: d, access: next, dryRun: false }).action).toBe('write');
+    expect(load(cfg(d))).toEqual({ hooks: { pre_llm_call: [{ command: hermesTurnHookCommand(next), timeout: 10 }] } });
+    expect(approvals(d).map((a) => a.command)).toEqual([hermesTurnHookCommand(next)]);
   });
 
-  test('prints the entry instead of editing: a hooks: section of the user\'s, no absolute launcher, no Hermes home, damaged markers', () => {
+  test('prints the entry instead of editing: a hooks: section of the user\'s, no Hermes home, damaged markers', () => {
     const theirs = 'hooks:\n  pre_tool_call:\n    - command: /usr/bin/true\n';
     const d = hermes(theirs);
-    const o = syncHermesTurnHook({ hermesHome: d, launcher, dryRun: false });
+    const o = syncHermesTurnHook({ hermesHome: d, access, dryRun: false });
     expect(o.action).toBe('print');
-    expect(o.snippet).toContain(`- command: "${cmd}"`);
+    expect(o.snippet).toContain(`- command: ${JSON.stringify(cmd)}`);
     expect(cfg(d)).toBe(theirs);
     expect(existsSync(join(d, 'shell-hooks-allowlist.json'))).toBe(false);
-    expect(syncHermesTurnHook({ hermesHome: hermes(''), launcher: null, dryRun: false }).action).toBe('print');
-    expect(syncHermesTurnHook({ hermesHome: hermes(''), launcher: 'gbrain', dryRun: false }).action).toBe('print');
-    expect(syncHermesTurnHook({ hermesHome: join(tmpdir(), 'gbrain-no-such-hermes-home'), launcher, dryRun: false }).action).toBe('print');
+    expect(syncHermesTurnHook({ hermesHome: join(tmpdir(), 'gbrain-no-such-hermes-home'), access, dryRun: false }).action).toBe('print');
     const damaged = hermes('# gbrain:turn-rule:begin\nmodel: x\n');
-    expect(syncHermesTurnHook({ hermesHome: damaged, launcher, dryRun: false }).action).toBe('print');
+    expect(syncHermesTurnHook({ hermesHome: damaged, access, dryRun: false }).action).toBe('print');
     expect(cfg(damaged)).toBe('# gbrain:turn-rule:begin\nmodel: x\n');
   });
 
   test('dry-run writes nothing', () => {
     const d = hermes('model: x\n');
-    expect(syncHermesTurnHook({ hermesHome: d, launcher, dryRun: true }).action).toBe('write');
+    expect(syncHermesTurnHook({ hermesHome: d, access, dryRun: true }).action).toBe('write');
     expect(cfg(d)).toBe('model: x\n');
     expect(existsSync(join(d, 'shell-hooks-allowlist.json'))).toBe(false);
+  });
+});
+
+describe('per-turn rule: OpenClaw before_prompt_build plugin', () => {
+  const access: BrainFirstAccess = { kind: 'mcp', server: 'gbrain' };
+  function state(): string {
+    const dir = mkdtempSync(join(tmpdir(), 'gbrain-openclaw-state-'));
+    roots.push(dir);
+    return dir;
+  }
+  function recorder(fail?: string) {
+    const calls: string[][] = [];
+    return { calls, run: (argv: string[]) => { calls.push(argv); return argv.includes(fail ?? '\0') ? { ok: false, output: 'boom' } : { ok: true, output: '' }; } };
+  }
+
+  test('writes a self-contained hook-only plugin and installs it with the openclaw CLI; a re-run keeps it', async () => {
+    const st = state();
+    await withEnv({ OPENCLAW_STATE_DIR: st, OPENCLAW_PROFILE: undefined }, async () => {
+      const dir = openclawTurnPluginDir();
+      expect(dir).toBe(join(st, 'gbrain', OPENCLAW_TURN_PLUGIN_ID));
+      const rec = recorder();
+      const o = syncOpenclawTurnPlugin({ access, dryRun: false, openclawBin: '/bin/openclaw', run: rec.run });
+      expect(o.action).toBe('write');
+      expect(rec.calls).toEqual([
+        ['/bin/openclaw', 'plugins', 'install', '--link', dir, '--force', '--accept-capabilities'],
+        ['/bin/openclaw', 'plugins', 'enable', OPENCLAW_TURN_PLUGIN_ID],
+        ['/bin/openclaw', 'config', 'set', `plugins.entries.${OPENCLAW_TURN_PLUGIN_ID}.hooks.allowConversationAccess`, 'true'],
+      ]);
+      expect(JSON.parse(readFileSync(join(dir, 'openclaw.plugin.json'), 'utf8'))).toMatchObject({ id: OPENCLAW_TURN_PLUGIN_ID, configSchema: { type: 'object' } });
+      expect(JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8')).openclaw).toEqual({ extensions: ['./index.js'] });
+      const mod = await import(join(dir, 'index.js'));
+      const handlers: Record<string, () => unknown> = {};
+      mod.default.register({ on: (event: string, fn: () => unknown) => { handlers[event] = fn; } });
+      expect(Object.keys(handlers)).toEqual(['before_prompt_build']);
+      expect(handlers.before_prompt_build()).toEqual({ prependContext: renderBrainFirstTurnRule(access) });
+      expect(syncOpenclawTurnPlugin({ access, dryRun: false, openclawBin: '/bin/openclaw', run: recorder().run }).action).toBe('keep');
+    });
+  });
+
+  test('no openclaw on PATH or a failed command: the plugin is written and the remaining commands are printed', async () => {
+    await withEnv({ OPENCLAW_STATE_DIR: state(), OPENCLAW_PROFILE: undefined }, async () => {
+      const o = syncOpenclawTurnPlugin({ access, dryRun: false, openclawBin: null });
+      expect(o.action).toBe('print');
+      expect(o.commands?.[0]).toBe(`openclaw plugins install --link ${openclawTurnPluginDir()} --force --accept-capabilities`);
+      expect(o.commands).toHaveLength(3);
+      expect(existsSync(join(openclawTurnPluginDir(), 'index.js'))).toBe(true);
+      const failed = syncOpenclawTurnPlugin({ access, dryRun: false, openclawBin: '/bin/openclaw', run: recorder('enable').run });
+      expect(failed.action).toBe('print');
+      expect(failed.commands).toEqual([`/bin/openclaw plugins enable ${OPENCLAW_TURN_PLUGIN_ID}`, `/bin/openclaw config set plugins.entries.${OPENCLAW_TURN_PLUGIN_ID}.hooks.allowConversationAccess true`]);
+    });
+  });
+
+  test('dry-run writes and runs nothing; removal uninstalls and deletes the directory and its empty parent', async () => {
+    const st = state();
+    await withEnv({ OPENCLAW_STATE_DIR: st, OPENCLAW_PROFILE: undefined }, async () => {
+      const rec = recorder();
+      expect(syncOpenclawTurnPlugin({ access, dryRun: true, openclawBin: '/bin/openclaw', run: rec.run }).action).toBe('write');
+      expect(rec.calls).toEqual([]);
+      expect(existsSync(openclawTurnPluginDir())).toBe(false);
+      expect(removeOpenclawTurnPlugin({ dryRun: false, openclawBin: '/bin/openclaw', run: rec.run }).action).toBe('skip');
+      syncOpenclawTurnPlugin({ access, dryRun: false, openclawBin: '/bin/openclaw', run: rec.run });
+      const gone = recorder();
+      expect(removeOpenclawTurnPlugin({ dryRun: false, openclawBin: '/bin/openclaw', run: gone.run }).action).toBe('remove');
+      expect(gone.calls).toEqual([['/bin/openclaw', 'plugins', 'uninstall', OPENCLAW_TURN_PLUGIN_ID, '--force']]);
+      expect(existsSync(join(st, 'gbrain'))).toBe(false);
+    });
   });
 });

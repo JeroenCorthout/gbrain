@@ -20,7 +20,7 @@
 export const PAGES_SUBCOMMANDS = ['purge-deleted', 'purges', 'unpurge', 'unsearchable', 'ghosts', 'status'] as const;
 export const CACHE_SUBCOMMANDS = ['stats', 'clear', 'prune'] as const;
 export const INTEGRITY_SUBCOMMANDS = ['check', 'auto', 'review', 'reset-progress'] as const;
-export const HOOK_SUBCOMMANDS = ['session-start', 'user-prompt', 'stop', 'session-end', 'compact', 'turn-rule'] as const;
+export const HOOK_SUBCOMMANDS = ['session-start', 'user-prompt', 'stop', 'session-end', 'compact'] as const;
 export const SEARCH_SUBCOMMANDS = ['modes', 'stats', 'tune', 'diagnose'] as const;
 export const EDGE_PROPOSALS_SUBCOMMANDS = ['list', 'show', 'accept', 'reject', 'undo', 'date', 'retry'] as const;
 export const CONFIG_SUBCOMMANDS = ['show', 'get', 'set', 'unset'] as const;

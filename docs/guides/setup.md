@@ -182,10 +182,13 @@ missing, stale or damaged, with a fix that rewrites only the block.
 A rule in the system prompt is easy for a model to pass over, so the same rule
 also rides each turn where the harness has a per-turn hook: Claude Code and
 Codex get it from setup's UserPromptSubmit hook while the block is installed,
-OpenClaw from gbrain's context engine, and Hermes from a marked `pre_llm_call`
-hook (`gbrain hook turn-rule`) that `gbrain setup hermes` adds to its config.yaml.
-Cursor's rule is always applied; opencode reads its AGENTS.md on every request.
-The opt-out turns the per-turn rule off with the block.
+OpenClaw from a hook-only plugin (`gbrain-turn-rule`, `before_prompt_build`)
+that `gbrain setup openclaw` installs with the openclaw CLI, and Hermes from a
+marked, self-contained `pre_llm_call` hook that `gbrain setup hermes` adds to its
+config.yaml. Cursor's rule is always applied; opencode reads its AGENTS.md on
+every request. QM has no per-turn hook an install can set: its gateway's
+`instructions` are per turn but belong to the surface that posts the turn. The
+opt-out turns the per-turn rule off with the block.
 
 ## Skill loading (opt-in)
 
