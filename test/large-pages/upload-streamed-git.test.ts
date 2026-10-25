@@ -113,6 +113,27 @@ for (const backend of testBackends()) describe(`[${backend}] uploads over the ce
     expect(git(root, 'status', '--porcelain')).toBe('');
   }, { databaseUrl, setup }), 600_000);
 
+  test('(a) not strict: at publication:before_commit, before the row commits, the head and every part are on disk with their planned hashes', () => managedBrain(async ({ engine, ctx, root }) => {
+    const text = bigPage(25 * MiB);
+    let planned: Array<{ path: string; afterHash: string | null }> = [];
+    let atCommit: Array<{ path: string; hash: string | null }> | undefined;
+    installFaultHook(async point => {
+      if (point === 'publication:prepared' && !planned.length) {
+        const [row] = await engine.executeRaw<{ recovery: unknown }>('SELECT recovery FROM persistence_requests WHERE recovery IS NOT NULL');
+        const record = (typeof row!.recovery === 'string' ? JSON.parse(row!.recovery) : row!.recovery) as { target?: string; files: typeof planned };
+        expect(record.target).toBe('page_split');
+        planned = record.files.map(file => ({ path: file.path, afterHash: file.afterHash }));
+      }
+      if (point === 'publication:before_commit' && !atCommit) atCommit = planned.map(file => ({ path: file.path, hash: existsSync(file.path) ? sha(readFileSync(file.path)) : null }));
+    });
+    expect(await upload(ctx, 'notes/order-log', text)).toMatchObject({ state: 'committed' });
+    expect(planned.length).toBeGreaterThan(2);
+    expect(planned[0]!.path).toBe(join(root, 'notes/order-log.md'));
+    expect(planned.every(file => file.afterHash !== null)).toBe(true);
+    expect(atCommit).toEqual(planned.map(file => ({ path: file.path, hash: file.afterHash })));
+    expect(headFileSha(join(root, 'notes/order-log.md'))).toBe(await renderSha(engine, 'notes/order-log'));
+  }, { databaseUrl, setup }), 600_000);
+
   test('(a) a strict source commits head + parts through the door before the row commits', () => managedBrain(async ({ engine, ctx, root }) => {
     await strict(engine);
     const text = bigPage(25 * MiB);
