@@ -37,7 +37,8 @@ import { recordedPathFromFileUri, scannerSlugRootMode, scannerSourcePath } from 
 import { engineMutationPrecondition, parseMutationPrecondition } from './preconditions.ts';
 import { assertPurgeParams } from './purge-params.ts';
 import { authorizeWrite, slugDisclosable } from './authority.ts';
-import { findLiveFileClaimants, type FileClaimant, type FileClaimTarget } from './file-claims.ts';
+import { findLiveFileClaimants, refusePartFileTarget, type FileClaimant, type FileClaimTarget } from './file-claims.ts';
+import { readSplitHead, resolvesModifiedHead, type SplitHeadReading } from './split-files.ts';
 import { digest, sha256 } from './digest.ts';
 import { replaceableFile } from '../facts/file-body-guard.ts';
 import { getWorktreeBinding } from './ownership.ts';
@@ -296,6 +297,7 @@ export async function prepareFileTarget(engine: BrainEngine, row: Pick<WriteRequ
   if (!isWriteTargetContained(path, root)) throw opError('source_changed', 'The canonical file target is outside its registered source.',
     `The file of ${row.slug} resolves outside source ${row.source_id}'s registered root (a symlinked directory or a moved checkout), so nothing was written. Inspect the owner before resubmitting; how to repair the checkout is the user's decision.`,
     { fix: ownerStatusFix(row.source_id) });
+  refusePartFileTarget(row, root, path, ownerStatusFix(row.source_id));
   // #7130: a canonical file under a path the checkout's .gitignore excludes would never be committed, so the page would be
   // file-backed by a file no history holds (and a later sync could read its absence as a deletion). The write publishes
   // to the database only and binds no file; a declared db_only page keeps its cache file as before. Only a new page whose
@@ -326,9 +328,15 @@ export async function prepareFileTarget(engine: BrainEngine, row: Pick<WriteRequ
   const piecewise = (snapshot && bodyUnread(snapshot.page)) || (content !== null && isStreamedContent(content));
   const before: Buffer | FileBytes | null = !existsSync(path) ? null
     : piecewise || statSync(path).size > LARGE_FILE_MIN_BYTES ? FileBytes.open(path) : readFileSync(path);
+  // Wave B PR 5: a split head (split-files.ts) compares as the page file its parts reassemble to; the target still expects the head's bytes.
+  // A head whose body was edited compares as itself (drift) unless this write is that edit's resolution.
+  let head: SplitHeadReading | null = null;
   try {
-    return await compareFileTarget(engine, row, snapshot, content, options, { root, path, mode, capturedPath, before });
-  } finally { if (before instanceof FileBytes) before.close(); }
+    head = before ? readSplitHead(path, before) : null;
+    if (head?.modified && await resolvesModifiedHead(engine, row, path, head.modified, content)) return { path, root, content, expectedBeforeHash: head.headHash };
+    const target = await compareFileTarget(engine, row, snapshot, content, options, { root, path, mode, capturedPath, before: head?.reassembled ?? before });
+    return target && head ? { ...target, expectedBeforeHash: head.headHash } : target;
+  } finally { try { head?.dispose(); } finally { if (before instanceof FileBytes) before.close(); } }
 }
 
 /** prepareFileTarget's comparison of the file at `path` (`before`, its bytes or a piecewise reading) with the snapshot. */

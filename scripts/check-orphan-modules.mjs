@@ -72,12 +72,6 @@ const PERMITTED_TEST_ONLY = [
   { path: 'src/core/ingestion/sources/file-watcher.ts', reason: 'held: ingestion cluster awaits a wire-up vs delete product decision' },
   { path: 'src/core/ingestion/sources/gstack-learnings.ts', reason: 'held: ingestion cluster awaits a wire-up vs delete product decision' },
   { path: 'src/core/ingestion/sources/inbox-folder.ts', reason: 'held: ingestion cluster awaits a wire-up vs delete product decision (docs/guides/data-ingestion.md promises the inbox folder)' },
-  { path: 'src/core/split-layout/head.ts', reason: 'held: Wave B PR 5 lane 5a split git layout format core; lanes 5b (publication) and 5c (sync) wire it in, and remove this entry' },
-  { path: 'src/core/split-layout/index.ts', reason: 'held: Wave B PR 5 lane 5a split git layout format core; lanes 5b (publication) and 5c (sync) wire it in, and remove this entry' },
-  { path: 'src/core/split-layout/paths.ts', reason: 'held: Wave B PR 5 lane 5a split git layout format core; lanes 5b (publication) and 5c (sync) wire it in, and remove this entry' },
-  { path: 'src/core/split-layout/plan.ts', reason: 'held: Wave B PR 5 lane 5a split git layout format core; lanes 5b (publication) and 5c (sync) wire it in, and remove this entry' },
-  { path: 'src/core/split-layout/types.ts', reason: 'held: Wave B PR 5 lane 5a split git layout format core; lanes 5b (publication) and 5c (sync) wire it in, and remove this entry' },
-  { path: 'src/core/split-layout/verify.ts', reason: 'held: Wave B PR 5 lane 5a split git layout format core; lanes 5b (publication) and 5c (sync) wire it in, and remove this entry' },
   { path: 'src/core/ingestion/sources/markdown-greenfield.ts', reason: 'held: ingestion cluster awaits a wire-up vs delete product decision (docs/migrations/v0.41.2-markdown-greenfield.md)' },
 ];
 
