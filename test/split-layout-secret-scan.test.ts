@@ -13,7 +13,7 @@
  */
 import { afterAll, afterEach, beforeAll, expect, test } from 'bun:test';
 import { execFileSync } from 'node:child_process';
-import { appendFileSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SCAN_MAX_FILE_BYTES, scanFiles } from '../src/core/secret-scan.ts';
@@ -149,3 +149,15 @@ test('the push gate refuses every staged part of a head whose manifest it cannot
     expect(execFileSync('git', ['-C', work, 'diff', '--cached', '--name-only'], { encoding: 'utf8' })).toBe('');
   }
 }, T);
+
+test('scanFiles never follows a symlinked part file out of the parts directory', async () => {
+  const outside = join(mkdtempSync(join(home, 'outside-')), 'elsewhere.txt');
+  writeFileSync(outside, `unrelated file key ${OPENAI}\n`);
+  const page = await splitPage(linesBody(12_000));
+  const linked = page.parts[1]!;
+  rmSync(page.abs(linked.rel));
+  symlinkSync(outside, page.abs(linked.rel));
+  const findings = scanFiles([page.abs(HEAD)]);
+  expect(findings.filter(f => f.pattern === 'openai' || f.file === page.abs(linked.rel))).toEqual([]);
+  expect(scanFiles([outside]).map(f => f.pattern)).toContain('openai');
+});

@@ -28,7 +28,7 @@
  * decision, not a default.
  */
 
-import { existsSync, readFileSync, statSync } from 'fs';
+import { closeSync, constants, existsSync, lstatSync, openSync, readFileSync, statSync } from 'fs';
 import { isAbsolute, join, relative, resolve } from 'path';
 import { createHash } from 'crypto';
 import {
@@ -1171,12 +1171,13 @@ export function scanFiles(paths: string[], opts: ScanOpts = {}): SecretFinding[]
   const allowlist = opts.allowlist ?? [];
   const out: SecretFinding[] = [];
   // Wave B PR 5: a split head brings its part files (each scanned whole) and their seams into the scan (secret-scan-split.ts).
+  // A part is read only as a regular file of its own (lstat): a symlinked part is never followed out of the parts directory.
   const queue = [...paths], queued = new Set(paths.map((p) => resolve(p)));
   for (let i = 0; i < queue.length; i++) {
     const p = queue[i]!;
     try {
       if (!existsSync(p)) continue;
-      const st = statSync(p);
+      const st = i < paths.length ? statSync(p) : lstatSync(p);
       if (!st.isFile() || st.size > SCAN_MAX_FILE_BYTES) continue;
     } catch {
       continue;
@@ -1187,7 +1188,11 @@ export function scanFiles(paths: string[], opts: ScanOpts = {}): SecretFinding[]
     if (looksBinary(p)) continue;
     let text: string;
     try {
-      text = readFileSync(p, 'utf-8');
+      if (i < paths.length) text = readFileSync(p, 'utf-8');
+      else {
+        const fd = openSync(p, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+        try { text = readFileSync(fd, 'utf-8'); } finally { closeSync(fd); }
+      }
     } catch {
       continue;
     }
