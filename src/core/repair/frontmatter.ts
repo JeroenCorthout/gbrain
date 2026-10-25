@@ -36,9 +36,17 @@
  * the file up, write it, import it, clear its hold, and print the commit
  * step. An apply refuses while an unfinished managed sync cursor still names
  * a selected file.
+ *
+ * Wave B PR 5: a split page head is read, previewed and bound as the page
+ * file F' it and its parts reassemble to (`readPageFile`), so the managed
+ * publication lays the repaired page out as a head plus parts again. A head
+ * that does not reassemble is `needs_review` with its hold code
+ * (`split_page_incomplete`, `split_head_modified`, `split_page_too_large`),
+ * and a legacy source, which writes the file directly, passes a split head
+ * by as `split_page_unsupported`; neither is written.
  */
 import { execFileSync } from '../spawn.ts';
-import { existsSync, lstatSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, readdirSync, writeFileSync } from 'node:fs';
 import { maintenanceTransaction } from '../persistence/attribution.ts';
 import { join } from 'node:path';
 import type { BrainEngine } from '../engine.ts';
@@ -57,7 +65,8 @@ import { clearGitHold, readGitSourceHolds, type GitHoldRecord } from '../persist
 import { loadRepairBusySet, repairBusy, repairBusyMessage, type RepairBusySet } from '../persistence/repair-busy.ts';
 import { fenceWhere } from '../fence-repair/refusal.ts';
 import type { SyncRename } from '../persistence/sync-discovery.ts';
-import { canonicalRepairFields, confinedRepairTarget, managedRepairRoot, prepareRepairPublication, repairScreenConfig, submitManagedFileRepair } from '../persistence/file-repair.ts';
+import { canonicalRepairFields, confinedRepairTarget, managedRepairRoot, prepareRepairPublication, repairScreenConfig, SPLIT_PAGE_UNSUPPORTED, submitManagedFileRepair } from '../persistence/file-repair.ts';
+import { pageFileSha256, readPageFile } from '../split-layout/index.ts';
 import { clearApprovedSet, loadApprovedSet, previewChangedError, previewHash, saveApprovedSet } from '../persistence/preview-approval.ts';
 import type { PageSnapshot } from '../page-state/types.ts';
 import { materializedSnapshot, segmentedOverCeiling } from '../persistence/segmented-apply.ts';
@@ -307,9 +316,10 @@ async function analyzeFile(ctx: FileContext, path: string, hold: GitHoldRecord |
     if (!(error instanceof OperationError)) throw error;
     return hold ? review(hold.code, `${path} is a symlink, sits under one, or resolves outside the source root; gbrain never writes through one. Replace it with the real file, then preview again.`) : null;
   }
-  const size = lstatSync(abs).size;
-  if (size > MAX_FILE_SIZE) return review('file_too_large', resolution({ code: 'file_too_large' }, path, src.sourceId));
-  const bytes = readFileSync(abs);
+  if (lstatSync(abs).size > MAX_FILE_SIZE) return review('file_too_large', resolution({ code: 'file_too_large' }, path, src.sourceId));
+  const file = readPageFile(abs, { maxBytes: MAX_FILE_SIZE });
+  if (file.hold) return review(file.hold.code, file.hold.message);
+  const bytes = file.bytes, size = bytes.length;
   const content = bytes.toString('utf8');
   if (!Buffer.from(content, 'utf8').equals(bytes)) return review(hold?.code ?? 'invalid_frontmatter', `${path} is not valid UTF-8, so gbrain will not rewrite it; re-save it as UTF-8, then preview again.`);
   const sourcePath = hold?.source_path ?? path;
@@ -363,6 +373,10 @@ interface Prepared { approved: ApprovedRepair; content: string; original: string
 async function bindProposal(ctx: FileContext, path: string, hold: GitHoldRecord | undefined, proposal: NonNullable<Analysis['proposal']>,
   screenConfig: Awaited<ReturnType<typeof repairScreenConfig>>): Promise<Prepared | NeedsReview> {
   const { engine, src } = ctx;
+  const file = readPageFile(join(src.root, path));
+  if (file.hold) return { source_id: src.sourceId, path, code: file.hold.code, resolution: file.hold.message };
+  if (file.split && src.mode === 'legacy') return { source_id: src.sourceId, path, code: SPLIT_PAGE_UNSUPPORTED, resolution: `${path} is a split page head (its page continues in part files), and this brain has no canonical owner to write the page back as a head plus parts, so it is not rewritten. `
+    + 'Fix the frontmatter lines in the head file by hand (they are the page frontmatter; leave its gbrain_parts key and its body as they are), commit, and preview again.' };
   const sourcePath = hold?.source_path ?? path;
   const page = ctx.pages.get(sourcePath);
   if (page && 'ambiguous' in page) return { source_id: src.sourceId, path, code: 'origin_conflict', resolution: originConflictMessage(src.sourceId, sourcePath, page.ambiguous) };
@@ -384,7 +398,7 @@ async function bindProposal(ctx: FileContext, path: string, hold: GitHoldRecord 
   if (stored && digest(canonicalRepairFields(stored.page, stored.tags)) === publication.digest) {
     return { source_id: src.sourceId, path, code: 'embedded_frontmatter', resolution: `The page of ${path} already matches its file; nothing to re-import.` };
   }
-  const original = readFileSync(join(src.root, path));
+  const original = file.bytes;
   return { content: proposal.content, original: original.toString('utf8'), approved: { source_id: src.sourceId, mode: src.mode, path, source_path: sourcePath, slug, class: proposal.class, fixes: proposal.fixes,
     before: sha256(original), after: sha256(Buffer.from(proposal.content, 'utf8')), chars: proposal.content.length, page_id: snapshot?.page.id ?? null, revision: snapshot?.revision ?? null,
     result_digest: publication.digest, ...(proposal.rename_from ? { rename_from: proposal.rename_from } : {}) } };
@@ -408,9 +422,9 @@ async function scan(engine: BrainEngine, scope: RepairScope, selection: Selectio
       const analysis = await analyzeFile(ctx, path, hold);
       if (!analysis) continue;
       if (analysis.review) out.review.push(analysis.review);
-      if (analysis.pending) {
-        const before = readFileSync(join(src.root, path), 'utf8');
-        out.pending.push({ source_id: src.sourceId, path, class: 'interpretive', fixes: analysis.pending.fixes, diff: lineDiff(path, before, analysis.pending.content), selected: false });
+      const before = analysis.pending ? readPageFile(join(src.root, path)) : null;
+      if (analysis.pending && before && !before.hold) {
+        out.pending.push({ source_id: src.sourceId, path, class: 'interpretive', fixes: analysis.pending.fixes, diff: lineDiff(path, before.bytes.toString('utf8'), analysis.pending.content), selected: false });
       }
       if (!analysis.proposal) continue;
       const bound = await bindProposal(ctx, path, hold, analysis.proposal, screenConfig);
@@ -536,7 +550,9 @@ async function applyRepair(ctx: OperationContext, repair: ApprovedRepair, select
   const changed = (reason: string): RepairItemOutcome => ({ applied: false, outcome: 'changed_since_preview', reason, detail: { path: repair.path } });
   const root = await rootFor(ctx.engine, repair);
   const target = join(root, repair.path);
-  if (!existsSync(target) || sha256(readFileSync(target)) !== repair.before) return changed(`${repair.path} changed on disk since the preview`);
+  const onDisk = existsSync(target) ? pageFileSha256(target) : null;
+  if (onDisk?.hold) return { applied: false, outcome: 'needs_review', reason: onDisk.hold.message, detail: { path: repair.path, code: onDisk.hold.code } };
+  if (!onDisk || onDisk.sha256 !== repair.before) return changed(`${repair.path} changed on disk since the preview`);
   const src: SourceRoot = { sourceId: repair.source_id, incarnation: '', mode: repair.mode, root };
   const holds = (await readGitSourceHolds(ctx.engine, { sourceIds: [repair.source_id] }))[0]?.holds ?? [];
   const hold = holds.find(entry => entry.path === repair.path);
