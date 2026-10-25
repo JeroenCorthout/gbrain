@@ -7,6 +7,7 @@ import { sanitizeRemoteBody } from './remote-body.ts';
 import { credentialSafeProjection } from './credential-projection.ts';
 import { scanFencedBlocks, MAX_FENCES_PER_PAGE } from './fence-scan.ts';
 import { isQuarantined } from './quarantine.ts';
+import { bodyUnread } from './page-body/page-shape.ts';
 import { resolveMaxChunkTokens } from './embedding-input-limit.ts';
 import { estimateEmbedTokens } from './chunkers/token-estimate.ts';
 import { fenceTrustMarker, loadFenceChunkOverlay, markFenceChunk, splitFenceOverlay, type FenceChunkOverlay } from './eligibility/fence-overlay.ts';
@@ -241,7 +242,7 @@ export function prepareProseChunks(page: { compiled_truth: string; timeline?: st
  */
 export async function prepareFenceAwareMarkdownChunks(engine: Pick<BrainEngine, 'executeRaw'>, sourceId: string, slug: string,
   page: MarkdownChunkPage, existing?: { id: number; deleted_at?: unknown; compiled_truth: string; timeline?: string | null } | null): Promise<MarkdownChunkSet> {
-  const unchanged = !!existing && !existing.deleted_at && existing.compiled_truth === page.compiled_truth && (existing.timeline ?? '') === (page.timeline ?? '');
+  const unchanged = !!existing && !existing.deleted_at && !bodyUnread(existing) && existing.compiled_truth === page.compiled_truth && (existing.timeline ?? '') === (page.timeline ?? '');
   const [stored] = unchanged ? await engine.executeRaw<{ chunker_version: number | null }>('SELECT chunker_version FROM pages WHERE id = $1', [existing!.id]) : [];
   const overlay = await loadFenceChunkOverlay(engine, { sourceId, slug, compiled_truth: page.compiled_truth, timeline: page.timeline });
   return prepareMarkdownChunkSet(page, undefined, overlay, { timelineBullets: inlineTimelineBullets(stored?.chunker_version == null ? null : Number(stored.chunker_version)) });

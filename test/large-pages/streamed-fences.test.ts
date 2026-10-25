@@ -13,7 +13,7 @@
  *    `assertNoHiddenFenceRows` (the guard of a remote write the stored body cannot be merged into) refuses a body holding
  *    a takes fence, a non-world facts row, in a quoted fence too, or an unclosed fence, inline or segmented, and admits a
  *    world-only facts fence. A coordinated streamed import whose source gained a withdrawal after its fences were
- *    rewritten refuses `revision_conflict` at publication (`validate`).
+ *    rewritten refuses `revision_conflict` at publication (the prepared `apply`) and writes nothing.
  * 2. Fails when: a region split across chunks is missed or rewritten twice, bytes between regions change, an oversized
  *    region is read whole before refusing, a residual fence is stored in a coordinated import, the streamed body differs
  *    from whole-page Tier 1 without holding the file, a remote writer adds a takes fence, the guard reads only the first
@@ -130,6 +130,8 @@ describe('streamed fence pass', () => {
       'with-takes': { fence: takes, hidden: 'takes' },
       // Remote reads hide a quoted fence's private rows too; a canonical facts reader skips the quoted fence.
       'quoted-private-row': { fence: `${facts([row(1, 'Walks to work')])}\n\nAn example:\n\n\`\`\`\n${privateRow}\n\`\`\``, hidden: 'facts' },
+      // Two quoted fences back to back (their stored regions touch): each is judged on its own.
+      'adjacent-quoted': { fence: `An example:\n\n\`\`\`\n${facts([row(1, 'Walks to work')])}${privateRow}\n\`\`\``, hidden: 'facts' },
       // Stored as written with `fences.normalize` off (Tier 1 closes it otherwise); remote reads drop the unclosed tail.
       'unclosed': { fence: `${FACTS_FENCE_BEGIN}\n${HEADER}${row(1, 'Drinks tea')}\n`, hidden: 'facts' },
     };
@@ -193,8 +195,10 @@ describe('streamed fence pass', () => {
       await engine.transaction(tx => prepared!.validate(tx));
       await engine.transaction(tx => withCoordinatedWrite(tx, ['default'], () => tx.executeRaw(
         `INSERT INTO fact_withdrawals(source_id,visibility,subject,fact_hash) VALUES ('default','world','*',gbrain_fact_fingerprint($1))`, [claim]), TEST_WRITE_ATTRIBUTION));
-      const refused = await engine.transaction(tx => prepared!.validate(tx)).then(() => null, (error: { code?: string }) => error.code);
+      // Every publisher (the coordinated sync and import, the upload adapter) runs the prepared apply in its publication transaction.
+      const refused = await engine.transaction(tx => prepared!.apply(tx)).then(() => null, (error: { code?: string }) => error.code);
       expect(refused).toBe('revision_conflict');
+      expect(await engine.getPage('notes/race', { sourceId: 'default' })).toBeNull();
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

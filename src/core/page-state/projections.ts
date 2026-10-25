@@ -159,7 +159,9 @@ async function indexingContext(engine: BrainEngine, snapshot: PageSnapshot, maxC
  * its embedding `page-body/segmented-embedding.ts`, never this body read.
  */
 export async function readProjectionSnapshot(engine: BrainEngine, slug: string, sourceId: string,
-  opts: { allowUnsealed?: boolean; maxChunkTokens?: number; requireLiveSource?: boolean } = {}): Promise<ProjectionSnapshot | null> {
+  opts: { allowUnsealed?: boolean; maxChunkTokens?: number; requireLiveSource?: boolean; preview?: boolean } = {}): Promise<ProjectionSnapshot | null> {
+  // A preview reads without the page guard, which inserts its guard row and locks: it writes nothing and installs nothing.
+  if (opts.preview) return readGuardedProjectionSnapshot(engine, slug, sourceId, opts);
   return engine.transaction(async tx => {
     await tx.lockPageKeys([{ sourceId, slug }]);
     return readGuardedProjectionSnapshot(tx, slug, sourceId, opts);

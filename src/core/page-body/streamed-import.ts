@@ -460,6 +460,7 @@ async function importScanned(engine: BrainEngine, input: { file: FileHandle; bom
       : { source_path: relativePath, source_kind: null, source_uri: fileOriginUri(existing?.source_uri, sourceRoot, relativePath), ingested_via: null }) };
   const refs = prepared.body.body_flags.has_protected ? [] : [...codeRefs.refs.values()];
   const apply = async (tx: BrainEngine, preimage?: PageSnapshot | null) => {
+    await fences.revalidate(tx);
     if (existing) await tx.createVersion(slug, preimage ? { sourceId, preimage } : { sourceId });
     const result = await applySegmentedBody(tx, { slug, sourceId, pageId: live?.id ?? null, prepared, meta, promotion: live?.storage === 'inline', retireMaxRows: input.policy.flipRetireMaxRows });
     await tx.updatePageContextualRetrievalState(slug, sourceId, mode, corpusGeneration);
@@ -487,8 +488,7 @@ async function importScanned(engine: BrainEngine, input: { file: FileHandle; bom
   if (opts.coordinated) {
     let applied: { pageId: number; complete: boolean } | null = null;
     return opts.coordinated.prepare({ slug, observedRevision: opts.coordinated.snapshot?.revision ?? null, noop: false, contentHash: hash, result: imported, frontmatter: parsed.frontmatter,
-      validate: async tx => {
-        await fences.revalidate(tx);
+      validate: async () => {
         const now = await lstat(input.filePath);
         if (now.size !== size || now.mtimeMs !== input.stat.mtimeMs) throw opError('source_changed', 'The input file changed after import preparation.',
           `${relativePath} changed after its import request was prepared, so the request published nothing. Import it again to publish the current bytes.`);
@@ -501,7 +501,6 @@ async function importScanned(engine: BrainEngine, input: { file: FileHandle; bom
   }
   const applied = await maintenanceTransaction(engine, async tx => {
     await assertImportBase(tx, slug, sourceId, existing);
-    await fences.revalidate(tx);
     return apply(tx);
   }, writeTrustOfGate(writeGate)).catch(async error => { await abort(); throw error; });
   await afterCommit(engine, applied);

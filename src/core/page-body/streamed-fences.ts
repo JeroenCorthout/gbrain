@@ -24,9 +24,9 @@
  * grounds).
  *
  * The overlay reads the withdrawal and purge ledgers while the body is staged; `revalidate` runs in the publication
- * transaction and refuses `revision_conflict`, as `assertPreparedFactWithdrawals` does for an inline import, when the
- * source's ledgers changed since the first region was rewritten (a forget or purge that committed meanwhile could not
- * see the bytes still in flight).
+ * transaction (the prepared import's `apply`, which every publisher runs) and refuses `revision_conflict`, as
+ * `assertPreparedFactWithdrawals` does for an inline import, when the source's ledgers changed since the first region
+ * was rewritten (a forget or purge that committed meanwhile could not see the bytes still in flight).
  *
  * Memory: one region at a time, plus the body's settled reader-visible regions (at most one facts and one takes fence)
  * while the timeline streams.
@@ -37,7 +37,7 @@ import type { FenceIssueWire } from '../fence-repair/tier1.ts';
 import type { FenceCtx, FenceFix } from '../fence-repair/types.ts';
 import { settleFenceRegion } from '../fence-repair/import-step.ts';
 import { assertFenceRegionWithdrawals, preserveWithdrawnFenceRows } from '../facts/withdrawal.ts';
-import { FACTS_FENCE_END, parseFactsFence } from '../facts-fence.ts';
+import { parseFactsFence } from '../facts-fence.ts';
 import { TAKES_FENCE_BEGIN } from '../takes-fence.ts';
 import { protectedRegions } from '../fence-scan.ts';
 import { PROTECTED_PAIRS } from '../remote-body.ts';
@@ -69,15 +69,18 @@ export class FenceRegionRefused extends Error {
   constructor(readonly refusal: ContentRefusal) { super(refusal.message); }
 }
 
+/** A closed facts region a remote read renders with rows left out: a non-world row, or a fence that does not parse (rendered empty). */
+const hidesRows = (fence: string) => { const parsed = parseFactsFence(fence); return parsed.warnings.length > 0 || parsed.facts.some(fact => fact.visibility !== 'world'); };
+
 /**
- * A facts region a remote read renders with rows left out: a non-world row, a fence that does not parse (rendered empty),
- * or an unclosed fence (a stored region running to the end of its body region: the truncated tail remote reads drop).
+ * What remote reads hide in `text` (`sanitizeRemoteBody`'s regions, each judged on its own): a takes region, a facts
+ * region that hides rows, or an unclosed fence's truncated tail.
  */
-const hidesRows = (fence: string) => {
-  if (!fence.endsWith(FACTS_FENCE_END)) return true;
-  const parsed = parseFactsFence(fence);
-  return parsed.warnings.length > 0 || parsed.facts.some(fact => fact.visibility !== 'world');
-};
+function hiddenIn(text: string): 'takes' | 'facts' | null {
+  const { regions, truncatedAt } = protectedRegions(text, PROTECTED_PAIRS);
+  if (regions.some(region => region.pair === 1)) return 'takes';
+  return truncatedAt !== -1 || regions.some(region => region.pair === 0 && hidesRows(text.slice(region.start, region.end))) ? 'facts' : null;
+}
 const FOUND = Symbol('hidden fence row');
 
 /**
@@ -90,13 +93,8 @@ export async function hiddenFenceContent(engine: BrainEngine, pageId: number): P
   const [page] = await engine.executeRaw<{ body_storage: string }>('SELECT body_storage FROM pages WHERE id=$1', [pageId]);
   if (!page) return null;
   if (page.body_storage !== 'segmented') {
-    let hidden: 'takes' | 'facts' | null = null;
-    for (const text of Object.values(await inlineRegions(engine, pageId))) {
-      const { regions, truncatedAt } = protectedRegions(text, PROTECTED_PAIRS);
-      if (regions.some(region => region.pair === 1)) return 'takes';
-      if (truncatedAt !== -1 || regions.some(region => region.pair === 0 && hidesRows(text.slice(region.start, region.end)))) hidden = 'facts';
-    }
-    return hidden;
+    const found = Object.values(await inlineRegions(engine, pageId)).map(hiddenIn);
+    return found.includes('takes') ? 'takes' : found.includes('facts') ? 'facts' : null;
   }
   const [found] = await engine.executeRaw<{ takes: boolean; tail: boolean }>(`SELECT
       bool_or(m.protected_regions @> '[{"kind":"takes"}]'::jsonb) AS takes, bool_or(m.protected_regions @> '[{"kind":"tail"}]'::jsonb) AS tail
@@ -105,7 +103,8 @@ export async function hiddenFenceContent(engine: BrainEngine, pageId: number): P
   if (found?.takes) return 'takes';
   if (found?.tail) return 'facts';
   try {
-    await readLiveSegmentedFences(engine, pageId, fence => { if (hidesRows(fence)) throw FOUND; });
+    // A visited unit joins regions whose bytes touch (two fences back to back, a fence across forced cuts), so each is rescanned.
+    await readLiveSegmentedFences(engine, pageId, fence => { if (hiddenIn(fence)) throw FOUND; });
   } catch (error) {
     if (error === FOUND) return 'facts';
     throw error;

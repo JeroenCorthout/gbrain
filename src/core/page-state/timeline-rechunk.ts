@@ -57,7 +57,7 @@ const chunkKey = (c: { chunk_source: string; chunk_text: string; projected_byte_
   JSON.stringify([c.chunk_source, c.chunk_text, c.projected_byte_start ?? null, c.projected_byte_end ?? null]);
 
 async function rechunkPage(engine: BrainEngine, row: CandidateRow, apply: boolean): Promise<TimelineRechunkPage | null> {
-  const read = await readProjectionSnapshot(engine, row.slug, row.source_id, { requireLiveSource: true });
+  const read = await readProjectionSnapshot(engine, row.slug, row.source_id, { requireLiveSource: true, preview: !apply });
   if (!read || read.pageKind !== 'markdown') return null;
   const stored = read.storedChunkerVersion ?? 0;
   if (stored < MARKDOWN_CHUNKER_VERSION || stored >= INLINE_TIMELINE_CHUNKER_VERSION) return null;

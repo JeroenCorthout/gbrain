@@ -6,7 +6,7 @@
  *    INLINE_TIMELINE_CHUNKER_VERSION, while a page sealed at MARKDOWN_CHUNKER_VERSION (the pre-bullet chunker) keeps
  *    its chunk rows and version through a schema replay, the post-upgrade re-embed step, `reindex --markdown`, the
  *    projection drain, a frontmatter-only edit and incremental and full syncs of unchanged files. The reindex
- *    previews without writing and its apply re-chunks to the new version without touching the unchanged truth rows;
+ *    previews without writing (in a read-only transaction: no page guard, lock or row) and its apply re-chunks to the new version without touching the unchanged truth rows;
  *    doctor counts the pages still old (informational) and names the preview.
  * 2. Fails when: inline timeline chunks start mid-entry, any upgrade or sync step re-chunks or restamps an old page
  *    (for example a MARKDOWN_CHUNKER_VERSION bump), the preview writes, or the apply leaves the page old.
@@ -171,7 +171,8 @@ for (const backend of process.env.DATABASE_URL ? ['pglite', 'postgres'] : ['pgli
       const state = await pageState(engine(), slug);
       expect(state.chunker_version).toBe(MARKDOWN_CHUNKER_VERSION);
 
-      const preview = await runTimelineRechunk(engine(), { slug });
+      // In a read-only transaction: the preview takes no page guard, lock or write.
+      const preview = await engine().transaction(async tx => { await tx.executeRaw('SET TRANSACTION READ ONLY'); return runTimelineRechunk(tx, { slug }); });
       expect(preview).toMatchObject({ dry_run: true, chunker_version: INLINE_TIMELINE_CHUNKER_VERSION, pending: 1,
         commands: { apply: ['gbrain', 'reindex', '--timeline-bullets', '--slug', slug, '--apply'], embed: null } });
       expect(preview.pages).toEqual([{ source_id: 'default', slug, chunker_version: MARKDOWN_CHUNKER_VERSION, chunks: before.length,

@@ -12,7 +12,8 @@
  *    trusted local writer creates it and forgets the fact (a remote forget of its owner-written rows asks the owner),
  *    and a remote replace is refused by design (the stored takes fence is hidden from remote reads), so the replace runs
  *    locally. A remote upload replace of
- *    a page whose quoted facts fence holds a private row is refused `upload_protected_content` and writes nothing.
+ *    a page whose quoted facts fences (a world-only one directly followed by one with a private row) hide a row is
+ *    refused `upload_protected_content` and writes nothing.
  * 2. Fails when: the streamed importer holds a fenced body (master before GBRA-95: `fenced` set on the first
  *    `gbrain:facts:begin`, then `file_too_large`), a re-import of the stale file revives the withdrawn or purged row, a
  *    remote upload adds a takes fence, or a remote replace drops a quoted fence's private row.
@@ -225,7 +226,7 @@ for (const kind of testBackends()) {
 
     test('a remote upload replace of a page whose quoted facts fence holds a private row is refused and writes nothing', async () => {
       const slug = 'notes/quoted-private';
-      const quoted = `An example fence:\n\n\`\`\`\n${FACTS_FENCE_BEGIN}\n| # | claim | kind | confidence | visibility | notability | valid_from | valid_until | source | context |\n|---|-------|------|------------|------------|------------|------------|-------------|--------|---------|\n| 1 | ${KEPT} | preference | 1.0 | private | medium | 2026-01-01 |  | chat |  |\n${FACTS_FENCE_END}\n\`\`\`\n`;
+      const quoted = `An example of two fences:\n\n\`\`\`\n${FACTS_FENCE_BEGIN}\n| # | claim | kind | confidence | visibility | notability | valid_from | valid_until | source | context |\n|---|-------|------|------------|------------|------------|------------|-------------|--------|---------|\n| 1 | Reads on the train | preference | 1.0 | world | medium | 2026-01-01 |  | chat |  |\n${FACTS_FENCE_END}${FACTS_FENCE_BEGIN}\n| # | claim | kind | confidence | visibility | notability | valid_from | valid_until | source | context |\n|---|-------|------|------------|------------|------------|------------|-------------|--------|---------|\n| 1 | ${KEPT} | preference | 1.0 | private | medium | 2026-01-01 |  | chat |  |\n${FACTS_FENCE_END}\n\`\`\`\n`;
       expect((await importFile(slug, `---\ntitle: Quoted private\ntype: note\n---\n\n${quoted}\n${filler.slice(0, 2 * MiB)}\n`)).status).toBe('imported');
       const before = await storedTruth(slug);
       const replacement = `---\ntitle: Quoted private\ntype: note\n---\n\n${filler}\n`;
