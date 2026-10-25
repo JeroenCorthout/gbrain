@@ -45,7 +45,10 @@
  * write, import, clear the hold and print the commit step. Every candidate
  * passes the owner check and the `repairBusy` admission re-read, at plan,
  * at apply and again at the write (file-repair.ts). Messages carry paths,
- * slugs, codes and amounts only.
+ * slugs, codes and amounts only. Wave B PR 5: a split page head is judged
+ * and edited as the page file F' its parts reassemble to; one that does not
+ * reassemble is held with its hold code, and a legacy source passes a split
+ * head by as `split_page_unsupported`.
  */
 import { execFileSync } from '../spawn.ts';
 import { existsSync, lstatSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -69,7 +72,8 @@ import { sha256 } from '../persistence/digest.ts';
 import { clearApprovedSet, loadApprovedSet, previewChangedError, previewHash, saveApprovedSet } from '../persistence/preview-approval.ts';
 import { clearGitHold, readGitHold, readGitSourceHolds, recordContentHoldRepair, recordHoldAttempt, type ContentHoldRepairState, type GitHoldRecord } from '../persistence/sync-holds.ts';
 import { rotate, rotationAfter, rotationBrain, rotationKeyOf, saveRotation } from './rotation.ts';
-import { confinedRepairTarget, prepareRepairPublication, repairScreenConfig, submitManagedFileRepair } from '../persistence/file-repair.ts';
+import { confinedRepairTarget, prepareRepairPublication, repairScreenConfig, SPLIT_PAGE_UNSUPPORTED, submitManagedFileRepair } from '../persistence/file-repair.ts';
+import { readPageFile, type PageFileHoldCode } from '../split-layout/index.ts';
 import { repairBusy, repairBusyMessage } from '../persistence/repair-busy.ts';
 import { frozenImportScreenInput, loadSyncScreenRun, screenFrozenContent } from '../persistence/sync-screen.ts';
 import type { PageSnapshot } from '../page-state/types.ts';
@@ -293,7 +297,13 @@ function slugPageMismatch(cand: Candidate, other: string, why: string): Analysis
     + `By hand: make the slug: line name ${cand.slug} exactly or move the file to the path that derives ${cand.slug}, commit, and run gbrain sync --source ${cand.src.id} --no-pull.` };
 }
 
-async function readCandidate(engine: BrainEngine, src: FenceSource, path: string): Promise<{ ok: true; cand: Candidate } | { ok: false; reason: 'gone' | 'unsafe_path' | 'not_utf8' | 'no_checkout' } | { ok: false; reason: 'origin_conflict'; message: string }> {
+/**
+ * One held or selected file as it is now. A split page head reads as the page file F' its parts reassemble to
+ * (`readPageFile`); a head that does not reassemble is its hold code, and a legacy source, which writes the file
+ * directly, passes a split head by (`split_page_unsupported`).
+ */
+async function readCandidate(engine: BrainEngine, src: FenceSource, path: string): Promise<{ ok: true; cand: Candidate } | { ok: false; reason: 'gone' | 'unsafe_path' | 'not_utf8' | 'no_checkout' }
+  | { ok: false; reason: 'origin_conflict'; message: string } | { ok: false; reason: PageFileHoldCode | typeof SPLIT_PAGE_UNSUPPORTED; message: string; split: true }> {
   if (!src.root) return { ok: false, reason: 'no_checkout' };
   const abs = join(src.root, path);
   if (!existsSync(abs)) return { ok: false, reason: 'gone' };
@@ -301,7 +311,11 @@ async function readCandidate(engine: BrainEngine, src: FenceSource, path: string
     if (error instanceof OperationError) return { ok: false, reason: 'unsafe_path' };
     throw error;
   }
-  const bytes = readFileSync(abs);
+  const file = readPageFile(abs);
+  if (file.hold) return { ok: false, reason: file.hold.code, message: file.hold.message, split: true };
+  if (file.split && !src.managed) return { ok: false, reason: SPLIT_PAGE_UNSUPPORTED, split: true,
+    message: `${path} is a split page head (its page continues in part files), and this brain has no canonical owner to write the page back as a head plus parts, so it was passed by. Remove the slug: line from the head file by hand (it carries the page frontmatter), commit, and sync.` };
+  const bytes = file.bytes;
   const content = bytes.toString('utf8');
   if (!Buffer.from(content, 'utf8').equals(bytes)) return { ok: false, reason: 'not_utf8' };
   const hold = await readGitHold(engine, src.id, src.incarnation, path);
@@ -392,7 +406,9 @@ async function candidatePaths(engine: BrainEngine, src: FenceSource, selection: 
     if (paths.has(path) || selection.skip.includes(path)) continue;
     const abs = src.root ? join(src.root, path) : null;
     if (!abs || !existsSync(abs) || !lstatSync(abs).isFile()) { unknown.push(path); continue; }
-    const content = readFileSync(abs, 'utf8');
+    const file = readPageFile(abs);
+    if (file.hold) { paths.add(path); continue; }
+    const content = file.bytes.toString('utf8');
     const hold = classifyImportHold(parseMarkdown(content, path, { validate: true }), { expectedSlug: resolveSlugForPath(path), byteLength: Buffer.byteLength(content), maxBytes: MAX_FILE_SIZE });
     if (hold?.code === 'frontmatter_slug_conflict') paths.add(path); else unknown.push(path);
   }
@@ -452,7 +468,7 @@ export const slugConflictsRepair: RepairHandler = {
         const read = await readCandidate(engine, src, path);
         if (!read.ok) {
           if (read.reason === 'gone' || read.reason === 'no_checkout') { skip(read.reason === 'gone' ? 'gone' : 'local_path_missing'); continue; }
-          await keep({ reason: read.reason, tier: 'manual', resolution: read.reason === 'origin_conflict' ? read.message : read.reason === 'unsafe_path'
+          await keep({ reason: read.reason, tier: 'manual', resolution: 'message' in read ? read.message : read.reason === 'unsafe_path'
             ? `${path} is a symlink, sits under one, or resolves outside the source root; gbrain never writes through one. Replace it with the real file.`
             : `${path} is not valid UTF-8; re-save it as UTF-8 and preview again.` });
           continue;
@@ -595,7 +611,7 @@ async function applyConflict(ctx: OperationContext, entry: ApprovedConflict, opt
     return skipped('sync_in_progress', repairBusyMessage(src.busy, src.id, entry.path));
   }
   const read = await readCandidate(engine, src, entry.path);
-  if (!read.ok) return skipped(moved, `${entry.path} is ${read.reason === 'gone' ? 'gone' : read.reason}.`);
+  if (!read.ok) return 'split' in read ? skipped(read.reason, read.message) : skipped(moved, `${entry.path} is ${read.reason === 'gone' ? 'gone' : read.reason}.`);
   const cand = read.cand;
   if (cand.before !== entry.before || (cand.named ? sha256(pageContent(cand.named)) : null) !== entry.named_sha256 || (cand.named?.page.id ?? null) !== entry.named_page_id) {
     return skipped(moved, `${entry.path} or the page its slug: line names changed since it was ${opts.expect ? 'previewed' : 'read'}; preview again with ${shellQuote(contentPreviewArgv(src.id, entry.path))}.`);
@@ -790,7 +806,7 @@ export async function healAbsentSlugLine(ctx: OperationContext, run: AbsentSlugH
   const left = (reason: string, message: string): RepairItemOutcome => ({ applied: false, outcome: 'skipped', reason, detail: { path, message } });
   if (repairBusy(src.busy, { path })) return left('sync_in_progress', repairBusyMessage(src.busy, src.id, path));
   const read = await readCandidate(ctx.engine, src, path);
-  if (!read.ok) return left(read.reason, `${path} is ${read.reason}.`);
+  if (!read.ok) return left(read.reason, 'message' in read ? read.message : `${path} is ${read.reason}.`);
   const cand = read.cand;
   if (cand.hold?.code !== 'frontmatter_slug_conflict') return left('not_held', `${path} is no longer held for its slug: line.`);
   if (cand.before !== cand.hold.upstream_version) return left('changed_since_hold', `${path} changed since sync held it; the next sync re-screens the new bytes.`);
