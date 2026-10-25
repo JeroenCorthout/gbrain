@@ -49,6 +49,10 @@
  *     row reuses the key/value table every brain has.
  * `gbrain doctor --only behavior_changes` reads every row newer than the
  * brain's baseline again and writes nothing.
+ *
+ * This file holds only the table, so an appended row merges cleanly; the release, baseline and chain helpers live in
+ * behavior-notice-state.ts and delivery in behavior-notice-delivery.ts, both re-exported here. When the table nears
+ * the 1,500-line module cap, freeze it and start a sibling table that BEHAVIOR_CHANGES concatenates.
  */
 import { VERSION } from '../version.ts';
 import { CHAT_FALLBACK_PLANE_LABEL } from './ai/chat-fallback-planes.ts';
