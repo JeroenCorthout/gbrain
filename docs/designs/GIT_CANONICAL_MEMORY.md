@@ -70,6 +70,8 @@ What remains: a bad merge from another clone is indexed as committed (git wins),
 
 A write from a remote MCP caller or a thin client becomes a journal request that the checkout owner's door commits. The caller receives the revision once it is committed and indexed, or `write_pending` with a request id while the owner is unavailable. It is never written database-first. A hosted brain runs the door against a server-side bare repository, with an optional push to a repository the user owns.
 
+The request carries the bytes, the expected revision, the idempotency key (`request_id`) and the caller's grant, and the owner re-authorizes it against the live grant inside the publication transaction, before the door commit. A grant revoked while the request waits is refused with no commit and no row. If a door commit landed and the transaction then failed, the request is replayed; should the replay end without committing (its grant revoked meanwhile), the receipt still names the landed commit (`outcome.persistence.landed_before_row`), because Git holds those bytes and the indexer will import them: they were authorized when they were committed, and a later revocation does not retract committed content.
+
 ## Conversion
 
 A source changes mode only through a preview-bound verb. The preview is the [git-gap census](#the-git-gap-census): every page whose row differs from its committed blob, every page with no file that is not in a declared class, held items and parked effects, by category. The operator chooses per category to commit the database content through the door, declare it, or let git win. The preview lists any database content that git-wins would discard, and the apply binds to that preview. A source can return to its previous mode.
