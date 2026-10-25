@@ -5,6 +5,8 @@
  * `pages unsearchable` (#6696 B3) lists embedding-state rows; its body is pages-unsearchable.ts.
  * `pages ghosts [--source <id>] [--json]` (#6696 B5, pages-ghosts.ts) lists ghost pages, read-only.
  * `pages status <slug...> [--source <id>] [--json]` (#7179, pages-status.ts) says whether each page is searchable and why, read-only.
+ * `pages split-storage <slug> [--source <id>] [--apply] [--json] [--resolve-head keep-edit|discard]` (Wave B PR 5,
+ * pages-split-storage.ts) previews, and with --apply republishes, the split git layout of a large page's file.
  * Manual escape hatch alongside the autopilot purge phase. Hard-deletes pages
  * whose `deleted_at` is older than the cutoff; cascades to content_chunks,
  * page_links, chunk_relations via existing FKs.
@@ -132,6 +134,13 @@ Subcommands:
                                     chunks, any large-page embedding hold or sync hold on its
                                     file, whether the file is in the synced commit, why, and
                                     the fix. A page that is not searchable still exits 0.
+  split-storage <slug> [--source <id>] [--apply] [--json] [--resolve-head keep-edit|discard]
+                                    Preview (default, writes nothing) how the page's canonical file
+                                    is laid out in Git: one file, or over sync.max_file_bytes a head
+                                    file plus hidden part files. --apply republishes the file through
+                                    the write door in that layout. --resolve-head keeps (keep-edit)
+                                    or discards an edit made to a split page's head
+                                    (split_head_modified); preview first. Run on the owner host.
 
 Notes:
   Soft-delete a page via \`gbrain delete <slug> --force\`; restore via \`gbrain restore <slug> --force\`
@@ -151,6 +160,7 @@ export async function runPages(engine: BrainEngine, args: string[]): Promise<voi
     case 'unsearchable': return (await import('./pages-unsearchable.ts')).runPagesUnsearchable(engine, args.slice(1));
     case 'ghosts': return (await import('./pages-ghosts.ts')).runPagesGhosts(engine, args.slice(1));
     case 'status': return (await import('./pages-status.ts')).runPagesStatus(engine, args.slice(1));
+    case 'split-storage': return (await import('./pages-split-storage.ts')).runPagesSplitStorage(engine, args.slice(1));
     case undefined:
       printUsage();
       return;

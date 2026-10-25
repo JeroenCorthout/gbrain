@@ -49,6 +49,12 @@ export const STRICT_SUBCOMMANDS: Readonly<Record<string, StrictSpec>> = {
       '--source-id': 'The purge is brain-wide: it removes soft-deleted pages from every source, and per-source purge is not supported.',
     },
   },
+  'pages split-storage': {
+    flags: ['--apply', '--json'],
+    values: { '--source': null, '--resolve-head': { re: /^(?:keep-edit|discard)$/, shape: 'keep-edit or discard' } },
+    maxPositionals: 1,
+    fix: { argv: ['pages', '--help'], why: 'Prints the pages subcommands with split-storage and its flags; changes nothing.' },
+  },
   'cache clear': { flags: ['--yes', '-y'], values: { '--source': null }, separateValues: true, maxPositionals: 0, fix: CACHE_FIX },
   'cache prune': { maxPositionals: 0, fix: CACHE_FIX },
   'schema use': { maxPositionals: 1, fix: SCHEMA_FIX },
