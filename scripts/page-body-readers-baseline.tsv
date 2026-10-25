@@ -498,6 +498,7 @@ src/core/persistence/sync-prepare.ts	prepareManagedSyncCode	field	INLINE	code pa
 src/core/persistence/sync-prepare.ts	prepareSyncMutation	call:serializePageToMarkdown	SEGW	lane 1d file
 src/core/persistence/sync-prepare.ts	prepareSyncMutation	field	SEGW	lane 1d file: preserveProtectedTakes over fenceBody (an unread body is fence-free)
 src/core/persistence/takes-prepare.ts	prepare	call:serializePageToMarkdown	SEGW	
+src/core/persistence/upload-streamed.ts	uploadPageFile	call:serializePageToMarkdown	NONE	serializes the frontmatter head with an empty body; the body streams from the staged upload parts (the scan's stored regions)
 src/core/persistence/writer-guard-schema.ts	MANAGED_WRITER_GUARD_FUNCTION_SQL	sql	STREAM	managed-writer guard tuple (lane 1a adds body_generation)
 src/core/pglite-engine.ts	PGLiteEngine.putPage	call:putPage	SEGW	delegation to engine-sql putPage
 src/core/pglite-engine.ts	PGLiteEngine.refreshPageBody	call:refreshPageBody	SEGW	delegation to engine-sql refreshPageBody

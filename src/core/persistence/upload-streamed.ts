@@ -12,8 +12,8 @@
  * always-loaded core page (before or after) refuses: the core guard renders the page whole.
  *
  * Git is the parent: on a source bound to a worktree the upload publishes its canonical file before its row, as put_page
- * does (`prepareFileTarget`). The file is the stored page's render (`uploadPageFile`), streamed from the staged
- * segments; over the split threshold the publication lays it out as a head and parts (split-files.ts), which a strict
+ * does (`prepareFileTarget`). The file is the stored page's render (`uploadPageFile`), built from the import's
+ * outputs and streamed from the staged upload parts, with no database write before Git has it; over the split threshold the publication lays it out as a head and parts (split-files.ts), which a strict
  * source's door commits before the row commits and a durable source's Git effect commits after. A page the source
  * declares database-only (a `storage.db_only` path, a privacy class, an ignored target) and an unbound source publish
  * database-only as before, and a strict source refuses an undeclared database-only row (G7a, git-declared.ts).
@@ -24,7 +24,7 @@ import { join } from 'node:path';
 import type { BrainEngine } from '../engine.ts';
 import { OperationError, opError } from '../ops/contract.ts';
 import { readPageBodyPolicy } from '../page-body/limits.ts';
-import { importStreamedMarkdownFile, type StreamedPreparedImport } from '../page-body/streamed-import.ts';
+import { importStreamedMarkdownFile, type StreamedPageRender, type StreamedPreparedImport } from '../page-body/streamed-import.ts';
 import { assertPageRevision } from '../page-state/types.ts';
 import { contentRefusalError, PAGE_OVER_LIMIT_SUGGESTION } from '../import-screen.ts';
 import { pageGateTrust, pageWriteTrust, stampPageTrustMarker, storedPageTier } from '../trust/page-write.ts';
@@ -40,17 +40,15 @@ import type { PageSnapshot } from '../page-state/types.ts';
 import { PAGE_MAX_BYTES } from '../page-size-policy.ts';
 import { bodyStagingGoneError } from '../engine-sql/page-body.ts';
 import { serializePageToMarkdown } from '../markdown.ts';
-import { withoutBody } from '../page-body/page-shape.ts';
-import type { BodyRegion } from '../page-body/types.ts';
+import { sanitizeText } from '../batch-rows.ts';
 import { TIMELINE_SEPARATOR } from '../page-window/document.ts';
 import { SOURCE_CONFIG_OBJECT_SQL } from '../source-config-sql.ts';
 import { readSlugRootMode } from '../sync-anchor.ts';
 import { scannerSlugRootMode, scannerSourcePath } from '../write-through.ts';
-import { ownerSourceGateInput, publicationAttribution, writeTrustOfGate } from './attribution.ts';
-import { withCoordinatedWrite } from './context.ts';
+import { ownerSourceGateInput, writeTrustOfGate } from './attribution.ts';
 import { StreamedFileContent } from './large-file.ts';
 import { bindOrigin } from './origin-guard.ts';
-import { pageDatabaseOnlyPublication, prepareFileTarget } from './page-prepare.ts';
+import { pageDatabaseOnlyPublication, prepareFileTarget, unreadPageFile } from './page-prepare.ts';
 import { pageIdentityError } from './page-identity.ts';
 import { remoteLinkHint } from './page-advisories.ts';
 import { stagedUploadParts, stagedUploadWork, type StagingBodyRef } from './page-upload.ts';
@@ -95,39 +93,65 @@ async function assertNothingHiddenDropped(engine: BrainEngine, row: WriteRequest
 }
 
 /**
- * The upload's canonical file: the page as it will be stored, rendered as `unreadPageFile` reads it back after commit
- * (export's serializer: the head, the truth, TIMELINE_SEPARATOR before the first timeline byte, the timeline, a final
- * newline). The import staged the body, which turns live only in the publication transaction, so the page's head and
- * its new generation's manifest rows are read in a transaction that applies the staged import and rolls back: nothing
- * it writes commits and the staging stays live. The file is produced from those rows each time it is read, one segment
- * text at a time by sha256 (staged texts are kept until publication), never as one string. The import holds an upload
- * carrying a facts or takes fence, so no withdrawal overlay rewrites these texts.
+ * The upload's canonical file, rendered from the import's own outputs before any database write, as `unreadPageFile`
+ * renders the stored page after commit (export's serializer). The head is serializePageToMarkdown over the prepared
+ * columns: the frontmatter after the gate and the stamp, read back through jsonb so its keys take their stored order,
+ * and the tags the page will hold (its tags that frontmatter did not set, plus the frontmatter's). The body is the
+ * scan's stored regions read from the staged upload parts in order: the truth, TIMELINE_SEPARATOR before the timeline,
+ * then a final newline. The parts stay staged until the request is final, so the file is produced again at
+ * publication; it is never one string. A no-op upload's file is the stored page's.
  */
 async function uploadPageFile(engine: BrainEngine, row: WriteRequest, ref: StagingBodyRef, snapshot: PageSnapshot | null,
-  prepared: StreamedPreparedImport, trust: WriteTrust | undefined): Promise<StreamedFileContent> {
-  const rollback = new Error('upload render rollback');
-  const box: { head?: string; rows?: Array<{ region: BodyRegion; sha256: Uint8Array }>; page?: { type: string | null; frontmatter: unknown } } = {};
-  await engine.transaction(tx => withCoordinatedWrite(tx, [row.source_id], async () => {
-    await prepared.apply(tx, snapshot);
-    const final = await tx.readPageSnapshot(row.slug, { sourceId: row.source_id, includeDeleted: true });
-    if (final) Object.assign(box, { head: serializePageToMarkdown({ ...withoutBody(final.page), compiled_truth: '', timeline: '' }, final.tags).slice(0, -1),
-      rows: (await tx.readManifest(Number(final.page.id))).map(r => ({ region: r.region, sha256: r.sha256 })), page: { type: final.page.type ?? null, frontmatter: final.page.frontmatter } });
-    throw rollback;
-  }, publicationAttribution(row, trust))).catch(error => { if (error !== rollback) throw error; });
-  const { head, rows } = box;
-  if (head === undefined || !rows) throw bodyStagingGoneError(row.slug, ref.staging_id, null);
+  prepared: StreamedPreparedImport): Promise<StreamedFileContent> {
+  const render = prepared.render;
+  if (!render) {
+    if (!snapshot) throw bodyStagingGoneError(row.slug, ref.staging_id, null);
+    return unreadPageFile(engine, snapshot);
+  }
+  const [[stored], kept] = await Promise.all([
+    engine.executeRaw<{ frontmatter: unknown }>('SELECT $1::text::jsonb AS frontmatter', [JSON.stringify(render.frontmatter)]),
+    snapshot ? engine.executeRaw<{ tag: string }>("SELECT tag FROM tags WHERE page_id=$1 AND tag_source IS DISTINCT FROM 'frontmatter'", [Number(snapshot.page.id)]) : [],
+  ]);
+  const frontmatter = (typeof stored!.frontmatter === 'string' ? JSON.parse(stored!.frontmatter) : stored!.frontmatter) as Record<string, unknown>;
+  const tags = [...new Set([...kept.map(t => t.tag), ...render.tags])].sort();
+  const head = serializePageToMarkdown({ slug: row.slug, type: render.type, title: render.title, frontmatter, compiled_truth: '', timeline: '' } as never, tags).slice(0, -1);
+  const hasTimeline = render.timelinePieces.some(piece => 'text' in piece ? piece.text.length > 0 : piece.end > piece.start);
   return StreamedFileContent.measure(engine, async function* (exec) {
+    const read = stagedReader(exec, row, ref);
+    const region = async function* (pieces: StreamedPageRender['truthPieces']): AsyncIterable<Uint8Array> {
+      for (const piece of pieces) {
+        if ('text' in piece) { yield Buffer.from(sanitizeText(piece.text), 'utf8'); continue; }
+        if (piece.start < render.prefix.length) yield render.prefix.subarray(piece.start, Math.min(piece.end, render.prefix.length));
+        const from = Math.max(piece.start, render.prefix.length) - render.prefix.length + render.bom, to = piece.end - render.prefix.length + render.bom;
+        if (to > from) for await (const bytes of read(from, to)) yield bytes.includes(0) ? bytes.filter(byte => byte !== 0) : bytes;
+      }
+    };
     yield head;
-    let separated = false;
-    for (const r of rows) {
-      const text = (await exec.readSegmentTexts(row.source_id, [r.sha256])).get(Buffer.from(r.sha256).toString('hex'));
-      if (text === undefined) throw bodyStagingGoneError(row.slug, ref.staging_id, null);
-      if (!text.length) continue;
-      if (r.region === 'timeline' && !separated) { yield TIMELINE_SEPARATOR; separated = true; }
-      yield text;
-    }
+    yield* region(render.truthPieces);
+    if (hasTimeline) { yield TIMELINE_SEPARATOR; yield* region(render.timelinePieces); }
     yield '\n';
-  }, box.page);
+  }, { type: render.type, frontmatter });
+}
+
+/** Bytes `[start, end)` of the staged upload, read part by part in one forward pass (ranges come in increasing order). */
+function stagedReader(exec: BrainEngine, row: WriteRequest, ref: StagingBodyRef): (start: number, end: number) => AsyncIterable<Uint8Array> {
+  const parts = stagedUploadParts(exec, ref)[Symbol.asyncIterator]();
+  let chunk: Uint8Array = new Uint8Array(0), at = 0;
+  return async function* (start, end) {
+    while (start < end) {
+      if (start < at) throw bodyStagingGoneError(row.slug, ref.staging_id, null);
+      if (start >= at + chunk.length) {
+        const next = await parts.next();
+        if (next.done || !next.value) throw bodyStagingGoneError(row.slug, ref.staging_id, null);
+        at += chunk.length;
+        chunk = next.value;
+        continue;
+      }
+      const to = Math.min(end - at, chunk.length);
+      yield chunk.subarray(start - at, to);
+      start = at + to;
+    }
+  };
 }
 
 /**
@@ -136,8 +160,8 @@ async function uploadPageFile(engine: BrainEngine, row: WriteRequest, ref: Stagi
  * inferred source pins with its first origin, #5610).
  */
 async function uploadFileTarget(engine: BrainEngine, row: WriteRequest, ref: StagingBodyRef, snapshot: PageSnapshot | null,
-  prepared: StreamedPreparedImport, trust: WriteTrust | undefined): Promise<{ file: PreparedMutation['file']; bind(tx: BrainEngine): Promise<void> }> {
-  const file = row.worktree_id ? await prepareFileTarget(engine, row, snapshot, await uploadPageFile(engine, row, ref, snapshot, prepared, trust), undefined,
+  prepared: StreamedPreparedImport): Promise<{ file: PreparedMutation['file']; bind(tx: BrainEngine): Promise<void> }> {
+  const file = row.worktree_id ? await prepareFileTarget(engine, row, snapshot, await uploadPageFile(engine, row, ref, snapshot, prepared), undefined,
     { remote: row.authority.remote, newPageIgnoredDatabaseOnly: true }) : undefined;
   const mintMode = file && !snapshot?.page.source_path ? await scannerSlugRootMode(engine, row.source_id, file.root) : undefined;
   const sourcePath = file && mintMode ? scannerSourcePath(file.root, file.path, mintMode) : undefined;
@@ -211,7 +235,7 @@ export async function prepareStreamedUpload(engine: BrainEngine, row: WriteReque
     throw opError('revision_conflict', 'The page changed during upload preparation.', `Page ${row.slug} changed while this upload was prepared, so nothing was written. Read the page and upload again against its current revision.`);
   }
   const pageTrust = remote ? trust : writeTrustOfGate(await ownerSourceGateInput(engine, row.source_id, prepared.frontmatter));
-  const target = await uploadFileTarget(engine, row, ref, snapshot, prepared, pageTrust);
+  const target = await uploadFileTarget(engine, row, ref, snapshot, prepared);
   const mutation: PreparedMutation = { observedRevision: prepared.observedRevision, noop: prepared.noop, ...(pageTrust ? { trust: pageTrust } : {}),
     file: target.file, ...await pageDatabaseOnlyPublication(engine, row, target.file),
     ...(prepared.afterCommit ? { afterCommit: prepared.afterCommit } : {}),
