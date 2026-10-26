@@ -18,17 +18,23 @@ import { createReadPin, READ_PIN_TTL_MS, releaseReadPin, renewReadPin } from '..
 import type { ExportWithdrawal } from '../core/export-snapshot.ts';
 import type { Page } from '../core/types.ts';
 
-/** @internal Test seam: runs after a streamed page's read pin is taken, before its body is read (the export pin tests). */
+/** @internal Test seam: runs before each streamed page's body is read, after every export read pin is taken (the export pin tests). */
 export const exportProbe: { beforeStream?: (pageId: number) => Promise<void> } = {};
 
 /** A segmented page planned in the snapshot and streamed after it commits, on the generation the snapshot read. */
 interface DeferredStream { name: string; bytes: number; page: Pick<Page, 'id' | 'slug' | 'source_id' | 'body_bytes'>; generation: number; head: string }
 
-/** `pieces`, renewing the export's read pin every third of its TTL so a long stream keeps its generation pinned. */
-async function* renewing(engine: BrainEngine, pin: string | null, pieces: AsyncIterable<Uint8Array | string>): AsyncIterable<Uint8Array | string> {
-  let renewed = Date.now();
+/**
+ * `pieces`, renewing every live export pin each third of their TTL, so a long stream keeps its own generation and the
+ * generations of the pages still waiting pinned. A pin that can no longer be renewed (expired, removed) refuses the
+ * export: its generation may already be collected.
+ */
+async function* renewing(engine: BrainEngine, pins: string[], clock: { renewed: number }, pieces: AsyncIterable<Uint8Array | string>): AsyncIterable<Uint8Array | string> {
   for await (const piece of pieces) {
-    if (pin && Date.now() - renewed > READ_PIN_TTL_MS / 3) { await renewReadPin(engine, pin); renewed = Date.now(); }
+    if (pins.length && Date.now() - clock.renewed > READ_PIN_TTL_MS / 3) {
+      for (const pin of pins) if (!await renewReadPin(engine, pin)) throw new Error('An export read pin expired before its page was streamed; nothing was published. Retry the export.');
+      clock.renewed = Date.now();
+    }
     yield piece;
   }
 }
@@ -200,18 +206,25 @@ a fresh directory. See docs/storage-tiering.md#safe-export.`);
       checkDeadline();
       if (collisions.length) throw collisionRefusal(collisions, owners, outDir);
     });
-    // Segmented pages stream after the snapshot commits, so no snapshot stays open while a large body is read. Each
-    // holds a read pin on the generation the snapshot read (a GC root, as a retained version is), and its rows must
-    // still tile the snapshot's body_bytes, so the file is the snapshot's page or the export refuses.
-    for (const d of deferred) {
-      const pin = await createReadPin(engine, { pageId: Number(d.page.id), generation: d.generation, purpose: 'export', audience: 'trusted', view: null, viewKey: null,
-        principal: null, revision: `export:${d.generation}`, totalBytes: Number(d.page.body_bytes ?? 0), totalLines: null, sha256: null });
-      try {
+    // Segmented pages stream after the snapshot commits, so no snapshot stays open while a large body is read. Every one
+    // takes its read pin on the generation the snapshot read (a GC root, as a retained version is) as soon as the
+    // snapshot commits, before the first stream, and its rows must still tile the snapshot's body_bytes, so the file is
+    // the snapshot's page or the export refuses (a generation collected in the moment before its pin, or a page whose
+    // pin could not be written: a read-only database or the per-page pin cap, streams unpinned under the same check).
+    const pins: string[] = [];
+    try {
+      for (const d of deferred) {
+        const pin = await createReadPin(engine, { pageId: Number(d.page.id), generation: d.generation, purpose: 'export', audience: 'trusted', view: null, viewKey: null,
+          principal: null, revision: `export:${d.generation}`, totalBytes: Number(d.page.body_bytes ?? 0), totalLines: null, sha256: null });
+        if (pin) pins.push(pin);
+      }
+      const clock = { renewed: Date.now() };
+      for (const d of deferred) {
         await exportProbe.beforeStream?.(Number(d.page.id));
-        await staged.writeStream(d.name, d.bytes, segmentedLimit, renewing(engine, pin,
+        await staged.writeStream(d.name, d.bytes, segmentedLimit, renewing(engine, pins, clock,
           segmentedExportMarkdown(engine, d.page, exportBodyLedger(d.page.slug, ledgers.get(d.page.source_id) ?? []), d.head, d.generation)));
-      } finally { if (pin) await releaseReadPin(engine, pin); }
-    }
+      }
+    } finally { for (const pin of pins) await releaseReadPin(engine, pin); }
     console.log(`${restoreOnly ? 'Restoring' : 'Exporting'} ${stage.pages}${restoreOnly ? ' db_only' : ''} pages to ${outDir}/`);
     const progress = createProgress(cliOptsToProgressOptions(getCliOptions()));
     progress.start('export.pages', stage.pages);

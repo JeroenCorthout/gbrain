@@ -4,7 +4,8 @@
  *
  * 1. Protects: the markdown view's size and sha256 are keyed by the exact rendered view (head, so metadata and tags,
  *    the withdrawal overlay, audience and body generation), so a same-length metadata edit and a same-length overlay
- *    change (a withdrawal, which moves no page revision) each report the sha256 of the bytes served; a paged read that
+ *    change (a withdrawal or a fence hold, which move no page revision) each report the sha256 of the bytes served, and
+ *    a pinned cursor refuses after such a change rather than resume at its old offset in other bytes; a paged read that
  *    an append overtakes reads on to the end on its pinned generation without revision_changed (get_page and the thin
  *    client's printPagedPage, which no longer restarts), with the size it started with; a live pin keeps its generation
  *    through version pruning and a segment sweep, and an expired pin lets the sweep collect it and the read refuses
@@ -26,6 +27,8 @@ import { decodeCursor, encodeCursor, MAX_WINDOW_BYTES } from '../../src/core/pag
 import { pagedReadWork, printPagedPage } from '../../src/cli/page-render.ts';
 import { openAppendBrain, type AppendBrain } from '../helpers/append-brain.ts';
 import { factRow } from '../helpers/segmented-privacy-fixture.ts';
+import { holdFingerprint } from '../../src/core/write-gate-store.ts';
+import { fenceRowHoldTexts } from '../../src/core/eligibility/fence-overlay.ts';
 import { testBackends } from '../helpers/test-backends.ts';
 
 const sha = (text: string) => createHash('sha256').update(text, 'utf8').digest('hex');
@@ -130,6 +133,47 @@ for (const kind of testBackends()) {
         expect(text(two)).toContain('Pinned probe B');
         expect(two[0]!.body.size.sha256).toBe(sha(text(two)));
       }
+    }, 300_000);
+
+    test('a same-length fence hold change (no revision, generation, head or withdrawal change) reports the remote view\'s sha256 of the bytes served', async () => {
+      const slug = await seed();
+      const hold = (claim: string) => brain.engine.executeRaw(`INSERT INTO write_gate_holds (kind, source_id, slug, fingerprint, detector_version, tier, payload)
+        VALUES ('fact', 'default', $1, $2, 1, 'external_untrusted', '{}'::jsonb)`, [slug, holdFingerprint('fact', fenceRowHoldTexts({ claim }))]);
+      // A held row is left out of the remote projection; a trusted reader sees the stored body.
+      for (const c of [{}] as Caller[]) {
+        await brain.engine.executeRaw('DELETE FROM write_gate_holds WHERE slug=$1', [slug]);
+        await hold(ALPHA);
+        const before = await revision(slug);
+        const one = text(await pageOn(slug, await markdown(slug, { max_bytes: 4 * 1024 * 1024 }, c), c));
+        expect((await markdown(slug, { bytes: { offset: 0, length: 64 } }, c)).body.size.sha256).toBe(sha(one));
+        await brain.engine.executeRaw('DELETE FROM write_gate_holds WHERE slug=$1', [slug]);
+        await hold(BRAVO);
+        expect(await revision(slug)).toBe(before);
+        const replies = await pageOn(slug, await markdown(slug, { max_bytes: 4 * 1024 * 1024 }, c), c);
+        const two = text(replies);
+        expect(Buffer.byteLength(two)).toBe(Buffer.byteLength(one));
+        expect(two).not.toBe(one);
+        expect(replies[0]!.body.size.sha256).toBe(sha(two));
+      }
+      await brain.engine.executeRaw('DELETE FROM write_gate_holds WHERE slug=$1', [slug]);
+    }, 300_000);
+
+    test('a pinned cursor refuses after a same-revision overlay change instead of resuming at its old offset in other bytes', async () => {
+      const slug = await seed();
+      const withdraw = (claim: string) => brain.engine.executeRaw(`INSERT INTO fact_withdrawals (source_id, visibility, subject, fact_hash, withdrawn_at)
+        VALUES ('default', 'world', $1, gbrain_fact_fingerprint($2), '2026-01-02T00:00:00Z')`, [slug, claim]);
+      for (const c of [{ remote: false }, {}] as Caller[]) {
+        await brain.engine.executeRaw('DELETE FROM fact_withdrawals WHERE subject=$1', [slug]);
+        await withdraw(ALPHA);
+        const first = await markdown(slug, { max_bytes: 256 * 1024 }, c);
+        expect(decodeCursor(first.body.next_cursor)!.pin).toBeDefined();
+        await brain.engine.executeRaw('DELETE FROM fact_withdrawals WHERE subject=$1', [slug]);
+        await withdraw(BRAVO);
+        const moved = await markdown(slug, { cursor: first.body.next_cursor }, c);
+        expect(moved.isError).toBe(true);
+        expect(code(moved)).toBe('revision_changed');
+      }
+      await brain.engine.executeRaw('DELETE FROM fact_withdrawals WHERE subject=$1', [slug]);
     }, 300_000);
 
     test('trusted and remote readers of one page keep their own cached digest, so neither re-hashes the page for the other', async () => {

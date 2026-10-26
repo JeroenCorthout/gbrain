@@ -19,6 +19,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { BrainEngine } from '../../src/core/engine.ts';
 import { exportProbe, runExport } from '../../src/commands/export.ts';
+import { READ_PIN_TTL_MS } from '../../src/core/page-body/read-pins.ts';
 import { exportBodyLedger, readExportPage, readExportWithdrawals, segmentedExportHead, segmentedExportMarkdown } from '../../src/core/export-snapshot.ts';
 import { openAppendBrain, type AppendBrain } from '../helpers/append-brain.ts';
 import { conversationPage } from '../helpers/conversation-page.ts';
@@ -115,6 +116,44 @@ for (const kind of testBackends()) {
       expect(exportProbe.beforeStream).toBeUndefined();
       expect(sha(file!)).toBe(sha(expected));
       expect(sha(await reference(brain.engine, slug))).not.toBe(sha(expected));
+    }, 300_000);
+
+    test("every export pin is taken before the first stream: a page waiting behind another keeps the snapshot's generation", async () => {
+      const first = 'notes/export-pinned-d1', second = 'notes/export-pinned-d2';
+      const ids = [await seed(first, 3_000_000), await seed(second, 3_100_000)];
+      const expected = await reference(brain.engine, second);
+      let mutated = false;
+      exportProbe.beforeStream = async pageId => {
+        if (mutated) return;
+        mutated = true;
+        expect(pageId).toBe(ids[0]!);
+        const res = await brain.call('append_page', { slug: second, text: '\n\nAppended while another page streamed.\n', request_id: randomUUID() });
+        expect(res.isError).toBe(false);
+        await brain.engine.executeRaw('DELETE FROM page_versions WHERE page_id=$1', [ids[1]]);
+        await brain.engine.sweepSegments({ pageId: ids[1] });
+      };
+      const out = join(dir, `out-${++exports}`);
+      try { await quietly(() => runExport(brain.engine, ['--dir', out, '--slug-prefix', 'notes/export-pinned-d'])); } finally { exportProbe.beforeStream = undefined; }
+      expect(mutated).toBe(true);
+      expect(sha(readFileSync(join(out, `${second}.md`)))).toBe(sha(expected));
+    }, 300_000);
+
+    test('an export pin that can no longer be renewed refuses the export instead of streaming an unpinned generation', async () => {
+      const slug = 'notes/export-pinned-e';
+      const id = await seed(slug, 3_000_000);
+      const now = Date.now;
+      exportProbe.beforeStream = async pageId => {
+        if (pageId !== id) return;
+        exportProbe.beforeStream = undefined;
+        await brain.engine.executeRaw('DELETE FROM page_read_pins WHERE page_id=$1', [id]);
+        const late = now() + READ_PIN_TTL_MS;
+        Date.now = () => late;
+      };
+      const out = join(dir, `out-${++exports}`);
+      try {
+        await expect(quietly(() => runExport(brain.engine, ['--dir', out, '--slug-prefix', slug]))).rejects.toThrow(/export read pin expired/);
+      } finally { Date.now = now; exportProbe.beforeStream = undefined; }
+      expect(existsSync(join(out, `${slug}.md`))).toBe(false);
     }, 300_000);
 
     test('a generation collected before the stream refuses the export; nothing is published complete', async () => {

@@ -47,7 +47,7 @@ import {
 } from '../page-window/segmented.ts';
 import { confirmBodyPin, hiddenBefore, openSegmentedBody, type BodyPin } from '../page-body/read-range.ts';
 import { inlineRegions, inlineTailDigest } from '../page-body/tail-digest.ts';
-import { createReadPin, digestKey, readPinPrincipal, renderKey, useReadPin, type ReadPin } from '../page-body/read-pins.ts';
+import { createReadPin, digestKey, fenceOverlayIdentity, readPinPrincipal, renderKey, useReadPin, type ReadPin } from '../page-body/read-pins.ts';
 import { TIMELINE_SEPARATOR } from '../page-window/document.ts';
 import { renderTrustedText, type TrustFields } from '../eligibility/labels.ts';
 import { pageTrustForRead, type QuarantinedView } from './get-page-projection.ts';
@@ -370,6 +370,8 @@ interface SegmentedWindows {
   size: Record<string, unknown>;
   /** The read pin a cursor carried, when it continues this read on its pinned generation and view past a revision change. */
   continued: ReadPin | null;
+  /** The cursor's live pin names another rendered view of the same revision (an overlay moved): its offsets no longer apply. */
+  viewMoved: boolean;
   /** The pin the next cursor carries: the one in use, else a new one on this generation and view; undefined when none could be written. */
   pinToken: () => Promise<string | undefined>;
 }
@@ -391,7 +393,7 @@ async function segmentedWindows(ctx: OperationContext, input: PartialReadInput, 
   const pinned = held && cursor!.revision !== revision ? held : null;
   const body = await openSegmentedBody(ctx.engine, { pageId: page.id, ...(pinned ? { generation: pinned.generation } : {}), pin: { ...input.pin, revision } });
   const head = req.view === 'markdown' ? markdownHead(page, tags) : null;
-  const key = renderKey(req.view, req.view === 'markdown' ? audience : 'remote', head, body.ledger);
+  const key = renderKey(req.view, req.view === 'markdown' ? audience : 'remote', head, body.ledger, await fenceOverlayIdentity(ctx.engine, page.source_id, page.slug));
   if (pinned && pinned.viewKey !== key) return segmentedWindows(ctx, input, req, mode, null);
   const stored = audience === 'trusted' && !pinned ? { body_bytes: body.bodyBytes, body_lines: body.bodyLines } : {};
   let seg: SegmentedDocument;
@@ -413,7 +415,7 @@ async function segmentedWindows(ctx: OperationContext, input: PartialReadInput, 
     pageId: page.id, generation: body.generation, purpose: 'read', audience, view: req.view, viewKey: key, principal, revision,
     totalBytes: Number(size.total_bytes), totalLines: Number(size.total_lines), sha256: typeof size.sha256 === 'string' ? size.sha256 : null,
   }).then(t => t ?? undefined);
-  return { size, continued: pinned, pinToken, doc: {
+  return { size, continued: pinned, viewMoved: !!held && !pinned && held.viewKey !== key, pinToken, doc: {
     total: seg.total, segmented: true, segments: seg,
     outline: (from, limit) => segmentedOutline(seg, from, limit, Number(size.total_lines)),
     from: (offset, maxBytes) => seg.from(offset, maxBytes),
@@ -577,9 +579,10 @@ export async function readPartialBody(ctx: OperationContext, input: PartialReadI
     if (sel.kind === 'bytes') return doc.bytes(sel.offset, Math.min(sel.length, maxBytes));
     if (sel.kind === 'cursor') {
       const c = cursor!;
-      if (c.revision !== revision) {
+      if (c.revision !== revision || segmented?.viewMoved) {
         const position = Math.min(c.offset, doc.total);
-        throw opError('revision_changed', `Page ${page.slug} changed since this cursor was issued (revision ${c.revision}, now ${revision}).`,
+        throw opError('revision_changed', segmented?.viewMoved ? `Page ${page.slug} renders differently since this cursor was issued (its withdrawal or fence overlay changed at revision ${revision}).`
+          : `Page ${page.slug} changed since this cursor was issued (revision ${c.revision}, now ${revision}).`,
           `Continue from the same byte offset at the current revision (bytes: { offset: ${position}, length: ${c.max_bytes} }), or start over from the outline.`,
           { legacy_error: 'invalid_params', detail: JSON.stringify({ revision, cursor_revision: c.revision, offset: position }),
             fix: readFix('Reads on from the same byte offset at the current revision.', { argv: ['gbrain', 'get', '--source', page.source_id, '--', page.slug],

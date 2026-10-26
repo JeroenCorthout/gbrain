@@ -6,7 +6,7 @@
  * version (engine-sql/page-body.ts sweepSegments), so an append that moves the page to a new generation mid-read never
  * collects the rows and texts being paged. A read pin also records the rendered view it is bound to: `view_key`, the
  * identity of everything the view renders besides the body generation (the markdown head, so the page's metadata and
- * tags, and the withdrawal overlay), and the view's size and sha256, so a continued read is verified against the
+ * tags, the withdrawal overlay and the fence overlay of held, demoted or flagged facts rows), and the view's size and sha256, so a continued read is verified against the
  * bytes it started on. Access is not part of the pin: every window is authorized again by get_page before the pin is
  * used, so a delete, a privacy change or a revoked grant stops the read whatever the pin says.
  *
@@ -18,6 +18,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import type { BrainEngine } from '../engine.ts';
 import type { OperationContext } from '../ops/contract.ts';
 import type { BodyLedger } from './segment-ledger.ts';
+import { activationSuppressedSql } from '../eligibility/sql.ts';
 
 export const READ_PIN_TTL_MS = 15 * 60 * 1000;
 export const READ_PINS_PER_PAGE = 64;
@@ -58,12 +59,33 @@ export function overlayIdentity(ledger: BodyLedger): string {
   return sha256Hex(JSON.stringify([rows, g ? [g.count, g.latest, g.world_only] : null]));
 }
 
+const FENCE_IDENTITY_SQL = `SELECT md5(concat_ws('|',
+    coalesce((SELECT p.trust_tier FROM pages p WHERE p.source_id=$1 AND p.slug=$2 AND p.deleted_at IS NULL LIMIT 1), ''),
+    coalesce((SELECT string_agg(concat_ws(':', f.row_num, f.id, f.trust_tier, (${activationSuppressedSql('facts', 'f')})::text), ',' ORDER BY f.id)
+      FROM facts f WHERE f.source_id=$1 AND f.source_markdown_slug=$2), ''),
+    coalesce((SELECT string_agg(h.fingerprint, ',' ORDER BY h.fingerprint) FROM write_gate_holds h
+      WHERE h.kind='fact' AND h.source_id=$1 AND h.slug=$2 AND h.status='held'), ''),
+    coalesce((SELECT string_agg(concat_ws(':', fp.visibility, fp.subject, fp.fact_hash), ',' ORDER BY fp.visibility, fp.subject, fp.fact_hash)
+      FROM fact_purges fp WHERE fp.source_id=$1 AND (fp.subject='*' OR fp.subject=$2)), ''))) AS id`;
+
+/**
+ * Identity of the fence overlay a read applies to the page's facts rows (eligibility/fence-overlay.ts
+ * loadFenceChunkOverlay): the page's trust tier, each facts row's tier and activation suppression, the held fact rows
+ * and the purges that reach the page. A hold, tier or flag change can swap equal-length rows without moving the body
+ * generation, the head or the withdrawal ledger.
+ */
+export async function fenceOverlayIdentity(engine: Pick<BrainEngine, 'executeRaw'>, sourceId: string, slug: string): Promise<string> {
+  const [row] = await engine.executeRaw<{ id: string }>(FENCE_IDENTITY_SQL, [sourceId, slug]);
+  return String(row?.id ?? '');
+}
+
 /**
  * The rendered view's identity apart from its body generation: view, audience, the exact markdown head (metadata and
- * tags; the read view has none) and the overlay. Two reads with the same key and generation render the same bytes.
+ * tags; the read view has none), the withdrawal overlay and the fence overlay (`fence`, fenceOverlayIdentity). Two
+ * reads with the same key and generation render the same bytes.
  */
-export function renderKey(view: 'read' | 'markdown', audience: ReadPinAudience, head: string | null, ledger: BodyLedger): string {
-  return `v2:${sha256Hex(JSON.stringify([view, audience, head === null ? null : sha256Hex(head), overlayIdentity(ledger)]))}`;
+export function renderKey(view: 'read' | 'markdown', audience: ReadPinAudience, head: string | null, ledger: BodyLedger, fence: string): string {
+  return `v3:${sha256Hex(JSON.stringify([view, audience, head === null ? null : sha256Hex(head), overlayIdentity(ledger), fence]))}`;
 }
 
 /** page_view_digests key of a rendered view: its render key plus the body generation. */
