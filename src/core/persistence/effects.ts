@@ -6,7 +6,7 @@ import { targetedWithdrawalEffect, upgradeWithdrawalEffect } from './effect-targ
 import { existsSync, statSync } from 'node:fs';
 import { join, relative, sep } from 'node:path';
 import type { BrainEngine } from '../engine.ts';
-import { isPersistenceDeclaration, PERSISTENCE_PROTOCOL_PREDICATE } from './protocol.ts';
+import { declarePersistenceProtocol, isPersistenceDeclaration, PERSISTENCE_PROTOCOL_PREDICATE } from './protocol.ts';
 import type { GBrainConfig } from '../config.ts';
 import type { PageSnapshot } from '../page-state/types.ts';
 import { OperationError, opError } from '../ops/contract.ts';
@@ -40,14 +40,14 @@ import { atomicStagingPath } from '../atomic-write.ts';
 import { isSourceDbOnlySlug } from './source-storage.ts';
 import { advanceEffectCursor, claimCoalescedGitEffects, claimPersistenceEffect, completeEffect, effectClaimStamp, effectClaimKeeper, failEffect, hasRearmableTargets, mirrorGates, parkEffect, rearmWithheldTargets, renewPersistenceEffectClaim, requeueEffect, retryBusyEffect, retryEffect, singleFileGitEffect, type MirrorGate } from './effect-journal.ts';
 import { guardEffectSource, recoverEffectPublication, reserveEffectRecovery } from './effect-recovery.ts';
-import { commitGitTargets, DURABILITY_NOT_ENABLED, gitRootAhead, publishGitEffect, publishSplitGitEffect, pushGitRoot, type GitEffectOwner } from './effect-git.ts';
+import { commitGitTargets, DURABILITY_NOT_ENABLED, gitRootAhead, publishGitEffect, pushGitRoot, type GitEffectOwner } from './effect-git.ts';
 import { retryIndexLockParks } from './effect-retry.ts';
 import { assertSegmentedMirrorGate, resumeGatedMirrors } from './segmented-mirror-gate.ts';
 import { gitDurabilityPolicy } from './git-durability-policy.ts';
 import { EFFECT_FAULT_POINTS, faultPoint } from './fault-points.ts';
 import { dispatchFactsBackstopEffect } from './effect-facts.ts';
 import { runLinksEffect } from './effect-links.ts';
-import { PARK_AFTER_FAILURES, splitGitEffect, WITHHELD_BY_MIRROR, type EffectRecovery, type GitCommitNote, type PersistenceEffect, type SkippedTarget } from './effect-model.ts';
+import { PARK_AFTER_FAILURES, WITHHELD_BY_MIRROR, type EffectRecovery, type GitCommitNote, type ParkedTarget, type PersistenceEffect, type SkippedTarget } from './effect-model.ts';
 import { fileContentHash } from './large-file.ts';
 import { isSyncMetafile, metafileIsPage, readMetafilePagesMode } from '../sync.ts';
 import { diskMetafileHeads } from '../sync-metafile-pages.ts';
@@ -56,11 +56,7 @@ import { scannerSlugRootMode } from '../write-through.ts';
 import { recoveryStagingFile } from './staging.ts';
 import { selectEffectRecoveries } from './effect-recovery-scan.ts';
 import { nativeFileTarget } from './native-file-target.ts';
-import { withFilesystemPublication } from './filesystem-guard.ts';
-import type { MutationFile } from './bundle-files.ts';
-import { releaseSplitTargets, splitPublicationTargets, type SplitFileFields } from './split-files.ts';
-import { splitMirrorPlan, splitPartsDrifted, stageSplitMirror } from './split-mirror.ts';
-import { isSplitHeadPath, pageFileSha256, partsDirFor } from '../split-layout/index.ts';
+import { outsideDoorRefusal } from '../split-write-through.ts';
 import { sourceMirrorReadOnly } from './mirror-read-only.ts';
 import { isLockOpenFailure, type NativeLockHandle } from './native-lock.ts';
 import { planPageEmbedding } from '../page-embedding-budget.ts';
@@ -171,6 +167,7 @@ async function recordSkippedTarget(engine: BrainEngine, effect: PersistenceEffec
 /** Record a scan target as skipped and move past it without writing the page or its file. */
 async function skipTarget(engine: BrainEngine, effect: PersistenceEffect, snapshot: PageSnapshot, reason: SkippedTarget['reason']): Promise<void> {
   await engine.transaction(async tx => {
+    await declarePersistenceProtocol(tx);
     await recordSkippedTarget(tx, effect, { slug: snapshot.page.slug, reason });
     await finishPage(tx, effect, snapshot);
   });
@@ -268,23 +265,12 @@ async function mirrorPage(engine: BrainEngine, effect: PersistenceEffect, bindin
     await materializeAndAdvance(engine, effect, snapshot, opts.hostId, 'file_database_drift');
     return;
   }
+  // Wave B PR 5 (option B): the mirror is outside the publication door, so a page in a split unit is passed by, its files
+  // untouched (split-write-through.ts outsideDoorRefusal, split_page_unsupported); a render of any size is one file.
+  if (await splitUnitRefused(file.root, file.path, effect, snapshot.page.slug)) { await materializeAndAdvance(engine, effect, snapshot, opts.hostId, 'split_page_unsupported'); return; }
   const target = { kind: 'withdrawal-mirror' as const, path: file.path, root: file.root, beforeHash: file.expectedBeforeHash ?? null,
     mode: statSync(file.path).mode & 0o7777, ownerEpoch: String(binding!.owner_epoch), pageId: snapshot.page.id,
     sourceIncarnation: snapshot.sourceIncarnation, slug: snapshot.page.slug, revision: snapshot.revision };
-  // Wave B PR 5: a split page, or a render over the threshold, is mirrored as one unit (head plus parts, split-mirror.ts).
-  const unit: MutationFile & SplitFileFields = { path: file.path, root: file.root, content, expectedBeforeHash: file.expectedBeforeHash, expectedParts: file.expectedParts };
-  if (await splitPublicationTargets(engine, unit)) {
-    try {
-      // A part that changed since the file was compared is a local edit, passed by like a changed head.
-      if (splitPartsDrifted(unit)) { await materializeAndAdvance(engine, effect, snapshot, opts.hostId, 'file_database_drift'); return; }
-      const plan = await splitMirrorPlan(engine, target, unit);
-      await reserveEffectRecovery(engine, effect, plan.record, plan.bytes, opts.hostId);
-      await withFilesystemPublication([file.root], () => stageSplitMirror(engine, plan));
-      await faultPoint('effect_recovery:split_staged', { effectId: effect.id, requestId: effect.request_id, sourceId: effect.source_id, slug: target.slug });
-      await recoverEffectPublication(engine, effect, opts.hostId, { boundary: opts.boundary, between: keep });
-    } finally { releaseSplitTargets(unit); }
-    return;
-  }
   if (isStreamedContent(content)) {
     // Version 2: the file is staged by path and digest, never embedded; the reservation counts its one staged copy.
     const record: EffectRecovery = { ...target, version: 2, afterHash: content.hash, after: null,
@@ -355,15 +341,12 @@ async function gitPage(engine: BrainEngine, effect: PersistenceEffect, binding: 
 async function publishGitPage(engine: BrainEngine, effect: PersistenceEffect, binding: WorktreeBinding & { local_path: string }, opts: EffectWorkerOptions,
   attempt: EffectAttempt, hardened: boolean | undefined, owner: GitEffectOwner | undefined): Promise<void> {
   const root = binding.local_path;
-  // Wave B PR 5: a split page's head commits with its part files (effect-git.ts publishSplitGitEffect).
-  if (splitGitEffect(effect)) {
-    const target = await singleFileGitTarget(engine, effect, { ...binding, local_path: root }, attempt);
-    if (target !== null) await completeEffect(engine, effect, await publishSplitGitEffect(root, target, opts.signal, hardened, gitCommitNote(effect), undefined, owner));
-    return;
-  }
+  // Wave B PR 5 (option B): a Git effect commits no path of a split unit (split-unit-guard.ts); only the strict door does.
+  const strict = binding.canonical_git === true;
   if (!targetedWithdrawalEffect(effect) && !effect.data.source_scan) {
     const target = await singleFileGitTarget(engine, effect, { ...binding, local_path: root }, attempt);
-    if (target !== null) await completeEffect(engine, effect, await publishGitEffect(root, target, opts.signal, hardened, gitCommitNote(effect), undefined, owner));
+    if (target !== null) await completeEffect(engine, effect, await publishGitEffect(root, target, opts.signal, hardened, gitCommitNote(effect), undefined, owner, strict,
+      { sourceId: effect.source_id, slug: effect.data.slug }));
     return;
   }
   // Only a page walk reads snapshots; a single-file effect completes by its recorded hash.
@@ -411,25 +394,23 @@ async function publishGitPage(engine: BrainEngine, effect: PersistenceEffect, bi
   // A page the mirror passed is committed only when its raw bytes are the mirror's rendering of the page as it is now: the
   // hash the mirror recorded writing at this revision, else the rendering measured now (a segmented page's from its
   // segments, unreadPageFile, never held as one string).
-  // A split head is compared through the page file its parts reassemble to (a recorded head hash would not cover its parts).
+  // A page walk (a withdrawal or a source scan) is outside the door: a page in a split unit is passed by, never committed.
+  if (await splitUnitRefused(join(root, binding.relative_path), path, effect, snapshot.page.slug)) { await skipTarget(engine, effect, snapshot, 'split_page_unsupported'); return; }
   const mirrored = attempt.gate?.files.get(snapshot.page.slug);
-  const split = mirrored?.split === true || (isSplitHeadPath(path) && existsSync(partsDirFor(path)));
-  if (verdict === 'evidence' && (snapshot.page.deleted_at || walkedFileHash(path, split) !== (mirrored?.revision === snapshot.revision && !mirrored.split ? mirrored.hash
+  if (verdict === 'evidence' && (snapshot.page.deleted_at || persistenceFileHash(path) !== (mirrored?.revision === snapshot.revision ? mirrored.hash
     : content === null ? (await unreadPageFile(engine, snapshot, keep)).hash : fileContentHash(content)))) {
     await skipTarget(engine, effect, snapshot, 'withdrawal_not_mirrored');
     return;
   }
-  // Wave B PR 5: a split head commits with its part files.
-  const result = await (split ? publishSplitGitEffect : publishGitEffect)(root, relative(root, path).split(sep).join('/'), opts.signal, hardened, gitCommitNote(effect), undefined, owner);
+  const result = await publishGitEffect(root, relative(root, path).split(sep).join('/'), opts.signal, hardened, gitCommitNote(effect), undefined, owner, strict,
+    { sourceId: effect.source_id, slug: snapshot.page.slug });
   if (result.reason === 'durability_not_enabled') await completeEffect(engine, effect, result);
   else await finishPage(engine, effect, snapshot, result);
 }
 
-/** The hash a Git walk compares with the page's render: the page file a split head's parts reassemble to, else the file's own. */
-function walkedFileHash(path: string, split: boolean): string | null {
-  if (!split) return persistenceFileHash(path);
-  const page = pageFileSha256(path);
-  return page.hold ? null : page.sha256;
+/** Whether page `slug`'s file at `path` is in a split unit, which a withdrawal mirror (outside the door) passes by. */
+async function splitUnitRefused(root: string, path: string, effect: PersistenceEffect, slug: string): Promise<boolean> {
+  return await outsideDoorRefusal({ root, path, route: 'mirror', sourceId: effect.source_id, slug }) !== null;
 }
 
 /**
@@ -737,9 +718,12 @@ async function recordFailure(engine: BrainEngine, effect: PersistenceEffect, err
   const [current] = await engine.executeRaw<{ recovering: boolean }>('SELECT recovery IS NOT NULL AS recovering FROM persistence_effects WHERE id=$1', [effect.id]);
   if (current?.recovering) { await retryEffect(engine, effect, code, 30_000); return; }
   // GBRA-133: a target a .gitignore rule excludes fails the same way on every attempt; it parks at once, naming the rule.
-  if (code === 'git_target_ignored') { await parkEffectTarget(engine, effect, code, target, (error as OperationError).detail); return; }
+  if (code === 'git_target_ignored') { await parkEffectTarget(engine, effect, code, target, { rule: (error as OperationError).detail }); return; }
   // Wave B PR 5: a split page whose parts are missing or changed fails the same way until they are restored; it parks at once.
   if (code === 'split_page_incomplete') { await parkEffectTarget(engine, effect, code, target); return; }
+  // Wave B PR 5 (option B): a split unit this route may not change is refused on every attempt; it parks at once with the
+  // refusal's reason and fix (split-unit-guard.ts).
+  if (code === 'split_page_unsupported') { const { reason, fix } = error as OperationError; await parkEffectTarget(engine, effect, code, target, { reason, fix }); return; }
   // A retried parked target has exactly one authorized attempt; otherwise the
   // counter only accumulates while the same target keeps failing.
   const prior = target !== undefined && effect.data.retry_slugs?.includes(target) ? PARK_AFTER_FAILURES - 1
@@ -789,10 +773,12 @@ const DEPENDENCY_CODES = ['recovery_required', 'owner_unavailable', 'write_claim
  * or a failure outside any target, parks the whole effect. Parked work stays
  * retained until `gbrain sources writer retry-effects` authorizes another attempt.
  */
-async function parkEffectTarget(engine: BrainEngine, effect: PersistenceEffect, code: string, target: string | undefined, rule?: string): Promise<void> {
+async function parkEffectTarget(engine: BrainEngine, effect: PersistenceEffect, code: string, target: string | undefined,
+  cause: Pick<ParkedTarget, 'rule' | 'reason' | 'fix'> = {}): Promise<void> {
   const { target_failures: _failures, failing_target: _target, retry_slugs: retrying = [], ...data } = effect.data;
   const scanning = target !== undefined && (targetedWithdrawalEffect(effect) || effect.data.source_scan === true);
-  const parked = [...(effect.data.parked ?? []), { ...(target ?? effect.data.slug ? { slug: target ?? effect.data.slug } : {}), error_code: code, ...(rule ? { rule } : {}) }];
+  const parked = [...(effect.data.parked ?? []), { ...(target ?? effect.data.slug ? { slug: target ?? effect.data.slug } : {}), error_code: code,
+    ...Object.fromEntries(Object.entries(cause).filter(([, value]) => value !== undefined)) }];
   if (!scanning) { await parkEffect(engine, effect, { ...data, ...(retrying.length ? { retry_slugs: retrying } : {}), parked }); return; }
   const remaining = retrying.filter(slug => slug !== target);
   // An embedding scan's next page starts with a full attempt budget, as when the cursor advances.
@@ -979,7 +965,8 @@ async function runEffectPass(engine: BrainEngine, config: GBrainConfig, opts: Ef
       }
       const notes = new Map(targets.flatMap(({ effect, path }) => { const note = gitCommitNote(effect); return note ? [[path, note] as const] : []; }));
       const outcomes = targets.length ? await commitGitTargets(binding.local_path, targets.map(t => t.path), opts.signal, notes,
-        { writerLock: lock, onReclaim: () => { reclaimed = true; } }) : new Map();
+        { writerLock: lock, onReclaim: () => { reclaimed = true; } }, binding.canonical_git === true,
+        new Map(targets.map(({ effect, path }) => [path, { sourceId: effect.source_id, slug: effect.data.slug }]))) : new Map();
       const pending = unpushed.get(binding.local_path) ?? { binding, items: [] };
       // #7089: an absent target whose removal an earlier attempt committed (its push failed) joins the push like an
       // unchanged one while the root is ahead of its upstream; on a root that is not ahead it completes without a push.

@@ -4,8 +4,8 @@
  * (persistence/split-files.ts), as one unit:
  *   - a split create writes the head and every part; the file F they reassemble to is the one-file write's F, byte for
  *     byte, and the page row holds the whole body, never the head;
- *   - on a Git-durable source one Git commit holds the head and every part; on a strict source (canonical = git) the
- *     door commit at before_commit holds them all and the effect only pushes; a source with no Git writes files only;
+ *   - only a strict source (canonical = git) takes the layout: its door commit at before_commit holds the head and every
+ *     part and the effect only pushes; any other source writes the one file it wrote before (option B);
  *   - an append rewrites the head and the last part only: earlier parts keep their inode, mtime and bytes;
  *   - shrinking under the threshold converts back to one file and removes the parts and their directory;
  *   - delete removes the head and its parts; restore writes them again.
@@ -31,7 +31,12 @@ const page = (body: string[]) => `---\ntype: note\ntitle: Split example\n---\n\n
 const put = (ctx: OperationContext, slug: string, content: string, expectedRevision?: string, requestId = randomUUID()) =>
   op('put_page').handler(ctx, { slug, content, request_id: requestId, wait_ms: 30_000, ...(expectedRevision ? { expected_revision: expectedRevision } : {}) }) as Promise<Record<string, any>>;
 const revision = async (engine: BrainEngine, slug: string) => (await engine.readPageSnapshot(slug, { sourceId: 'default', includeDeleted: true }))!.revision;
-const setup = ({ root }: { root: string }) => { writeFileSync(join(root, '.gitignore'), '\n'); durableGitRepo(root, ['.gitignore']); };
+const plainSetup = ({ root }: { root: string }) => { writeFileSync(join(root, '.gitignore'), '\n'); durableGitRepo(root, ['.gitignore']); };
+/** Option B: only a git-canonical source lays a page out as a split unit, so every fixture source is strict (canonical = git). */
+const setup = async ({ engine, root }: { engine: BrainEngine; root: string }) => {
+  writeFileSync(join(root, '.gitignore'), '\n'); durableGitRepo(root, ['.gitignore']);
+  await engine.executeRaw(`UPDATE sources SET config = config || '{"canonical":"git"}'::jsonb WHERE id='default'`);
+};
 const strict = (engine: BrainEngine) => engine.executeRaw(`UPDATE sources SET config = config || '{"canonical":"git"}'::jsonb WHERE id='default'`);
 const partsOf = (root: string, rel: string) => {
   const dir = partsDirFor(join(root, rel));
@@ -172,13 +177,25 @@ for (const backend of testBackends()) describe(`[${backend}] split git layout: t
     expect(git(root, 'status', '--porcelain')).toBe('');
   }, { databaseUrl, setup }), 120_000);
 
-  test('a source without Git writes the head and parts as files only', () => managedBrain(async ({ engine, ctx, root }) => {
+  // Option B: a source that is not git-canonical never lays a page out as a split unit; it writes the one file it wrote
+  // before the layout existed (the same bytes as under the default threshold), and a Git-durable one commits just that file.
+  for (const git_ of ['none', 'durable'] as const) test(`a non-strict source (${git_ === 'none' ? 'no Git' : 'Git-durable'}) writes a page over the threshold as one file, as before`, () => managedBrain(async ({ engine, ctx, root }) => {
     __setSplitLimitsForTests(LIMITS);
-    await engine.setConfig(SPLIT_MAX_FILE_BYTES_KEY, '2048');
     const content = page(lines(0, 80));
+    expect(await put(ctx, 'notes/plain', content)).toMatchObject({ state: 'committed' });
+    const plain = readFileSync(join(root, 'notes/plain.md'));
+    await engine.setConfig(SPLIT_MAX_FILE_BYTES_KEY, '2048');
+    expect(plain.byteLength).toBeGreaterThan(2048);
     expect(await put(ctx, 'notes/files', content)).toMatchObject({ state: 'committed' });
-    expect(existsSync(join(root, '.git'))).toBe(false);
-    expect(partsOf(root, 'notes/files.md').length).toBeGreaterThan(4);
-    expect(reassembled(join(root, 'notes/files.md'))).toContain(lines(79, 80)[0]);
-  }, { databaseUrl }), 120_000);
+    expect(existsSync(join(root, '.git'))).toBe(git_ === 'durable');
+    expect(existsSync(partsDirFor(join(root, 'notes/files.md')))).toBe(false);
+    expect(stamped(readFileSync(join(root, 'notes/files.md'), 'utf8'))).toBe(stamped(plain.toString('utf8')));
+    expect(await body(engine, 'notes/files')).toBe(await body(engine, 'notes/plain'));
+    if (git_ === 'none') return;
+    await settleManagedGitEffects(engine);
+    const commits = git(root, 'log', '--format=%H', '--', 'notes/files.md', 'notes/.files.gbparts').split('\n').filter(Boolean);
+    expect(commits).toHaveLength(1);
+    expect(committedPaths(root, commits[0])).toEqual(['notes/files.md']);
+    expect(git(root, 'show', `${commits[0]}:notes/files.md`)).toBe(readFileSync(join(root, 'notes/files.md'), 'utf8'));
+  }, { databaseUrl, ...(git_ === 'durable' ? { setup: plainSetup } : {}) }), 120_000);
 });

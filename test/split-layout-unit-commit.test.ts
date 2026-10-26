@@ -5,9 +5,9 @@
  * all use it.
  *
  * 1. Protects: (a, b) a committed ordinary page whose worktree copy was turned into an equivalent head plus parts without
- *    committing them is a divergence the door did not produce (round 6, split_unit_diverged): a title edit on a strict
- *    or a non-strict source refuses and leaves the disk, the index and HEAD as they were, rather than committing the
- *    hand conversion; (c) recovery reads a door commit missing a part the head lists (one only on disk) as not
+ *    committing them is a divergence the door did not produce: a title edit refuses split_page_unsupported (unit_diverged
+ *    on a strict source, non_strict_source on any other) and leaves the disk, the index and HEAD as they were, rather
+ *    than committing the hand conversion; (c) recovery reads a door commit missing a part the head lists (one only on disk) as not
  *    landed as published (`recovery_required`), and one holding the whole unit as landed.
  * 2. Fails when: a commit's paths are only the files the write wrote or removed, so a kept part Git never had stays out
  *    of HEAD (a fresh checkout cannot reassemble the page), or recovery accepts such a commit.
@@ -69,13 +69,13 @@ for (const backend of testBackends()) describe(`[${backend}] split git layout: e
   const databaseUrl = backend === 'postgres' ? requirePostgresTestDatabase() : undefined;
   afterEach(() => __setSplitLimitsForTests(null));
 
-  // Round 6 ("refuse rather than reconcile"): a layout converted on disk and never committed is a divergence the door did
-  // not produce, so the write refuses with split_unit_diverged and every byte stays: the disk, the index and HEAD.
+  // "Refuse rather than reconcile": a layout converted on disk and never committed is a divergence the door did not
+  // produce, so the write refuses split_page_unsupported and every byte stays: the disk, the index and HEAD.
   for (const strict of [true, false]) test(`(${strict ? 'a' : 'b'}) ${strict ? 'strict' : 'non-strict'}: a title edit over a converted, never-committed layout refuses and leaves the disk, the index and HEAD as they were`, () => managedBrain(async ({ engine, ctx, root }) => {
     if (strict) await engine.executeRaw(`UPDATE sources SET config = config || '{"canonical":"git"}'::jsonb WHERE id='default'`);
     const revision = await convertedNotCommitted(engine, ctx, root);
     const before = unitBytes(root);
-    expect(await put(ctx, page('Retitled example'), revision).then(() => null, error => error.code)).toBe('split_unit_diverged');
+    expect(await put(ctx, page('Retitled example'), revision).then(() => null, error => `${error.code}:${error.reason}`)).toBe(`split_page_unsupported:${strict ? 'unit_diverged' : 'non_strict_source'}`);
     await settleManagedGitEffects(engine);
     expect(unitBytes(root)).toEqual(before);
     expect((await engine.readPageSnapshot('notes/probe', { sourceId: 'default' }))!.revision).toBe(revision);

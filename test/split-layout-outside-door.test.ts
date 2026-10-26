@@ -1,16 +1,16 @@
 /**
- * Wave B PR 5 lane 5e, round 6 ("refuse rather than reconcile"): outside the publication door a split page is never
- * removed or overwritten unbound, and a refusal leaves every byte as it was: the head, each part and the page's row.
+ * Wave B PR 5 lane 5e (option B, GBRA-108): outside the publication door a split page is never written, removed or
+ * overwritten, bound to the bytes it compared or not, and a refusal leaves every byte as it was: the head, each part and
+ * the page's row.
  *
- * 1. Protects: deletePageThrough (bound to the page's bytes or not) and the classic Google connector's delete refuse
- *    `split_page_unsupported` on a split page whose head a human edited, the Google route before it deletes its row; an
- *    overwrite not bound to the bytes it compared (writePageThrough without `expectedFileBytes`) or over a held head
- *    (writeSplitPageFile with no precondition) refuses the same way. Every split preflight (assertSplitWritable,
- *    splitWriteRefusal, oneFileWriteRefusal, assertOneFileWritable, assertPageThroughWritable) and writeSplitPageFile refuse
- *    incoming content that is itself a split head (`split_head_content`), as the publication door does.
+ * 1. Protects: writePageThrough (bound to the page's bytes or not), deletePageThrough and the classic Google connector's
+ *    delete refuse `split_page_unsupported` on a split page whose head a human edited, the Google route before it deletes
+ *    its row. Every check outside the door (assertOutsideDoorWritable, outsideDoorRefusal, assertOneFileWritable,
+ *    assertPageThroughWritable) refuses incoming content that is itself a split head (`split_head_content`), as the
+ *    publication door does.
  * 2. Fails when: a remover outside the door unlinks a split head or its parts, deletes the row of a page whose files it
- *    then refuses to remove, an unbound overwrite replaces a split head, or a writer outside the door takes a split head
- *    as a page file.
+ *    then refuses to remove, a write-through (bound or unbound) replaces a split head, or a writer outside the door takes
+ *    a split head as a page file.
  * 3. Real PGLite and Postgres engines, the probe shape of the round 6 review (a split head edited by hand).
  */
 import { afterEach, describe, expect, test } from 'bun:test';
@@ -22,7 +22,7 @@ import { deletePageByRelPath } from '../src/core/google/sweep-shared.ts';
 import { serializePageToMarkdown } from '../src/core/markdown.ts';
 import { __setSplitLimitsForTests, readPageFile } from '../src/core/split-layout/index.ts';
 import { atomicWriteTextFile } from '../src/core/bootstrap/atomic-write.ts';
-import { assertOneFileWritable, assertSplitWritable, oneFileWriteRefusal, splitWriteRefusal, writeSplitPageFile } from '../src/core/split-write-through.ts';
+import { assertOneFileWritable, assertOutsideDoorWritable, outsideDoorRefusal } from '../src/core/split-write-through.ts';
 import { _resetWriteThroughCacheForTest, assertPageThroughWritable, deletePageThrough, writePageThrough } from '../src/core/write-through.ts';
 import { isolatedSharedSkillsEngine } from './helpers/shared-skills-engine.ts';
 import { writeSplitPage } from './helpers/split-page.ts';
@@ -103,25 +103,24 @@ for (const backend of testBackends()) describe(`[${backend}] split git layout: r
     expect(await state(engine, root)).toEqual(before);
   }), 120_000);
 
-  test('writeSplitPageFile with no precondition refuses to overwrite a held split head (split_page_unsupported)', () => withEditedSplitPage(async (engine, root) => {
+  test('writePageThrough bound to the bytes it compared refuses a split page too (split_page_unsupported): the edited head, its parts and the row stay', () => withEditedSplitPage(async (engine, root) => {
     const before = await state(engine, root);
-    const page = serializePageToMarkdown((await engine.getPage(SLUG, { sourceId: 'default' }))!, []);
-    expect(await outcomeOf(() => writeSplitPageFile(engine, join(root, `${SLUG}.md`), root, page.replace('title: Example', 'title: Retitled example')))).toEqual({ thrown: 'split_page_unsupported' });
+    const expectedFileBytes = readFileSync(join(root, `${SLUG}.md`), 'utf8');
+    expect(await writePageThrough(engine, SLUG, { expectedFileBytes })).toEqual({ written: false, skipped: 'split_page_unsupported' });
     expect(await state(engine, root)).toEqual(before);
   }), 120_000);
 
-  test('every engine preflight and writeSplitPageFile refuse incoming split head content (split_head_content) at an ordinary page: files and rows stay', () => withEditedSplitPage(async (engine, root) => {
+  test('every check outside the door refuses incoming split head content (split_head_content) at an ordinary page: files and rows stay', () => withEditedSplitPage(async (engine, root) => {
     const head = await splitHeadText(join(root, '..'));
     const target = join(root, 'notes/target.md');
     writeFileSync(target, 'Original target body\n');
     await engine.putPage('notes/target', { type: 'note', title: 'Target', compiled_truth: 'Original target body' });
     const before = await state(engine, root);
     for (const run of [
-      () => assertSplitWritable(engine, target, root, head),
-      () => splitWriteRefusal(engine, target, root, head),
-      () => oneFileWriteRefusal(engine, target, root, head),
+      () => assertOutsideDoorWritable({ root, path: target, route: 'raw_writer', sourceId: 'default' }, head),
+      async () => { throw await outsideDoorRefusal({ root, path: target, route: 'connector', sourceId: 'default' }, head); },
+      async () => assertOneFileWritable(target, head),
       () => assertPageThroughWritable(engine, 'notes/target', 'default', head),
-      () => writeSplitPageFile(engine, target, root, head),
     ]) expect(await outcomeOf(run)).toEqual({ thrown: 'split_head_content' });
     expect(await state(engine, root)).toEqual(before);
   }), 120_000);

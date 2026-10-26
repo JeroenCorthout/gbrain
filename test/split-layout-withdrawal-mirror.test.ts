@@ -1,27 +1,24 @@
 /**
- * Wave B PR 5 lane 5e (split git layout, spec §9 option B): a withdrawal mirror of a split page.
+ * Wave B PR 5 lane 5e (split git layout, option B, GBRA-108): a withdrawal mirror of a split page.
  *
- * 1. Protects: forget and purge_fact of a claim in a split page's facts fence rewrite the page as one unit through the
- *    split layout the publication door uses (persistence/split-mirror.ts): the head and the parts that changed are
- *    written, parts the new manifest drops are removed, the head reassembles to the page with the claim withdrawn, and
- *    the withdrawal's Git effect commits the head with its parts. A page the withdrawal brings under the threshold is
- *    one file again, with every part and the parts directory removed. A page stored in segments is mirrored the same way.
- *    A mirror interrupted mid-staging, once every stage is written, or once every file is renamed recovers forward:
- *    one unit on disk and in Git, no stage left, no live row.
- * 2. Fails when: the mirror writes the page's whole file over the head (the head stops being a split head and the parts
- *    are orphaned), a part keeps the withdrawn claim, the Git effect commits the head without its parts, or recovery
- *    leaves a stage or publishes a head without its parts.
+ * 1. Protects: the withdrawal mirror is a route outside the publication door, so on a git-canonical source it passes a
+ *    split page by (split-write-through.ts outsideDoorRefusal, route 'mirror'): forget and purge_fact withdraw the claim
+ *    in the database, the mirror and its Git effect settle with the page recorded as skipped (split_page_unsupported),
+ *    and the head, every part and Git HEAD stay byte for byte. A one-file page on the same source is still mirrored and
+ *    committed with the claim gone from its file.
+ * 2. Fails when: the mirror or its Git effect writes, commits or removes a file of the split unit, or the effects never
+ *    settle (the round 7 timeout on a strict source: the mirror wrote the unit and its Git effect then refused every
+ *    split-unit path, a failure with no terminal outcome, until the 120 s bound).
  * 3. PGLite always; PostgreSQL when DATABASE_URL is set (test/postgres-unit-arms.txt). KB-sized limits through
- *    __setSplitLimitsForTests; interruptions are a fault hook that throws once at a seam (fault-points.ts).
+ *    __setSplitLimitsForTests; the source is git-canonical (canonical: git), the only kind whose door lays out a split page.
  */
 import { afterEach, describe, expect, test } from 'bun:test';
 import { randomUUID } from 'node:crypto';
-import { chmodSync, existsSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import type { BrainEngine } from '../src/core/engine.ts';
 import { operations, type OperationContext } from '../src/core/operations.ts';
 import { runPersistenceEffects } from '../src/core/persistence/effects.ts';
-import { installFaultHook } from '../src/core/persistence/fault-points.ts';
 import { localHostId } from '../src/core/persistence/identity.ts';
 import { declarePersistenceProtocol } from '../src/core/persistence/protocol.ts';
 import { __setSplitLimitsForTests, parseHead, partsDirFor, readPageFile, SPLIT_MAX_FILE_BYTES_KEY } from '../src/core/split-layout/index.ts';
@@ -31,279 +28,113 @@ import { requirePostgresTestDatabase, testBackends } from './helpers/test-backen
 import { waitFor } from './helpers/wait-for.ts';
 
 const LIMITS = { thresholdMin: 1024, partTarget: 1024, partMax: 2048, leadMax: 128, partCountMax: 500 };
-/** A page stored in segments is over 1 MiB: parts of about 64 KB keep its head under the threshold. */
-const SEGMENTED_LIMITS = { ...LIMITS, partTarget: 65_536, partMax: 131_072 };
 const SLUG = 'people/alice-example';
+const SMALL = 'people/bob-example';
 const CLAIM = 'Alice Example keeps the locker code 4471';
-const LIVE_ROW = new RegExp(`\\|\\s*${CLAIM}\\s*\\|`);
+const SMALL_CLAIM = 'Bob Example keeps the locker code 5582';
+const liveRow = (claim: string) => new RegExp('\\|\\s*' + claim + '\\s*\\|');
 const op = (name: string) => operations.find(o => o.name === name)!;
-const pageOf = (lines: number) => `---\ntype: person\ntitle: Alice Example\n---\n\n# Alice Example\n\n${Array.from({ length: lines },
-  (_, i) => `Line ${String(i).padStart(5, '0')} of a page long enough to be stored as a head and parts.`).join('\n')}\n`;
-const setup = ({ root }: { root: string }) => { writeFileSync(join(root, '.gitignore'), '\n'); durableGitRepo(root, ['.gitignore']); };
+const pageOf = (title: string, lines: number) => '---\ntype: person\ntitle: ' + title + '\n---\n\n# ' + title + '\n\n'
+  + Array.from({ length: lines }, (_, i) => 'Line ' + String(i).padStart(5, '0') + ' of a page long enough to be stored as a head and parts.').join('\n') + '\n';
 
-function pageFiles(root: string) {
+/** A git-canonical source (canonical: git): its door lays out a page over the threshold as a head plus parts. */
+const setup = async ({ engine, root }: { engine: BrainEngine; root: string }) => {
+  writeFileSync(join(root, '.gitignore'), '\n');
+  durableGitRepo(root, ['.gitignore']);
+  await engine.executeRaw("UPDATE sources SET config = config || '{\"canonical\":\"git\"}'::jsonb WHERE id='default'");
+};
+
+/** Every file of the split unit with its bytes, and HEAD: what a mirror outside the door must leave as it was. */
+function unitState(root: string) {
   const head = join(root, SLUG + '.md');
   const dir = partsDirFor(head);
-  const rel = (path: string) => relative(root, path).split('\\').join('/');
-  const parts = existsSync(dir) ? readdirSync(dir).filter(name => name.endsWith('.gbpart')).sort().map(name => join(dir, name)) : [];
-  return { head, dir, rel, tracked: [head, ...parts].map(rel) };
-}
-const commitPaths = (root: string, commit: string) => git(root, 'show', '--name-only', '--format=', commit).split('\n').filter(Boolean).sort();
-
-/** The page as its head and parts stand for it on disk (the head must be a split head whose parts verify). */
-function splitPage(root: string): string {
-  const { head } = pageFiles(root);
-  const file = readPageFile(head);
-  expect(file.hold).toBeUndefined();
-  expect(file.split).toBe(true);
-  return file.hold ? '' : file.bytes.toString('utf8');
-}
-
-/** The head is a split head, its parts verify, and HEAD's tree holds exactly the head and the parts on disk. */
-function expectCommittedSplit(root: string) {
-  const { head, dir, rel } = pageFiles(root);
-  expect(parseHead(readFileSync(head, 'utf8')) !== null).toBe(true);
-  splitPage(root);
-  expect(git(root, 'status', '--porcelain', '--untracked-files=all')).toBe('');
-  const tracked = git(root, 'ls-files', '--', rel(head), rel(dir)).split('\n').filter(Boolean).sort();
-  expect(tracked).toEqual(pageFiles(root).tracked.sort());
-}
-
-/** Neither the page on disk nor the page HEAD commits holds the pattern. */
-function expectWithdrawnEverywhere(root: string, gone: RegExp) {
-  const { head } = pageFiles(root);
-  const file = readPageFile(head);
-  expect(file.hold).toBeUndefined();
-  if (!file.hold) expect(file.bytes.toString('utf8')).not.toMatch(gone);
-  for (const path of pageFiles(root).tracked) expect(git(root, 'show', `HEAD:${path}`)).not.toMatch(gone);
+  const files = [head, ...(existsSync(dir) ? readdirSync(dir).sort().map(name => join(dir, name)) : [])];
+  return { files: Object.fromEntries(files.map(path => [relative(root, path), readFileSync(path, 'utf8')])), head: git(root, 'rev-parse', 'HEAD') };
 }
 
 /** Runs effect passes until the source's mirror and Git effects have settled (committed, no recovery left). */
 async function settle(engine: BrainEngine) {
   await waitFor(async () => {
-    const [open] = await engine.executeRaw<{ n: number }>(`SELECT count(*)::int AS n FROM persistence_effects
-      WHERE kind IN ('withdrawal-mirror','git') AND (state <> 'committed' OR recovery IS NOT NULL)`);
+    const [open] = await engine.executeRaw<{ n: number }>("SELECT count(*)::int AS n FROM persistence_effects WHERE kind IN ('withdrawal-mirror','git') AND (state <> 'committed' OR recovery IS NOT NULL)");
     if (!open!.n) return true;
-    await engine.transaction(async tx => { await declarePersistenceProtocol(tx); await tx.executeRaw(`UPDATE persistence_effects SET next_attempt_at=now() WHERE state='queued'`); });
+    await engine.transaction(async tx => { await declarePersistenceProtocol(tx); await tx.executeRaw("UPDATE persistence_effects SET next_attempt_at=now() WHERE state='queued'"); });
     await runPersistenceEffects(engine, { engine: engine.kind, embedding_disabled: true } as never, { hostId: localHostId(), limit: 20 }).catch(() => undefined);
     return false;
   }, { timeoutMs: 120_000, intervalMs: 100, label: 'the mirror and Git effects settled' });
 }
 
 /** A put_page replayed with its request_id until it commits (a large page can still be pending after the wait). */
-async function put(ctx: OperationContext, content: string) {
+async function put(ctx: OperationContext, slug: string, content: string) {
   const request_id = randomUUID();
   for (let replay = 0; replay < 20; replay++) {
-    const out = await op('put_page').handler(ctx, { slug: SLUG, content, request_id, wait_ms: 30_000 }) as Record<string, any>;
+    const out = await op('put_page').handler(ctx, { slug, content, request_id, wait_ms: 30_000 }) as Record<string, any>;
     if (out.state !== 'pending' && out.code !== 'write_pending') { expect(out.state).toBe('committed'); return; }
   }
   throw new Error('put_page did not commit');
 }
 
-/** Remembers CLAIM about the page; the row lands in a part of the split page. Returns the fact's protocol id. */
-async function remember(ctx: OperationContext, engine: BrainEngine, root: string): Promise<string> {
-  const out = await op('remember').handler(ctx, { fact: CLAIM, entity: SLUG, provenance: 'test', visibility: 'world' }) as Record<string, any>;
+/** Remembers the claim about the page through the door; returns the fact's protocol id. */
+async function remember(ctx: OperationContext, engine: BrainEngine, slug: string, claim: string): Promise<string> {
+  const out = await op('remember').handler(ctx, { fact: claim, entity: slug, provenance: 'test', visibility: 'world' }) as Record<string, any>;
   await settle(engine);
-  const [row] = await engine.executeRaw<{ id: number }>('SELECT id FROM facts WHERE fact=$1', [CLAIM]);
+  const [row] = await engine.executeRaw<{ id: number }>('SELECT id FROM facts WHERE fact=$1', [claim]);
   expect(row).toBeDefined();
-  expect(splitPage(root)).toMatch(LIVE_ROW);
-  expect(readFileSync(pageFiles(root).head, 'utf8')).not.toContain(CLAIM);
-  expectCommittedSplit(root);
   return String(out.fact_id ?? out.id ?? row!.id);
 }
 
-async function purge(ctx: OperationContext, engine: BrainEngine) {
-  const [fact] = await engine.executeRaw<{ id: number }>('SELECT id FROM facts WHERE fact=$1', [CLAIM]);
+/** A git-canonical brain with a split page carrying CLAIM in its parts and a one-file page carrying SMALL_CLAIM, all committed. */
+async function seeded(ctx: OperationContext, engine: BrainEngine, root: string) {
+  __setSplitLimitsForTests(LIMITS);
+  await engine.setConfig(SPLIT_MAX_FILE_BYTES_KEY, '4096');
+  await put(ctx, SLUG, pageOf('Alice Example', 120));
+  await put(ctx, SMALL, pageOf('Bob Example', 3));
+  const ids = { split: await remember(ctx, engine, SLUG, CLAIM), small: await remember(ctx, engine, SMALL, SMALL_CLAIM) };
+  const head = join(root, SLUG + '.md');
+  expect(parseHead(readFileSync(head, 'utf8')) !== null).toBe(true);
+  expect(readFileSync(head, 'utf8')).not.toContain(CLAIM);
+  const file = readPageFile(head);
+  expect(file.hold).toBeUndefined();
+  if (!file.hold) expect(file.bytes.toString('utf8')).toMatch(liveRow(CLAIM));
+  expect(readFileSync(join(root, SMALL + '.md'), 'utf8')).toMatch(liveRow(SMALL_CLAIM));
+  expect(git(root, 'status', '--porcelain', '--untracked-files=all')).toBe('');
+  return ids;
+}
+
+const mirrorEffects = (engine: BrainEngine) => engine.executeRaw<{ state: string; error_code: string | null; clear: boolean; skipped: unknown }>(
+  "SELECT state, error_code, recovery IS NULL AS clear, data->'skipped' AS skipped FROM persistence_effects WHERE kind='withdrawal-mirror' ORDER BY id");
+
+/** Withdraws the claim with forget or purge_fact. */
+async function withdraw(ctx: OperationContext, engine: BrainEngine, how: 'forget' | 'purge_fact', id: string, claim: string) {
+  if (how === 'forget') { await op('forget').handler(ctx, { id, request_id: randomUUID() }); return; }
+  const [fact] = await engine.executeRaw<{ id: number }>('SELECT id FROM facts WHERE fact=$1', [claim]);
   const dry = await op('purge_fact').handler(ctx, { id: Number(fact!.id), dry_run: true }) as Record<string, any>;
   const done = await op('purge_fact').handler(ctx, { id: Number(fact!.id), confirm: dry.confirm_token, expected_revision: dry.expected_revision, request_id: randomUUID() }) as Record<string, any>;
   expect(done.state).toBe('committed');
 }
 
-const forget = (ctx: OperationContext, id: string) => op('forget').handler(ctx, { id, request_id: randomUUID() });
-const mirrorEffects = (engine: BrainEngine) => engine.executeRaw(`SELECT kind,state,error_code,recovery IS NULL AS clear FROM persistence_effects WHERE kind='withdrawal-mirror'`);
-
-for (const backend of testBackends()) describe(`[${backend}] split git layout: a withdrawal mirror`, () => {
+for (const backend of testBackends()) describe('[' + backend + '] split git layout: a withdrawal mirror (outside the door)', () => {
   const databaseUrl = backend === 'postgres' ? requirePostgresTestDatabase() : undefined;
-  afterEach(() => { installFaultHook(undefined); __setSplitLimitsForTests(null); });
+  afterEach(() => { __setSplitLimitsForTests(null); });
 
-  test('forget rewrites the split page as one unit: head and changed parts, committed together', () => managedBrain(async ({ engine, ctx, root }) => {
-    __setSplitLimitsForTests(LIMITS);
-    await engine.setConfig(SPLIT_MAX_FILE_BYTES_KEY, '4096');
-    await put(ctx, pageOf(120));
-    const id = await remember(ctx, engine, root);
-    await forget(ctx, id);
-    await settle(engine);
-    expect(await mirrorEffects(engine)).toEqual([{ kind: 'withdrawal-mirror', state: 'committed', error_code: null, clear: true }]);
-    expectCommittedSplit(root);
-    expectWithdrawnEverywhere(root, LIVE_ROW);
-    expect(splitPage(root)).toContain(`~~${CLAIM}~~`);
-    const { head, rel } = pageFiles(root);
-    expect(commitPaths(root, 'HEAD')).toContain(rel(head));
-  }, { databaseUrl, setup }), 240_000);
-
-  test('purge_fact removes the claim from every part and commits the unit', () => managedBrain(async ({ engine, ctx, root }) => {
-    __setSplitLimitsForTests(LIMITS);
-    await engine.setConfig(SPLIT_MAX_FILE_BYTES_KEY, '4096');
-    await put(ctx, pageOf(120));
-    await remember(ctx, engine, root);
-    await purge(ctx, engine);
-    await settle(engine);
-    expect(await mirrorEffects(engine)).toEqual([{ kind: 'withdrawal-mirror', state: 'committed', error_code: null, clear: true }]);
-    expectCommittedSplit(root);
-    expectWithdrawnEverywhere(root, new RegExp(CLAIM));
-  }, { databaseUrl, setup }), 240_000);
-
-  test('a purge that brings the page under the threshold converts it back to one file and removes every part', () => managedBrain(async ({ engine, ctx, root }) => {
-    __setSplitLimitsForTests(LIMITS);
-    await engine.setConfig(SPLIT_MAX_FILE_BYTES_KEY, '4096');
-    await put(ctx, pageOf(120));
-    await remember(ctx, engine, root);
-    const { head, rel } = pageFiles(root);
-    const partsBefore = pageFiles(root).tracked.slice(1);
-    const whole = readPageFile(head);
-    expect(whole.hold).toBeUndefined();
-    // The page is just over the threshold now; without the purged row it is under it.
-    if (!whole.hold) await engine.setConfig(SPLIT_MAX_FILE_BYTES_KEY, String(whole.bytes.length - 1));
-    await purge(ctx, engine);
-    await settle(engine);
-    expect(parseHead(readFileSync(head, 'utf8'))).toBeNull();
-    expect(existsSync(partsDirFor(head))).toBe(false);
-    expect(pageFiles(root).tracked).toEqual([rel(head)]);
-    expect(git(root, 'status', '--porcelain', '--untracked-files=all')).toBe('');
-    expect(commitPaths(root, 'HEAD')).toEqual([rel(head), ...partsBefore].sort());
-    expectWithdrawnEverywhere(root, new RegExp(CLAIM));
-  }, { databaseUrl, setup }), 240_000);
-
-  test('forget on a split page stored in segments mirrors the streamed page as one unit', () => managedBrain(async ({ engine, ctx, root }) => {
-    __setSplitLimitsForTests(SEGMENTED_LIMITS);
-    await engine.setConfig(SPLIT_MAX_FILE_BYTES_KEY, '131072');
-    await engine.setConfig('pages.segmented_storage', 'on');
-    await put(ctx, pageOf(17_000));
-    expect(await engine.executeRaw('SELECT body_storage FROM pages WHERE slug=$1', [SLUG])).toEqual([{ body_storage: 'segmented' }]);
-    const id = await remember(ctx, engine, root);
-    await forget(ctx, id);
-    await settle(engine);
-    expect(await mirrorEffects(engine)).toEqual([{ kind: 'withdrawal-mirror', state: 'committed', error_code: null, clear: true }]);
-    expectCommittedSplit(root);
-    expectWithdrawnEverywhere(root, LIVE_ROW);
-  }, { databaseUrl, setup }), 240_000);
-
-  test('a withdrawal mirror of a private split page writes its new parts with the head file\'s 0600 mode', () => managedBrain(async ({ engine, ctx, root }) => {
-    __setSplitLimitsForTests(LIMITS);
-    await engine.setConfig(SPLIT_MAX_FILE_BYTES_KEY, '4096');
-    await put(ctx, pageOf(120));
-    const id = await remember(ctx, engine, root);
-    const { head, dir } = pageFiles(root);
-    chmodSync(dir, 0o700);
-    for (const path of [head, ...readdirSync(dir).map(name => join(dir, name))]) chmodSync(path, 0o600);
-    const before = new Set(readdirSync(dir));
-    await forget(ctx, id);
-    await settle(engine);
-    expectWithdrawnEverywhere(root, LIVE_ROW);
-    expect(readdirSync(dir).filter(name => !before.has(name)).length).toBeGreaterThan(0);
-    expect([head, ...readdirSync(dir).map(name => join(dir, name))].map(path => statSync(path).mode & 0o777)).toEqual([head, ...readdirSync(dir)].map(() => 0o600));
-    expect(statSync(dir).mode & 0o777).toBe(0o700);
-  }, { databaseUrl, setup }), 240_000);
-
-  /** Where the mirror stops once: mid-staging (a stage cut short), once every stage is written (no file renamed), and once every file is renamed (its transaction rolled back). */
-  const SEAMS = { staging: 'large_file:stage_streaming', staged: 'effect_recovery:split_staged', published: 'effect_recovery:before_clear' } as const;
-  for (const interruption of Object.keys(SEAMS) as (keyof typeof SEAMS)[]) {
-    test(`a split mirror interrupted ${interruption} recovers forward: one unit, no stage left, no live row`, () => managedBrain(async ({ engine, ctx, root }) => {
-      __setSplitLimitsForTests(LIMITS);
-      await engine.setConfig(SPLIT_MAX_FILE_BYTES_KEY, '4096');
-      await put(ctx, pageOf(120));
-      const id = await remember(ctx, engine, root);
-      let thrown = 0;
-      let staged = 0;
-      const interrupt = () => { thrown++; throw new Error(`interrupted at ${interruption}`); };
-      installFaultHook(async point => { if (point === SEAMS[interruption] && !thrown && (interruption !== 'staging' || ++staged === 2)) interrupt(); });
-      try {
-        await forget(ctx, id);
-        await settle(engine);
-      } finally { installFaultHook(undefined); }
-      expect(thrown).toBe(1);
-      expect(await mirrorEffects(engine)).toEqual([{ kind: 'withdrawal-mirror', state: 'committed', error_code: null, clear: true }]);
-      expectCommittedSplit(root);
-      expectWithdrawnEverywhere(root, LIVE_ROW);
-      const { head, dir } = pageFiles(root);
-      expect([...readdirSync(join(head, '..')), ...readdirSync(dir)].filter(name => name.includes('.tmp.'))).toEqual([]);
-    }, { databaseUrl, setup }), 240_000);
-  }
-
-  /** Runs effect passes until the mirror settles or the passes run out; returns the mirror effect rows. */
-  async function runMirror(engine: BrainEngine, boundary?: (name: string) => Promise<void> | void) {
-    for (let pass = 0; pass < 30; pass++) {
-      await engine.transaction(async tx => { await declarePersistenceProtocol(tx); await tx.executeRaw(`UPDATE persistence_effects SET next_attempt_at=now() WHERE state='queued'`); });
-      await runPersistenceEffects(engine, { engine: engine.kind, embedding_disabled: true } as never, { hostId: localHostId(), limit: 20, ...(boundary ? { boundary: async (name: string) => { await boundary(name); } } : {}) }).catch(() => undefined);
+  for (const how of ['forget', 'purge_fact'] as const) {
+    test(how + ' on a git-canonical source passes a split page by (split_page_unsupported): the effects settle, the head, every part and HEAD stay; a one-file page is mirrored and committed', () => managedBrain(async ({ engine, ctx, root }) => {
+      const ids = await seeded(ctx, engine, root);
+      const before = unitState(root);
+      await withdraw(ctx, engine, how, ids.split, CLAIM);
+      await settle(engine);
+      expect(unitState(root)).toEqual(before);
+      await withdraw(ctx, engine, how, ids.small, SMALL_CLAIM);
+      await settle(engine);
+      expect(await engine.executeRaw('SELECT fact FROM facts WHERE fact = ANY($1::text[]) AND expired_at IS NULL', [[CLAIM, SMALL_CLAIM]])).toEqual([]);
+      expect(unitState(root).files).toEqual(before.files);
       const rows = await mirrorEffects(engine);
-      if (rows.length && (rows[0] as { state: string }).state === 'committed') return rows;
-      await new Promise(resolve => setTimeout(resolve, 50));
-    }
-    return mirrorEffects(engine);
-  }
-  const EDIT = 'An uncommitted edit by alice-example\n';
-
-  test('a part edited after the mirror compared the page file is kept: the mirror passes the page by and writes nothing', () => managedBrain(async ({ engine, ctx, root }) => {
-    __setSplitLimitsForTests(LIMITS);
-    await engine.setConfig(SPLIT_MAX_FILE_BYTES_KEY, '4096');
-    await put(ctx, pageOf(120));
-    const id = await remember(ctx, engine, root);
-    const { head, dir } = pageFiles(root);
-    const first = join(dir, readdirSync(dir).sort()[0]!);
-    const headBefore = readFileSync(head, 'utf8');
-    await forget(ctx, id);
-    const getConfig = engine.getConfig;
-    let edited = false;
-    // The mirror reads the split threshold when it plans the unit, after prepareFileTarget compared the page file.
-    engine.getConfig = function (this: BrainEngine, key: string) {
-      if (key !== SPLIT_MAX_FILE_BYTES_KEY || edited) return getConfig.call(this, key);
-      return getConfig.call(this, key).then(value => { edited = true; writeFileSync(first, EDIT); return value; });
-    };
-    try { await runMirror(engine); } finally { engine.getConfig = getConfig; }
-    expect(edited).toBe(true);
-    expect(readFileSync(first, 'utf8')).toBe(EDIT);
-    expect(readFileSync(head, 'utf8')).toBe(headBefore);
-    expect(readdirSync(dir).filter(name => name.includes('.tmp.'))).toEqual([]);
-  }, { databaseUrl, setup }), 240_000);
-
-  test('a kept part edited after the mirror staged its unit blocks the publication: nothing is renamed and the edit stays', () => managedBrain(async ({ engine, ctx, root }) => {
-    __setSplitLimitsForTests(LIMITS);
-    await engine.setConfig(SPLIT_MAX_FILE_BYTES_KEY, '4096');
-    await put(ctx, pageOf(120));
-    const id = await remember(ctx, engine, root);
-    const { head, dir } = pageFiles(root);
-    const first = join(dir, readdirSync(dir).sort()[0]!);
-    const headBefore = readFileSync(head, 'utf8');
-    let edited = false;
-    installFaultHook(point => { if (point === 'effect_recovery:split_staged' && !edited) { edited = true; writeFileSync(first, EDIT); } });
-    await forget(ctx, id);
-    const rows = await runMirror(engine);
-    expect(edited).toBe(true);
-    expect(rows).toEqual([expect.objectContaining({ kind: 'withdrawal-mirror', clear: false })]);
-    expect((rows[0] as { state: string }).state).not.toBe('committed');
-    expect(readFileSync(first, 'utf8')).toBe(EDIT);
-    expect(readFileSync(head, 'utf8')).toBe(headBefore);
-  }, { databaseUrl, setup }), 240_000);
-
-  for (const change of ['a kept part edited', 'a part the mirror removes edited', 'a part file added'] as const) {
-    test(`${change} after recovery checked the unit and before it publishes blocks the publication: nothing is renamed or removed, the change stays and the effect keeps its recovery`, () => managedBrain(async ({ engine, ctx, root }) => {
-      __setSplitLimitsForTests(LIMITS);
-      await engine.setConfig(SPLIT_MAX_FILE_BYTES_KEY, '4096');
-      await put(ctx, pageOf(120));
-      const id = await remember(ctx, engine, root);
-      const { head, dir } = pageFiles(root);
-      const names = readdirSync(dir).sort();
-      const target = join(dir, change === 'a part file added' ? '9999-01234567.gbpart' : change === 'a kept part edited' ? names[0]! : names.at(-1)!);
-      const headBefore = readFileSync(head, 'utf8');
-      await forget(ctx, id);
-      let changed = false;
-      const rows = await runMirror(engine, name => { if (name === 'before_mirror_file' && !changed) { changed = true; writeFileSync(target, EDIT); } });
-      expect(changed).toBe(true);
-      expect(rows).toEqual([expect.objectContaining({ kind: 'withdrawal-mirror', clear: false })]);
-      expect((rows[0] as { state: string }).state).not.toBe('committed');
-      expect(readFileSync(target, 'utf8')).toBe(EDIT);
-      expect(readFileSync(head, 'utf8')).toBe(headBefore);
-      expect(readdirSync(dir).filter(name => !name.includes('.tmp.')).sort()).toEqual(change === 'a part file added' ? [...names, '9999-01234567.gbpart'].sort() : names);
-    }, { databaseUrl, setup }), 240_000);
+      expect(rows.length).toBeGreaterThan(0);
+      for (const row of rows) expect(row).toMatchObject({ state: 'committed', error_code: null, clear: true });
+      expect(rows.flatMap(row => (row.skipped as Array<{ slug: string; reason: string }> | null) ?? [])).toContainEqual({ slug: SLUG, reason: 'split_page_unsupported' });
+      const small = readFileSync(join(root, SMALL + '.md'), 'utf8');
+      expect(small).not.toMatch(liveRow(SMALL_CLAIM));
+      expect(git(root, 'show', 'HEAD:' + SMALL + '.md')).toBe(small);
+      expect(git(root, 'status', '--porcelain', '--untracked-files=all')).toBe('');
+    }, { databaseUrl, setup }), 300_000);
   }
 });

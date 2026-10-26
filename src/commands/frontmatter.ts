@@ -45,9 +45,7 @@ import {
 import { collectGitVisibleFiles } from '../core/git-visible-files.ts';
 import { isMarkdownFilePath, pruneDir, slugifyPath } from '../core/sync.ts';
 import { isPathContained } from '../core/path-confine.ts';
-import { isSplitHeadPath, parseHead } from '../core/split-layout/index.ts';
 import { assertOneFileWritable } from '../core/split-write-through.ts';
-import { isDeepStrictEqual } from 'util';
 
 /** Test seams: the stream `validate --stdin` reads, and the directory `--staged` runs git in. */
 export interface FrontmatterIo {
@@ -225,7 +223,7 @@ interface FileValidation {
   /** Why the file could not be checked at all, or why --fix left it as it was. */
   note?: string;
   /** --fix: the refusal that kept the fixes from being written. */
-  fix_refused?: 'split_page_unsupported';
+  fix_refused?: 'split_page_unsupported' | 'split_head_content';
   failed: boolean;
 }
 
@@ -323,26 +321,16 @@ function readStagedBlobs(paths: string[], cwd = process.cwd()): { root: string; 
 }
 
 /**
- * `validate --fix` on the head of a split page (a head plus part files in its parts directory): the fix may change the
- * head's frontmatter only, so it is written when the fixed head keeps its manifest and its body byte for byte (the parts
- * stay valid and a frontmatter edit verifies as is). Returns the refusal note otherwise, including a head that does not
- * parse; any other file runs the split preflight (assertOneFileWritable) on the fixed bytes, so a parts directory beside a
- * file that declares none, or a fix that grows the page past the split threshold, is refused too. Null when the fix may
- * be written.
+ * `validate --fix` is outside the publication door: a file in a split unit (a head plus part files), or a fix whose bytes
+ * are a split head, refuses (split-write-through.ts assertOneFileWritable). Returns the refusal note, or null when the
+ * fix may be written.
  */
-function splitHeadFixRefusal(file: string, content: string, fixed: string): string | null {
-  if (!isSplitHeadPath(file)) return null;
-  const before = parseHead(content);
-  if (before === null) {
-    try { assertOneFileWritable(file, fixed); return null; } catch (error) {
-      if ((error as { code?: string } | null)?.code !== 'split_page_unsupported') throw error;
-      return `${(error as Error).message} frontmatter --fix writes one whole file, so nothing was written.`;
-    }
+function splitFixRefusal(file: string, fixed: string): { code: 'split_page_unsupported' | 'split_head_content'; note: string } | null {
+  try { assertOneFileWritable(file, fixed); return null; } catch (error) {
+    const code = (error as { code?: string } | null)?.code;
+    if (code !== 'split_page_unsupported' && code !== 'split_head_content') throw error;
+    return { code, note: `${(error as Error).message} Nothing was written.` };
   }
-  const after = parseHead(fixed);
-  if (!('error' in before) && after && !('error' in after)
-    && isDeepStrictEqual(after.manifest, before.manifest) && after.headBody === before.headBody) return null;
-  return `split_page_unsupported: ${file} is the head of a split page (its page continues in part files) and this fix would change more than the head's frontmatter, so nothing was written. Edit the head's frontmatter by hand and leave its gbrain_parts block as it is, or read the whole page with gbrain get and, on a brain with a canonical owner, write it through put_page.`;
 }
 
 /** `validate --fix` on a managed brain: name the coordinated repair instead of a bare coordinator error. */
@@ -489,9 +477,9 @@ async function runValidate(rest: string[], io: FrontmatterIo): Promise<void> {
         const auto = autoFixFrontmatter(content, { filePath: slugPath });
         const repaired = repairRecoverableFrontmatter(auto.content, { includeAmbiguous: flags.includeAmbiguous });
         const fixes = [...auto.fixes, ...repaired.fixes];
-        const splitRefusal = fixes.length > 0 ? splitHeadFixRefusal(file, content, repaired.content) : null;
+        const splitRefusal = fixes.length > 0 ? splitFixRefusal(file, repaired.content) : null;
         if (splitRefusal) {
-          results.push({ ...result, note: splitRefusal, fix_refused: 'split_page_unsupported', failed: true });
+          results.push({ ...result, note: splitRefusal.note, fix_refused: splitRefusal.code, failed: true });
           continue;
         }
         result.fixesApplied = fixes;
@@ -843,8 +831,8 @@ async function runGenerate(args: string[]): Promise<void> {
     if (doFix && !dryRun) {
       const fm = serializeFrontmatter(inferred);
       const newContent = fm + '\n' + content;
-      const splitRefusal = splitHeadFixRefusal(absPath, content, newContent);
-      if (splitRefusal) { console.error(`${relPath}: ${splitRefusal}`); return; }
+      const splitRefusal = splitFixRefusal(absPath, newContent);
+      if (splitRefusal) { console.error(`${relPath}: ${splitRefusal.note}`); return; }
       // Safety: write a centralized backup first.
       createFrontmatterBackup(absPath, { sourcePath: brainRoot, runId: backupRunId });
       assertManagedFilesystemWrite(absPath);

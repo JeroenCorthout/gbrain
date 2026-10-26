@@ -2,14 +2,15 @@
  * Wave B PR 5 lane 5e (split git layout, spec §9 option B): the unmanaged write-through on a split page.
  *
  * 1. Protects: `writePageThrough` and `deletePageThrough` (write-through.ts), the direct writers of an unmanaged brain
- *    (brainstorm --save, the cycle's derived pages, sync's re-export), never break a split page: a write whose parts all
- *    stay rewrites only the head, so the reassembled page file F' is the page the database holds; a write that would
- *    write or remove a part (a page that changed in its parts, or one back under the threshold) is skipped
- *    `split_page_unsupported` with every file kept, since outside the door no recovery record finishes a head and parts
- *    written one by one; a delete removes the head and every part. `expectedFileBytes` is the page file F', so a caller
- *    that compared the raw head, or a head whose parts no longer verify, is refused as `file_changed` with every file kept.
- * 2. Fails when: the write-through renders the page over the head as one file (orphaning the parts), writes or removes
- *    a part outside the door, or unlinks the head alone.
+ *    (brainstorm --save, the cycle's derived pages, sync's re-export), are routes outside the publication door, and
+ *    only the strict door of a git-canonical source changes a split page (option B). So both skip a split page outright
+ *    with `split_page_unsupported` (reason `outside_door`) before any file or row is written or bound, whatever the
+ *    write would change (the parts, the head alone, or a page back under the threshold), whatever `expectedFileBytes`
+ *    holds (the page file F', the raw head, nothing), and also when the head's parts no longer verify (no file_changed or
+ *    hold code first): the head, every part and the page row stay byte for byte, and no temporary copy is left.
+ * 2. Fails when: the write-through renders the page over the head as one file (orphaning the parts), rewrites the head,
+ *    writes or removes a part, unlinks the head, binds or changes the row, or reports file_changed instead of the
+ *    split refusal.
  * 3. PGLite always; PostgreSQL when DATABASE_URL is set (test/postgres-unit-arms.txt). KB-sized limits through
  *    __setSplitLimitsForTests.
  */
@@ -18,9 +19,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { BrainEngine } from '../src/core/engine.ts';
-import { serializePageToMarkdown } from '../src/core/markdown.ts';
-import { __setSplitLimitsForTests, parseHead, partsDirFor } from '../src/core/split-layout/index.ts';
-import { readPageFile } from '../src/core/split-layout/page-file.ts';
+import { __setSplitLimitsForTests, partsDirFor } from '../src/core/split-layout/index.ts';
 import { _resetWriteThroughCacheForTest, deletePageThrough, writePageThrough } from '../src/core/write-through.ts';
 import { isolatedSharedSkillsEngine } from './helpers/shared-skills-engine.ts';
 import { writeSplitPage } from './helpers/split-page.ts';
@@ -41,27 +40,16 @@ const layout = (root: string) => {
     parts: existsSync(dir) ? Object.fromEntries(readdirSync(dir).sort().map(name => [name, readFileSync(join(dir, name), 'utf8')])) : null };
 };
 
-/** The page file at the head path as text (F' for a split head). */
-const readPageFileText = (path: string) => {
-  const page = readPageFile(path);
-  return page.hold ? page : { split: page.split, text: page.bytes.toString('utf8') };
-};
+/** The page row as stored (every column), so a refused write that bound or changed it shows. */
+const pageRow = (engine: BrainEngine) => engine.executeRaw("SELECT * FROM pages WHERE source_id = 'default' AND slug = $1", [SLUG]);
 
-/** The page file the database's row renders to: what write-through writes. */
-async function rendered(engine: BrainEngine): Promise<string> {
-  const page = await engine.getPage(SLUG);
-  return serializePageToMarkdown(page!, await engine.getTags(SLUG));
+/** Every file and the row, and no temporary copy beside the head: what a refused write-through leaves as it was. */
+async function state(engine: BrainEngine, root: string) {
+  return { files: layout(root), row: await pageRow(engine), tmp: readdirSync(join(root, 'notes')).filter(name => name.includes('.tmp')) };
 }
 
-/** The files agree with the database: the page file reassembles to its render, and the parts directory holds exactly the head's manifest. */
-async function expectSplitAgrees(engine: BrainEngine, root: string): Promise<void> {
-  const headPath = join(root, SLUG + '.md');
-  const page = readPageFileText(headPath);
-  expect(page).toMatchObject({ split: true, text: await rendered(engine) });
-  const parsed = parseHead(readFileSync(headPath, 'utf8'));
-  if (!parsed || 'error' in parsed) throw new Error('the head does not parse');
-  expect(readdirSync(partsDirFor(headPath)).sort()).toEqual(parsed.manifest.parts.map(part => part.path.split('/').pop()!).sort());
-}
+/** A logger that keeps the warnings: the refusal names its reason. */
+const warnings = () => { const lines: string[] = []; return { lines, logger: { info() {}, warn(line: string) { lines.push(line); }, error() {} } }; };
 
 async function withSplitPage(databaseUrl: string | undefined, run: (engine: BrainEngine, root: string, head: string) => Promise<void>) {
   const home = mkdtempSync(join(tmpdir(), 'split-write-through-'));
@@ -87,43 +75,48 @@ for (const backend of testBackends()) describe(`[${backend}] split git layout: t
   const databaseUrl = backend === 'postgres' ? requirePostgresTestDatabase() : undefined;
   afterEach(() => { __setSplitLimitsForTests(null); });
 
-  for (const expected of ['page file', 'unbound'] as const) test(`writePageThrough refuses a page whose part files the write would change (split_page_unsupported, ${expected} preimage): every file is kept`, () => withSplitPage(databaseUrl, async (engine, root) => {
-    const before = layout(root);
-    expect(await writePageThrough(engine, SLUG, expected === 'page file' ? { expectedFileBytes: file } : {})).toMatchObject({ written: false, skipped: 'split_page_unsupported' });
-    expect(layout(root)).toEqual(before);
-    expect(readdirSync(join(root, 'notes')).filter(name => name.includes('.tmp'))).toEqual([]);
+  for (const expected of ['page file', 'unbound'] as const) test(`writePageThrough refuses a page whose part files the write would change (split_page_unsupported, outside_door, ${expected} preimage): every file and the row are kept`, () => withSplitPage(databaseUrl, async (engine, root) => {
+    const before = await state(engine, root);
+    const warned = warnings();
+    expect(await writePageThrough(engine, SLUG, { ...(expected === 'page file' ? { expectedFileBytes: file } : {}), logger: warned.logger })).toMatchObject({ written: false, skipped: 'split_page_unsupported' });
+    expect(warned.lines.some(line => line.includes('split_page_unsupported (outside_door)'))).toBe(true);
+    expect(await state(engine, root)).toEqual(before);
   }), 120_000);
 
-  test('writePageThrough rewrites only the head when every part stays (a frontmatter edit): the page file agrees with the database', () => withSplitPage(databaseUrl, async (engine, root) => {
-    const parts = layout(root).parts;
+  test('writePageThrough refuses a frontmatter-only edit whose parts would all stay (split_page_unsupported, outside_door): the head, every part and the row stay byte for byte', () => withSplitPage(databaseUrl, async (engine, root) => {
     await engine.putPage(SLUG, { type: 'note', title: 'Split example retitled', compiled_truth: body });
-    expect(await writePageThrough(engine, SLUG, { expectedFileBytes: file })).toMatchObject({ written: true, path: join(root, SLUG + '.md') });
-    await expectSplitAgrees(engine, root);
-    expect(layout(root).parts).toEqual(parts);
+    const before = await state(engine, root);
+    const warned = warnings();
+    expect(await writePageThrough(engine, SLUG, { expectedFileBytes: file, logger: warned.logger })).toMatchObject({ written: false, skipped: 'split_page_unsupported' });
+    expect(warned.lines.some(line => line.includes('split_page_unsupported (outside_door)'))).toBe(true);
+    expect(await state(engine, root)).toEqual(before);
   }), 120_000);
 
-  test('a page back under the threshold is refused (split_page_unsupported): the head and its parts are kept', () => withSplitPage(databaseUrl, async (engine, root) => {
+  test('a page back under the threshold is refused (split_page_unsupported, outside_door): the head, its parts and the row are kept', () => withSplitPage(databaseUrl, async (engine, root) => {
     await engine.putPage(SLUG, { type: 'note', title: 'Split example', compiled_truth: `A short page now. ${DB_EDIT}\n` });
-    const before = layout(root);
+    const before = await state(engine, root);
     expect(await writePageThrough(engine, SLUG, { expectedFileBytes: file })).toMatchObject({ written: false, skipped: 'split_page_unsupported' });
-    expect(layout(root)).toEqual(before);
+    expect(await state(engine, root)).toEqual(before);
   }), 120_000);
 
-  test('a preimage that is not the page file, or a head whose parts no longer verify, refuses with every file kept', () => withSplitPage(databaseUrl, async (engine, root, head) => {
-    const before = layout(root);
-    expect(await writePageThrough(engine, SLUG, { expectedFileBytes: head })).toMatchObject({ written: false, skipped: 'file_changed' });
-    expect(layout(root)).toEqual(before);
+  test('a preimage of the raw head, or a head whose parts no longer verify, refuses split_page_unsupported (outside_door) before any file_changed check, with every file and the row kept', () => withSplitPage(databaseUrl, async (engine, root, head) => {
+    const before = await state(engine, root);
+    expect(await writePageThrough(engine, SLUG, { expectedFileBytes: head })).toMatchObject({ written: false, skipped: 'split_page_unsupported' });
+    expect(await deletePageThrough(engine, SLUG, { expectedFileBytes: head })).toMatchObject({ removed: false, skipped: 'split_page_unsupported' });
+    expect(await state(engine, root)).toEqual(before);
     const dir = partsDirFor(join(root, SLUG + '.md'));
     unlinkSync(join(dir, readdirSync(dir).sort()[0]!));
-    const broken = layout(root);
-    expect(await writePageThrough(engine, SLUG, { expectedFileBytes: file })).toMatchObject({ written: false, skipped: 'file_changed' });
-    expect(await deletePageThrough(engine, SLUG, { expectedFileBytes: file })).toMatchObject({ removed: false, skipped: 'file_changed' });
-    expect(layout(root)).toEqual(broken);
+    const broken = await state(engine, root);
+    const warned = warnings();
+    expect(await writePageThrough(engine, SLUG, { expectedFileBytes: file, logger: warned.logger })).toMatchObject({ written: false, skipped: 'split_page_unsupported' });
+    expect(await deletePageThrough(engine, SLUG, { expectedFileBytes: file, logger: warned.logger })).toMatchObject({ removed: false, skipped: 'split_page_unsupported' });
+    expect(warned.lines.filter(line => line.includes('split_page_unsupported (outside_door)'))).toHaveLength(2);
+    expect(await state(engine, root)).toEqual(broken);
   }), 120_000);
 
-  test('deletePageThrough refuses a split page (split_page_unsupported), even bound to its bytes: the head and every part stay', () => withSplitPage(databaseUrl, async (engine, root) => {
-    const before = layout(root);
+  test('deletePageThrough refuses a split page (split_page_unsupported, outside_door), even bound to its bytes: the head, every part and the row stay', () => withSplitPage(databaseUrl, async (engine, root) => {
+    const before = await state(engine, root);
     expect(await deletePageThrough(engine, SLUG, { expectedFileBytes: file })).toEqual({ removed: false, path: join(root, SLUG + '.md'), skipped: 'split_page_unsupported' });
-    expect(layout(root)).toEqual(before);
+    expect(await state(engine, root)).toEqual(before);
   }), 120_000);
 });

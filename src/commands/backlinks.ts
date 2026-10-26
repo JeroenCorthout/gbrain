@@ -392,7 +392,7 @@ export async function fixBacklinkGaps(
 
         try { assertOneFileWritable(targetPath, content); } catch (error) {
           if ((error as { code?: string } | null)?.code !== 'split_page_unsupported') throw error;
-          outcome.skipped.push({ page: targetPage, reason: `${(error as Error).message} Only a brain with a canonical owner writes a head and its part files together — file left untouched` });
+          outcome.skipped.push({ page: targetPage, reason: `${(error as Error).message} File left untouched.` });
           return;
         }
         if (!dryRun) {

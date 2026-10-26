@@ -33,7 +33,8 @@ import { deletePageThrough, isWriteThroughDisabled, resolvePageWriteTarget, writ
 import { urlCloneReadOnly } from '../url-clone.ts';
 import { gitChildEnv } from '../git-env.ts';
 import { fileDatabaseDriftToken, replaceableFile } from '../facts/file-body-guard.ts';
-import { PageFileChanged, assertPageFileRemovable, readPageFileText, writePageTemp, writeSplitPageFile } from '../split-write-through.ts';
+import { assertSplitUnitMutable } from '../persistence/split-unit-guard.ts';
+import { assertOutsideDoorWritable, writePageTemp } from '../split-write-through.ts';
 
 export const DERIVED_WRITE_THROUGH_KEYS = {
   extract_atoms: 'cycle.extract_atoms.write_through',
@@ -179,9 +180,8 @@ export type DreamPageFileWrite = { written: true; path: string } | { written: fa
  * checkout (no root configured, or the root is missing) keeps the caller's brainDir layout (`<brainDir>/<slug>.md`,
  * foreign sources under `.sources/<id>/`). The file is replaced only when `replaceableFile` finds nothing in it the
  * database lacks, and is re-read after the replacement is staged, right before the rename, so an edit that lands in
- * between is kept as well. A page over the split threshold, or a split page head, goes through split-write-through.ts
- * under the same comparison of its page file F': a new head whose parts all stay, or `split_page_unsupported` with
- * nothing written.
+ * between is kept as well. A file in a split unit refuses `split_page_unsupported` (outside_door) before anything is
+ * written (split-write-through.ts assertOutsideDoorWritable): only the publication door writes a split page.
  *
  * This is the reverse-write's own direct write (a staged sibling renamed over the file), as before, not
  * `writePageThrough` or `atomicWriteFileSync`: once a subagent's tool write has gone through the coordinator, the
@@ -200,16 +200,10 @@ export async function writeDreamPageFile(engine: BrainEngine, brainDir: string, 
   } catch { /* unreadable gbrain.yml: sync reports it */ }
   const filePath = target.ok ? target.filePath
     : sourceId === opts.nativeSourceId ? join(brainDir, `${slug}.md`) : join(brainDir, '.sources', sourceId, `${slug}.md`);
+  await assertOutsideDoorWritable({ root: target.ok ? target.writeRoot : brainDir, path: filePath, route: 'raw_writer', sourceId, slug }, opts.markdown);
   const check = await replaceableFile(engine, sourceId, slug, filePath);
   if (!check.ok) return { written: false, held: dreamFileDriftToken(slug, sourceId, 'before') };
   mkdirSync(dirname(filePath), { recursive: true });
-  const unchanged = () => { const file = readPageFileText(filePath); if (file.hold || file.text !== check.expectedFileBytes) throw new PageFileChanged(filePath); };
-  try {
-    if (await writeSplitPageFile(engine, filePath, target.ok ? target.writeRoot : brainDir, opts.markdown, unchanged)) return { written: true, path: filePath };
-  } catch (error) {
-    if (error instanceof PageFileChanged) return { written: false, held: dreamFileDriftToken(slug, sourceId, 'during') };
-    throw error;
-  }
   const staged = `${filePath}.${process.pid}.tmp`;
   writePageTemp(staged, filePath, opts.markdown);
   try {
@@ -236,14 +230,13 @@ export async function removeDreamPageFile(engine: BrainEngine, brainDir: string,
     : sourceId === nativeSourceId ? join(brainDir, `${slug}.md`) : join(brainDir, '.sources', sourceId, `${slug}.md`);
   if (!existsSync(filePath)) return { removed: false };
   try {
-    assertPageFileRemovable(filePath);
+    await assertSplitUnitMutable({ root: target.ok ? target.writeRoot : brainDir, path: filePath, route: 'remover', strict: false, sourceId, slug });
   } catch (error) {
     if ((error as { code?: string }).code !== 'split_page_unsupported') throw error;
     return { removed: false, held: `${slug} (${(error as Error).message})` };
   }
   const check = await replaceableFile(engine, sourceId, slug, filePath);
-  const file = readPageFileText(filePath);
-  if (!check.ok || file.hold || file.text !== check.expectedFileBytes) {
+  if (!check.ok || readFileSync(filePath, 'utf-8') !== check.expectedFileBytes) {
     return { removed: false, held: fileDatabaseDriftToken(slug, sourceId, 'before', "the retired dream page's file was not removed") };
   }
   rmSync(filePath, { force: true });

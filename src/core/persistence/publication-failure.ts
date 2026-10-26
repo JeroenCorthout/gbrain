@@ -1,3 +1,4 @@
+import type { SplitUnsupportedReason } from './split-unit-guard.ts';
 import { OperationError } from '../ops/contract.ts';
 import { writerStamp } from './writer-versions.ts';
 import { cursorFenceCause } from './sync-knock-on.ts';
@@ -60,8 +61,11 @@ export const CANONICAL_FILE_MISSING = 'canonical_file_missing';
 export interface CanonicalFileDetail { origin: typeof CANONICAL_FILE_MISSING; stage?: PublicationStage; attempt?: { consumer_version: string; consumer_host_id: string | null } }
 /** #6693: a page write refused because its file holds a committed change sync has not imported (`pending_import`) or sync holds the file (`sync_held`). */
 export interface PendingImportDetail { origin: 'pending_import' | 'sync_held'; stage?: PublicationStage; attempt?: { consumer_version: string; consumer_host_id: string | null } }
-/** Wave B PR 5: a page write refused because its canonical file is a declared split head that does not verify (split-files.ts). */
-export interface SplitHeadDetail { origin: 'split_page_incomplete' | 'split_head_modified'; stage?: PublicationStage; attempt?: { consumer_version: string; consumer_host_id: string | null } }
+/**
+ * Wave B PR 5: a page write refused because its canonical file is a declared split head that does not verify
+ * (split-files.ts), or with split_page_unsupported and the reason the split-unit check gave (split-unit-guard.ts).
+ */
+export interface SplitHeadDetail { origin: 'split_page_incomplete' | 'split_head_modified' | SplitUnsupportedReason; stage?: PublicationStage; attempt?: { consumer_version: string; consumer_host_id: string | null } }
 export interface PublicationFailure { code: string; message: string; detail?: PublicationFailureDetail | FenceRefusalDetail | WithdrawalRefusalDetail | OwnerExceptionDetail | CanonicalFileDetail | PendingImportDetail | SplitHeadDetail }
 
 const IDENT = /^[A-Za-z_][A-Za-z0-9_.:-]{0,79}$/;

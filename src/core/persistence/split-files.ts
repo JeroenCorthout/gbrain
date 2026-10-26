@@ -14,10 +14,10 @@
  * - `recoverPublication` (coordinator.ts) recovers the record as one unit: all files go back to their prior bytes, or
  *   all are kept when the door commit landed (`splitLandedCommit`, named on the receipt with `landed_before_row`),
  *   never a mix of old and new files. `assertSplitRecoveryBinding` checks the record is this owner's head and parts.
- * - A Git effect of a split publication carries `version: 3` (effect-model.ts `SPLIT_GIT_EFFECT_VERSION`): the
- *   current runner commits the head with every part path in one commit (effect-git.ts `publishSplitGitEffect`);
- *   binaries that predate it refuse the version (`targetedWithdrawalEffect`: `withdrawal_provenance`) and never commit a
- *   head without its parts.
+ * - A Git effect of a split publication carries `version: 3` (effect-model.ts `SPLIT_GIT_EFFECT_VERSION`). The current
+ *   runner commits no path of a split unit from a Git effect (split-unit-guard.ts: `split_page_unsupported`, parked at
+ *   once); binaries that predate it refuse the version (`targetedWithdrawalEffect`: `withdrawal_provenance`) and never
+ *   commit a head without its parts.
  */
 import { createHash } from 'node:crypto';
 import { closeSync, constants, existsSync, lstatSync, openSync, readdirSync, readSync, rmdirSync, rmSync } from 'node:fs';
@@ -29,11 +29,11 @@ import { readFix } from '../ops/op-fix.ts';
 import type { Action } from '../agent-output.ts';
 import { isWriteTargetContained } from '../path-confine.ts';
 import { FRONTMATTER_HEAD_MAX_BYTES, SEGMENT_MAX_BYTES } from '../page-body/limits.ts';
-import { assertNoPartsKey, headBodyFor, parseHead, partFilePath, partsDirFor, planSplit, PART_FILE_RE, reassemble, splitLimits, SplitLayoutError, splitNotice, splitScratchPath, splitThresholdBytes, type ParsedHead, type SplitPlan } from '../split-layout/index.ts';
+import { headBodyFor, parseHead, partFilePath, partsDirFor, planSplit, PART_FILE_RE, reassemble, splitLimits, SplitLayoutError, splitNotice, splitScratchPath, splitThresholdBytes, type ParsedHead, type SplitPlan } from '../split-layout/index.ts';
 import type { MutationFile } from './bundle-files.ts';
 import type { PageMutationFile } from './coordinator.ts';
-import { git, rawBlobOid, readSplitUnitLayers, splitConvertingAttribute, splitGitAttributesError, splitUnitDivergence, splitUnitPaths, withSession } from './effect-git.ts';
-import { gitDurabilityPolicy } from './git-durability-policy.ts';
+import { git, rawBlobOid, splitUnitPaths, withSession } from './effect-git.ts';
+import { declaresPartsKey } from './split-unit-guard.ts';
 import { SPLIT_GIT_EFFECT_VERSION } from './effect-model.ts';
 import { fileContentBytes, FileBytes, hashFile, isStreamedContent, type StreamedFileContent } from './large-file.ts';
 import type { FileRecoveryRecord, RecoveryRecord, SplitRecoveryRecord, WriteRequest } from './model.ts';
@@ -133,14 +133,6 @@ function splitRefusal(path: string, error: SplitLayoutError): OperationError {
 
 /** The leading bytes of a content in which a page's frontmatter block must close (a BOM, then FRONTMATTER_HEAD_MAX_BYTES). */
 const FRONTMATTER_PREFIX_BYTES = FRONTMATTER_HEAD_MAX_BYTES + 3;
-const lenient = new TextDecoder('utf-8');
-
-/** Whether `prefix` (a content's leading bytes) has a frontmatter block declaring a top-level `gbrain_parts` key. */
-function declaresPartsKey(prefix: Uint8Array): boolean {
-  const text = lenient.decode(prefix);
-  try { assertNoPartsKey(text.startsWith('\uFEFF') ? text.slice(1) : text); return false; }
-  catch (error) { if (error instanceof SplitLayoutError) return true; throw error; }
-}
 
 /**
  * C1: a page publication whose content declares a top-level `gbrain_parts` key is a split page head, never a page file
@@ -493,68 +485,4 @@ export function assertSplitRecoveryBinding(record: SplitRecoveryRecord, binding:
     seen.add(file.path);
   }
   if (parts.some(part => dirname(part.path) !== dir || !PART_FILE_RE.test(basename(part.path)))) throw refuse();
-}
-
-/**
- * What to do about a split unit whose Git HEAD, index and disk disagree (split_unit_diverged), for the refusal and the
- * receipt's envelope (service.ts writeResponse). paths names the head and its parts directory for a local caller.
- */
-export function splitUnitDivergedAdvice(row: Pick<WriteRequest, 'source_id' | 'slug'>, paths?: string[], why?: string): { suggestion: string; fix: Action } {
-  const where = paths ? paths.join(' ') : `the head file of page ${row.slug} and its .gbparts directory`;
-  return { fix: ownersFix(row.source_id), suggestion: `The split page files of ${row.slug} were changed outside gbrain and not committed${why ? ` (${why})` : ''}, so Git HEAD, the index and the disk hold different versions of the page and nothing was written. Ask the user which version is right: commit the hand edit with gbrain git commit-push -m "Commit the split page edit" -- ${where}, or restore the head and its parts from HEAD (git restore --staged --worktree --source=HEAD -- ${where}); then run gbrain sync --source ${row.source_id} --no-pull and submit the write again with a new request_id.` };
-}
-
-/** Whether gbrain commits the files of this root itself: a strict source's door, or a non-strict source's Git effects. */
-async function gbrainCommits(binding: WorktreeBinding, root: string): Promise<boolean> {
-  return binding.canonical_git === true || (await gitDurabilityPolicy(binding, root)).durable;
-}
-
-/**
- * Wave B PR 5 round 6: refuses a page publication whose split unit (the head at the page's path and everything under its
- * parts directory) Git HEAD, the index and the disk disagree on (effect-git.ts readSplitUnitLayers, splitUnitDivergence),
- * with split_unit_diverged, before anything is written: the publication never reconciles a hand edit, a removal
- * staged or left unstaged, or a conversion made outside it. Runs under the worktree lock for every page file
- * publication of a root gbrain commits (strict or Git-durable), plain or split. The one divergence the door produces
- * itself, a non-strict write whose Git effect has not committed yet, is not one: such a root is checked once its
- * effect for the head ran.
- */
-export async function assertSplitUnitIntact(engine: BrainEngine, row: WriteRequest, file: SplitTarget, binding: WorktreeBinding): Promise<void> {
-  if (!partsDirOf(file.path) || !binding.local_path || !await gbrainCommits(binding, file.root)) return;
-  const effectPath = relative(binding.local_path, file.path).split(sep).join('/');
-  if (binding.canonical_git !== true && (await engine.executeRaw(`SELECT 1 FROM persistence_effects WHERE worktree_id=$1::uuid AND kind='git'
-    AND state IN ('queued','running','failed') AND data->>'relative_path'=$2 LIMIT 1`, [binding.worktree_id, effectPath])).length) return;
-  const layers = await withSession(file.root, undefined, undefined, false, session => readSplitUnitLayers(session, file.root, file.path));
-  const diverged = splitUnitDivergence(layers);
-  if (!diverged) return;
-  const advice = splitUnitDivergedAdvice(row, [layers.head, layers.partsDir], diverged);
-  throw opError('split_unit_diverged', `The split page files of ${row.slug} differ between Git HEAD, the index and the disk, so nothing was written.`, advice.suggestion,
-    { fix: advice.fix, docs: 'docs/guides/write-refusals.md#split_unit_diverged' });
-}
-
-/**
- * Whether Git (HEAD or the index) holds anything under the parts directory of any of these page files, on a root gbrain
- * commits: such a page publishes through publishMutation, whose assertSplitUnitIntact checks its unit, never in a group.
- */
-export async function splitUnitTracked(binding: WorktreeBinding, files: ReadonlyArray<Pick<MutationFile, 'path' | 'root'>>): Promise<boolean> {
-  const root = files[0]?.root;
-  if (!root || !await gbrainCommits(binding, root)) return false;
-  const dirs = files.flatMap(file => { const dir = partsDirOf(file.path); return dir ? [relative(root, dir).split(sep).join('/')] : []; });
-  if (!dirs.length) return false;
-  return withSession(root, undefined, undefined, false, async session => {
-    const born = (await git(session, ['rev-parse', '-q', '--verify', 'HEAD^{commit}'])).code === 0;
-    const [index, tree] = await Promise.all([git(session, ['ls-files', '-z', '--', ...dirs]), born ? git(session, ['ls-tree', '-r', '-z', '--name-only', 'HEAD', '--', ...dirs]) : Promise.resolve({ code: 0, stdout: '', stderr: '' })]);
-    return index.code !== 0 || tree.code !== 0 || index.stdout.length > 0 || tree.stdout.length > 0;
-  });
-}
-
-/**
- * Round 6: refuses a split publication (one that writes or removes part files) on a root gbrain commits when Git would
- * convert the bytes of its head or a manifest part (effect-git.ts splitConvertingAttribute): split_git_attributes,
- * before anything is written. The door commit and the split Git effect check the same again on the files they commit.
- */
-export async function assertSplitUnitCommittable(row: Pick<WriteRequest, 'source_id' | 'slug'>, file: SplitTarget, binding: WorktreeBinding): Promise<void> {
-  if (!file.split || !await gbrainCommits(binding, file.root)) return;
-  const rels = [file.path, ...file.split.manifest].map(path => relative(file.root, path).split(sep).join('/'));
-  const attribute = await withSession(file.root, undefined, undefined, false, session => splitConvertingAttribute(session, rels));
-  if (attribute) throw splitGitAttributesError(row.slug, attribute, row.source_id);
 }

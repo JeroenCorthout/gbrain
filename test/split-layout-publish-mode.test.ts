@@ -12,6 +12,7 @@
  * 3. PGLite always; PostgreSQL when DATABASE_URL is set. POSIX only (file modes). KB-sized split limits through
  *    __setSplitLimitsForTests; the publication is driven through publishMutation, as the Google connector's is.
  */
+import type { BrainEngine } from '../src/core/engine.ts';
 import { afterEach, describe, expect, test } from 'bun:test';
 import { randomUUID } from 'node:crypto';
 import { chmodSync, lstatSync, readdirSync, writeFileSync } from 'node:fs';
@@ -32,7 +33,11 @@ const LIMITS = { thresholdMin: 1024, partTarget: 512, partMax: 1024, leadMax: 12
 const mode = (path: string) => lstatSync(path).mode & 0o7777;
 const body = Array.from({ length: 80 }, (_, i) => `Line ${String(i).padStart(4, '0')} of the private split page body, long enough to fill a part.`).join('\n');
 const content = `---\ntype: note\ntitle: Private example\n---\n\n${body}\n`;
-const setup = ({ root }: { root: string }) => { writeFileSync(join(root, '.gitignore'), '\n'); durableGitRepo(root, ['.gitignore']); };
+/** Option B: only a git-canonical source lays a page out as a split unit, so every fixture source is strict (canonical = git). */
+const setup = async ({ engine, root }: { engine: BrainEngine; root: string }) => {
+  writeFileSync(join(root, '.gitignore'), '\n'); durableGitRepo(root, ['.gitignore']);
+  await engine.executeRaw(`UPDATE sources SET config = config || '{"canonical":"git"}'::jsonb WHERE id='default'`);
+};
 const put = (ctx: Parameters<typeof operations[number]['handler']>[0], slug: string, text: string, expected_revision?: string) =>
   operations.find(o => o.name === 'put_page')!.handler(ctx, { slug, content: text, request_id: randomUUID(), wait_ms: 30_000, ...(expected_revision ? { expected_revision } : {}) });
 const page = (text: string) => ({ type: 'note' as const, title: 'Private example', compiled_truth: text, timeline: '', frontmatter: {} });

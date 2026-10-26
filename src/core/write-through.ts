@@ -22,7 +22,7 @@ import { hasSourceFilesystemLock, withSourceFilesystemLock, assertSourceFilesyst
  * only does "row exists + repo is a real dir → render + atomic write".
  */
 
-import { existsSync, statSync, mkdirSync, unlinkSync, readdirSync } from 'fs';
+import { existsSync, statSync, mkdirSync, unlinkSync, readdirSync, readFileSync } from 'fs';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'path';
 import { atomicWriteFileSync } from './atomic-write.ts';
 import type { BrainEngine } from './engine.ts';
@@ -32,9 +32,9 @@ import { isWriteTargetContained, msysToNativePath } from './path-confine.ts';
 import { readSlugRootMode, resolveSlugRootMode, type SlugRootMode } from './sync-anchor.ts';
 import { resolveSlugForPath } from './sync.ts';
 import { PUSH_SCAN_MAX_FILE_BYTES } from './page-size-policy.ts';
-import { splitThresholdBytes } from './split-layout/limits.ts';
 import { assertNoReservedPartsKey } from './persistence/split-head-admission.ts';
-import { assertPageFileOverwritable, assertPageFileRemovable, assertSplitWritable, PageFileChanged, readPageFileText, writeSplitPageFile } from './split-write-through.ts';
+import { assertSplitUnitMutable } from './persistence/split-unit-guard.ts';
+import { assertOutsideDoorWritable } from './split-write-through.ts';
 import { canonicalFilesystemPath } from './persistence/root-registry.ts';
 import {
   isDurabilityHardened, commitWriteThroughFile, currentBranch, getLastPushOutcome,
@@ -96,17 +96,15 @@ export interface WriteThroughResult {
    *     (macOS/Windows default), the target directory already holds a
    *     differently-cased entry that the FS folds onto this page's file, so
    *     writing would silently clobber the OTHER slug's file (#2831) — refused.
-   *   - file_changed: the caller passed `expectedFileBytes` and the page file on
-   *     disk (F' for a split head) no longer holds them (an edit landed after the
-   *     caller read it, or a split head's parts no longer verify) — the edit is
-   *     kept and nothing is written.
-   *   - over_push_scan_cap: the rendered file stays one file (at or under the
-   *     split threshold) yet is over the pre-push secret-scan cap
-   *     (PUSH_SCAN_MAX_FILE_BYTES), so committing it would block every push.
-   *   - split_page_unsupported: the page is, or would become, a split page whose
-   *     part files the write changes, which only the publication door writes
-   *     with recovery (split-write-through.ts), or a split page the write is
-   *     not bound to by `expectedFileBytes` — nothing is written.
+   *   - file_changed: the caller passed `expectedFileBytes` and the file on
+   *     disk no longer holds them (an edit landed after the caller read it) —
+   *     the edit is kept and nothing is written.
+   *   - over_push_scan_cap: the rendered file is over the pre-push secret-scan
+   *     cap (PUSH_SCAN_MAX_FILE_BYTES), so committing it would block every push.
+   *   - split_page_unsupported: the page file is in a split unit (a head plus
+   *     part files), which only the publication door of a git-canonical source
+   *     writes (split-write-through.ts assertOutsideDoorWritable, reason
+   *     outside_door) — nothing is written, bound or not.
    */
   skipped?: 'disabled_by_config' | 'url_clone' | 'no_repo_configured' | 'repo_not_found' | 'source_repo_belongs_to_other_source' | 'page_not_found_after_write' | 'path_escapes_source_root' | 'case_insensitive_collision' | 'file_changed' | 'over_push_scan_cap' | 'split_page_unsupported';
   /** Caller-visible advisory when a permitted DB-only outcome is still risky. */
@@ -124,8 +122,7 @@ export interface WritePageThroughOpts {
    * The file bytes the caller read before writing the database row (null:
    * the file was absent). Rechecked under the source filesystem lock right
    * before the rename; a file that changed since is left untouched
-   * (`skipped: 'file_changed'`). Omitted: no preimage check, so a split page
-   * at the target is refused (`skipped: 'split_page_unsupported'`).
+   * (`skipped: 'file_changed'`). Omitted: no preimage check.
    */
   expectedFileBytes?: string | null;
 }
@@ -428,22 +425,16 @@ export async function resolvePageWriteTarget(
 }
 
 /**
- * The split preflight (`assertSplitWritable`) of a database-first writer that imports `content` as `slug` and then
- * calls writePageThrough (brainstorm and lsd saves, a classic concept publication): plans the page file writePageThrough
- * would render once the import lands (the parsed page rendered as serializePageToMarkdown renders the stored row, with
- * `frontmatterOverrides`) at the page's write target, and throws `split_page_unsupported` before the import when that
- * write would be refused, or `split_head_content` when `content` is itself a split head (on every brain). Otherwise a no-op when write-through would write no file (off, a URL clone, no target).
+ * The split check of a database-first writer that imports `content` as `slug` and then calls writePageThrough (brainstorm
+ * and lsd saves, a classic concept publication), before the import: `split_head_content` when `content` is itself a split
+ * head (on every brain), and `split_page_unsupported` (outside_door) when the page's write target is in a split unit
+ * (assertOutsideDoorWritable). Otherwise a no-op when write-through would write no file (off, a URL clone, no target).
  */
-export async function assertPageThroughWritable(engine: BrainEngine, slug: string, sourceId: string, content: string,
-  frontmatterOverrides?: Record<string, unknown>): Promise<void> {
+export async function assertPageThroughWritable(engine: BrainEngine, slug: string, sourceId: string, content: string): Promise<void> {
   assertNoReservedPartsKey(content, sourceId);
   if (await isWriteThroughDisabled(engine) || await urlCloneReadOnly(engine, sourceId)) return;
   const target = await resolvePageWriteTarget(engine, slug, sourceId);
-  if (!target.ok) return;
-  const parsed = parseMarkdown(content, `${slug}.md`);
-  const md = serializePageToMarkdown({ slug, type: parsed.type, title: parsed.title, compiled_truth: parsed.compiled_truth, timeline: parsed.timeline,
-    frontmatter: parsed.frontmatter } as Page, parsed.tags, { frontmatterOverrides });
-  await assertSplitWritable(engine, target.filePath, target.writeRoot, md);
+  if (target.ok) await assertOutsideDoorWritable({ root: target.writeRoot, path: target.filePath, route: 'write_through', sourceId, slug });
 }
 
 /**
@@ -490,10 +481,9 @@ export async function writePageThrough(
       frontmatterOverrides: opts.frontmatterOverrides,
     });
     // The pre-push secret scan refuses to push any file it cannot scan, so a
-    // file over its cap would block every later push of the brain repo. A page
-    // over the split threshold is a head plus parts, each under it.
+    // file over its cap would block every later push of the brain repo.
     const mdBytes = Buffer.byteLength(md, 'utf-8');
-    if (mdBytes > PUSH_SCAN_MAX_FILE_BYTES && mdBytes <= await splitThresholdBytes(engine)) {
+    if (mdBytes > PUSH_SCAN_MAX_FILE_BYTES) {
       opts.logger?.warn(`[write-through] ${slug}: the rendered file is over the ${PUSH_SCAN_MAX_FILE_BYTES}-byte pre-push secret-scan cap — file not written (DB row is intact)`);
       return { written: false, skipped: 'over_push_scan_cap' };
     }
@@ -526,20 +516,17 @@ export async function writePageThrough(
     // EEXIST when the directory already exists (POSIX no-ops it). That aborts
     // the put_page / enrich / capture write-through whenever the prefix dir
     // already exists, silently leaving the DB and the .md file plane out of sync.
-    // `expectedFileBytes` is the page file: F' for a split head, whose head and parts are written as one unit.
-    const fileChanged = () => {
-      if (opts.expectedFileBytes === undefined) return false;
-      const file = readPageFileText(filePath);
-      return file.hold !== undefined || file.text !== opts.expectedFileBytes;
-    };
-    if (fileChanged()) return { written: false, skipped: 'file_changed' };
+    // A page file in a split unit is written only by the publication door: refused, bound or not, before the row is bound.
     try {
-      assertPageFileOverwritable(filePath, opts.expectedFileBytes);
+      await assertOutsideDoorWritable({ root: writeRoot, path: filePath, route: 'write_through', sourceId, slug }, md);
     } catch (error) {
       if ((error as { code?: string }).code !== 'split_page_unsupported') throw error;
       opts.logger?.warn(`[write-through] ${slug}: ${(error as Error).message}`);
       return { written: false, skipped: 'split_page_unsupported' };
     }
+    const fileChanged = () => opts.expectedFileBytes !== undefined
+      && (existsSync(filePath) ? readFileSync(filePath, 'utf-8') : null) !== opts.expectedFileBytes;
+    if (fileChanged()) return { written: false, skipped: 'file_changed' };
 
     await engine.transaction(tx => bindOrigin(tx, { sourceId, slug, sourcePath: sourcePathToBind, onlyIfUnset: true, liveOnly: true }));
     assertSourceFilesystemActive();
@@ -548,13 +535,10 @@ export async function writePageThrough(
     if (fileChanged()) return { written: false, skipped: 'file_changed' };
     const changedWhileStaging = new Error('file_changed');
     const verify = () => { assertSourceFilesystemActive(); if (fileChanged()) throw changedWhileStaging; };
-    let paths: string[] | null;
     try {
-      paths = await writeSplitPageFile(engine, filePath, writeRoot, md, verify);
-      if (!paths) atomicWriteFileSync(filePath, md, { verify });
+      atomicWriteFileSync(filePath, md, { verify });
     } catch (error) {
-      if (error === changedWhileStaging || error instanceof PageFileChanged) return { written: false, skipped: 'file_changed' };
-      if ((error as { code?: string }).code === 'split_page_unsupported') return { written: false, skipped: 'split_page_unsupported' };
+      if (error === changedWhileStaging) return { written: false, skipped: 'file_changed' };
       throw error;
     }
 
@@ -570,7 +554,7 @@ export async function writePageThrough(
     try {
       assertSourceFilesystemActive();
       if (isDurabilityHardened(writeRoot)) {
-        committed = commitWriteThroughFile(writeRoot, filePath, slug, 'write-through', paths ?? []);
+        committed = commitWriteThroughFile(writeRoot, filePath, slug);
         if (committed) {
           pushed = 'pending';
           lastPushStatus = getLastPushOutcome(currentBranch(writeRoot), writeRoot);
@@ -609,10 +593,9 @@ export interface DeleteThroughResult {
    *   - url_clone: the source is a clone gbrain owns and pulls (#6946); its checkout is never written.
    *   - file_not_present: the page had no artifact on disk (DB-only page, or
    *     already removed by hand) — a clean no-op, not a failure.
-   *   - file_changed: the caller passed `expectedFileBytes` and the page file
-   *     (F' for a split head) no longer holds them (an edit landed after the
-   *     caller read it) — kept.
-   *   - split_page_unsupported: the file is a split page (a head plus part
+   *   - file_changed: the caller passed `expectedFileBytes` and the file no
+   *     longer holds them (an edit landed after the caller read it) — kept.
+   *   - split_page_unsupported: the file is in a split unit (a head plus part
    *     files), which only the publication door removes — kept, with the
    *     refusal logged.
    */
@@ -674,18 +657,14 @@ export async function deletePageThrough(
     if (!existsSync(filePath)) {
       return { removed: false, path: filePath, skipped: 'file_not_present' };
     }
-    if (opts.expectedFileBytes !== undefined) {
-      const file = readPageFileText(filePath);
-      if (file.hold || file.text !== opts.expectedFileBytes) return { removed: false, path: filePath, skipped: 'file_changed' };
-    }
-
     try {
-      assertPageFileRemovable(filePath);
+      await assertSplitUnitMutable({ root: writeRoot, path: filePath, route: 'remover', strict: false, sourceId, slug });
     } catch (error) {
       if ((error as { code?: string }).code !== 'split_page_unsupported') throw error;
       opts.logger?.warn(`[write-through] ${slug}: ${(error as Error).message}`);
       return { removed: false, path: filePath, skipped: 'split_page_unsupported' };
     }
+    if (opts.expectedFileBytes !== undefined && readFileSync(filePath, 'utf-8') !== opts.expectedFileBytes) return { removed: false, path: filePath, skipped: 'file_changed' };
     assertSourceFilesystemActive();
     unlinkSync(filePath);
     // Mirror writePageThrough (#2426): on a durability-hardened repo, commit

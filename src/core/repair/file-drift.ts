@@ -74,7 +74,7 @@ import { protectedReconcileKey, reconcileCanonical, RECONCILE_SCAN_KEYS, type Re
 import { ABSENT_FILE_HASH, canonicalDeletionState, missingFileRoute, readDeletedDriftTarget, readReconcileState, type DeletedDriftChange, type DeletedDriftTarget, type ReconcileArtifact } from '../persistence/reconcile-state.ts';
 import { clearGitHold, fileDriftActionVerb, fileDriftSide, FILE_DRIFT_DELETED_STATES, FILE_DRIFT_SIDES, GIT_HOLD_OP, heldDriftPreviewArgv, type FileDriftDeletedState, type FileDriftSide, type GitHoldRecord } from '../persistence/sync-holds.ts';
 import { prepareRepairPublication, repairScreenConfig, SPLIT_PAGE_UNSUPPORTED, submitManagedFileRepair } from '../persistence/file-repair.ts';
-import { pageFileSha256 } from '../split-layout/index.ts';
+import { outsideDoorRefusal } from '../split-write-through.ts';
 import { maintenancePreflight, submitDatabaseMaintenanceIntent, submitMaintenanceIntent } from '../persistence/prepared-maintenance.ts';
 import type { PreparedMutation } from '../persistence/coordinator.ts';
 import type { WriteRequest } from '../persistence/model.ts';
@@ -530,18 +530,15 @@ async function fileGonePage(engine: BrainEngine, sourceId: string, slug: string,
 }
 
 /**
- * Wave B PR 5: the skip of a page whose canonical file `rel` is a split page head, null for an ordinary file. Reconcile
- * reads, compares and writes one canonical file, and a split page continues in part files, so its head is never
- * reconciled as the page: a head that does not reassemble is passed by with its hold code, any other as
- * `split_page_unsupported`.
+ * Wave B PR 5 (option B): the skip of a page whose canonical file `rel` is in a split unit, null otherwise. A reconcile is
+ * outside the publication door, which alone writes a split page, so the page is passed by `split_page_unsupported`
+ * (split-write-through.ts outsideDoorRefusal) and nothing is written.
  */
 async function splitHeadSkip(engine: BrainEngine, sourceId: string, slug: string, rel: string): Promise<{ skip: string; detail: string } | null> {
   const binding = await getWorktreeBinding(engine, sourceId);
-  const path = join(binding!.local_path!, binding!.relative_path, ...rel.split('/'));
-  const file = existsSync(path) ? pageFileSha256(path) : null;
-  if (!file?.split) return null;
-  return file.hold ? { skip: file.hold.code, detail: file.hold.message } : { skip: SPLIT_PAGE_UNSUPPORTED,
-    detail: `${rel} is a split page head (its page continues in part files), and file-drift reconciles a page against one canonical file, so it was passed by and nothing was written; gbrain pages split-storage ${slug} --source ${sourceId} shows its layout` };
+  const root = join(binding!.local_path!, binding!.relative_path);
+  const refusal = await outsideDoorRefusal({ root, path: join(root, ...rel.split('/')), route: 'file_repair', sourceId, slug });
+  return refusal ? { skip: SPLIT_PAGE_UNSUPPORTED, detail: refusal.message } : null;
 }
 
 /**

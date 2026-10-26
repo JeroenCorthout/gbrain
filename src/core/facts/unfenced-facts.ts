@@ -49,13 +49,13 @@
  * - Unmanaged: under the source filesystem lock and the page lock, the same
  *   `.tmp` + parse + rename write as `fence-write.ts`, then one maintenance
  *   transaction mirrors the file body into `pages` and stamps the rows; a
- *   durability-hardened checkout commits the file. A file that is a split
- *   head (split-layout/) is never fenced here: the page is named in
- *   `failed_pages` with `split_page` or its hold code.
+ *   durability-hardened checkout commits the file. A page in a split unit
+ *   (split-layout/) is never fenced here: the page is named in
+ *   `failed_pages` with `split_page_unsupported` (outside_door).
  * A page that fails is reported in `failed_pages`; the others still fence.
  */
 import { existsSync, readFileSync, renameSync, rmSync } from 'node:fs';
-import { splitWriteRefusal, writePageTemp } from '../split-write-through.ts';
+import { writePageTemp } from '../split-write-through.ts';
 
 import type { BrainEngine } from '../engine.ts';
 import { sanitizeText } from '../batch-rows.ts';
@@ -570,7 +570,8 @@ async function fenceFilePage(engine: BrainEngine, sourceId: string, entitySlug: 
   if (!target.ok) { outcome.skipped_no_page += group.length; return; }
   const { writeRoot } = target;
   const write = () => withPageLock(entitySlug, async () => {
-    const split = splitPageToken(filePath, entitySlug, 'its rows stay unfenced, active and searchable');
+    const splitInput = { root: writeRoot, path: filePath, route: 'raw_writer' as const, sourceId, slug: entitySlug };
+    const split = await splitPageToken(splitInput, 'its rows stay unfenced, active and searchable');
     if (split) { outcome.failed_pages.push(split); return; }
     const bytes = readFileSync(filePath, 'utf-8');
     const page = await engine.getPage(entitySlug, { sourceId });
@@ -594,8 +595,8 @@ async function fenceFilePage(engine: BrainEngine, sourceId: string, entitySlug: 
     const durable = isDurabilityHardened(writeRoot);
     const prewrite = durable ? gitPathState(writeRoot, filePath) : 'clean';
     const tmpPath = `${filePath}.tmp`;
-    const refusal = await splitWriteRefusal(engine, filePath, writeRoot, fence.body);
-    if (refusal) { outcome.failed_pages.push(`${entitySlug} (${refusal.message} Its rows stay unfenced, active and searchable.)`); return; }
+    const refusal = await splitPageToken(splitInput, 'its rows stay unfenced, active and searchable', fence.body);
+    if (refusal) { outcome.failed_pages.push(refusal); return; }
     assertSourceFilesystemActive();
     writePageTemp(tmpPath, filePath, fence.body);
     const tmpBody = readFileSync(tmpPath, 'utf-8');

@@ -4,20 +4,22 @@
  * 1. Protects: every facts and takes maintenance step that reads a page's canonical file outside the publication door
  *    reads the page file F' a split head and its parts reassemble to, never the head alone. The facts reconcile finds
  *    an inline or segmented split page fresh, derives the rows that live in its parts and detaches a stray row; a
- *    split head whose parts do not verify holds the destructive reconcile with its hold code. An unmanaged writer
- *    (writeFactsToFence, forget's fence mirror) edits the page file F', and a write its part files would carry is
- *    refused `split_page_unsupported` with no file written: writeFactsToFence records nothing, and forget's withdrawal
- *    stands while its page mirror is held; a head whose parts do not verify refuses with its hold code and nothing
- *    changes. The unfenced-row fence step and a proposal accept refuse a split page with the typed
- *    reason split_page, nothing changed. On a managed brain an append publishes through the door and keeps the split layout. Takes
+ *    split head whose parts do not verify holds the destructive reconcile with its hold code. Only the strict door of
+ *    a git-canonical source changes a split page (option B), so every facts writer outside it (writeFactsToFence,
+ *    forget's fence mirror, the unfenced-row fence step, a proposal accept) refuses a split page outright with
+ *    `split_page_unsupported` (reason `outside_door`; the token `<slug> (split_page_unsupported (outside_door): ...)`)
+ *    before its temporary copy or any file or database write, whether the edit would touch the head alone or a part,
+ *    and also on a head whose parts do not verify: writeFactsToFence records nothing, forget's withdrawal stands while
+ *    its page mirror is held, and the head, every part and the rows stay byte for byte. On a managed brain whose source
+ *    is git-canonical (canonical: git) an append publishes through the door and keeps the split layout. Takes
  *    extraction from the checkout and a purge preview read F' too.
  * 2. Fails when: a reader compares or parses the head (a FACTS_PAGE_CACHE_STALE skip, rows in the parts never derived,
- *    a file_database_drift label for a page that has no drift), a writer rewrites the head or writes the whole page
- *    over it, writes a part outside the door, records a fact in the database while the file keeps the old page, or a
- *    hold or refusal is reported as anything but its code.
+ *    a file_database_drift label for a page that has no drift), a writer outside the door writes the head, a part or a
+ *    temporary copy of a split page, records a fact in the database while the file keeps the old page, reports a hold
+ *    code instead of split_page_unsupported, or the strict door's append does not keep the split layout.
  * 3. PGLite always; PostgreSQL when DATABASE_URL is set (test/postgres-unit-arms.txt). KB-sized limits through
  *    __setSplitLimitsForTests. Unmanaged split heads are written with planSplit, as a pull of another host's
- *    publication leaves them.
+ *    publication leaves them; the managed cases' source is git-canonical, the only kind whose door lays out a split page.
  */
 import { afterEach, describe, expect, test } from 'bun:test';
 import { createHash, randomUUID } from 'node:crypto';
@@ -31,7 +33,6 @@ import { FACTS_FENCE_BEGIN, FACTS_FENCE_END, parseFactsFence } from '../src/core
 import { extractFactsFromFenceText } from '../src/core/facts/extract-from-fence.ts';
 import { writeFactsToFence, type FenceInputFact } from '../src/core/facts/fence-write.ts';
 import { forgetFactInFence } from '../src/core/facts/forget.ts';
-import { fileBodyMatchesStored, readStoredBody } from '../src/core/facts/file-body-guard.ts';
 import { applyProposalAction } from '../src/core/facts/proposal-supersede.ts';
 import { auditUnadoptableFacts, fenceUnfencedFacts, planUnfencedFacts } from '../src/core/facts/unfenced-facts.ts';
 import { insertProposal } from '../src/core/ai/decide/proposals-store.ts';
@@ -93,25 +94,10 @@ async function writeSplit(path: string, content: string) {
   if (!file.hold) expect(file.bytes.toString('utf8')).toBe(content);
 }
 
-/** The writer tests' limits: a KB threshold, so the page they rewrite stays a head plus parts. */
+/** The writer tests' limits: a KB threshold, as a page laid out split by the door was written. */
 const WRITE_LIMITS = { ...LIMITS, thresholdDefault: 1024 };
-
-/**
- * Files and database agree after an unmanaged write: the head is still a split head whose parts directory holds exactly
- * its manifest, nothing is left at .tmp, and the stored body is the page file's. Returns the page file F'.
- */
-async function expectSplitAgrees(engine: BrainEngine, file: string): Promise<string> {
-  const read = readPageFile(file);
-  if (read.hold) throw new Error(read.hold.message);
-  expect(read.split).toBe(true);
-  const parsed = parseHead(readFileSync(file, 'utf8'));
-  if (!parsed || 'error' in parsed) throw new Error('the head does not parse');
-  expect(readdirSync(partsDirFor(file)).sort()).toEqual(parsed.manifest.parts.map(part => part.path.split('/').pop()!).sort());
-  expect(existsSync(file + '.tmp')).toBe(false);
-  const text = read.bytes.toString('utf8');
-  expect(fileBodyMatchesStored(text, SLUG, (await readStoredBody(engine, 'default', SLUG))!)).toBe(true);
-  return text;
-}
+/** The token a facts writer outside the door records for a split page. */
+const OUTSIDE_DOOR = SLUG + ' (split_page_unsupported (outside_door):';
 
 interface SplitBrain { engine: BrainEngine; root: string; file: string }
 
@@ -165,7 +151,12 @@ const storedBody = async (engine: BrainEngine) => (await engine.executeRaw<{ com
 const target = (root: string) => ({ sourceId: 'default', localPath: root, slug: SLUG, resolutionSource: 'exact_page' as const });
 const missingPart = (file: string) => { const dir = partsDirFor(file); rmSync(join(dir, readdirSync(dir).sort()[1]!)); };
 const op = (name: string) => operations.find(o => o.name === name)!;
-const setup = ({ root }: { root: string }) => { writeFileSync(join(root, '.gitignore'), NL); durableGitRepo(root, ['.gitignore']); };
+/** A git-canonical source (canonical: git): its door lays out a page over the threshold as a head plus parts. */
+const setup = async ({ engine, root }: { engine: BrainEngine; root: string }) => {
+  writeFileSync(join(root, '.gitignore'), NL);
+  durableGitRepo(root, ['.gitignore']);
+  await engine.executeRaw(`UPDATE sources SET config = config || '{"canonical":"git"}'::jsonb WHERE id='default'`);
+};
 
 /** A put_page replayed with its request_id until it commits. */
 async function put(ctx: OperationContext, content: string) {
@@ -241,7 +232,7 @@ for (const backend of testBackends()) describe('[' + backend + '] split git layo
     });
   }, 180_000);
 
-  test('writeFactsToFence on an unmanaged split page refuses a fact its part files would carry (split_page_unsupported); files and database stay', async () => {
+  test('writeFactsToFence on an unmanaged split page refuses outright (split_page_unsupported, outside_door); files and database stay', async () => {
     __setSplitLimitsForTests(WRITE_LIMITS);
     await withSplitBrain(databaseUrl, fenceInParts(60, CLAIM), async ({ engine, root, file }) => {
       await indexFence(engine, fenceInParts(60, CLAIM));
@@ -249,12 +240,12 @@ for (const backend of testBackends()) describe('[' + backend + '] split git layo
       const result = await writeFactsToFence(engine, target(root), [fact(SECOND)]);
       expect(result).toMatchObject({ inserted: 0, fenceWriteFailed: true });
       expect(result.legacyFallback).toBeUndefined();
-      expect(result.fenceRefusal?.code).toBe('split_page_unsupported');
+      expect(result.fenceRefusal).toMatchObject({ code: 'split_page_unsupported', reason: 'outside_door' });
       expect({ disk: disk(file), body: await storedBody(engine), rows: await activeRows(engine) }).toEqual(before);
     });
   }, 180_000);
 
-  test('writeFactsToFence on an unmanaged split head with a missing part refuses with the hold code; nothing is written', async () => {
+  test('writeFactsToFence on an unmanaged split head with a missing part refuses split_page_unsupported (outside_door), not a hold code; nothing is written', async () => {
     __setSplitLimitsForTests(WRITE_LIMITS);
     await withSplitBrain(databaseUrl, fenceInParts(60, CLAIM), async ({ engine, root, file }) => {
       missingPart(file);
@@ -262,51 +253,55 @@ for (const backend of testBackends()) describe('[' + backend + '] split git layo
       const result = await writeFactsToFence(engine, target(root), [fact(SECOND)]);
       expect(result).toMatchObject({ inserted: 0, fenceWriteFailed: true });
       expect(result.legacyFallback).toBeUndefined();
-      expect(result.fenceRefusal?.code).toBe('split_page_incomplete');
+      expect(result.fenceRefusal).toMatchObject({ code: 'split_page_unsupported', reason: 'outside_door' });
       expect({ disk: disk(file), body: await storedBody(engine) }).toEqual(before);
       expect(await engine.executeRaw('SELECT id FROM facts')).toEqual([]);
     });
   }, 180_000);
 
-  test('forget on an unmanaged split page withdraws the fact and holds the page mirror its part files would carry (split_page_unsupported): the files stay', async () => {
+  test('forget on an unmanaged split page withdraws the fact and holds the page mirror (split_page_unsupported, outside_door): the files stay', async () => {
     __setSplitLimitsForTests(WRITE_LIMITS);
     const content = fenceInParts(60, CLAIM);
     await withSplitBrain(databaseUrl, content, async ({ engine, file }) => {
       const [id] = await indexFence(engine, content);
       const before = { disk: disk(file), body: await storedBody(engine) };
       const result = await forgetFactInFence(engine, id!);
-      expect(result).toMatchObject({ ok: true, path: 'legacy_db', warning: expect.stringContaining('split_page_unsupported') });
+      expect(result).toMatchObject({ ok: true, path: 'legacy_db', warning: expect.stringContaining(OUTSIDE_DOOR) });
       expect({ disk: disk(file), body: await storedBody(engine) }).toEqual(before);
       expect(existsSync(file + '.tmp')).toBe(false);
       expect(await activeRows(engine)).toEqual([]);
     });
   }, 180_000);
 
-  test("forget on an unmanaged segmented split page whose fence is in the head's lead withdraws the fact and holds the page mirror (split_page_unsupported): the files stay", async () => {
+  test("writeFactsToFence and forget on an unmanaged segmented split page whose fence is in the head's lead refuse the head-only edit (split_page_unsupported, outside_door): forget's withdrawal stands, the files stay", async () => {
     __setSplitLimitsForTests({ ...SEGMENTED_LIMITS, leadMax: 4096, thresholdDefault: 1024 ** 2 });
     const content = page(facts(CLAIM) + NL + NL + prose(17_000));
-    await withSplitBrain(databaseUrl, content, async ({ engine, file }) => {
+    await withSplitBrain(databaseUrl, content, async ({ engine, root, file }) => {
       expect(readFileSync(file, 'utf8')).toContain(CLAIM);
       const [id] = await indexFence(engine, content);
       const before = disk(file);
+      const body = await storedBody(engine);
+      const written = await writeFactsToFence(engine, target(root), [fact(SECOND)]);
+      expect(written).toMatchObject({ inserted: 0, fenceWriteFailed: true, fenceRefusal: { code: 'split_page_unsupported', reason: 'outside_door' } });
+      expect({ disk: disk(file), body: await storedBody(engine), rows: await activeRows(engine) }).toEqual({ disk: before, body, rows: [{ row_num: 1, fact: CLAIM }] });
       const result = await forgetFactInFence(engine, id!);
-      expect(result).toMatchObject({ ok: true, path: 'legacy_db', warning: expect.stringContaining('split_page_unsupported') });
+      expect(result).toMatchObject({ ok: true, path: 'legacy_db', warning: expect.stringContaining(OUTSIDE_DOOR) });
       expect(disk(file)).toEqual(before);
       expect(existsSync(file + '.tmp')).toBe(false);
       expect(await activeRows(engine)).toEqual([]);
     }, { segmented: true });
   }, 300_000);
 
-  test('writeFactsToFence and forget refuse a split write (split_page_unsupported) before they touch a temporary file beside the head', async () => {
+  test('writeFactsToFence and forget refuse a split page (split_page_unsupported, outside_door) before they touch a temporary file beside the head', async () => {
     __setSplitLimitsForTests(WRITE_LIMITS);
     const content = fenceInParts(60, CLAIM);
     await withSplitBrain(databaseUrl, content, async ({ engine, root, file }) => {
       const [id] = await indexFence(engine, content);
       mkdirSync(file + '.tmp');
       const written = await writeFactsToFence(engine, target(root), [fact(SECOND)]);
-      expect(written.fenceRefusal?.code).toBe('split_page_unsupported');
+      expect(written.fenceRefusal).toMatchObject({ code: 'split_page_unsupported', reason: 'outside_door' });
       const forgot = await forgetFactInFence(engine, id!);
-      expect(forgot).toMatchObject({ ok: true, path: 'legacy_db', warning: expect.stringContaining('split_page_unsupported') });
+      expect(forgot).toMatchObject({ ok: true, path: 'legacy_db', warning: expect.stringContaining(OUTSIDE_DOOR) });
       expect(statSync(file + '.tmp').isDirectory()).toBe(true);
     });
   }, 180_000);
@@ -344,10 +339,10 @@ for (const backend of testBackends()) describe('[' + backend + '] split git layo
       const listed = beside();
       const umask = process.umask(0o022);
       try {
-        expect(await applyProposalAction(engine, proposal, 'accept')).toMatchObject({ action: 'accept', status: 'refused', reason: expect.stringContaining(SLUG + ' (split_page:') });
-        expect((await writeFactsToFence(engine, target(root), [fact('Alice Example plays the cello')])).fenceRefusal?.code).toBe('split_page_unsupported');
-        expect((await fenceUnfencedFacts(engine, await planUnfencedFacts(engine, { sourceId: 'default' }))).failed_pages.filter(p => p.startsWith(SLUG + ' ('))).toHaveLength(1);
-        expect(await forgetFactInFence(engine, old!)).toMatchObject({ ok: true, path: 'legacy_db', warning: expect.stringContaining('split_page_unsupported') });
+        expect(await applyProposalAction(engine, proposal, 'accept')).toMatchObject({ action: 'accept', status: 'refused', reason: expect.stringContaining(OUTSIDE_DOOR) });
+        expect((await writeFactsToFence(engine, target(root), [fact('Alice Example plays the cello')])).fenceRefusal).toMatchObject({ code: 'split_page_unsupported', reason: 'outside_door' });
+        expect((await fenceUnfencedFacts(engine, await planUnfencedFacts(engine, { sourceId: 'default' }))).failed_pages.filter(p => p.startsWith(OUTSIDE_DOOR))).toHaveLength(1);
+        expect(await forgetFactInFence(engine, old!)).toMatchObject({ ok: true, path: 'legacy_db', warning: expect.stringContaining(OUTSIDE_DOOR) });
         expect(beside()).toEqual(listed);
         expect(readdirSync(partsDirFor(file)).map(name => join(partsDirFor(file), name)).concat(file).sort()).toEqual([...unit].sort());
         for (const path of unit) expect(statSync(path).mode & 0o777).toBe(0o600);
@@ -377,18 +372,18 @@ for (const backend of testBackends()) describe('[' + backend + '] split git layo
     }, { oneFile: true });
   }, 180_000);
 
-  test('the unfenced-row fence step passes an unmanaged split page by with reason split_page', async () => {
+  test('the unfenced-row fence step passes an unmanaged split page by with split_page_unsupported (outside_door); the rows and files stay', async () => {
     __setSplitLimitsForTests(LIMITS);
     const content = fenceInParts(60, CLAIM);
     await withSplitBrain(databaseUrl, content, async ({ engine, file }) => {
       await indexFence(engine, content);
       const [loose] = extractFactsFromFenceText(parseFactsFence(facts(SECOND)).facts, SLUG, 'default');
       await engine.insertFact(unfenced(loose!), { source_id: 'default' });
-      const before = disk(file);
+      const before = { disk: disk(file), body: await storedBody(engine), rows: await activeRows(engine) };
       const outcome = await fenceUnfencedFacts(engine, await planUnfencedFacts(engine, { sourceId: 'default' }));
-      expect(outcome.failed_pages.filter(p => p.startsWith(SLUG + ' (split_page:'))).toHaveLength(1);
+      expect(outcome.failed_pages.filter(p => p.startsWith(OUTSIDE_DOOR))).toHaveLength(1);
       expect(outcome.fenced).toBe(0);
-      expect(disk(file)).toEqual(before);
+      expect({ disk: disk(file), body: await storedBody(engine), rows: await activeRows(engine) }).toEqual(before);
     });
   }, 180_000);
 
@@ -404,7 +399,7 @@ for (const backend of testBackends()) describe('[' + backend + '] split git layo
     });
   }, 180_000);
 
-  test('a proposal accept on an unmanaged split page is refused with reason split_page; facts, head and parts stay', async () => {
+  test('a proposal accept on an unmanaged split page is refused with split_page_unsupported (outside_door); facts, head and parts stay', async () => {
     __setSplitLimitsForTests(LIMITS);
     const content = fenceInParts(60, CLAIM, SECOND);
     await withSplitBrain(databaseUrl, content, async ({ engine, file }) => {
@@ -414,7 +409,7 @@ for (const backend of testBackends()) describe('[' + backend + '] split git layo
       const before = disk(file);
       const result = await applyProposalAction(engine, id, 'accept');
       expect(result).toMatchObject({ action: 'accept', status: 'refused' });
-      expect((result as { reason?: string }).reason).toContain(SLUG + ' (split_page:');
+      expect((result as { reason?: string }).reason).toContain(OUTSIDE_DOOR);
       expect(disk(file)).toEqual(before);
       expect(await activeRows(engine)).toEqual([{ row_num: 1, fact: CLAIM }, { row_num: 2, fact: SECOND }]);
     });
@@ -434,7 +429,7 @@ for (const backend of testBackends()) describe('[' + backend + '] split git layo
     });
   }, 180_000);
 
-  test('a managed append to a split page publishes through the door and keeps the split layout', () => managedBrain(async ({ engine, ctx, root }) => {
+  test('a managed append to a split page on a git-canonical source publishes through the door and keeps the split layout', () => managedBrain(async ({ engine, ctx, root }) => {
     __setSplitLimitsForTests(LIMITS);
     await engine.setConfig(SPLIT_MAX_FILE_BYTES_KEY, '4096');
     await put(ctx, page(prose(120)));
@@ -451,7 +446,7 @@ for (const backend of testBackends()) describe('[' + backend + '] split git layo
     expect(await activeRows(engine)).toEqual([{ row_num: 1, fact: CLAIM }]);
   }, { databaseUrl, setup }), 240_000);
 
-  test("a purge preview of a claim in a split page's part reports the canonical file and its Git history as carrying it", () => managedBrain(async ({ engine, ctx, root }) => {
+  test("a purge preview of a claim in a split page's part on a git-canonical source reports the canonical file and its Git history as carrying it", () => managedBrain(async ({ engine, ctx, root }) => {
     __setSplitLimitsForTests(LIMITS);
     await engine.setConfig(SPLIT_MAX_FILE_BYTES_KEY, '4096');
     await put(ctx, page(prose(120)));

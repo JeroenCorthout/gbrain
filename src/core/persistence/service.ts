@@ -1,6 +1,6 @@
 import { PENDING_IMPORT, pendingImportRefusal } from './pending-import.ts';
-import { isSplitRefusalReason, splitInvalidAdvice, splitUnitDivergedAdvice } from './split-files.ts';
-import { splitGitAttributesError } from './effect-git.ts';
+import { isSplitRefusalReason, splitInvalidAdvice } from './split-files.ts';
+import { isSplitUnsupportedReason, splitPageUnsupportedAdvice } from './split-unit-guard.ts';
 import type { BrainEngine } from '../engine.ts';
 import type { GBrainConfig } from '../config.ts';
 import { OperationError } from '../ops/contract.ts';
@@ -381,12 +381,9 @@ export function writeResponse(row: WriteRequest, hints: { retryAfterMs?: number 
   // Wave B PR 5: a write refused over a split head that failed verification names the split code and its fix, not a drift repair.
   const splitOrigin = isTerminal(row) && reason === 'source_changed' ? (row.error_detail as { origin?: unknown } | null | undefined)?.origin : undefined;
   if (isSplitRefusalReason(splitOrigin)) Object.assign(error, { ...splitInvalidAdvice(row, splitOrigin, `the head of ${row.slug}`), reason: splitOrigin, detail: 'file_database_drift' });
-  // Round 6: a split unit Git HEAD, the index and the disk disagree on names its fix (commit the hand edit, or restore it), never a retry.
-  if (isTerminal(row) && reason === 'split_unit_diverged') Object.assign(error, { ...splitUnitDivergedAdvice(row), docs: 'docs/guides/write-refusals.md#split_unit_diverged' });
-  if (isTerminal(row) && reason === 'split_git_attributes') {
-    const advice = splitGitAttributesError(row.slug, `A Git attribute or core.autocrlf would convert the head file of ${row.slug} or one of its part files`, row.source_id);
-    Object.assign(error, { suggestion: advice.suggestion, fix: advice.fix, docs: advice.docs });
-  }
+  // Option B: a split-unit refusal names the fix of its reason (split-unit-guard.ts), never a retry.
+  const unsupported = isTerminal(row) && reason === 'split_page_unsupported' ? (row.error_detail as { origin?: unknown } | null | undefined)?.origin : undefined;
+  if (isSplitUnsupportedReason(unsupported)) Object.assign(error, { ...splitPageUnsupportedAdvice(unsupported, { slug: row.slug, sourceId: row.source_id }), reason: unsupported });
   // #6317 (B1b): a waiter-only process names the owner that publishes for it, so the caller is told who holds the write instead of polling blind.
   if (!isTerminal(row) && hints.waiterOnlyOwner) {
     const owner = hints.waiterOnlyOwner;

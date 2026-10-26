@@ -4,9 +4,9 @@
  * (persistence/split-files.ts `splitPublicationTargets`, `mayTakeSplitLayout`), whoever submits it.
  *
  * 1. Protects: a managed file repair that reads the head raw and republishes it with a frontmatter edit (bound to the
- *    page file's hash, so it passes the repair's own split-aware check and reaches the door), a put_page of
- *    the head's text at its own page, and a put_page of the head's text at another page path all refuse: the head, every
- *    part and the stored body stay as they were.
+ *    page file's hash) refuses as a route outside the door (split_page_unsupported, outside_door, before the content
+ *    check), and a put_page of the head's text at its own page or at another page path refuses split_head_content: the
+ *    head, every part and the stored body stay as they were.
  * 2. Fails when: the head is published as the page (the page becomes its lead and notice and every part is removed), or
  *    a head is written as a page file anywhere.
  * 3. PGLite always; PostgreSQL when DATABASE_URL is set. KB-sized split limits through __setSplitLimitsForTests.
@@ -26,7 +26,11 @@ import { requirePostgresTestDatabase, testBackends } from './helpers/test-backen
 const LIMITS = { thresholdMin: 1024, partTarget: 1024, partMax: 2048, leadMax: 128, partCountMax: 500 };
 const lines = Array.from({ length: 120 }, (_, i) => `Line ${String(i).padStart(4, '0')} of the split page body, long enough to fill a part.`);
 const content = `---\ntype: note\ntitle: Split example\n---\n\n${lines.join('\n')}\n`;
-const setup = ({ root }: { root: string }) => { writeFileSync(join(root, '.gitignore'), '\n'); durableGitRepo(root, ['.gitignore']); };
+/** Option B: only a git-canonical source lays a page out as a split unit, so every fixture source is strict (canonical = git). */
+const setup = async ({ engine, root }: { engine: BrainEngine; root: string }) => {
+  writeFileSync(join(root, '.gitignore'), '\n'); durableGitRepo(root, ['.gitignore']);
+  await engine.executeRaw(`UPDATE sources SET config = config || '{"canonical":"git"}'::jsonb WHERE id='default'`);
+};
 const sha = (bytes: Buffer | string) => createHash('sha256').update(bytes).digest('hex');
 const put = (ctx: OperationContext, slug: string, text: string, expectedRevision?: string) => operations.find(o => o.name === 'put_page')!.handler(ctx,
   { slug, content: text, request_id: randomUUID(), wait_ms: 30_000, ...(expectedRevision ? { expected_revision: expectedRevision } : {}) }) as Promise<Record<string, any>>;
@@ -55,7 +59,7 @@ for (const backend of testBackends()) describe(`[${backend}] split git layout: a
   const databaseUrl = backend === 'postgres' ? requirePostgresTestDatabase() : undefined;
   afterEach(() => __setSplitLimitsForTests(null));
 
-  test('a managed file repair of the head (a frontmatter edit) refuses split_head_content; the head, parts and body stay', () => managedBrain(async ({ engine, ctx, root }) => {
+  test('a managed file repair of the head (a frontmatter edit) is outside the door: split_page_unsupported (outside_door); the head, parts and body stay', () => managedBrain(async ({ engine, ctx, root }) => {
     const { head, before } = await splitPage(engine, ctx, root);
     const repaired = head.replace('title: Split example', 'title: Split example repaired');
     const pageFile = pageFileSha256(join(root, 'notes/big.md'));
@@ -66,7 +70,8 @@ for (const backend of testBackends()) describe(`[${backend}] split git layout: a
     expect(prepared.status).toBe('ready');
     const refused = await refusal(submitManagedFileRepair(ctx, { sourceId: 'default', requestId: randomUUID(), slug: 'notes/big', path: 'notes/big.md', sourcePath: 'notes/big.md',
       content: repaired, beforeHash: pageFile.sha256, resultDigest: (prepared as { digest: string }).digest, expected_revision: snapshot!.revision, noEmbed: true }));
-    expect(refused).toMatchObject({ code: 'split_head_content' });
+    expect(refused).toMatchObject({ code: 'split_page_unsupported' });
+    expect(refused.message).toContain('split_page_unsupported (outside_door)');
     expect(await state(engine, root)).toEqual(before);
   }, { databaseUrl, setup }), 120_000);
 
