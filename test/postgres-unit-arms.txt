@@ -443,6 +443,7 @@ test/source-lifecycle-dry-run-physical-root-6849.test.ts
 test/source-retire-missing-checkout.test.ts
 test/source-row-diagnostics.test.ts
 test/sources-resolve-path.test.ts
+test/split-layout-classic-bound-writer.test.ts
 test/split-layout-command.test.ts
 test/split-layout-doctor.test.ts
 test/split-layout-facts.test.ts
