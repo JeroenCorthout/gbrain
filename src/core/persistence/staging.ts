@@ -113,6 +113,16 @@ export function cleanupRecoveryStaging(record: StagedRecovery, opts: { keepBefor
 }
 
 /**
+ * Refuses (unexpected_staging_bytes) unless the prior file's copy a restoration would rename back is present and
+ * verified: recovery checks every copy a unit restores before the first canonical file changes, so a bad copy blocks
+ * the recovery with nothing restored.
+ */
+export function verifyBeforeStage(record: StagedRecovery): void {
+  const stage = record.staging?.before;
+  if (!stage || !stages(record).includes(stage) || !withVerifiedStage(stage, () => {})) throw blocked();
+}
+
+/**
  * Recovery's restoration of a version 3 record: the verified copy of the prior file is renamed over the canonical
  * path with its recorded mode. A missing copy refuses (`unexpected_staging_bytes`): the bytes cannot be guessed.
  */

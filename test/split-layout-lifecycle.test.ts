@@ -28,7 +28,11 @@ const LIMITS = { thresholdMin: 1024, partTarget: 512, partMax: 1024, leadMax: 12
 const op = (name: string) => operations.find(o => o.name === name)!;
 const lines = (from: number, to: number) => Array.from({ length: to - from }, (_, i) => `Line ${String(from + i).padStart(4, '0')} of the split page body, long enough to fill a part.`);
 const page = (body: string[], extra = '') => `---\ntype: note\ntitle: Split example\n${extra}---\n\n${body.join('\n')}\n`;
-const setup = ({ root }: { root: string }) => { writeFileSync(join(root, '.gitignore'), '\n'); durableGitRepo(root, ['.gitignore']); };
+/** Option B: only a git-canonical source lays a page out as a split unit, so every fixture source is strict (canonical = git). */
+const setup = async ({ engine, root }: { engine: BrainEngine; root: string }) => {
+  writeFileSync(join(root, '.gitignore'), '\n'); durableGitRepo(root, ['.gitignore']);
+  await engine.executeRaw(`UPDATE sources SET config = config || '{"canonical":"git"}'::jsonb WHERE id='default'`);
+};
 const strict = (engine: BrainEngine) => engine.executeRaw(`UPDATE sources SET config = config || '{"canonical":"git"}'::jsonb WHERE id='default'`);
 const call = (ctx: OperationContext, name: string, params: Record<string, unknown>) =>
   op(name).handler(ctx, { request_id: randomUUID(), wait_ms: 30_000, ...params }) as Promise<Record<string, any>>;

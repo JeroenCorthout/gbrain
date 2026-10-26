@@ -62,7 +62,8 @@ import { withFilesystemPublication } from './filesystem-guard.ts';
 import { isWriteTargetContained } from '../path-confine.ts';
 import { assertKnowledgePublicationAllowed } from '../shared-skills/knowledge-guard.ts';
 import { isStreamedContent } from './large-file.ts';
-import { mayTakeSplitLayout, splitUnitTracked } from './split-files.ts';
+import { mayTakeSplitLayout } from './split-files.ts';
+import { splitUnitMembers } from './split-unit-guard.ts';
 import { sharedReadFailure } from './bounded-reads.ts';
 import { chargedInterruption, decoratePublicationOutcome, finishPreparationStalled, finishUnpublishedFailure, pageRecoveryRecord, persistenceFileHash, preparationAbortReason,
   publicationPostimage, publishMutation, publishPersistenceFile, recoverPublication, releaseChargedInterruption, type PreparedMutation, type PublicationHooks } from './coordinator.ts';
@@ -294,8 +295,11 @@ export async function publishGroup(engine: BrainEngine, rows: WriteRequest[], pr
     if (blocked.length) return lane ? { ...none, reason: 'busy' } : none;
     releaseCapacity = tryAcquirePublicationCapacity(engine, lane ? lane.effective + 1 : joined ? Number.POSITIVE_INFINITY : undefined);
     if (!releaseCapacity) return { ...none, reason: 'busy' };
-    // Wave B PR 5 round 6: a member whose split unit Git still holds publishes through publishMutation, which checks the unit.
-    if (await splitUnitTracked(binding, prepared.flatMap(member => member.file && !member.noop ? [member.file] : []))) return none;
+    // Wave B PR 5 (option B): a member on a path of a split unit publishes alone through publishMutation, whose split-unit check decides.
+    const memberFiles = prepared.flatMap(member => member.file && !member.noop ? [member.file] : []);
+    for (const root of new Set(memberFiles.map(file => file.root))) {
+      if ((await splitUnitMembers(root, memberFiles.filter(file => file.root === root).map(file => file.path))).size) return none;
+    }
     const files = new Map<number, { row: WriteRequest; record: FileRecoveryRecord; bytes: number }>();
     for (let i = 0; i < rows.length; i++) {
       const file = prepared[i]!.file;

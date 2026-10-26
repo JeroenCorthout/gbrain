@@ -77,13 +77,33 @@ async function insideWorkTree(session: GitSession): Promise<boolean> {
   return out.code === 0 && out.stdout.trim() === 'true';
 }
 
-/** Whether Git HEAD or the index hold anything under `partsDir` (relative). */
-async function gitHoldsParts(session: GitSession, partsDir: string): Promise<boolean> {
-  const born = (await git(session, ['rev-parse', '-q', '--verify', 'HEAD^{commit}'])).code === 0;
-  const [index, tree] = await Promise.all([git(session, ['ls-files', '-z', '--', partsDir]),
-    born ? git(session, ['ls-tree', '-r', '-z', '--name-only', 'HEAD', '--', partsDir]) : Promise.resolve({ code: 0, stdout: '', stderr: '' })]);
-  if (index.code !== 0 || tree.code !== 0) throw gitFailure('Cannot inspect the canonical Git target.', `git ls-files or git ls-tree failed for ${partsDir}.`);
-  return index.stdout.length > 0 || tree.stdout.length > 0;
+/**
+ * The subset of `paths` (absolute) in a split unit now: a path inside a parts directory, or a head whose parts directory
+ * exists on disk or that declares gbrain_parts on disk, or (in a Git worktree, one ls-files and one ls-tree for all of
+ * them) whose parts directory HEAD or the index hold anything under.
+ */
+export async function splitUnitMembers(root: string, paths: readonly string[]): Promise<Set<string>> {
+  const present = new Set<string>(), byDir = new Map<string, string[]>();
+  for (const path of paths) {
+    const unit = splitUnitOf(root, path);
+    if (!unit) continue;
+    if (splitUnitOnDisk(unit, path)) { present.add(path); continue; }
+    const dir = toRel(root, unit.partsDir);
+    byDir.set(dir, [...byDir.get(dir) ?? [], path]);
+  }
+  if (!byDir.size || !existsSync(root)) return present;
+  await withSession(root, undefined, undefined, false, async session => {
+    if (!await insideWorkTree(session)) return;
+    const dirs = [...byDir.keys()];
+    const born = (await git(session, ['rev-parse', '-q', '--verify', 'HEAD^{commit}'])).code === 0;
+    const [index, tree] = await Promise.all([git(session, ['ls-files', '-z', '--', ...dirs]),
+      born ? git(session, ['ls-tree', '-r', '-z', '--name-only', 'HEAD', '--', ...dirs]) : Promise.resolve({ code: 0, stdout: '', stderr: '' })]);
+    if (index.code !== 0 || tree.code !== 0) throw gitFailure('Cannot inspect the canonical Git target.', `git ls-files or git ls-tree failed for ${dirs[0]}.`);
+    for (const held of [...index.stdout.split('\0'), ...tree.stdout.split('\0')].filter(Boolean)) {
+      for (const [dir, heads] of byDir) if (held.startsWith(`${dir}/`)) for (const path of heads) present.add(path);
+    }
+  });
+  return present;
 }
 
 /** Whether the disk alone shows `path` in `unit`: it lies inside the parts directory, the parts directory exists, or the head declares gbrain_parts. */
@@ -91,16 +111,9 @@ function splitUnitOnDisk(unit: { head: string; partsDir: string }, path: string)
   return unit.head !== path || existsSync(unit.partsDir) || headDeclaresParts(unit.head);
 }
 
-/**
- * Whether `path` is in a split unit now: it lies inside a parts directory, its parts directory exists on disk, its head on
- * disk declares gbrain_parts, or (in a Git worktree) HEAD or the index hold anything under its parts directory.
- */
+/** Whether `path` is in a split unit now (splitUnitMembers). */
 export async function splitUnitPresent(root: string, path: string): Promise<boolean> {
-  const unit = splitUnitOf(root, path);
-  if (!unit) return false;
-  if (splitUnitOnDisk(unit, path)) return true;
-  if (!existsSync(root)) return false;
-  return withSession(root, undefined, undefined, false, async session => await insideWorkTree(session) && gitHoldsParts(session, toRel(root, unit.partsDir)));
+  return (await splitUnitMembers(root, [path])).size > 0;
 }
 
 /** A split page's unit in its three states: path (relative, `/`-separated) to blob id, raw bytes on disk. */
@@ -217,10 +230,11 @@ export async function assertSplitUnitMutable(input: SplitUnitGuardInput): Promis
   const unit = splitUnitOf(input.root, input.path);
   if (!unit) return;
   const planned = input.planned ?? [];
-  if (!planned.length && !await splitUnitPresent(input.root, input.path)) return;
   if (input.route !== 'door' || !input.strict) {
-    throw splitPageUnsupported(input.route === 'recovery' ? 'recovery_unit_changed' : input.route === 'door' || input.route === 'git_effect' ? 'non_strict_source' : 'outside_door', input, unit);
+    if (planned.length || await splitUnitPresent(input.root, input.path)) throw splitPageUnsupported(routeReason(input), input, unit);
+    return;
   }
+  if (!planned.length && !await splitUnitPresent(input.root, input.path)) return;
   await withSession(input.root, undefined, undefined, false, async session => {
     const rels = unitRels(input.root, unit, planned);
     const flagged = await flaggedIndexEntry(session, [toRel(input.root, unit.head), toRel(input.root, unit.partsDir)]);
@@ -231,6 +245,23 @@ export async function assertSplitUnitMutable(input: SplitUnitGuardInput): Promis
     const diverged = splitUnitDivergence(await readSplitUnitLayers(session, input.root, unit.head));
     if (diverged) throw splitPageUnsupported('unit_diverged', input, unit, diverged);
   });
+}
+
+/** Why a route other than the strict door refuses a unit path: recovery, a non-strict source (its door or Git effect), or outside the door. */
+function routeReason(input: Pick<SplitUnitGuardInput, 'route' | 'strict'>): SplitUnsupportedReason {
+  if (input.route === 'recovery') return 'recovery_unit_changed';
+  return (input.route === 'door' || input.route === 'git_effect') && !input.strict ? 'non_strict_source' : 'outside_door';
+}
+
+/**
+ * assertSplitUnitMutable for many paths of one root on a route other than the strict door (a Git effect group): the
+ * refusal of each path in a split unit, keyed by path; a path absent from the map may be changed.
+ */
+export async function splitUnitRefusals(input: Omit<SplitUnitGuardInput, 'path' | 'planned' | 'phase'> & { paths: readonly string[] }): Promise<Map<string, OperationError>> {
+  if (input.route === 'door' && input.strict) throw new Error('splitUnitRefusals is for routes other than the strict door');
+  const refusals = new Map<string, OperationError>();
+  for (const path of await splitUnitMembers(input.root, input.paths)) refusals.set(path, splitPageUnsupported(routeReason(input), input, splitUnitOf(input.root, path)!));
+  return refusals;
 }
 
 /**

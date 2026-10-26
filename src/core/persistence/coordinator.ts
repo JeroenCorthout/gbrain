@@ -1,6 +1,7 @@
 import { closeSync, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { assertSplitBytesVerbatim, splitGitAttributesError, splitUnitPaths, withSession } from './effect-git.ts';
+import { splitUnitPaths, withSession } from './effect-git.ts';
+import { assertSplitUnitMutable, isSplitUnsupportedReason } from './split-unit-guard.ts';
 import type { BrainEngine } from '../engine.ts';
 import type { PageSnapshot } from '../page-state/types.ts';
 import { OperationError, opError } from '../ops/contract.ts';
@@ -35,7 +36,7 @@ import type { AppendedRange, GitCommitNote } from './effect-model.ts';
 import { authorizePageVisibility } from './page-visibility.ts';
 import { withNoRepoWriteThroughWarning } from '../write-through.ts';
 import { assertUnboundPublication, classifyUnboundPage, unboundWriteWarning } from './unbound-source.ts';
-import { assertRecoveryStagingAbsent, cleanupRecoveryStaging, recoveryStagingFile, restoreBeforeStage, upgradeRecoveryStaging, type RecoveryStagingFile } from './staging.ts';
+import { assertRecoveryStagingAbsent, cleanupRecoveryStaging, recoveryStagingFile, restoreBeforeStage, upgradeRecoveryStaging, verifyBeforeStage, type RecoveryStagingFile } from './staging.ts';
 import { assertManagedFilesystemWrite } from './filesystem-guard.ts';
 import { beforeStagePath, fileContentBytes, fileContentHash, hashDescriptor, hashFile, isStreamedContent, LARGE_FILE_MIN_BYTES, stageBeforeCopy, stageStreamedContent, type StreamedFileContent } from './large-file.ts';
 import { declarePublication, publicationTransaction } from './publication-deadline.ts';
@@ -56,7 +57,7 @@ import { markBeliefCommits } from '../belief/append.ts';
 import { classifyPgAccessError } from '../pg-access-classify.ts';
 import { commitThroughDoor, doorCommitLanded, doorMarker, replayAfterDoorCommit, sourceCanonicalGit, strictChanged } from './git-door.ts';
 import { assertNoPrivateCommit, declareStrictPublication } from './git-declared.ts';
-import { assertSplitRecoveryBinding, assertSplitUnitCommittable, assertSplitUnitIntact, isSplitRecoveryRecord, releaseSplitTargets, removeEmptyPartsDir, splitFilesChanged, splitKeptPartsChanged, splitLandedCommit, splitPublicationTargets, splitRecoveryRecord, type SplitFileFields } from './split-files.ts';
+import { assertSplitRecoveryBinding, isSplitRecoveryRecord, releaseSplitTargets, removeEmptyPartsDir, splitFilesChanged, splitKeptPartsChanged, splitLandedCommit, splitPublicationTargets, splitRecoveryRecord, type SplitFileFields } from './split-files.ts';
 
 interface PreparedMutationBase {
   sourceExclusive?: boolean;
@@ -208,7 +209,9 @@ function requestError(error: unknown): PublicationFailure {
       // #6693: a refusal on a page whose file awaits import or is held by sync; the replay after import selects on it.
       ?? (error.code === 'source_changed' && (error.reason === PENDING_IMPORT || error.reason === SYNC_HELD) ? { origin: error.reason } : undefined)
       // Wave B PR 5: a write over a declared split head that does not verify (split-files.ts splitInvalidRefusal).
-      ?? (error.code === 'source_changed' && (error.reason === 'split_page_incomplete' || error.reason === 'split_head_modified') ? { origin: error.reason } : undefined);
+      ?? (error.code === 'source_changed' && (error.reason === 'split_page_incomplete' || error.reason === 'split_head_modified') ? { origin: error.reason } : undefined)
+      // Wave B PR 5 (option B): a split-unit refusal keeps its reason, which selects the receipt's fix (service.ts writeResponse).
+      ?? (error.code === 'split_page_unsupported' && isSplitUnsupportedReason(error.reason) ? { origin: error.reason } : undefined);
     return { code: error.code, message: error.message, ...(detail ? { detail } : {}) };
   }
   const refusal = databaseRefusal(error);
@@ -532,13 +535,14 @@ export async function publishMutation(engine: BrainEngine, row: WriteRequest, pr
       if (!binding || !lock || !isWriteTargetContained(prepared.file.path, prepared.file.root)) throw opError('storage_error', 'Filesystem publication requires a confined canonical owner.',
         `This host does not hold source ${row.source_id}'s canonical worktree, or the file of ${row.slug} resolves outside it, so request ${row.request_id} wrote no file. Inspect the owner; the write publishes only on the host that owns the source.`,
         { fix: ownerStatusFix(row.source_id) });
-      // Wave B PR 5 round 6: Git HEAD, the index and the disk must hold the page's split unit alike; a divergence refuses, never reconciles.
-      await assertSplitUnitIntact(engine, row, prepared.file, binding);
-      // Wave B PR 5: a page over sync.max_file_bytes, or one leaving that layout, publishes its head and part files as one record;
-      // every prior file it replaces or removes is named by its staged before-copy (path, SHA-256), never embedded.
-      const split = await splitPublicationTargets(engine, prepared.file)
+      // Wave B PR 5 (option B): only a git-canonical source lays a page out as a head plus part files, or changes one, and only
+      // through this door; every prior file it replaces or removes is named by its staged before-copy (path, SHA-256), never
+      // embedded. A non-strict source writes one file as before and refuses any path of a split unit (split-unit-guard.ts).
+      const strict = binding.canonical_git === true;
+      const split = strict && await splitPublicationTargets(engine, prepared.file)
         ? splitRecoveryRecord(row, prepared.file, binding, (r, file, b) => largeRecoveryRecord(r, file, b, 0) ?? pageRecoveryRecord(r, file, b)) : null;
-      if (split) await assertSplitUnitCommittable(row, prepared.file, binding);
+      await assertSplitUnitMutable({ root: prepared.file.root, path: prepared.file.path, route: 'door', strict, sourceId: row.source_id, slug: row.slug,
+        planned: prepared.file.split?.manifest, remote: row.authority?.remote === true });
       if (split) files.push(...prepared.file.parts!);
       const { record, bytes } = split ?? pageRecoveryRecord(row, prepared.file, binding);
       if (binding.canonical_git === true) record.door = await doorMarker(binding.local_path!);
@@ -653,7 +657,8 @@ export async function publishMutation(engine: BrainEngine, row: WriteRequest, pr
             reason => opError('split_page_incomplete', 'The split page just published does not match its part files, so it was not committed.',
               `${reason}. The strict door commit of a split page holds its head with every part, so nothing was committed and recovery restores the prior files. Inspect the checkout with git status on the brain host before retrying the write with a new request_id.`), { staged: true });
           // Round 6: Git stores the head and parts byte for byte, or the door commits nothing (recovery restores the prior files).
-          await assertSplitBytesVerbatim(session, splitDoor.root, found, reason => splitGitAttributesError(row.slug, reason, row.source_id));
+          await assertSplitUnitMutable({ root: splitDoor.root, path: files[0]!.path, route: 'door', strict: true, phase: 'commit', sourceId: row.source_id, slug: row.slug,
+            planned: found.parts.map(rel => join(splitDoor.root, rel)), remote: row.authority?.remote === true });
           return found;
         });
         Object.assign(outcome.persistence as object, { git_state: 'committed', git_commit: await commitThroughDoor(splitDoor.root,
@@ -772,6 +777,15 @@ export async function recoverPublication(engine: BrainEngine, id: string, hostId
         // A live request's restoration runs inside this guard too, so a refusal there is recorded as its blocked reason.
         // A split record's files resolve to one door commit (splitLandedCommit) or to none: all are kept, or all restored.
         if (!isTerminal(current) && split?.door) landed = await splitLandedCommit(split.door.root, split.door.head, records);
+        // Wave B PR 5 (option B): only the strict door's own record restores a split unit's files; any other record refuses them.
+        if (!isTerminal(current) && !split?.door) for (const record of records) {
+          await assertSplitUnitMutable({ root: record.root, path: record.path, route: 'recovery', strict: binding.canonical_git === true, sourceId: current.source_id, slug: current.slug });
+        }
+        // A unit restores whole or not at all: every prior-file copy it would rename back verifies before any file changes.
+        if (!isTerminal(current) && (split ? landed === null : !!bundle)) for (const record of records) {
+          const actual = bundle ? bundleFileHash(record) : fileHash(record.path);
+          if (record.staging?.before && actual === record.afterHash && actual !== record.beforeHash) verifyBeforeStage(record);
+        }
         if (!isTerminal(current)) for (let index = 0; index < records.length; index++) {
           const record = records[index];
           hooks.fileBoundary?.('before_restore', current, index);
@@ -806,7 +820,7 @@ export async function recoverPublication(engine: BrainEngine, id: string, hostId
         if (!isTerminal(current) && split) await withFilesystemPublication([split.root], async () => removeEmptyPartsDir(records[0]!.path));
       }
       catch (error) {
-        if (!(error instanceof OperationError) || !['unexpected_staging_bytes','unexpected_file_bytes','storage_error'].includes(error.code)) throw error;
+        if (!(error instanceof OperationError) || !['unexpected_staging_bytes','unexpected_file_bytes','storage_error','split_page_unsupported'].includes(error.code)) throw error;
         const reason = error.code === 'unexpected_staging_bytes' ? error.code : 'unexpected_file_bytes';
         const [blocked] = await tx.executeRaw<WriteRequest>(`UPDATE persistence_requests SET
           state=CASE WHEN state IN ('committed','conflict','failed','cancelled') THEN state ELSE 'recovering' END,

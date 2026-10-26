@@ -10,11 +10,13 @@
  *    hand), as the planted bypasses below do, so a kept part Git never had can stay out of a commit.
  * 3. Static: TypeScript AST over the source, no database.
  *
- * Round 6 widens it to the publication routes: in coordinator.ts and group-publish.ts, a function that writes a page
- * file (publishFile, publishPersistenceFile) runs the unit-state check (split-files.ts assertSplitUnitIntact, or the
- * group's deferral to it, splitUnitTracked); one that restores files decides through splitLandedCommit, which searches
- * the whole unit in HEAD. It fails when a route writes without it, as the planted bypasses below do. The landed-commit search
- * itself (rev-list) must name the parts directory (partsDirFor), not only the record paths.
+ * Option B widens it to every door, effect and recovery route: in coordinator.ts, group-publish.ts and effect-git.ts, a
+ * function that writes, restores, removes or commits a page file (publishFile, publishPersistenceFile,
+ * restoreBeforeStage, commitThroughDoor, a git commit) runs the one split-unit check (split-unit-guard.ts
+ * assertSplitUnitMutable, its many-path form splitUnitRefusals, or the group's deferral through splitUnitMembers); one
+ * that restores files also decides a strict door record through splitLandedCommit, which searches the whole unit in
+ * HEAD. It fails when a route mutates without them, as the planted bypasses below do. The landed-commit search itself
+ * (rev-list) must name the parts directory (partsDirFor), not only the record paths.
  */
 import { describe, expect, test } from 'bun:test';
 import { readFileSync } from 'node:fs';
@@ -24,8 +26,6 @@ const DOOR_FILES = ['src/core/persistence/coordinator.ts', 'src/core/persistence
 const SINKS = ['commitThroughDoor', 'commitGitTargets'];
 const COMMIT = new RegExp(`\\b(${SINKS.join('|')})\\s*\\(|'rev-list'|'ls-tree'`);
 const SPLIT = /split|gbparts|partsDir|manifest\.parts/i;
-/** Round 6 unit-state readers: they list HEAD and the index to compare them with the disk, and commit nothing. */
-const STATE_READERS = ['readSplitUnitLayers', 'splitUnitTracked'];
 
 /** Named top-level functions (declarations, arrow or function constants, class methods) of a source text. */
 function functions(file: string, text: string): Array<{ name: string; body: string }> {
@@ -47,7 +47,7 @@ function functions(file: string, text: string): Array<{ name: string; body: stri
 /** The functions of `text` that commit or read a landed commit for a split page without splitUnitPaths. */
 export function splitUnitBypasses(file: string, text: string): string[] {
   return functions(file, text)
-    .filter(fn => fn.name !== 'splitUnitPaths' && !SINKS.includes(fn.name) && !STATE_READERS.includes(fn.name))
+    .filter(fn => fn.name !== 'splitUnitPaths' && !SINKS.includes(fn.name))
     .filter(fn => COMMIT.test(fn.body) && SPLIT.test(fn.body) && !/\bsplitUnitPaths\s*\(/.test(fn.body))
     .map(fn => `${file}:${fn.name}`);
 }
@@ -59,7 +59,7 @@ describe('split git layout: every split commit path set comes from splitUnitPath
 
   test('the check finds every function that commits or checks a landed commit for a split page', () => {
     const found = DOOR_FILES.flatMap(file => functions(file, readFileSync(file, 'utf8')).filter(fn => COMMIT.test(fn.body) && SPLIT.test(fn.body)).map(fn => fn.name));
-    expect(found).toEqual(expect.arrayContaining(['publishSplitGitEffect', 'splitLandedCommit']));
+    expect(found).toEqual(expect.arrayContaining(['publishMutation', 'splitLandedCommit']));
   });
 
   test('planted bypasses are caught: a door commit of the written files, a hand-joined manifest, a landed check without the unit', () => {
@@ -79,33 +79,34 @@ describe('split git layout: every split commit path set comes from splitUnitPath
   });
 });
 
-const PUBLICATION_FILES = ['src/core/persistence/coordinator.ts', 'src/core/persistence/group-publish.ts'];
-const WRITES_PAGE_FILE = /\b(publishFile|publishPersistenceFile)\s*\(/;
-const RESTORES = /before_restore|restoreBeforeStage/;
+const MUTATION_FILES = ['src/core/persistence/coordinator.ts', 'src/core/persistence/group-publish.ts', 'src/core/persistence/effect-git.ts'];
+const MUTATES = /\b(publishFile|publishPersistenceFile|restoreBeforeStage|commitThroughDoor)\s*\(|\['commit'|'commit',/;
+const GUARDED = /\b(assertSplitUnitMutable|splitUnitRefusals|splitUnitMembers)\s*\(/;
+const RESTORES = /before_restore|restoreBeforeStage\s*\(/;
 
 /**
- * The page publication routes of `text` that write a page file without the round 6 unit-state check: a publication
- * (publishMutation, publishGroup) calls assertSplitUnitIntact or defers to it through splitUnitTracked; a recovery that
- * restores files (recoverPublication) decides through splitLandedCommit, which searches the whole unit in HEAD.
+ * The door, effect and recovery routes of `text` that write, restore, remove or commit a page file without the one
+ * split-unit check (assertSplitUnitMutable, splitUnitRefusals, or the group's deferral through splitUnitMembers), and
+ * the restoring routes that do not also decide a strict door record through splitLandedCommit.
  */
-export function unitStateBypasses(file: string, text: string): string[] {
+export function unitGuardBypasses(file: string, text: string): string[] {
   return functions(file, text)
-    .filter(fn => fn.name !== 'publishFile' && WRITES_PAGE_FILE.test(fn.body))
-    .filter(fn => !(RESTORES.test(fn.body) ? /\bsplitLandedCommit\s*\(/ : /\b(assertSplitUnitIntact|splitUnitTracked)\s*\(/).test(fn.body))
+    .filter(fn => fn.name !== 'publishFile' && MUTATES.test(fn.body))
+    .filter(fn => !GUARDED.test(fn.body) || (RESTORES.test(fn.body) && !/\bsplitLandedCommit\s*\(/.test(fn.body)))
     .map(fn => `${file}:${fn.name}`);
 }
 
-describe('split git layout: every page publication route checks the unit HEAD, the index and the disk hold', () => {
-  test('the publication modules have no bypass', () => {
-    expect(PUBLICATION_FILES.flatMap(file => unitStateBypasses(file, readFileSync(file, 'utf8')))).toEqual([]);
+describe('split git layout: every door, effect and recovery route runs the one split-unit check', () => {
+  test('the mutation modules have no bypass', () => {
+    expect(MUTATION_FILES.flatMap(file => unitGuardBypasses(file, readFileSync(file, 'utf8')))).toEqual([]);
   });
 
-  test('the check sees the single, group and recovery routes', () => {
-    const found = PUBLICATION_FILES.flatMap(file => functions(file, readFileSync(file, 'utf8')).filter(fn => fn.name !== 'publishFile' && WRITES_PAGE_FILE.test(fn.body)).map(fn => fn.name));
-    expect(found).toEqual(expect.arrayContaining(['publishMutation', 'publishGroup', 'recoverPublication']));
+  test('the check sees the single, group, recovery and Git effect routes', () => {
+    const found = MUTATION_FILES.flatMap(file => functions(file, readFileSync(file, 'utf8')).filter(fn => fn.name !== 'publishFile' && MUTATES.test(fn.body)).map(fn => fn.name));
+    expect(found).toEqual(expect.arrayContaining(['publishMutation', 'publishGroup', 'recoverPublication', 'commitGitTargets']));
   });
 
-  test('planted bypasses are caught: a publication without the check, a group without the deferral, a restore without the unit search', () => {
+  test('planted bypasses are caught: a publication, a group, a restore, a Git effect commit and a restore without the door search', () => {
     const planted = `
       export async function publishMutation(engine, row, prepared, binding) {
         const split = await splitPublicationTargets(engine, prepared.file);
@@ -118,10 +119,16 @@ describe('split git layout: every page publication route checks the unit HEAD, t
         hooks.fileBoundary?.('before_restore', current, 0);
         publishFile(file, record.staging?.restoration?.path);
       }
-      async function checked(engine, row, prepared, binding) { await assertSplitUnitIntact(engine, row, prepared.file, binding); publishFile(prepared.file); }
-      async function deferred(binding, prepared) { if (await splitUnitTracked(binding, prepared)) return; publishPersistenceFile(prepared[0]); }
-      async function recovered(root, record) { await splitLandedCommit(root, null, [record]); restoreBeforeStage(record); publishFile(record); }`;
-    expect(unitStateBypasses('planted.ts', planted)).toEqual(['planted.ts:publishMutation', 'planted.ts:publishGroup', 'planted.ts:recoverPublication']);
+      export async function commitGitTargets(root, paths) {
+        await git(session, ['add', '--', ...paths]);
+        await git(session, ['commit', '--only', '-m', 'x', '--', ...paths]);
+      }
+      async function restoreWithoutDoorSearch(record) { await assertSplitUnitMutable({ root: record.root, path: record.path, route: 'recovery', strict: false }); restoreBeforeStage(record); }
+      async function checked(prepared) { await assertSplitUnitMutable({ root: prepared.file.root, path: prepared.file.path, route: 'door', strict: true }); publishFile(prepared.file); }
+      async function deferred(root, files) { if ((await splitUnitMembers(root, files)).size) return; publishPersistenceFile(files[0]); }
+      async function effect(root, paths) { const refused = await splitUnitRefusals({ root, paths, route: 'git_effect', strict: false }); await git(session, ['commit', '--only', '--', ...paths]); }
+      async function recovered(record) { await assertSplitUnitMutable({ root: record.root, path: record.path, route: 'recovery', strict: false }); await splitLandedCommit(record.root, null, [record]); restoreBeforeStage(record); }`;
+    expect(unitGuardBypasses('planted.ts', planted)).toEqual(['planted.ts:publishMutation', 'planted.ts:publishGroup', 'planted.ts:recoverPublication', 'planted.ts:commitGitTargets', 'planted.ts:restoreWithoutDoorSearch']);
   });
 });
 

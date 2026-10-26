@@ -14,7 +14,7 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { OperationError } from '../src/core/operations.ts';
-import { assertSplitUnitMutable, splitUnitPresent, type SplitUnitGuardInput } from '../src/core/persistence/split-unit-guard.ts';
+import { assertSplitUnitMutable, splitUnitPresent, splitUnitRefusals, type SplitUnitGuardInput } from '../src/core/persistence/split-unit-guard.ts';
 import { git, gitFixture, type GitFixture } from './helpers/git-publication.ts';
 
 let fixture: GitFixture | null = null;
@@ -49,6 +49,7 @@ describe('routes outside the strict door', () => {
       expect((await refusal({ root, path, route: 'write_through' }))?.reason).toBe('outside_door');
       expect((await refusal({ root, path, route: 'connector' }))?.reason).toBe('outside_door');
       expect((await refusal({ root, path, route: 'git_effect', strict: false }))?.reason).toBe('non_strict_source');
+      expect((await refusal({ root, path, route: 'git_effect', strict: true }))?.reason).toBe('outside_door');
       expect((await refusal({ root, path, strict: false }))?.reason).toBe('non_strict_source');
       expect((await refusal({ root, path, route: 'recovery' }))?.reason).toBe('recovery_unit_changed');
     }
@@ -64,6 +65,16 @@ describe('routes outside the strict door', () => {
     const fresh = fixture.root;
     expect(await refusal({ root: fresh, route: 'write_through' })).toBeNull();
     expect((await refusal({ root: fresh, strict: false, planned: [join(fresh, PART)] }))?.reason).toBe('non_strict_source');
+  });
+
+  test('a Git effect group gets one refusal per unit path and none for a plain page', async () => {
+    const { root } = unit();
+    writeFileSync(join(root, 'Notes/plain.md'), 'One file.\n');
+    rmSync(join(root, DIR), { recursive: true });
+    writeFileSync(join(root, 'Notes/other.md'), 'Other.\n');
+    const refused = await splitUnitRefusals({ root, paths: [join(root, HEAD), join(root, 'Notes/plain.md'), join(root, 'Notes/other.md')], route: 'git_effect', strict: false });
+    expect([...refused.keys()]).toEqual([join(root, HEAD)]);
+    expect(refused.get(join(root, HEAD))!.reason).toBe('non_strict_source');
   });
 
   test('a plain page and a path that cannot be a head pass on every route', async () => {

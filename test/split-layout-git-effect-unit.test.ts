@@ -1,24 +1,25 @@
 /**
- * Wave B PR 5 lane 5b: a split page's Git effect on a Git-durable source that is not strict commits the head and every
- * part file in one commit, or nothing (persistence/effect-git.ts publishSplitGitEffect).
+ * Wave B PR 5 (option B): only the strict publication door commits a split page. A Git effect never commits or removes
+ * a path of a split unit (persistence/effect-git.ts commitGitTargets runs split-unit-guard.ts splitUnitRefusals on every
+ * target), and the Git effect of a strict door publication only pushes.
  *
- * 1. Protects: no Git commit ever holds a split head without all of its parts. When the effect cannot commit the whole
- *    unit, it commits nothing of the page, leaves nothing staged, and parks with a typed code at once: a part a
- *    .gitignore rule excludes parks `git_target_ignored` naming the rule; a part changed after publication parks
- *    `split_page_incomplete`. The page row stays committed.
- * 2. Fails when: the head (or any other part) is committed while one part is refused, the refused unit leaves paths
- *    staged, or the effect retries and parks later under a generic code.
- * 3. PGLite always; PostgreSQL when DATABASE_URL is set. KB-sized split limits through __setSplitLimitsForTests; the
- *    checkout is changed at publication:before_commit, after the files are published and before the effect exists.
+ * 1. Protects: a non-strict source's queued Git effect whose page path became a split unit (a parts directory beside it,
+ *    put there outside gbrain) parks on its first attempt as split_page_unsupported (non_strict_source), keeping the
+ *    reason and its fix on the parked target, and commits and stages nothing; on a strict source the same check refuses
+ *    outside_door; a strict source's split publication lands in its door commit and its Git effect is push-only,
+ *    committing nothing else.
+ * 2. Fails when: a Git effect commits a head without its parts or a part without its head, a strict effect stages a
+ *    unit path itself, or the refusal is retried PARK_AFTER_FAILURES times instead of parking at once.
+ * 3. PGLite always; PostgreSQL when DATABASE_URL is set. KB-sized split limits through __setSplitLimitsForTests.
  */
 import { afterEach, describe, expect, test } from 'bun:test';
 import { randomUUID } from 'node:crypto';
-import { appendFileSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { BrainEngine } from '../src/core/engine.ts';
 import { operations, type OperationContext } from '../src/core/operations.ts';
+import { commitGitTargets } from '../src/core/persistence/effect-git.ts';
 import { runPersistenceEffects } from '../src/core/persistence/effects.ts';
-import { installFaultHook } from '../src/core/persistence/fault-points.ts';
 import { localHostId } from '../src/core/persistence/identity.ts';
 import { __setSplitLimitsForTests, partsDirFor, SPLIT_MAX_FILE_BYTES_KEY } from '../src/core/split-layout/index.ts';
 import { durableGitRepo, git } from './helpers/git-publication.ts';
@@ -30,8 +31,9 @@ const LIMITS = { thresholdMin: 1024, partTarget: 512, partMax: 1024, leadMax: 12
 const lines = Array.from({ length: 80 }, (_, i) => `Line ${String(i).padStart(4, '0')} of the split page body, long enough to fill a part.`);
 const content = `---\ntype: note\ntitle: Split example\n---\n\n${lines.join('\n')}\n`;
 const setup = ({ root }: { root: string }) => { writeFileSync(join(root, '.gitignore'), '\n'); durableGitRepo(root, ['.gitignore']); };
-const put = (ctx: OperationContext, slug: string) => operations.find(o => o.name === 'put_page')!.handler(ctx,
-  { slug, content, request_id: randomUUID(), wait_ms: 30_000 }) as Promise<Record<string, any>>;
+const strict = (engine: BrainEngine) => engine.executeRaw(`UPDATE sources SET config = config || '{"canonical":"git"}'::jsonb WHERE id='default'`);
+const put = (ctx: OperationContext, slug: string, body = content) => operations.find(o => o.name === 'put_page')!.handler(ctx,
+  { slug, content: body, request_id: randomUUID(), wait_ms: 30_000 }) as Promise<Record<string, any>>;
 
 /** Runs effects until the source's Git effects are all committed or failed; returns them. */
 async function settledGitEffects(engine: BrainEngine): Promise<Array<{ state: string; error_code: string | null; data: Record<string, any> }>> {
@@ -46,53 +48,55 @@ async function settledGitEffects(engine: BrainEngine): Promise<Array<{ state: st
   }
 }
 
-/** Puts a split page, running `tamper` once with its part file names at publication:before_commit. */
-async function splitPut(engine: BrainEngine, ctx: OperationContext, root: string, tamper: (dir: string, parts: string[]) => void): Promise<void> {
-  __setSplitLimitsForTests(LIMITS);
-  await engine.setConfig(SPLIT_MAX_FILE_BYTES_KEY, '2048');
-  let done = false;
-  installFaultHook(async point => {
-    if (point !== 'publication:before_commit' || done) return;
-    done = true;
-    const dir = partsDirFor(join(root, 'notes/big.md'));
-    tamper(dir, readdirSync(dir).sort());
-  });
-  expect(await put(ctx, 'notes/big')).toMatchObject({ state: 'committed' });
-  expect(done).toBe(true);
-}
-
 const pageCommits = (root: string) => git(root, 'log', '--format=%H', '--', 'notes/big.md', 'notes/.big.gbparts').split('\n').filter(Boolean);
 
-for (const backend of testBackends()) describe(`[${backend}] split git layout: the Git effect commits the whole unit or nothing`, () => {
+for (const backend of testBackends()) describe(`[${backend}] split git layout: only the strict door commits a split unit`, () => {
   const databaseUrl = backend === 'postgres' ? requirePostgresTestDatabase() : undefined;
-  afterEach(() => { installFaultHook(undefined); __setSplitLimitsForTests(null); });
+  afterEach(() => __setSplitLimitsForTests(null));
 
-  test('a part a .gitignore rule excludes: neither the head nor any part is committed; the effect parks git_target_ignored', () => managedBrain(async ({ engine, ctx, root }) => {
-    await splitPut(engine, ctx, root, (_dir, parts) => {
-      expect(parts.length).toBeGreaterThan(2);
-      appendFileSync(join(root, '.gitignore'), `notes/.big.gbparts/${parts[1]}\n`);
-    });
-    const effects = await settledGitEffects(engine);
-    expect(effects).toHaveLength(1);
-    expect(effects[0]).toMatchObject({ state: 'failed', error_code: 'targets_parked' });
-    expect(effects[0]!.data.parked).toEqual([expect.objectContaining({ error_code: 'git_target_ignored' })]);
+  test('a non-strict Git effect whose page path became a split unit parks at once as split_page_unsupported with its reason and fix, and commits nothing', () => managedBrain(async ({ engine, ctx, root }) => {
+    expect(await put(ctx, 'notes/big', '---\ntype: note\ntitle: Small\n---\n\nOne line.\n')).toMatchObject({ state: 'committed' });
+    mkdirSync(partsDirFor(join(root, 'notes/big.md')));
+    writeFileSync(join(partsDirFor(join(root, 'notes/big.md')), '0001-00000000.gbpart'), 'A part placed outside gbrain.\n');
+    await runPersistenceEffects(engine, { engine: engine.kind }, { hostId: localHostId(), limit: 10 });
+    const [effect, ...rest] = await engine.executeRaw<{ state: string; error_code: string | null; attempts: number; data: unknown }>(
+      "SELECT state, error_code, attempts, data FROM persistence_effects WHERE source_id='default' AND kind='git'");
+    expect(rest).toEqual([]);
+    const data = typeof effect!.data === 'string' ? JSON.parse(effect!.data) : effect!.data as Record<string, any>;
+    console.log('R7_PARK', JSON.stringify({ backend, state: effect!.state, error_code: effect!.error_code, attempts: effect!.attempts, parked: data.parked }));
+    expect({ state: effect!.state, error_code: effect!.error_code, attempts: effect!.attempts }).toEqual({ state: 'failed', error_code: 'targets_parked', attempts: 1 });
+    expect(data.target_failures).toBeUndefined();
+    expect(data.parked).toEqual([{ slug: 'notes/big', error_code: 'split_page_unsupported', reason: 'non_strict_source',
+      fix: expect.objectContaining({ ask_user: true, verify: { argv: ['gbrain', 'sources', 'writer', 'status', '--json'] } }) }]);
     expect(pageCommits(root)).toEqual([]);
     expect(git(root, 'diff', '--cached', '--name-only')).toBe('');
-    expect(await engine.readPageSnapshot('notes/big', { sourceId: 'default' })).not.toBeNull();
   }, { databaseUrl, setup }), 120_000);
 
-  test('a part changed before the effect runs: neither the head nor any part is committed; the effect parks split_page_incomplete', () => managedBrain(async ({ engine, ctx, root }) => {
-    await splitPut(engine, ctx, root, (dir, parts) => {
-      const path = join(dir, parts[0]!);
-      const bytes = readFileSync(path, 'utf8');
-      writeFileSync(path, (bytes[0] === 'X' ? 'Y' : 'X') + bytes.slice(1));
-    });
-    const effects = await settledGitEffects(engine);
-    expect(effects).toHaveLength(1);
-    expect(effects[0]).toMatchObject({ state: 'failed', error_code: 'targets_parked' });
-    expect(effects[0]!.data.parked).toEqual([expect.objectContaining({ error_code: 'split_page_incomplete' })]);
+  test('on a strict source the Git effect check refuses a unit path outside_door and stages nothing', () => managedBrain(async ({ root }) => {
+    __setSplitLimitsForTests(LIMITS);
+    mkdirSync(join(root, 'notes'), { recursive: true });
+    writeFileSync(join(root, 'notes/big.md'), 'A head placed outside gbrain.\n');
+    mkdirSync(partsDirFor(join(root, 'notes/big.md')));
+    writeFileSync(join(partsDirFor(join(root, 'notes/big.md')), '0001-00000000.gbpart'), 'A part placed outside gbrain.\n');
+    const outcomes = await commitGitTargets(root, ['notes/big.md', 'notes/.big.gbparts/0001-00000000.gbpart'], undefined, undefined, undefined, true);
+    expect([...outcomes.values()].map(outcome => (outcome as { code?: string; reason?: string }))).toEqual([
+      expect.objectContaining({ code: 'split_page_unsupported', reason: 'outside_door' }), expect.objectContaining({ code: 'split_page_unsupported', reason: 'outside_door' })]);
     expect(pageCommits(root)).toEqual([]);
     expect(git(root, 'diff', '--cached', '--name-only')).toBe('');
-    expect(await engine.readPageSnapshot('notes/big', { sourceId: 'default' })).not.toBeNull();
+  }, { databaseUrl, setup }), 120_000);
+
+  test('a strict split publication lands in its door commit; its Git effect only pushes', () => managedBrain(async ({ engine, ctx, root }) => {
+    __setSplitLimitsForTests(LIMITS);
+    await strict(engine);
+    await engine.setConfig(SPLIT_MAX_FILE_BYTES_KEY, '2048');
+    expect(await put(ctx, 'notes/big')).toMatchObject({ state: 'committed' });
+    const commits = pageCommits(root);
+    expect(commits).toHaveLength(1);
+    const parts = readdirSync(partsDirFor(join(root, 'notes/big.md'))).sort();
+    expect(parts.length).toBeGreaterThan(2);
+    const effects = await settledGitEffects(engine);
+    expect(effects).toEqual([expect.objectContaining({ state: 'committed', data: expect.objectContaining({ push_only: true }) })]);
+    expect(pageCommits(root)).toEqual(commits);
+    expect(git(root, 'status', '--porcelain')).toBe('');
   }, { databaseUrl, setup }), 120_000);
 });

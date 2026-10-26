@@ -25,7 +25,11 @@ import { requirePostgresTestDatabase, testBackends } from './helpers/test-backen
 const LIMITS = { thresholdMin: 1024, partTarget: 512, partMax: 1024, leadMax: 128, partCountMax: 500 };
 const lines = (from: number, to: number) => Array.from({ length: to - from }, (_, i) => `Line ${String(from + i).padStart(4, '0')} of the split page body, long enough to fill a part.`);
 const page = (body: string[]) => `---\ntype: note\ntitle: Split example\n---\n\n${body.join('\n')}\n`;
-const setup = ({ root }: { root: string }) => { writeFileSync(join(root, '.gitignore'), '\n'); durableGitRepo(root, ['.gitignore']); };
+/** Option B: only a git-canonical source lays a page out as a split unit, so every fixture source is strict (canonical = git). */
+const setup = async ({ engine, root }: { engine: BrainEngine; root: string }) => {
+  writeFileSync(join(root, '.gitignore'), '\n'); durableGitRepo(root, ['.gitignore']);
+  await engine.executeRaw(`UPDATE sources SET config = config || '{"canonical":"git"}'::jsonb WHERE id='default'`);
+};
 const put = (ctx: OperationContext, slug: string, content: string, expectedRevision?: string) => operations.find(o => o.name === 'put_page')!.handler(ctx,
   { slug, content, request_id: randomUUID(), wait_ms: 30_000, ...(expectedRevision ? { expected_revision: expectedRevision } : {}) }) as Promise<Record<string, any>>;
 const sha = (path: string) => statSync(path).isFile() ? createHash('sha256').update(readFileSync(path)).digest('hex') : 'dir';

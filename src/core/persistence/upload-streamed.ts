@@ -11,12 +11,14 @@
  * a trusted local writer takes the source owner's tier, as a local `put --file` streamed on an unmanaged brain does. An
  * always-loaded core page (before or after) refuses: the core guard renders the page whole.
  *
- * Git is the parent: on a source bound to a worktree the upload publishes its canonical file before its row, as put_page
- * does (`prepareFileTarget`). The file is the stored page's render (`uploadPageFile`), built from the import's
- * outputs and streamed from the staged upload parts, with no database write before Git has it; over the split threshold the publication lays it out as a head and parts (split-files.ts), which a strict
- * source's door commits before the row commits and a durable source's Git effect commits after. A page the source
- * declares database-only (a `storage.db_only` path, a privacy class, an ignored target) and an unbound source publish
- * database-only as before, and a strict source refuses an undeclared database-only row (G7a, git-declared.ts).
+ * Git is the parent: on a git-canonical source (canonical: git) bound to a worktree the upload publishes its canonical file
+ * before its row, as put_page does (`prepareFileTarget`). The file is the stored page's render (`uploadPageFile`), built
+ * from the import's outputs and streamed from the staged upload parts, with no database write before Git has it; over the
+ * split threshold the publication lays it out as a head and parts (split-files.ts), which the source's door commits before
+ * the row commits. A page the source declares database-only (a `storage.db_only` path, a privacy class, an ignored
+ * target) publishes database-only, and the source refuses an undeclared database-only row (G7a, git-declared.ts). Any
+ * other source, bound or not, publishes the upload database-only (`db_only`) as before: its canonical file is not
+ * written from this path (Wave B PR 5 option B).
  */
 import { lstat, mkdtemp, open, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -48,6 +50,7 @@ import { scannerSlugRootMode, scannerSourcePath } from '../write-through.ts';
 import { ownerSourceGateInput, writeTrustOfGate } from './attribution.ts';
 import { StreamedFileContent } from './large-file.ts';
 import { bindOrigin } from './origin-guard.ts';
+import { sourceCanonicalGit } from './git-door.ts';
 import { pageDatabaseOnlyPublication, prepareFileTarget, unreadPageFile } from './page-prepare.ts';
 import { pageIdentityError } from './page-identity.ts';
 import { remoteLinkHint } from './page-advisories.ts';
@@ -236,7 +239,9 @@ export async function prepareStreamedUpload(engine: BrainEngine, row: WriteReque
     throw opError('revision_conflict', 'The page changed during upload preparation.', `Page ${row.slug} changed while this upload was prepared, so nothing was written. Read the page and upload again against its current revision.`);
   }
   const pageTrust = remote ? trust : writeTrustOfGate(await ownerSourceGateInput(engine, row.source_id, prepared.frontmatter));
-  const target = await uploadFileTarget(engine, row, ref, snapshot, prepared);
+  // Wave B PR 5 (option B): only a git-canonical source writes the upload's file (and lays it out as a head plus parts);
+  // any other source publishes it database-only, as before.
+  const target = await sourceCanonicalGit(engine, row.source_id) ? await uploadFileTarget(engine, row, ref, snapshot, prepared) : { file: undefined, bind: async () => {} };
   const mutation: PreparedMutation = { observedRevision: prepared.observedRevision, noop: prepared.noop, ...(pageTrust ? { trust: pageTrust } : {}),
     file: target.file, ...await pageDatabaseOnlyPublication(engine, row, target.file),
     ...(prepared.afterCommit ? { afterCommit: prepared.afterCommit } : {}),

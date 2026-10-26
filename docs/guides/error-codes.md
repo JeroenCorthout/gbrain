@@ -4029,16 +4029,6 @@ More: [docs/guides/write-refusals.md#slug_page_mismatch](../../docs/guides/write
 |---|---|---|---|---|---|---|
 | Split bad ratio. | The request itself was wrong or no longer matches the brain; nothing was changed. | Correct the request using the message above, then retry. | agent | `repeat the read that failed` | 1 | no |
 
-### split_git_attributes
-
-<a id="split_git_attributes"></a>
-
-| Meaning | Why | Next step | Who acts · consent | Verify | Exit | Retryable |
-|---|---|---|---|---|---|---|
-| A page write would write or commit a split page (a head file plus part files in a .<name>.gbparts directory) whose files Git would store as other bytes: a .gitattributes text, eol, filter or working-tree-encoding attribute, a diff driver with a textconv, or core.autocrlf applies to the head or a part. Nothing was written; a door commit or Git effect that finds it commits nothing. | A split page's head manifest hashes every part and the head's own lead byte for byte, so a part Git converts on commit (CRLF to LF, a clean filter, an LFS pointer, a re-encoding) would be committed as bytes no checkout can reassemble into the page. gbrain never stages around the attributes; whether the rule should cover these files is the user's decision. | Ask the user to narrow the .gitattributes rule (or core.autocrlf) so the page head file and its .gbparts directory get none of those attributes, for example a later line giving those paths -text -filter -diff; commit it, then submit the write again with a new request_id. For a parked split Git effect, run gbrain sources writer retry-effects for the source with --parked-code split_git_attributes once the rule is fixed. Run: gbrain sources writer status --source '{source_id}' --json | user | `repeat the read that failed` | 1 | no |
-
-More: [docs/guides/write-refusals.md#split_git_attributes](../../docs/guides/write-refusals.md#split_git_attributes)
-
 ### split_head_content
 
 <a id="split_head_content"></a>
@@ -4090,16 +4080,6 @@ More: [docs/guides/write-refusals.md#split_page_unsupported](../../docs/guides/w
 | A split page's parts directory holds something that is not a part file (a file not named NNNN-<sha8>.gbpart, a subdirectory or a symlink), or is not a plain directory, so the page's files were not written and nothing in it was removed. | A write over a split page rewrites its head and parts and removes every other part file in the directory. An entry that is not a part file is nobody's part, so gbrain will not plan around it or delete it; what it is and whether it may go is the user's decision. | Ask the user what the entry is, move it out of the parts directory (or remove it if they agree), then submit the write again with a new request_id. Run: gbrain doctor --only split_layout --json | user | `repeat the read that failed` | 1 | no |
 
 More: [docs/guides/write-refusals.md#split_parts_unexpected](../../docs/guides/write-refusals.md#split_parts_unexpected)
-
-### split_unit_diverged
-
-<a id="split_unit_diverged"></a>
-
-| Meaning | Why | Next step | Who acts · consent | Verify | Exit | Retryable |
-|---|---|---|---|---|---|---|
-| A page write found its split page files (the head at the page's path and everything in its .<name>.gbparts directory) held differently by Git HEAD, the index and the disk: a change made outside gbrain and not committed, such as a split page converted to one file by hand, a part edited or removed, or a removal staged with git rm --cached. Nothing was written, staged or committed. | A split page is one unit in Git: its head and every part commit together. Publishing over a unit whose committed, staged and on-disk states disagree would have to pick one of them, and any pick either commits a plain head beside obsolete parts or discards the uncommitted change. Which version is right is the user's decision, so the write refuses instead of reconciling them. | Ask the user which version is right: commit the hand edit with gbrain git commit-push and the head path and its .gbparts directory as the paths, or restore the head and its parts from HEAD (git restore --staged --worktree --source=HEAD followed by the same paths); then run gbrain sync for the source with --no-pull and submit the write again with a new request_id. Run: gbrain sources writer status --source '{source_id}' --json | user | `repeat the read that failed` | 1 | no |
-
-More: [docs/guides/write-refusals.md#split_unit_diverged](../../docs/guides/write-refusals.md#split_unit_diverged)
 
 ### split_unparseable
 

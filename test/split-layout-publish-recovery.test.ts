@@ -44,7 +44,11 @@ const interruption = (code: string) => Object.assign(new Error(`database interru
 const put = (ctx: OperationContext, slug: string, content: string, expectedRevision?: string, requestId = randomUUID()) =>
   op('put_page').handler(ctx, { slug, content, request_id: requestId, wait_ms: 30_000, ...(expectedRevision ? { expected_revision: expectedRevision } : {}) }) as Promise<Record<string, any>>;
 const snapshotOf = async (engine: BrainEngine, slug: string) => (await engine.readPageSnapshot(slug, { sourceId: 'default' }))!;
-const setup = ({ root }: { root: string }) => { writeFileSync(join(root, '.gitignore'), '\n'); durableGitRepo(root, ['.gitignore']); };
+/** Option B: only a git-canonical source lays a page out as a split unit, so every fixture source is strict (canonical = git). */
+const setup = async ({ engine, root }: { engine: BrainEngine; root: string }) => {
+  writeFileSync(join(root, '.gitignore'), '\n'); durableGitRepo(root, ['.gitignore']);
+  await engine.executeRaw(`UPDATE sources SET config = config || '{"canonical":"git"}'::jsonb WHERE id='default'`);
+};
 const strict = (engine: BrainEngine) => engine.executeRaw(`UPDATE sources SET config = config || '{"canonical":"git"}'::jsonb WHERE id='default'`);
 /** Every file of the split unit at rel: the head and each file of its parts directory (a publication's own staging aside), with their bytes. */
 const unit = (root: string, rel: string): Record<string, string> => {

@@ -3,8 +3,9 @@
  * prepared against (persistence/split-files.ts `expectedParts`, `splitFilesChanged`, `splitKeptPartsChanged`).
  *
  * 1. Protects: a write carries the verified manifest of the head it read (every part with its SHA-256) from preparation
- *    to publication. A part edited by hand after preparation, whether the write would rewrite it or keep it, refuses
- *    `source_changed` as an edited single file does: nothing is written, and the edit stays on disk. A part the
+ *    to publication. A part edited by hand after preparation, whether the write would rewrite it or keep it, refuses:
+ *    `split_page_unsupported` (unit_diverged) when the edit precedes the door's split-unit check, `source_changed` as an
+ *    edited single file does after it; nothing is written, and the edit stays on disk. A part the
  *    publication keeps unwritten is rechecked under the lock, in the publication transaction, like every file it writes.
  * 2. Fails when: the publication plans against the directory as it finds it at publication (so a hand edit to a part
  *    is overwritten, or a kept part that changed is left under a head that no longer describes it).
@@ -27,7 +28,11 @@ import { requirePostgresTestDatabase, testBackends } from './helpers/test-backen
 const LIMITS = { thresholdMin: 1024, partTarget: 512, partMax: 1024, leadMax: 128, partCountMax: 500 };
 const lines = (from: number, to: number) => Array.from({ length: to - from }, (_, i) => `Line ${String(from + i).padStart(4, '0')} of the split page body, long enough to fill a part.`);
 const page = (body: string[]) => `---\ntype: note\ntitle: Split example\n---\n\n${body.join('\n')}\n`;
-const setup = ({ root }: { root: string }) => { writeFileSync(join(root, '.gitignore'), '\n'); durableGitRepo(root, ['.gitignore']); };
+/** Option B: only a git-canonical source lays a page out as a split unit, so every fixture source is strict (canonical = git). */
+const setup = async ({ engine, root }: { engine: BrainEngine; root: string }) => {
+  writeFileSync(join(root, '.gitignore'), '\n'); durableGitRepo(root, ['.gitignore']);
+  await engine.executeRaw(`UPDATE sources SET config = config || '{"canonical":"git"}'::jsonb WHERE id='default'`);
+};
 const put = (ctx: OperationContext, slug: string, content: string, expectedRevision?: string) => operations.find(o => o.name === 'put_page')!.handler(ctx,
   { slug, content, request_id: randomUUID(), wait_ms: 30_000, ...(expectedRevision ? { expected_revision: expectedRevision } : {}) }) as Promise<Record<string, any>>;
 const sha = (path: string) => createHash('sha256').update(readFileSync(path)).digest('hex');
@@ -63,9 +68,10 @@ for (const backend of testBackends()) describe(`[${backend}] split git layout: p
   afterEach(() => { installFaultHook(undefined); __setSplitLimitsForTests(null); });
 
   for (const point of ['consumer:prepared', 'publication:prepared'] as const) {
-    test(`a part the write keeps, edited at ${point}, refuses source_changed: nothing is written and the edit stays`, () => managedBrain(async ({ engine, ctx, root }) => {
+    test(`a part the write keeps, edited at ${point}, refuses: nothing is written and the edit stays`, () => managedBrain(async ({ engine, ctx, root }) => {
       const { refused, before, firstPart, edited } = await appendWithEditedPart(engine, ctx, root, point);
-      expect(refused).toMatchObject({ code: 'source_changed' });
+      // An edit before the publication's split-unit check is a unit HEAD and the disk disagree on (option B); one after it is drift.
+      expect(refused).toMatchObject(point === 'consumer:prepared' ? { code: 'split_page_unsupported', reason: 'unit_diverged' } : { code: 'source_changed' });
       expect(readFileSync(firstPart, 'utf8')).toBe(edited);
       const after = unit(root, 'notes/big.md');
       expect(after.head).toBe(before.head);
