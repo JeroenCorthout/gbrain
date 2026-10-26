@@ -446,6 +446,7 @@ test/sources-resolve-path.test.ts
 test/split-layout-classic-bound-writer.test.ts
 test/split-layout-command.test.ts
 test/split-layout-doctor.test.ts
+test/split-layout-door-refusals.test.ts
 test/split-layout-facts.test.ts
 test/split-layout-file-repair.test.ts
 test/split-layout-git-attributes.test.ts
