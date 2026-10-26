@@ -4,10 +4,10 @@
  * removes. The strict door commit, the split Git effect and landed-commit recovery (split-files.ts `splitLandedCommit`)
  * all use it.
  *
- * 1. Protects: (a) a committed ordinary page whose worktree copy was turned into an equivalent head plus parts without
- *    committing them; a title edit on a strict source reports `committed` and HEAD holds the head with every manifest part
- *    (the parts it kept unwritten included) and nothing else in the parts directory; (b) the same on a non-strict source
- *    through the split Git effect; (c) recovery reads a door commit missing a part the head lists (one only on disk) as not
+ * 1. Protects: (a, b) a committed ordinary page whose worktree copy was turned into an equivalent head plus parts without
+ *    committing them is a divergence the door did not produce (round 6, split_unit_diverged): a title edit on a strict
+ *    or a non-strict source refuses and leaves the disk, the index and HEAD as they were, rather than committing the
+ *    hand conversion; (c) recovery reads a door commit missing a part the head lists (one only on disk) as not
  *    landed as published (`recovery_required`), and one holding the whole unit as landed.
  * 2. Fails when: a commit's paths are only the files the write wrote or removed, so a kept part Git never had stays out
  *    of HEAD (a fresh checkout cannot reassemble the page), or recovery accepts such a commit.
@@ -46,6 +46,13 @@ function expectHeadHoldsUnit(root: string): void {
   for (const part of parsed.manifest.parts) expect(sha(Buffer.from(git(root, 'show', `HEAD:notes/.probe.gbparts/${part.path.slice(part.path.indexOf('/') + 1)}`), 'utf8'))).toBe(part.sha256);
 }
 
+/** The unit's bytes in each state: the head and parts on disk, the index entries and HEAD's tree under notes/. */
+function unitBytes(root: string) {
+  const head = join(root, 'notes/probe.md'), dir = partsDirFor(head);
+  return { head: sha(readFileSync(head)), parts: Object.fromEntries(readdirSync(dir).sort().map(name => [name, sha(readFileSync(join(dir, name)))])),
+    index: git(root, 'ls-files', '-s', '--', 'notes'), tree: git(root, 'ls-tree', '-r', 'HEAD', '--', 'notes') };
+}
+
 /** A committed ordinary page whose worktree copy is now an equivalent head plus parts, none of them committed. */
 async function convertedNotCommitted(engine: BrainEngine, ctx: OperationContext, root: string): Promise<string> {
   __setSplitLimitsForTests(LIMITS);
@@ -62,19 +69,16 @@ for (const backend of testBackends()) describe(`[${backend}] split git layout: e
   const databaseUrl = backend === 'postgres' ? requirePostgresTestDatabase() : undefined;
   afterEach(() => __setSplitLimitsForTests(null));
 
-  test('(a) strict: a title edit over a converted, never-committed layout commits the head with every manifest part and nothing else', () => managedBrain(async ({ engine, ctx, root }) => {
-    await engine.executeRaw(`UPDATE sources SET config = config || '{"canonical":"git"}'::jsonb WHERE id='default'`);
+  // Round 6 ("refuse rather than reconcile"): a layout converted on disk and never committed is a divergence the door did
+  // not produce, so the write refuses with split_unit_diverged and every byte stays: the disk, the index and HEAD.
+  for (const strict of [true, false]) test(`(${strict ? 'a' : 'b'}) ${strict ? 'strict' : 'non-strict'}: a title edit over a converted, never-committed layout refuses and leaves the disk, the index and HEAD as they were`, () => managedBrain(async ({ engine, ctx, root }) => {
+    if (strict) await engine.executeRaw(`UPDATE sources SET config = config || '{"canonical":"git"}'::jsonb WHERE id='default'`);
     const revision = await convertedNotCommitted(engine, ctx, root);
-    const result = await put(ctx, page('Retitled example'), revision);
-    expect(result).toMatchObject({ state: 'committed' });
-    expectHeadHoldsUnit(root);
-  }, { databaseUrl, setup }), 120_000);
-
-  test('(b) non-strict: the split Git effect commits the head with every manifest part and nothing else', () => managedBrain(async ({ engine, ctx, root }) => {
-    const revision = await convertedNotCommitted(engine, ctx, root);
-    expect(await put(ctx, page('Retitled example'), revision)).toMatchObject({ state: 'committed' });
+    const before = unitBytes(root);
+    expect(await put(ctx, page('Retitled example'), revision).then(() => null, error => error.code)).toBe('split_unit_diverged');
     await settleManagedGitEffects(engine);
-    expectHeadHoldsUnit(root);
+    expect(unitBytes(root)).toEqual(before);
+    expect((await engine.readPageSnapshot('notes/probe', { sourceId: 'default' }))!.revision).toBe(revision);
   }, { databaseUrl, setup }), 120_000);
 
   test('(c) recovery: a door commit missing a part the head lists is not landed as published; the whole unit is', () => managedBrain(async ({ root }) => {

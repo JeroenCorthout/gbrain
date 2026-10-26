@@ -447,6 +447,7 @@ test/split-layout-command.test.ts
 test/split-layout-doctor.test.ts
 test/split-layout-facts.test.ts
 test/split-layout-file-repair.test.ts
+test/split-layout-git-attributes.test.ts
 test/split-layout-git-blobs.test.ts
 test/split-layout-git-effect-unit.test.ts
 test/split-layout-head-content.test.ts
@@ -462,10 +463,12 @@ test/split-layout-publish-recovery.test.ts
 test/split-layout-publish.test.ts
 test/split-layout-raw-readers.test.ts
 test/split-layout-raw-writers.test.ts
+test/split-layout-recovery-whole-unit.test.ts
 test/split-layout-renamed-head.test.ts
 test/split-layout-reserved-key.test.ts
 test/split-layout-sync.test.ts
 test/split-layout-unit-commit.test.ts
+test/split-layout-unit-diverged.test.ts
 test/split-layout-withdrawal-mirror.test.ts
 test/split-layout-write-through.test.ts
 test/stats-health-source-scope.test.ts
