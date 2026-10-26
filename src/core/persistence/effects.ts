@@ -6,7 +6,7 @@ import { targetedWithdrawalEffect, upgradeWithdrawalEffect } from './effect-targ
 import { existsSync, statSync } from 'node:fs';
 import { join, relative, sep } from 'node:path';
 import type { BrainEngine } from '../engine.ts';
-import { isPersistenceDeclaration, PERSISTENCE_PROTOCOL_PREDICATE } from './protocol.ts';
+import { declarePersistenceProtocol, isPersistenceDeclaration, PERSISTENCE_PROTOCOL_PREDICATE } from './protocol.ts';
 import type { GBrainConfig } from '../config.ts';
 import type { PageSnapshot } from '../page-state/types.ts';
 import { OperationError, opError } from '../ops/contract.ts';
@@ -167,6 +167,7 @@ async function recordSkippedTarget(engine: BrainEngine, effect: PersistenceEffec
 /** Record a scan target as skipped and move past it without writing the page or its file. */
 async function skipTarget(engine: BrainEngine, effect: PersistenceEffect, snapshot: PageSnapshot, reason: SkippedTarget['reason']): Promise<void> {
   await engine.transaction(async tx => {
+    await declarePersistenceProtocol(tx);
     await recordSkippedTarget(tx, effect, { slug: snapshot.page.slug, reason });
     await finishPage(tx, effect, snapshot);
   });
