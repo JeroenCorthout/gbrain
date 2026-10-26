@@ -1628,7 +1628,7 @@ export class PostgresEngine implements BrainEngine {
     return quoteIdentifier(col.name);
   }
 
-  async countStaleChunks(opts?: { sourceId?: string; signature?: string; includeNullSignature?: boolean }): Promise<number> {
+  async countStaleChunks(opts?: { sourceId?: string; signature?: string; includeNullSignature?: boolean; excludeSegmented?: boolean }): Promise<number> {
     const column = (await resolveActiveEmbeddingColumnFromEngine(this, { fallbackToLegacy: true })).name;
     return this.withScopedReadTransaction(undefined, opts?.sourceId, tx => chunksImpl.countStaleChunks(scopedRead(this.engineSqlOn(tx)), column, opts));
   }
@@ -1659,6 +1659,7 @@ export class PostgresEngine implements BrainEngine {
     sourceId?: string;
     orderBy?: 'page_id' | 'updated_desc';
     afterUpdatedAt?: string | null;
+    excludeSegmented?: boolean;
   }): Promise<StaleChunkRow[]> {
     const column = (await resolveActiveEmbeddingColumnFromEngine(this, { fallbackToLegacy: true })).name;
     return this.withScopedReadTransaction(undefined, opts?.sourceId, tx => chunksImpl.listStaleChunks(scopedRead(this.engineSqlOn(tx)), column, opts));
