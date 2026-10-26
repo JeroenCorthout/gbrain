@@ -464,6 +464,7 @@ test/split-layout-raw-writers.test.ts
 test/split-layout-renamed-head.test.ts
 test/split-layout-reserved-key.test.ts
 test/split-layout-sync.test.ts
+test/split-layout-unit-commit.test.ts
 test/split-layout-withdrawal-mirror.test.ts
 test/split-layout-write-through.test.ts
 test/stats-health-source-scope.test.ts

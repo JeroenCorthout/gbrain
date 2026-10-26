@@ -32,7 +32,7 @@ import { FRONTMATTER_HEAD_MAX_BYTES, SEGMENT_MAX_BYTES } from '../page-body/limi
 import { assertNoPartsKey, headBodyFor, parseHead, partFilePath, partsDirFor, planSplit, PART_FILE_RE, reassemble, splitLimits, SplitLayoutError, splitNotice, splitScratchPath, splitThresholdBytes, type ParsedHead, type SplitPlan } from '../split-layout/index.ts';
 import type { MutationFile } from './bundle-files.ts';
 import type { PageMutationFile } from './coordinator.ts';
-import { git, withSession } from './effect-git.ts';
+import { git, splitUnitPaths, withSession } from './effect-git.ts';
 import { SPLIT_GIT_EFFECT_VERSION } from './effect-model.ts';
 import { fileContentBytes, FileBytes, hashFile, isStreamedContent, type StreamedFileContent } from './large-file.ts';
 import type { FileRecoveryRecord, RecoveryRecord, SplitRecoveryRecord, WriteRequest } from './model.ts';
@@ -444,6 +444,18 @@ export async function splitLandedCommit(root: string, doorHead: string | null, f
       const worktree = await git(session, ['hash-object', '--', `./${rels[index]}`], false);
       if (worktree.code !== 0) throw gitFailed('git hash-object');
       if (worktree.stdout.trim() !== blob.stdout.trim()) throw unlike();
+    }
+    // The whole unit (splitUnitPaths): the commit holds every part the published head lists, kept parts included, as on disk, and nothing else in its parts directory.
+    const unit = await splitUnitPaths(session, root, files[0]!.path, () => unlike(), { staged: true });
+    const held = await git(session, ['ls-tree', '-r', '-z', '--name-only', commit, '--', unit.partsDir], false);
+    if (held.code !== 0) throw gitFailed('git ls-tree');
+    const inCommit = held.stdout.split('\0').filter(Boolean);
+    if (inCommit.length !== unit.parts.length || inCommit.some(path => !unit.parts.includes(path))) throw unlike();
+    for (const part of unit.parts) {
+      const [blob, worktree] = await Promise.all([git(session, ['rev-parse', '--verify', '--quiet', `${commit}:./${part}`], false), git(session, ['hash-object', '--', `./${part}`], false)]);
+      if (blob.code !== 0 && blob.code !== 1) throw gitFailed('git rev-parse');
+      if (worktree.code !== 0) throw gitFailed('git hash-object');
+      if (blob.code !== 0 || worktree.stdout.trim() !== blob.stdout.trim()) throw unlike();
     }
     return commit;
   }).catch(error => { throw error instanceof OperationError ? error : gitFailed('git'); });

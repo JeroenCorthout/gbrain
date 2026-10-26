@@ -462,32 +462,46 @@ export async function publishGitEffect(root: string, relativePath: string, signa
 }
 
 
+/** A split page's Git unit (splitUnitPaths), relative to the root, `/`-separated. */
+export interface SplitUnit { head: string; parts: string[]; stale: string[]; partsDir: string }
+
 /**
- * Wave B PR 5: the paths a split page's Git effect commits with its head (relative to `root`): every part the head on disk
- * lists, once they verify, and every tracked file in its parts directory that is gone from disk (parts a later layout
- * dropped, or all of them once the page is one file again). A head whose parts do not verify refuses
- * (`split_page_incomplete`), so the effect parks instead of committing a head without its parts.
+ * Wave B PR 5: the one path set every commit of a split page uses: the strict door commit (coordinator.ts), landed-commit
+ * recovery (split-files.ts `splitLandedCommit`) and the split Git effect (`publishSplitGitEffect`). `head`, then
+ * `parts`: every part the head on disk lists (resolved from the current head, verified, each on disk), whether or not
+ * the write rewrote it; `stale`: every other path Git holds under the parts directory (in HEAD or the index) that is
+ * gone from disk, which the commit removes; so the commit's tree holds the head with every manifest part and nothing else
+ * there. A head whose parts do not verify refuses through `refuse` (`split_page_incomplete` by default). `staged`
+ * (the door commit and recovery, while the publication's staging and before-copies may still sit in the parts directory)
+ * accepts unlisted entries there once every listed part matches; they are never committed.
  */
-async function splitUnitPaths(session: GitSession, root: string, head: string): Promise<string[]> {
+export async function splitUnitPaths(session: GitSession, root: string, head: string,
+  refuse: (reason: string) => Error = reason => splitUnitIncomplete(head, reason), opts: { staged?: boolean } = {}): Promise<SplitUnit> {
+  const rel = (path: string) => relative(root, path).split(sep).join('/');
   const headPath = resolvePath(root, head);
-  const partsDir = partsDirFor(headPath);
-  const listed: string[] = [];
+  const partsDir = rel(partsDirFor(headPath));
+  const parts: string[] = [];
   if (existsSync(headPath)) {
     const parsed = parseHead(readFileSync(headPath, 'utf8'));
-    if (parsed && 'error' in parsed) throw splitUnitIncomplete(head, parsed.error.reason);
+    if (parsed && 'error' in parsed) throw refuse(parsed.error.reason);
     if (parsed) {
       const verdict = verifyParts(headPath, parsed);
-      if (!verdict.ok) throw splitUnitIncomplete(head, verdict.reason);
-      const parts = parsed.manifest.parts.map(part => partFilePath(headPath, part.path));
-      const absent = parts.find(path => !existsSync(path));
-      if (absent) throw splitUnitIncomplete(head, `part ${relative(root, absent).split(sep).join('/')} the head lists is not on disk`);
-      listed.push(...parts.map(path => relative(root, path).split(sep).join('/')));
+      const extrasOnly = !verdict.ok && verdict.code === 'split_page_incomplete' && !verdict.missing.length && !verdict.mismatched.length && verdict.extra.length > 0;
+      if (!verdict.ok && !(opts.staged && extrasOnly)) throw refuse(verdict.reason);
+      const listed = parsed.manifest.parts.map(part => partFilePath(headPath, part.path));
+      const absent = listed.find(path => !existsSync(path));
+      if (absent) throw refuse(`part ${rel(absent)} the head lists is not on disk`);
+      parts.push(...listed.map(rel));
     }
   }
-  const tracked = await git(session, ['ls-files', '-z', '--', relative(root, partsDir).split(sep).join('/')]);
-  if (tracked.code !== 0) throw gitFailure('Cannot inspect the canonical Git target.', `git ls-files failed for the part files of ${head}.`);
-  const gone = tracked.stdout.split('\0').filter(path => path && !existsSync(join(root, path)));
-  return [...new Set([...listed, ...gone])];
+  const index = await git(session, ['ls-files', '-z', '--', partsDir]);
+  if (index.code !== 0) throw gitFailure('Cannot inspect the canonical Git target.', `git ls-files failed for the part files of ${head}.`);
+  const born = (await git(session, ['rev-parse', '-q', '--verify', 'HEAD^{commit}'])).code === 0;
+  const committed = born ? await git(session, ['ls-tree', '-r', '-z', '--name-only', 'HEAD', '--', partsDir]) : { code: 0, stdout: '' };
+  if (committed.code !== 0) throw gitFailure('Cannot inspect the canonical Git target.', `git ls-tree failed for the part files of ${head}.`);
+  const listed = new Set(parts);
+  const stale = [...new Set([...index.stdout.split('\0'), ...committed.stdout.split('\0')])].filter(path => path && !listed.has(path) && !existsSync(join(root, path)));
+  return { head: rel(headPath), parts, stale, partsDir };
 }
 
 const splitUnitIncomplete = (head: string, reason: string) => opError('split_page_incomplete', `The split page head ${head} does not match its part files, so neither it nor any part was committed.`,
@@ -503,8 +517,8 @@ const splitUnitIncomplete = (head: string, reason: string) => opError('split_pag
 export async function publishSplitGitEffect(root: string, head: string, signal?: AbortSignal, hardened?: boolean, note?: GitCommitNote,
   binding?: Pick<WorktreeBinding, 'git_durability'> | null, owner?: GitEffectOwner): Promise<Record<string, unknown>> {
   if (!(hardened ?? (await gitDurabilityPolicy(binding, root)).durable)) return { ...DURABILITY_NOT_ENABLED };
-  const parts = await withSession(root, signal, owner, false, session => splitUnitPaths(session, root, head));
-  const outcomes = await commitGitTargets(root, [head, ...parts], signal, note ? new Map([[head, note]]) : undefined, owner, true);
+  const unit = await withSession(root, signal, owner, false, session => splitUnitPaths(session, root, head));
+  const outcomes = await commitGitTargets(root, [head, ...unit.parts, ...unit.stale], signal, note ? new Map([[head, note]]) : undefined, owner, true);
   for (const outcome of outcomes.values()) if (outcome instanceof OperationError) throw outcome;
   const settled = [...outcomes.values()] as GitOutcome[];
   const outcome: GitOutcome = settled.some(entry => entry.git === 'committed') ? { git: 'committed' } : outcomes.get(head) as GitOutcome;
