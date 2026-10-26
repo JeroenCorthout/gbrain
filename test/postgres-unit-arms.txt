@@ -445,6 +445,12 @@ test/sources-resolve-path.test.ts
 test/split-layout-command.test.ts
 test/split-layout-doctor.test.ts
 test/split-layout-file-repair.test.ts
+test/split-layout-git-effect-unit.test.ts
+test/split-layout-head-content.test.ts
+test/split-layout-lifecycle.test.ts
+test/split-layout-parts-unexpected.test.ts
+test/split-layout-publish-drift.test.ts
+test/split-layout-publish-mode.test.ts
 test/split-layout-publish-recovery.test.ts
 test/split-layout-publish.test.ts
 test/split-layout-sync.test.ts

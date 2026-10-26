@@ -736,6 +736,8 @@ async function recordFailure(engine: BrainEngine, effect: PersistenceEffect, err
   if (current?.recovering) { await retryEffect(engine, effect, code, 30_000); return; }
   // GBRA-133: a target a .gitignore rule excludes fails the same way on every attempt; it parks at once, naming the rule.
   if (code === 'git_target_ignored') { await parkEffectTarget(engine, effect, code, target, (error as OperationError).detail); return; }
+  // Wave B PR 5: a split page whose parts are missing or changed fails the same way until they are restored; it parks at once.
+  if (code === 'split_page_incomplete') { await parkEffectTarget(engine, effect, code, target); return; }
   // A retried parked target has exactly one authorized attempt; otherwise the
   // counter only accumulates while the same target keeps failing.
   const prior = target !== undefined && effect.data.retry_slugs?.includes(target) ? PARK_AFTER_FAILURES - 1

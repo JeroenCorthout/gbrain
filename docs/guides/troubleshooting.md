@@ -854,6 +854,13 @@ names the missing, changed and unlisted part files.
 **Verify.** `gbrain sources status <id> --json` no longer lists the head, and `gbrain get <slug>` shows the whole
 page (no `> [gbrain] This page continues in` notice line).
 
+**The same code on a Git effect.** The Git effect of a split page commits the head and every part file in one commit
+or nothing. When a part the head lists is missing or changed after the write published it, the effect commits nothing
+of the page and parks at once with `split_page_incomplete` (`gbrain sources writer status --json` lists it; the page
+row is committed). Restore the parts, or write the page again so its head and parts are rewritten, then run
+`gbrain sources writer retry-effects <source> --parked-code split_page_incomplete`. A part a `.gitignore` rule
+excludes parks the effect the same way with `git_target_ignored`, naming the rule.
+
 ## Split head modified
 
 <a id="split-head-modified"></a>

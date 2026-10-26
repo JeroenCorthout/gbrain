@@ -261,7 +261,7 @@ export function commitMessage(commitPaths: string[], noted: ReadonlyMap<string, 
  * that is provably abandoned is reclaimed and the step retried (#6932).
  */
 export async function commitGitTargets(root: string, relativePaths: string[], signal?: AbortSignal,
-  notes?: ReadonlyMap<string, GitCommitNote>, owner?: GitEffectOwner): Promise<Map<string, GitOutcome | OperationError>> {
+  notes?: ReadonlyMap<string, GitCommitNote>, owner?: GitEffectOwner, unit = false): Promise<Map<string, GitOutcome | OperationError>> {
   const results = new Map<string, GitOutcome | OperationError>();
   await withSession(root, signal, owner, true, async session => {
     // One ls-files, one status, one add and one diff for the group; targets
@@ -328,6 +328,11 @@ export async function commitGitTargets(root: string, relativePaths: string[], si
         else if (indexed.has(path)) changed.push({ requested, path });
         else results.set(requested, { git: 'unchanged' });
       }
+    }
+    // A unit (a split page's head and parts) commits whole or not at all: one refused target unstages the rest.
+    if (unit && [...results.values()].some(outcome => outcome instanceof OperationError)) {
+      if (changed.length) await git(session, ['reset', '-q', '--', ...new Set(changed.map(c => c.path))]);
+      return;
     }
     if (!changed.length) return;
     // --only keeps unrelated staged paths out of this commit. After a lost
@@ -460,8 +465,8 @@ export async function publishGitEffect(root: string, relativePath: string, signa
 /**
  * Wave B PR 5: the paths a split page's Git effect commits with its head (relative to `root`): every part the head on disk
  * lists, once they verify, and every tracked file in its parts directory that is gone from disk (parts a later layout
- * dropped, or all of them once the page is one file again). A head whose parts do not verify refuses, so the effect
- * retries and parks instead of committing a head without its parts.
+ * dropped, or all of them once the page is one file again). A head whose parts do not verify refuses
+ * (`split_page_incomplete`), so the effect parks instead of committing a head without its parts.
  */
 async function splitUnitPaths(session: GitSession, root: string, head: string): Promise<string[]> {
   const headPath = resolvePath(root, head);
@@ -469,10 +474,10 @@ async function splitUnitPaths(session: GitSession, root: string, head: string): 
   const listed: string[] = [];
   if (existsSync(headPath)) {
     const parsed = parseHead(readFileSync(headPath, 'utf8'));
-    if (parsed && 'error' in parsed) throw splitHeadUnsafe(head, parsed.error.reason);
+    if (parsed && 'error' in parsed) throw splitUnitIncomplete(head, parsed.error.reason);
     if (parsed) {
       const verdict = verifyParts(headPath, parsed);
-      if (!verdict.ok) throw splitHeadUnsafe(head, verdict.reason);
+      if (!verdict.ok) throw splitUnitIncomplete(head, verdict.reason);
       listed.push(...parsed.manifest.parts.map(part => relative(root, join(dirname(headPath), part.path)).split(sep).join('/')));
     }
   }
@@ -482,20 +487,21 @@ async function splitUnitPaths(session: GitSession, root: string, head: string): 
   return [...new Set([...listed, ...gone])];
 }
 
-const splitHeadUnsafe = (head: string, reason: string) => opError('git_target_unsafe', `The split page head ${head} does not match its part files, so it was not committed.`,
-  `${reason}. The page write itself is committed; its Git effect retries and parks after repeated failures. Inspect the head and its parts directory on the brain host (gbrain sources writer status names the effect).`,
+const splitUnitIncomplete = (head: string, reason: string) => opError('split_page_incomplete', `The split page head ${head} does not match its part files, so neither it nor any part was committed.`,
+  `${reason}. The page write itself is committed in the database; its Git effect parks at once. Restore the part files the head lists (or rewrite the page so its head and parts are written again), then run gbrain sources writer retry-effects with --parked-code split_page_incomplete for the source (gbrain sources writer status names the effect).`,
   { fix: effectStatusFix });
 
 /**
  * Wave B PR 5: a split publication's Git effect (effect-model.ts `SPLIT_GIT_EFFECT_VERSION`): the head and every path of
- * its part files commit together in one `commit --only`, then the root is pushed. Any path Git refuses fails the whole
- * effect, so no commit holds a head without its parts.
+ * its part files commit together in one `commit --only`, then the root is pushed. Every path is checked before the
+ * commit; one Git refuses (an ignored part, `git_target_ignored`) or a part missing or changed (`split_page_incomplete`)
+ * commits nothing for the page and parks the effect, so no commit holds a head without its parts.
  */
 export async function publishSplitGitEffect(root: string, head: string, signal?: AbortSignal, hardened?: boolean, note?: GitCommitNote,
   binding?: Pick<WorktreeBinding, 'git_durability'> | null, owner?: GitEffectOwner): Promise<Record<string, unknown>> {
   if (!(hardened ?? (await gitDurabilityPolicy(binding, root)).durable)) return { ...DURABILITY_NOT_ENABLED };
   const parts = await withSession(root, signal, owner, false, session => splitUnitPaths(session, root, head));
-  const outcomes = await commitGitTargets(root, [head, ...parts], signal, note ? new Map([[head, note]]) : undefined, owner);
+  const outcomes = await commitGitTargets(root, [head, ...parts], signal, note ? new Map([[head, note]]) : undefined, owner, true);
   for (const outcome of outcomes.values()) if (outcome instanceof OperationError) throw outcome;
   const settled = [...outcomes.values()] as GitOutcome[];
   const outcome: GitOutcome = settled.some(entry => entry.git === 'committed') ? { git: 'committed' } : outcomes.get(head) as GitOutcome;

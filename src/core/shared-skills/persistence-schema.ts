@@ -1,5 +1,5 @@
 // A page request carries a version 1 single-file recovery record or, for a
-// split page (persistence/split-files.ts), a version 2 page_split record; a
+// split page (persistence/split-files.ts), a version 3 page_split record; a
 // skill bundle request carries a version 2 skill_bundle record. v275 re-creates
 // the function on existing brains.
 export const REQUEST_PROTOCOL_GUARD_FUNCTION = `CREATE OR REPLACE FUNCTION gbrain_guard_request_protocol() RETURNS trigger LANGUAGE plpgsql SET search_path = pg_catalog, public AS $$
@@ -33,7 +33,7 @@ export const REQUEST_PROTOCOL_GUARD_FUNCTION = `CREATE OR REPLACE FUNCTION gbrai
     END IF;
     record:=NEW.recovery;
     IF record IS NOT NULL AND ((target='page' AND record->>'version' IS DISTINCT FROM '1'
-        AND (record->>'version' IS DISTINCT FROM '2' OR record->>'target' IS DISTINCT FROM 'page_split' OR jsonb_typeof(record->'files') IS DISTINCT FROM 'array'))
+        AND (record->>'version' IS DISTINCT FROM '3' OR record->>'target' IS DISTINCT FROM 'page_split' OR jsonb_typeof(record->'files') IS DISTINCT FROM 'array'))
       OR (target='skill_bundle' AND (record->>'version' IS DISTINCT FROM '2' OR record->>'target' IS DISTINCT FROM 'skill_bundle'
         OR jsonb_typeof(record->'files') IS DISTINCT FROM 'array'))) THEN
       RAISE EXCEPTION 'unsupported_mutation_protocol: recovery target mismatch' USING ERRCODE='42501';

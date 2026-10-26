@@ -71,7 +71,7 @@ const effectRecoveryStuck = (effect: EffectRecoveryRef) => stuckOnFile(effect.er
 /** A live page or skill-bundle recovery's first file that matches neither recorded version (a terminal one never restores its file). */
 const requestRecoveryStuckFile = (request: RequestRecoveryRef): string | null => {
   if (isTerminal(request)) return null;
-  const files = request.version === '1' ? [{ path: request.path, before: request.before, after: request.after }] : request.version === '2' ? request.files ?? [] : [];
+  const files = request.version === '1' ? [{ path: request.path, before: request.before, after: request.after }] : request.version === '2' || request.version === '3' ? request.files ?? [] : [];
   return files.find(file => stuckOnFile(request.blocked_reason, file.path, file.before, file.after))?.path ?? null;
 };
 /** A record a newer gbrain wrote (recovery-version.ts): no recovery here finishes it, so only an upgrade clears it. */
