@@ -329,6 +329,21 @@ export function readSplitHead(path: string, before: Buffer | FileBytes): SplitHe
     dispose: () => { try { reassembled.close(); } finally { rmSync(scratch, { force: true }); } } };
 }
 
+/** The split codes a drift refusal carries as its reason (and the receipt as `error_detail.origin`). */
+export type SplitRefusalReason = 'split_page_incomplete' | 'split_head_modified';
+export const isSplitRefusalReason = (value: unknown): value is SplitRefusalReason => value === 'split_page_incomplete' || value === 'split_head_modified';
+
+/**
+ * What to do about a split head that failed verification, for the refusal and for the receipt's envelope (service.ts
+ * writeResponse): restore the parts and sync, or resolve the edited head; never a file-drift repair, which would replace the page with its head.
+ */
+export function splitInvalidAdvice(row: Pick<WriteRequest, 'source_id' | 'slug'>, code: SplitRefusalReason, head: string, why?: string): { suggestion: string; fix: Action } {
+  const detail = why ? `${code}: ${why}` : code;
+  return { fix: ownersFix(row.source_id), suggestion: code === 'split_head_modified'
+    ? `The split page head ${head} was edited by hand (${detail}), so the page it stands for cannot be compared or rewritten and nothing was written. Preview the resolution with gbrain pages split-storage ${row.slug} --source ${row.source_id} --resolve-head keep-edit (or discard), apply it, then submit the write again with a new request_id. Do not run a file-drift repair on it.`
+    : `The split page head ${head} does not match its part files (${detail}). Writing over it would replace the page with its head and remove the surviving parts, so the head and every part were left as they are and nothing was written. Restore the part files the head lists (from Git or a backup) and run gbrain sync --source ${row.source_id} --no-pull on the brain host, which reads the whole page again; then submit the write again with a new request_id. Do not run a file-drift repair on it: it would replace the page with its head.` };
+}
+
 /**
  * The refusal of a write over a declared split head that does not verify (readSplitHead `split_invalid`): the drift
  * refusal (`source_changed`, `file_database_drift`), raised before anything is compared, written or removed, with the
@@ -336,10 +351,8 @@ export function readSplitHead(path: string, before: Buffer | FileBytes): SplitHe
  * heals through sync once its parts verify again.
  */
 export function splitInvalidRefusal(row: Pick<WriteRequest, 'source_id' | 'slug'>, path: string, reading: Extract<SplitHeadReading, { kind: 'split_invalid' }>): OperationError {
-  const error = opError('source_changed', 'The canonical file contains an uncoordinated local edit.', reading.code === 'split_head_modified'
-    ? `The split page head ${basename(path)} was edited by hand (split_head_modified: ${reading.reason}), so the page it stands for cannot be compared or rewritten and nothing was written. Preview the resolution with gbrain pages split-storage ${row.slug} --source ${row.source_id} --resolve-head keep-edit (or discard), apply it, then submit the write again with a new request_id.`
-    : `The split page head ${basename(path)} does not match its part files (split_page_incomplete: ${reading.reason}). Writing over it would replace the page with its head and remove the surviving parts, so the head and every part were left as they are and nothing was written. Restore the part files the head lists (from Git or a backup) and run gbrain sync --source ${row.source_id} --no-pull on the brain host, which reads the whole page again; then submit the write again with a new request_id.`,
-    { detail: 'file_database_drift', fix: ownersFix(row.source_id) });
+  const advice = splitInvalidAdvice(row, reading.code, basename(path), reading.reason);
+  const error = opError('source_changed', 'The canonical file contains an uncoordinated local edit.', advice.suggestion, { detail: 'file_database_drift', fix: advice.fix });
   error.reason = reading.code;
   return error;
 }

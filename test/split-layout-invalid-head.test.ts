@@ -19,6 +19,7 @@ import { join } from 'node:path';
 import type { BrainEngine } from '../src/core/engine.ts';
 import { importFromContent } from '../src/core/import-file.ts';
 import { operations, OperationError, type OperationContext } from '../src/core/operations.ts';
+import { dispatchToolCall } from '../src/mcp/dispatch.ts';
 import { performManagedSync } from '../src/core/persistence/sync-run.ts';
 import { __setSplitLimitsForTests, parseHead, partsDirFor } from '../src/core/split-layout/index.ts';
 import { durableGitRepo } from './helpers/git-publication.ts';
@@ -93,4 +94,27 @@ for (const backend of testBackends()) describe(`[${backend}] split git layout: a
       if (fault === 'edited part') writeFileSync(part, `${readFileSync(part, 'utf8')}${HUMAN}`);
     } }), 120_000);
   }
+
+  test('a remote (MCP) write over a split head with a missing part refuses with the split reason on its envelope', () => managedBrain(async ({ engine, root }) => {
+    const before = layout(root);
+    const snapshot = (await engine.readPageSnapshot(SLUG, { sourceId: 'default' }))!;
+    const parsed = parseHead(readFileSync(join(root, `${SLUG}.md`), 'utf8'));
+    if (!parsed || 'error' in parsed) throw new Error('fixture head does not parse');
+    const content = parsed.frontmatterWithoutParts.replace('title: Split example', 'title: Retitled example') + parsed.headBody;
+    const result = await dispatchToolCall(engine, 'put_page', { slug: SLUG, content, expected_revision: snapshot.revision, request_id: randomUUID(), wait_ms: 30_000 },
+      { remote: true, transport: 'stdio', sourceId: 'default' });
+    const envelope = JSON.parse(result.content.map(item => item.text).join('')) as { code: string; reason?: string; detail?: string; suggestion: string };
+    expect(result.isError).toBe(true);
+    expect({ code: envelope.code, reason: envelope.reason, detail: envelope.detail }).toEqual({ code: 'source_changed', reason: 'split_page_incomplete', detail: 'file_database_drift' });
+    expect(envelope.suggestion).toContain('Restore the part files');
+    expect(layout(root)).toEqual(before);
+  }, { databaseUrl, setup: async ({ engine, root }) => {
+    __setSplitLimitsForTests(LIMITS);
+    await engine.setConfig('sync.max_file_bytes', '2048');
+    const written = await writeSplitPage(root, `${SLUG}.md`, page);
+    writeFileSync(join(root, '.gitignore'), '\n');
+    durableGitRepo(root, ['.gitignore', 'notes']);
+    await importFromContent(engine, SLUG, readFileSync(join(root, `${SLUG}.md`), 'utf8'), { sourceId: 'default', sourcePath: `${SLUG}.md`, noEmbed: true });
+    rmSync(join(root, written.parts[2]!.rel));
+  } }), 120_000);
 });
