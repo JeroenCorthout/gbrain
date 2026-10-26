@@ -18,7 +18,7 @@
  */
 import { afterEach, describe, expect, spyOn, test } from 'bun:test';
 import { randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { BrainEngine } from '../src/core/engine.ts';
@@ -32,6 +32,7 @@ import { deletePageByRelPath, importRendered, type GoogleSyncDeps, type GoogleSy
 import { serializePageToMarkdown } from '../src/core/markdown.ts';
 import { operations, type OperationContext } from '../src/core/operations.ts';
 import { __setSplitLimitsForTests, parseHead, partsDirFor, readPageFile, SPLIT_MAX_FILE_BYTES_KEY } from '../src/core/split-layout/index.ts';
+import { writeSplitPageFile } from '../src/core/split-write-through.ts';
 import { parseTakesFence, upsertTakeRow } from '../src/core/takes-fence.ts';
 import { addTakeToPage, appendTakesToPageMdFirst, updateTakeOnPage } from '../src/core/takes-write.ts';
 import { persistTakeFromSynthesis } from '../src/core/think/persist-take.ts';
@@ -149,6 +150,22 @@ for (const backend of testBackends()) describe(`[${backend}] split git layout: r
     expect(await engine.executeRaw('SELECT id FROM timeline_entries')).toHaveLength(1);
   }), 120_000);
 
+  test('a raw writer keeps a private page private: every part it writes takes the head file\'s 0600 mode, and a new parts directory is 0700', () => withSplitPage(databaseUrl, async (engine, root, head) => {
+    const modes = (path: string) => ({ head: statSync(path).mode & 0o777, dir: statSync(partsDirFor(path)).mode & 0o777,
+      parts: [...new Set(readdirSync(partsDirFor(path)).map(name => statSync(join(partsDirFor(path), name)).mode & 0o777))] });
+    chmodSync(partsDirFor(head), 0o700);
+    for (const path of [head, ...readdirSync(partsDirFor(head)).map(name => join(partsDirFor(head), name))]) chmodSync(path, 0o600);
+    expect(await writeTimelineEntryThrough(engine, SLUG, 'default', { date: '2026-01-02', summary: 'Acme-example shipped' })).toMatchObject({ handled: true, file: { written: true } });
+    expect(pageFile(head).text).toContain('Acme-example shipped');
+    expect(modes(head)).toEqual({ head: 0o600, dir: 0o700, parts: [0o600] });
+    const grown = join(root, 'notes/private-example.md');
+    writeFileSync(grown, '---\ntype: note\ntitle: Private example\n---\n\nShort.\n', { mode: 0o600 });
+    chmodSync(grown, 0o600);
+    expect(await writeSplitPageFile(engine, grown, root, file)).not.toBeNull();
+    expect(pageFile(grown)).toEqual({ split: true, text: file });
+    expect(modes(grown)).toEqual({ head: 0o600, dir: 0o700, parts: [0o600] });
+  }), 120_000);
+
   test('a derived page and a dream page file are written as their split unit; a retired dream page goes with its parts', () => withSplitPage(databaseUrl, async (engine, root, head) => {
     await engine.createVersion(SLUG);
     await engine.putPage(SLUG, { type: 'note', title: 'Split example', compiled_truth: `${body}\n\nA derived edit.\n` });
@@ -194,12 +211,16 @@ for (const backend of testBackends()) describe(`[${backend}] split git layout: r
   test('the classic Google connector writes a split page as its split unit and removes the head with its parts on delete', () => withSplitPage(databaseUrl, async (engine, root, head) => {
     const summary = { status: 'synced', added: 0, modified: 0, deleted: 0, chunksCreated: 0, embedded: 0, pagesAffected: [], threadsSeen: 0, attachmentInspection: {} } as unknown as GoogleSyncSummary;
     const deps = { managed: null, engine, sourceId: 'default', cfg: { dir: root, account: 'owner@example.invalid' }, opts: {}, entry: {}, log() {}, tick() {} } as unknown as GoogleSyncDeps;
+    chmodSync(partsDirFor(head), 0o700);
+    for (const path of [head, ...readdirSync(partsDirFor(head)).map(name => join(partsDirFor(head), name))]) chmodSync(path, 0o600);
     await importRendered(deps, `${SLUG}.md`, file.replace('Body line 0001', 'Edited line 0001'), null as never, summary, new Set());
     const page = pageFile(head);
     expect(page.split).toBe(true);
     expect(page.text).toContain('Edited line 0001');
     expect((await stored(engine, SLUG)).compiled_truth).toContain('Edited line 0001');
     expect(statSync(head).mode & 0o777).toBe(0o600);
+    expect(statSync(partsDirFor(head)).mode & 0o777).toBe(0o700);
+    expect(readdirSync(partsDirFor(head)).map(name => statSync(join(partsDirFor(head), name)).mode & 0o777).every(mode => mode === 0o600)).toBe(true);
     await engine.executeRaw("UPDATE pages SET source_path = $1 WHERE source_id = 'default' AND slug = $2", [`${SLUG}.md`, SLUG]);
     await deletePageByRelPath(deps, `${SLUG}.md`, summary);
     expect(layout(head)).toEqual({ head: null, parts: null });

@@ -16,7 +16,7 @@
  */
 import { afterEach, describe, expect, test } from 'bun:test';
 import { randomUUID } from 'node:crypto';
-import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import type { BrainEngine } from '../src/core/engine.ts';
 import { operations, type OperationContext } from '../src/core/operations.ts';
@@ -186,6 +186,23 @@ for (const backend of testBackends()) describe(`[${backend}] split git layout: a
     expect(await mirrorEffects(engine)).toEqual([{ kind: 'withdrawal-mirror', state: 'committed', error_code: null, clear: true }]);
     expectCommittedSplit(root);
     expectWithdrawnEverywhere(root, LIVE_ROW);
+  }, { databaseUrl, setup }), 240_000);
+
+  test('a withdrawal mirror of a private split page writes its new parts with the head file\'s 0600 mode', () => managedBrain(async ({ engine, ctx, root }) => {
+    __setSplitLimitsForTests(LIMITS);
+    await engine.setConfig(SPLIT_MAX_FILE_BYTES_KEY, '4096');
+    await put(ctx, pageOf(120));
+    const id = await remember(ctx, engine, root);
+    const { head, dir } = pageFiles(root);
+    chmodSync(dir, 0o700);
+    for (const path of [head, ...readdirSync(dir).map(name => join(dir, name))]) chmodSync(path, 0o600);
+    const before = new Set(readdirSync(dir));
+    await forget(ctx, id);
+    await settle(engine);
+    expectWithdrawnEverywhere(root, LIVE_ROW);
+    expect(readdirSync(dir).filter(name => !before.has(name)).length).toBeGreaterThan(0);
+    expect([head, ...readdirSync(dir).map(name => join(dir, name))].map(path => statSync(path).mode & 0o777)).toEqual([head, ...readdirSync(dir)].map(() => 0o600));
+    expect(statSync(dir).mode & 0o777).toBe(0o700);
   }, { databaseUrl, setup }), 240_000);
 
   /** Where the mirror stops once: mid-staging (a stage cut short), once every stage is written (no file renamed), and once every file is renamed (its transaction rolled back). */

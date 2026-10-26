@@ -14,7 +14,7 @@
  */
 import { existsSync, lstatSync, mkdirSync, unlinkSync } from 'node:fs';
 import { dirname } from 'node:path';
-import { atomicWriteFileSync } from './atomic-write.ts';
+import { atomicWriteFileSync, mkdirPrivate } from './atomic-write.ts';
 import type { BrainEngine } from './engine.ts';
 import { flushDirectory } from './fs-durable.ts';
 import { isWriteTargetContained } from './path-confine.ts';
@@ -40,12 +40,14 @@ export function readPageFileText(path: string): { text: string | null; split: bo
  * Writes `content` (F) at `filePath` as its split unit; null, writing nothing, when the target is one ordinary file
  * (F at or under the threshold and no parts directory), which the caller writes as before. Returns every path written
  * or removed, head first. Throws `PageFileChanged` when the head or a part changed since the unit was planned, and
- * whatever `precondition` throws, before any file is written.
+ * whatever `precondition` throws, before any file is written. `mode` is the head's exact mode (the Google connector's 0600);
+ * omitted, the head keeps its file's mode. Every part takes the head's mode from its first byte, and a new parts directory
+ * is 0700 when that mode grants nothing to group or other.
  */
 export async function writeSplitPageFile(engine: BrainEngine, filePath: string, root: string, content: string,
-  precondition?: () => void): Promise<string[] | null> {
+  precondition?: () => void, mode?: number): Promise<string[] | null> {
   const headHash = hashFile(filePath);
-  const unit: MutationFile & SplitFileFields = { path: filePath, root, content, expectedBeforeHash: headHash };
+  const unit: MutationFile & SplitFileFields & { publishMode?: number } = { path: filePath, root, content, expectedBeforeHash: headHash, ...(mode === undefined ? {} : { publishMode: mode }) };
   if (!await splitPublicationTargets(engine, unit)) return null;
   try {
     const parts = unit.parts ?? [];
@@ -55,15 +57,16 @@ export async function writeSplitPageFile(engine: BrainEngine, filePath: string, 
     const touched = [filePath];
     for (const part of parts) {
       if (part.content === null) continue;
-      mkdirSync(dirname(part.path), { recursive: true });
+      if (part.publishMode === undefined || part.publishMode & 0o077) mkdirSync(dirname(part.path), { recursive: true });
+      else mkdirPrivate(dirname(part.path), dirname(filePath));
       if (!isWriteTargetContained(part.path, root) || !lstatSync(dirname(part.path)).isDirectory()) throw new Error(`${part.path} resolves outside its source root`);
       const pieces: Uint8Array[] = [];
       if (isStreamedContent(part.content)) for await (const piece of part.content.pieces(engine)) pieces.push(piece);
       else pieces.push(typeof part.content === 'string' ? Buffer.from(part.content, 'utf8') : part.content);
-      atomicWriteFileSync(part.path, Buffer.concat(pieces), { durable: true });
+      atomicWriteFileSync(part.path, Buffer.concat(pieces), { durable: true, mode: part.publishMode });
       touched.push(part.path);
     }
-    atomicWriteFileSync(filePath, unit.content as string, { durable: true, verify: () => { if (hashFile(filePath) !== headHash) throw new PageFileChanged(filePath); } });
+    atomicWriteFileSync(filePath, unit.content as string, { durable: true, mode, verify: () => { if (hashFile(filePath) !== headHash) throw new PageFileChanged(filePath); } });
     for (const part of parts) {
       if (part.content !== null) continue;
       unlinkSync(part.path);

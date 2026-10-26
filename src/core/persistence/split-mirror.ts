@@ -14,7 +14,7 @@
  */
 import { lstatSync, mkdirSync } from 'node:fs';
 import { basename, dirname } from 'node:path';
-import { atomicStagingPath } from '../atomic-write.ts';
+import { atomicStagingPath, mkdirPrivate } from '../atomic-write.ts';
 import type { BrainEngine } from '../engine.ts';
 import { opError } from '../ops/contract.ts';
 import { isWriteTargetContained } from '../path-confine.ts';
@@ -44,7 +44,7 @@ export async function splitMirrorPlan(engine: BrainEngine, target: SplitMirrorTa
     const content = member.content === null ? null : await streamedOf(engine, member.content);
     if (content) contents.set(member.path, content);
     files.push({ path: member.path, root: member.root, beforeHash: index ? member.expectedBeforeHash ?? null : target.beforeHash,
-      afterHash: content?.hash ?? null, mode: index ? null : target.mode,
+      afterHash: content?.hash ?? null, mode: index ? (content ? (member as { publishMode?: number }).publishMode ?? null : null) : target.mode,
       ...(content ? { staging: { publication: { path: atomicStagingPath(member.path), hash: content.hash, bytes: content.bytes } } } : {}) });
   }
   for (const [path, hash] of Object.entries(unit.split?.kept ?? {})) files.push({ path, root: unit.root, beforeHash: hash, afterHash: hash, mode: null });
@@ -65,11 +65,12 @@ export function splitPartsDrifted(unit: MutationFile & SplitFileFields): boolean
   return [...new Set([...found.keys(), ...Object.keys(unit.expectedParts)])].some(path => (found.get(path) ?? null) !== (unit.expectedParts![path] ?? null));
 }
 
-/** Creates the directory a stage is written in (a new parts directory), confined to the source root before and after. */
+/** Creates the directory a stage is written in (a new parts directory, 0700 for a part whose mode grants nothing to group or other), confined to the source root before and after. */
 function stageParent(file: SplitMirrorFile): void {
   const confined = () => isWriteTargetContained(file.path, file.root);
   if (!confined()) throw unsafeUnit(file.path);
-  mkdirSync(dirname(file.path), { recursive: true });
+  if (file.mode === null || file.mode & 0o077) mkdirSync(dirname(file.path), { recursive: true });
+  else mkdirPrivate(dirname(file.path), dirname(dirname(file.path)));
   if (!confined() || !lstatSync(dirname(file.path)).isDirectory()) throw unsafeUnit(file.path);
 }
 
