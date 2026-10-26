@@ -12,7 +12,7 @@
  *    or a bound source's upload is prepared and left to the publication door.
  * 3. PGLite always; PostgreSQL when DATABASE_URL is set.
  */
-import { describe, expect, test } from 'bun:test';
+import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -70,13 +70,16 @@ async function refusedUpload(engine: BrainEngine, ctx: OperationContext, slug: s
 
 for (const backend of testBackends()) describe(`[${backend}] commit_page_upload refuses a top-level gbrain_parts key`, () => {
   const databaseUrl = backend === 'postgres' ? requirePostgresTestDatabase() : undefined;
+  let pglite: PGLiteEngine | undefined;
+  beforeAll(async () => {
+    if (databaseUrl) return;
+    pglite = new PGLiteEngine(); await pglite.connect({}); await pglite.initSchema();
+  });
+  afterAll(async () => { await pglite?.disconnect(); });
 
   for (const [label, bytes] of SIZES) {
     test(`unbound source, ${label}: refused split_head_content, nothing stored`, async () => {
-      const { engine, close } = databaseUrl ? await isolatedPersistencePostgres(databaseUrl) : await (async () => {
-        const pglite = new PGLiteEngine(); await pglite.connect({}); await pglite.initSchema();
-        return { engine: pglite as BrainEngine, close: () => pglite.disconnect() };
-      })();
+      const { engine, close } = databaseUrl ? await isolatedPersistencePostgres(databaseUrl) : { engine: pglite! as BrainEngine, close: async () => {} };
       try {
         const ctx = { engine, config: { engine: engine.kind, embedding_disabled: true }, sourceId: 'default', remote: false, dryRun: false,
           logger: { info() {}, warn() {}, error() {} } } as unknown as OperationContext;
