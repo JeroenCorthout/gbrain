@@ -86,6 +86,11 @@ async function gitHoldsParts(session: GitSession, partsDir: string): Promise<boo
   return index.stdout.length > 0 || tree.stdout.length > 0;
 }
 
+/** Whether the disk alone shows `path` in `unit`: it lies inside the parts directory, the parts directory exists, or the head declares gbrain_parts. */
+function splitUnitOnDisk(unit: { head: string; partsDir: string }, path: string): boolean {
+  return unit.head !== path || existsSync(unit.partsDir) || headDeclaresParts(unit.head);
+}
+
 /**
  * Whether `path` is in a split unit now: it lies inside a parts directory, its parts directory exists on disk, its head on
  * disk declares gbrain_parts, or (in a Git worktree) HEAD or the index hold anything under its parts directory.
@@ -93,7 +98,7 @@ async function gitHoldsParts(session: GitSession, partsDir: string): Promise<boo
 export async function splitUnitPresent(root: string, path: string): Promise<boolean> {
   const unit = splitUnitOf(root, path);
   if (!unit) return false;
-  if (unit.head !== path || existsSync(unit.partsDir) || headDeclaresParts(unit.head)) return true;
+  if (splitUnitOnDisk(unit, path)) return true;
   if (!existsSync(root)) return false;
   return withSession(root, undefined, undefined, false, async session => await insideWorkTree(session) && gitHoldsParts(session, toRel(root, unit.partsDir)));
 }
@@ -226,6 +231,16 @@ export async function assertSplitUnitMutable(input: SplitUnitGuardInput): Promis
     const diverged = splitUnitDivergence(await readSplitUnitLayers(session, input.root, unit.head));
     if (diverged) throw splitPageUnsupported('unit_diverged', input, unit, diverged);
   });
+}
+
+/**
+ * assertSplitUnitMutable for a route outside the door that must stay synchronous (skill tooling, the generic write
+ * helpers, writers with no brain): refuses `outside_door` as soon as the disk shows `path` in a split unit. It reads no
+ * Git state, which a route outside the door does not need: any unit present is a refusal for it.
+ */
+export function assertSplitUnitMutableSync(input: Omit<SplitUnitGuardInput, 'route' | 'strict' | 'planned' | 'phase'> & { route: Exclude<SplitUnitRoute, 'door' | 'git_effect' | 'recovery'> }): void {
+  const unit = splitUnitOf(input.root, input.path);
+  if (unit && splitUnitOnDisk(unit, input.path)) throw splitPageUnsupported('outside_door', input, unit);
 }
 
 const DOCS = 'docs/guides/write-refusals.md#split_page_unsupported';
