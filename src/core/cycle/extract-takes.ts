@@ -28,8 +28,8 @@
 import { withUnmanagedBeliefs } from '../belief/projection-point.ts';
 import { coveredSources } from '../belief/coverage-report.ts';
 import { isQuarantined, QUARANTINE_KEY } from '../quarantine.ts';
-import { readFileSync } from 'node:fs';
 import { join, relative, sep } from 'node:path';
+import { readPageFile } from '../split-layout/page-file.ts';
 import type { BrainEngine, TakeBatchInput } from '../engine.ts';
 import { parseTakesFence, TAKES_FENCE_BEGIN, type ParsedTake } from '../takes-fence.ts';
 import { isSegmentedPage } from '../page-body/page-shape.ts';
@@ -281,7 +281,13 @@ export async function extractTakesFromFs(
 
     let body: string;
     try {
-      body = readFileSync(path, 'utf-8');
+      const file = readPageFile(path);
+      if (file.hold) {
+        result.warnings.push(`${slug}: ${file.hold.code}: ${file.hold.message}`);
+        result.failedFiles.push({ path: relPath, error: file.hold.code });
+        continue;
+      }
+      body = file.bytes.toString('utf-8');
     } catch (e) {
       result.warnings.push(`TAKES_FILE_READ_FAILED: ${relPath}: ${(e as Error).message}`);
       continue;
