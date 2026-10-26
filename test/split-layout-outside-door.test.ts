@@ -1,11 +1,13 @@
 /**
  * Wave B PR 5 lane 5e, round 6 ("refuse rather than reconcile"): outside the publication door a split page is never
- * removed, and a refusal leaves every byte as it was: the head, each part and the page's database row.
+ * removed or overwritten unbound, and a refusal leaves every byte as it was: the head, each part and the page's row.
  *
  * 1. Protects: deletePageThrough (bound to the page's bytes or not) and the classic Google connector's delete refuse
- *    `split_page_unsupported` on a split page whose head a human edited, the Google route before it deletes its row.
- * 2. Fails when: a remover outside the door unlinks a split head or its parts, or deletes the row of a page whose files it
- *    then refuses to remove.
+ *    `split_page_unsupported` on a split page whose head a human edited, the Google route before it deletes its row; an
+ *    overwrite not bound to the bytes it compared (writePageThrough without `expectedFileBytes`) or over a held head
+ *    (writeSplitPageFile with no precondition) refuses the same way.
+ * 2. Fails when: a remover outside the door unlinks a split head or its parts, deletes the row of a page whose files it
+ *    then refuses to remove, or an unbound overwrite replaces a split head.
  * 3. Real PGLite and Postgres engines, the probe shape of the round 6 review (a split head edited by hand).
  */
 import { afterEach, describe, expect, test } from 'bun:test';
@@ -16,7 +18,8 @@ import type { BrainEngine } from '../src/core/engine.ts';
 import { deletePageByRelPath } from '../src/core/google/sweep-shared.ts';
 import { serializePageToMarkdown } from '../src/core/markdown.ts';
 import { __setSplitLimitsForTests, readPageFile } from '../src/core/split-layout/index.ts';
-import { _resetWriteThroughCacheForTest, deletePageThrough } from '../src/core/write-through.ts';
+import { writeSplitPageFile } from '../src/core/split-write-through.ts';
+import { _resetWriteThroughCacheForTest, deletePageThrough, writePageThrough } from '../src/core/write-through.ts';
 import { isolatedSharedSkillsEngine } from './helpers/shared-skills-engine.ts';
 import { writeSplitPage } from './helpers/split-page.ts';
 import { requirePostgresTestDatabase, testBackends } from './helpers/test-backends.ts';
@@ -63,6 +66,19 @@ for (const backend of testBackends()) describe(`[${backend}] split git layout: r
       });
     } finally { rmSync(home, { recursive: true, force: true }); }
   }
+
+  test('writePageThrough not bound to the bytes it compared refuses a split page (split_page_unsupported): the edited head, its parts and the row stay', () => withEditedSplitPage(async (engine, root) => {
+    const before = await state(engine, root);
+    expect(await writePageThrough(engine, SLUG)).toEqual({ written: false, skipped: 'split_page_unsupported' });
+    expect(await state(engine, root)).toEqual(before);
+  }), 120_000);
+
+  test('writeSplitPageFile with no precondition refuses to overwrite a held split head (split_page_unsupported)', () => withEditedSplitPage(async (engine, root) => {
+    const before = await state(engine, root);
+    const page = serializePageToMarkdown((await engine.getPage(SLUG, { sourceId: 'default' }))!, []);
+    expect(await outcomeOf(() => writeSplitPageFile(engine, join(root, `${SLUG}.md`), root, page.replace('title: Example', 'title: Retitled example')))).toEqual({ thrown: 'split_page_unsupported' });
+    expect(await state(engine, root)).toEqual(before);
+  }), 120_000);
 
   test('deletePageThrough refuses a split page (split_page_unsupported) and leaves the head, its parts and the row as they were', () => withEditedSplitPage(async (engine, root) => {
     const before = await state(engine, root);

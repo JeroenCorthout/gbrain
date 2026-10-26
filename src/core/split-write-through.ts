@@ -116,6 +116,16 @@ export function assertPageFileRemovable(filePath: string): void {
 }
 
 /**
+ * The check of an overwrite outside the publication door that is not bound to the page file it compared
+ * (`expectedFileBytes` undefined): throws `split_page_unsupported`, writing nothing, when the file at `filePath` is a
+ * split page, whose head or parts may hold an edit the database lacks. A bound overwrite passes; the writer rechecks
+ * the bytes before it writes.
+ */
+export function assertPageFileOverwritable(filePath: string, expectedFileBytes: string | null | undefined): void {
+  if (expectedFileBytes === undefined && isSplitPageFile(filePath)) throw splitPageOutsideDoor(filePath, 'overwritten');
+}
+
+/**
  * Writes a raw writer's temporary copy of the page file at `filePath` (`tmpPath`, renamed over it later) as a new file
  * with the page file's mode from its first byte (0644 when there is none), so a private page's copy is never readable
  * by others and the rename keeps the page's mode.
@@ -143,7 +153,7 @@ function splitPageOutsideDoor(filePath: string, action: 'removed' | 'overwritten
  * threshold and no parts directory), which the caller writes as before; the head path when F is a split unit whose parts
  * all stay, its head written atomically (refused when its bytes changed since the unit was planned) with the exact `mode`
  * if given (the Google connector's 0600), else its file's mode. Throws `split_page_unsupported` when a part would be
- * written or removed, `PageFileChanged` when a kept part changed, and whatever `precondition` throws, before any file
+ * written or removed or the split page there is held (a head edited by hand, a part missing or changed), `PageFileChanged` when a kept part changed, and whatever `precondition` throws, before any file
  * is written.
  */
 export async function writeSplitPageFile(engine: BrainEngine, filePath: string, root: string, content: string,
@@ -155,6 +165,7 @@ export async function writeSplitPageFile(engine: BrainEngine, filePath: string, 
     if (unit.parts?.length) throw splitPageUnsupported(filePath);
     if (splitKeptPartsChanged(unit)) throw new PageFileChanged(partsDirFor(filePath));
     precondition?.();
+    if (existsSync(filePath) && readPageFile(filePath).hold) throw splitPageOutsideDoor(filePath, 'overwritten');
     atomicWriteFileSync(filePath, unit.content as string, { durable: true, mode, verify: () => { if (hashFile(filePath) !== headHash) throw new PageFileChanged(filePath); } });
     return [filePath];
   } finally {

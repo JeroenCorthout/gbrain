@@ -33,7 +33,7 @@ import { readSlugRootMode, resolveSlugRootMode, type SlugRootMode } from './sync
 import { resolveSlugForPath } from './sync.ts';
 import { PUSH_SCAN_MAX_FILE_BYTES } from './page-size-policy.ts';
 import { splitThresholdBytes } from './split-layout/limits.ts';
-import { assertPageFileRemovable, assertSplitWritable, PageFileChanged, readPageFileText, writeSplitPageFile } from './split-write-through.ts';
+import { assertPageFileOverwritable, assertPageFileRemovable, assertSplitWritable, PageFileChanged, readPageFileText, writeSplitPageFile } from './split-write-through.ts';
 import { canonicalFilesystemPath } from './persistence/root-registry.ts';
 import {
   isDurabilityHardened, commitWriteThroughFile, currentBranch, getLastPushOutcome,
@@ -104,7 +104,8 @@ export interface WriteThroughResult {
    *     (PUSH_SCAN_MAX_FILE_BYTES), so committing it would block every push.
    *   - split_page_unsupported: the page is, or would become, a split page whose
    *     part files the write changes, which only the publication door writes
-   *     with recovery (split-write-through.ts) — nothing is written.
+   *     with recovery (split-write-through.ts), or a split page the write is
+   *     not bound to by `expectedFileBytes` — nothing is written.
    */
   skipped?: 'disabled_by_config' | 'url_clone' | 'no_repo_configured' | 'repo_not_found' | 'source_repo_belongs_to_other_source' | 'page_not_found_after_write' | 'path_escapes_source_root' | 'case_insensitive_collision' | 'file_changed' | 'over_push_scan_cap' | 'split_page_unsupported';
   /** Caller-visible advisory when a permitted DB-only outcome is still risky. */
@@ -122,7 +123,8 @@ export interface WritePageThroughOpts {
    * The file bytes the caller read before writing the database row (null:
    * the file was absent). Rechecked under the source filesystem lock right
    * before the rename; a file that changed since is left untouched
-   * (`skipped: 'file_changed'`). Omitted: no preimage check.
+   * (`skipped: 'file_changed'`). Omitted: no preimage check, so a split page
+   * at the target is refused (`skipped: 'split_page_unsupported'`).
    */
   expectedFileBytes?: string | null;
 }
@@ -529,6 +531,13 @@ export async function writePageThrough(
       return file.hold !== undefined || file.text !== opts.expectedFileBytes;
     };
     if (fileChanged()) return { written: false, skipped: 'file_changed' };
+    try {
+      assertPageFileOverwritable(filePath, opts.expectedFileBytes);
+    } catch (error) {
+      if ((error as { code?: string }).code !== 'split_page_unsupported') throw error;
+      opts.logger?.warn(`[write-through] ${slug}: ${(error as Error).message}`);
+      return { written: false, skipped: 'split_page_unsupported' };
+    }
 
     await engine.transaction(tx => bindOrigin(tx, { sourceId, slug, sourcePath: sourcePathToBind, onlyIfUnset: true, liveOnly: true }));
     assertSourceFilesystemActive();
