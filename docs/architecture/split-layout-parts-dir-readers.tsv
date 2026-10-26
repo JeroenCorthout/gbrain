@@ -1,0 +1,14 @@
+# Reviewed readers that test for a parts directory outside the split layout modules (test/split-layout-writer-census.test.ts). Writers call the split preflight instead.
+# path	parts-directory check ceiling	review rationale
+src/commands/pages-split-storage.ts	2	Reader: the split-storage command shows where a page's part files live (the parts directory relative to its root) in its storage report; it writes nothing beside a head itself.
+src/commands/sources-git-gap.ts	1	Reader: maps a parts-directory prefix in a Git diff listing back to the head it belongs to, so a gap report names the page.
+src/core/behavior-change-notice.ts	1	Notice text only: the behavior-change row names the .<name>.gbparts/ directory form; no file access.
+src/core/facts/purge-verify.ts	1	Reader: adds a head's parts directory to the Git pathspecs a purge preview searches for the claim.
+src/core/persistence/effect-git.ts	1	Door: the Git effect commits a split head together with its parts directory.
+src/core/persistence/effects.ts	1	Door: the withdrawal-mirror Git effect decides whether a mirrored page commits as a head plus its parts.
+src/core/persistence/file-repair.ts	1	Door: the managed file repair reads the head's bytes when a parts directory sits beside it, before it submits through the coordinator.
+src/core/persistence/split-files.ts	2	Door: the publication door's split unit (lane 5b); one match is its doc comment.
+src/core/persistence/split-mirror.ts	2	Door: the split withdrawal mirror lists the parts directory it revalidates under the publication lock.
+src/core/persistence/sync-holds.ts	1	Reader: matches the parts directory of a held head in sync hold records.
+src/core/persistence/sync-pass.ts	1	Reader: sorts part files out of a sync listing by their .gbparts/ segment.
+src/core/workspace-push.ts	1	Reader: names a head's parts directory prefix so a workspace push carries the head and its parts together.
