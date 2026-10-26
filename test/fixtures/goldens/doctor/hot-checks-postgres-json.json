@@ -3823,6 +3823,17 @@
           {
             "category": "brain",
             "details": {
+              "docs": "docs/guides/write-refusals.md#lfs_pointer_unsmudged",
+              "sources": []
+            },
+            "elapsed_ms": "<volatile>",
+            "message": "No source holds a page file committed as a Git LFS pointer.",
+            "name": "lfs_page_pointers",
+            "status": "ok"
+          },
+          {
+            "category": "brain",
+            "details": {
               "auto_repair": {
                 "active": false,
                 "enabled": true,
@@ -8567,6 +8578,17 @@
             "elapsed_ms": "<volatile>",
             "message": "No strict source has a Git checkout on this host.",
             "name": "git_repo_health",
+            "status": "ok"
+          },
+          {
+            "category": "brain",
+            "details": {
+              "docs": "docs/guides/write-refusals.md#lfs_pointer_unsmudged",
+              "sources": []
+            },
+            "elapsed_ms": "<volatile>",
+            "message": "No source holds a page file committed as a Git LFS pointer.",
+            "name": "lfs_page_pointers",
             "status": "ok"
           },
           {

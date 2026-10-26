@@ -3311,6 +3311,17 @@
         {
           "category": "brain",
           "details": {
+            "docs": "docs/guides/write-refusals.md#lfs_pointer_unsmudged",
+            "sources": []
+          },
+          "elapsed_ms": "<volatile>",
+          "message": "No source holds a page file committed as a Git LFS pointer.",
+          "name": "lfs_page_pointers",
+          "status": "ok"
+        },
+        {
+          "category": "brain",
+          "details": {
             "docs": "docs/guides/write-refusals.md#invalid_fence",
             "model_repair": {
               "max_usd_per_day": 1,

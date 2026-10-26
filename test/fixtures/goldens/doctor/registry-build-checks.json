@@ -1007,6 +1007,10 @@
       },
       {
         "category": "brain",
+        "name": "lfs_page_pointers"
+      },
+      {
+        "category": "brain",
         "name": "fence_integrity"
       },
       {

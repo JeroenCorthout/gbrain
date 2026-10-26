@@ -2471,6 +2471,16 @@ Reasons: `storage_unavailable`.
 
 More: [docs/guides/repair.md#legacy-twins](../../docs/guides/repair.md#legacy-twins)
 
+### lfs_pointer_unsmudged
+
+<a id="lfs_pointer_unsmudged"></a>
+
+| Meaning | Why | Next step | Who acts · consent | Verify | Exit | Retryable |
+|---|---|---|---|---|---|---|
+| A synced Markdown file is committed as a Git LFS pointer, so managed sync holds that file and the stored page stays as it was. | Sync reads committed blobs without smudging them (GIT_LFS_SKIP_SMUDGE=1), and a checkout without git-lfs never smudges, so an LFS-tracked page reaches sync as its ~130-byte pointer text; imported, that text would replace the page, and re-indexing from Git needs the real bytes. The rest of the source keeps syncing. | Ask the user first, since it changes how the file is stored: git lfs pull --include <path>, append an anchored /<path> -filter -diff -merge override to .gitattributes (git lfs untrack misses a wildcard rule), git add --renormalize -- <path> .gitattributes, then commit both through gbrain git commit-push (a hosted source takes the real bytes from the user's own clone; the hold's fix names the branch and quotes the path), then gbrain sync --source <id> --no-pull. | agent | `repeat the read that failed` | 1 | no |
+
+More: [docs/guides/write-refusals.md#lfs_pointer_unsmudged](../../docs/guides/write-refusals.md#lfs_pointer_unsmudged)
+
 ### link_cursor_invalid
 
 <a id="link_cursor_invalid"></a>

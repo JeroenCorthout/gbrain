@@ -125,6 +125,7 @@ import { fenceIntegrityEntry } from './checks/fence-integrity.ts';
 import { dbAheadOfGitEntry } from './checks/db-ahead-of-git.ts';
 import { gitIndexLagEntry } from './checks/git-index-lag.ts';
 import { gitRepoHealthEntry } from './checks/git-repo-health.ts';
+import { lfsPagePointersEntry } from './checks/lfs-page-pointers.ts';
 import { syncConfigKeysEntry } from './checks/sync-config-keys.ts';
 import { ghostPagesEntry } from './checks/ghost-pages.ts';
 import { originTwinsEntry } from './checks/origin-twins.ts';
@@ -298,6 +299,8 @@ export const DOCTOR_CHECK_REGISTRY: readonly DoctorEntry[] = [
   gitIndexLagEntry,
   // Wave C 1C (G7): each strict source's Git object store and its last maintenance run.
   gitRepoHealthEntry,
+  // Wave C 1D: page files held as unsmudged Git LFS pointers.
+  lfsPagePointersEntry,
   fenceIntegrityEntry,
   searchModeEntry,
 ];
