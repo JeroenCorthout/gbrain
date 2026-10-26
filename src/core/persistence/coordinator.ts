@@ -538,10 +538,12 @@ export async function publishMutation(engine: BrainEngine, row: WriteRequest, pr
       // Wave B PR 5 (option B): only a git-canonical source lays a page out as a head plus part files, or changes one, and only
       // through this door; every prior file it replaces or removes is named by its staged before-copy (path, SHA-256), never
       // embedded. A non-strict source writes one file as before and refuses any path of a split unit (split-unit-guard.ts).
+      // A managed file repair is a route outside the door: it never lays a page out and refuses any path of a unit (file_repair).
       const strict = binding.canonical_git === true;
-      const split = strict && await splitPublicationTargets(engine, prepared.file)
+      const fileRepair = (row.intent as { kind?: unknown } | null)?.kind === 'managed_file_repair';
+      const split = strict && !fileRepair && await splitPublicationTargets(engine, prepared.file)
         ? splitRecoveryRecord(row, prepared.file, binding, (r, file, b) => largeRecoveryRecord(r, file, b, 0) ?? pageRecoveryRecord(r, file, b)) : null;
-      await assertSplitUnitMutable({ root: prepared.file.root, path: prepared.file.path, route: 'door', strict, sourceId: row.source_id, slug: row.slug,
+      await assertSplitUnitMutable({ root: prepared.file.root, path: prepared.file.path, route: fileRepair ? 'file_repair' : 'door', strict, sourceId: row.source_id, slug: row.slug,
         planned: prepared.file.split?.manifest, remote: row.authority?.remote === true });
       if (split) files.push(...prepared.file.parts!);
       const { record, bytes } = split ?? pageRecoveryRecord(row, prepared.file, binding);
