@@ -3,7 +3,8 @@
  * frontmatter has a top-level `gbrain_parts` key refuses `split_head_content` at the door
  * (persistence/split-files.ts `splitPublicationTargets`, `mayTakeSplitLayout`), whoever submits it.
  *
- * 1. Protects: a managed file repair that reads the head raw and republishes it with a frontmatter edit, a put_page of
+ * 1. Protects: a managed file repair that reads the head raw and republishes it with a frontmatter edit (bound to the
+ *    page file's hash, so it passes the repair's own split-aware check and reaches the door), a put_page of
  *    the head's text at its own page, and a put_page of the head's text at another page path all refuse: the head, every
  *    part and the stored body stay as they were.
  * 2. Fails when: the head is published as the page (the page becomes its lead and notice and every part is removed), or
@@ -17,7 +18,7 @@ import { join } from 'node:path';
 import type { BrainEngine } from '../src/core/engine.ts';
 import { operations, type OperationContext } from '../src/core/operations.ts';
 import { prepareRepairPublication, repairScreenConfig, submitManagedFileRepair } from '../src/core/persistence/file-repair.ts';
-import { __setSplitLimitsForTests, partsDirFor, SPLIT_MAX_FILE_BYTES_KEY } from '../src/core/split-layout/index.ts';
+import { __setSplitLimitsForTests, pageFileSha256, partsDirFor, SPLIT_MAX_FILE_BYTES_KEY } from '../src/core/split-layout/index.ts';
 import { durableGitRepo } from './helpers/git-publication.ts';
 import { managedBrain, settleManagedGitEffects } from './helpers/managed-brain.ts';
 import { requirePostgresTestDatabase, testBackends } from './helpers/test-backends.ts';
@@ -57,12 +58,14 @@ for (const backend of testBackends()) describe(`[${backend}] split git layout: a
   test('a managed file repair of the head (a frontmatter edit) refuses split_head_content; the head, parts and body stay', () => managedBrain(async ({ engine, ctx, root }) => {
     const { head, before } = await splitPage(engine, ctx, root);
     const repaired = head.replace('title: Split example', 'title: Split example repaired');
+    const pageFile = pageFileSha256(join(root, 'notes/big.md'));
+    if (pageFile.hold) throw new Error(pageFile.hold.message);
     const snapshot = await engine.readPageSnapshot('notes/big', { sourceId: 'default', includeDeleted: true });
     const prepared = await prepareRepairPublication(engine, { sourceId: 'default', slug: 'notes/big', sourcePath: 'notes/big.md', path: 'notes/big.md', root, content: repaired,
       snapshot, base: snapshot, ...await repairScreenConfig(engine, 'default') });
     expect(prepared.status).toBe('ready');
     const refused = await refusal(submitManagedFileRepair(ctx, { sourceId: 'default', requestId: randomUUID(), slug: 'notes/big', path: 'notes/big.md', sourcePath: 'notes/big.md',
-      content: repaired, beforeHash: sha(head), resultDigest: (prepared as { digest: string }).digest, expected_revision: snapshot!.revision, noEmbed: true }));
+      content: repaired, beforeHash: pageFile.sha256, resultDigest: (prepared as { digest: string }).digest, expected_revision: snapshot!.revision, noEmbed: true }));
     expect(refused).toMatchObject({ code: 'split_head_content' });
     expect(await state(engine, root)).toEqual(before);
   }, { databaseUrl, setup }), 120_000);
