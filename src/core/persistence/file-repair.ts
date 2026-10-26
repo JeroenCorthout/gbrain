@@ -53,6 +53,7 @@
  * symlinked directory or file is never written through.
  */
 import { existsSync, lstatSync, readFileSync } from 'node:fs';
+import { isDeepStrictEqual } from 'node:util';
 import { basename, isAbsolute, join, resolve, sep } from 'node:path';
 import type { BrainEngine } from '../engine.ts';
 import type { GBrainConfig } from '../config.ts';
@@ -368,8 +369,10 @@ export async function prepareManagedFileRepairMutation(engine: BrainEngine, row:
   const rawHash = checkedFileHash(target, p.beforeHash, row.source_id, p.path, kind);
   // Once the door has staged a split page's new part files beside the head, the parts no longer reassemble as they are,
   // so validation compares the raw bytes this preparation bound; the door compares every file it replaces or removes.
+  // An import-only repair publishes no file, so the door never sees expectedParts: its parts are compared here instead.
   const checkFile = () => {
     if (sha256(readFileSync(confinedRepairTarget(root, p.path, row.source_id, kind))) !== rawHash) throw changedSincePreview(row.source_id, p.path, 'the file bytes differ from the previewed hash', kind);
+    if (!fileChanges && !isDeepStrictEqual(preparedParts(target, root), expectedParts)) throw changedSincePreview(row.source_id, p.path, 'a part file of the split page changed after the repair compared it', kind);
   };
   const source = { sourceId: row.source_id };
   const snapshot = await engine.readPageSnapshot(row.slug, { ...source, includeDeleted: true });
