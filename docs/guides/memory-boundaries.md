@@ -285,6 +285,11 @@ then its body. A page whose file would be larger than `sync.max_file_bytes`
   up to 16 MiB of the body, cut at a line break near 8 MiB. Joined in order they
   are the body, byte for byte.
 
+A leading byte-order mark (BOM) on the page file is not kept: the head is
+written without one, and a BOM added to a head by hand is ignored when it is
+read, the same way import drops a leading BOM from any page file. Every byte
+after it is kept.
+
 The page stays one page: one slug, one search entry, one set of links. gbrain
 writes the head and every changed part in one publication (one commit on a
 `canonical: git` source), and sync reads them back as the whole page. An append
