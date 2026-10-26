@@ -10,7 +10,9 @@
  *     between the writer's blob write and its tree, commit and ref update, and the published commit passes `git fsck`;
  *   - the cycle skips a repository whose user scheduled git's own maintenance, and doctor says so;
  *   - a hosted source's bare repository is maintained through its linked worktree;
- *   - doctor warns on a failed run with the preview-first fix, and the CLI previews and applies.
+ *   - doctor warns on a failed run with the preview-first fix, and the CLI previews and applies;
+ *   - doctor fails with `git_objects_missing` when a blob HEAD needs is deleted from the object store, passes once it is
+ *     restored, and reports a connectivity walk past its bound as not checked.
  * Engine-dependent cases run on PGLite and, with DATABASE_URL, on Postgres.
  */
 import { describe, expect, test } from 'bun:test';
@@ -263,6 +265,28 @@ for (const backend of testBackends()) describe(`[${backend}] git maintenance on 
     expect(out.join('\n')).toMatch(/^maintained \S+: loose .* pruned$/);
     expect(readMaintenanceRecord(join(root, '.git'))).toMatchObject({ result: 'ok', trigger: 'manual' });
     expect(await doctor(engine)).toMatchObject({ status: 'ok' });
+  }, { databaseUrl, setup }), 120_000);
+
+  test('doctor fails with git_objects_missing when a blob HEAD needs is gone, passes once it is restored, and reports an unfinished walk as not checked', () => managedBrain(async ({ engine, root }) => {
+    await strict(engine);
+    writeFileSync(join(root, 'notes-kept.md'), page('Kept', 'A page whose blob goes missing.'));
+    git(root, 'add', 'notes-kept.md');
+    git(root, '-c', 'user.name=Example', '-c', 'user.email=example@example.invalid', 'commit', '-qm', 'kept');
+    const blob = git(root, 'rev-parse', 'HEAD:notes-kept.md').trim();
+    const path = looseFile(root, blob);
+    const bytes = readFileSync(path);
+    expect(await doctor(engine)).toMatchObject({ status: 'ok', details: { sources: [{ source_id: 'default', connectivity: { state: 'ok' } }] } });
+    rmSync(path);
+    const broken = await doctor(engine);
+    expect(broken).toMatchObject({ status: 'fail', details: { code: 'git_objects_missing', missing: [{ source_id: 'default', count: 1, sample: [blob] }] },
+      fix: { actor: 'user', docs: 'docs/guides/shared-checkout-git.md#missing-git-objects', verify: { argv: ['gbrain', 'doctor', '--only', 'git_repo_health', '--json'] } } });
+    expect(broken.message).toContain(`default lacks 1 object(s) its history needs (${blob})`);
+    writeFileSync(path, bytes);
+    expect(await doctor(engine)).toMatchObject({ status: 'ok', details: { sources: [{ connectivity: { state: 'ok' } }] } });
+    const unbounded = await withEnv({ GBRAIN_DOCTOR_GIT_FSCK_TIMEOUT_MS: '1' }, () => { rmSync(path); return doctor(engine); });
+    expect(unbounded).toMatchObject({ status: 'ok', details: { sources: [{ connectivity: { state: 'not_checked' } }] } });
+    expect(unbounded.message).toContain('default: connectivity not checked (');
+    writeFileSync(path, bytes);
   }, { databaseUrl, setup }), 120_000);
 
   test('a hosted source keeps its objects in a bare repository, which the phase maintains through the linked worktree', () => managedBrain(async ({ engine }) => {

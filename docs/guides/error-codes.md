@@ -1789,6 +1789,16 @@ More: [docs/guides/shared-checkout-git.md#git-maintenance](../../docs/guides/sha
 
 More: [docs/guides/write-refusals.md#git_object_missing](../../docs/guides/write-refusals.md#git_object_missing)
 
+### git_objects_missing
+
+<a id="git_objects_missing"></a>
+
+| Meaning | Why | Next step | Who acts · consent | Verify | Exit | Retryable |
+|---|---|---|---|---|---|---|
+| doctor git_repo_health found objects that a strict source's HEAD, refs or index need missing from its Git object store (git fsck --connectivity-only). | Git cannot recreate a lost object: commits that name it cannot be read, checked out or pushed until it comes back from a copy that still has it. Pruning beside a concurrent writer has a small window git itself leaves open, so doctor checks connectivity after the fact. | Stop writers to the source, restore the objects from its remote (git fetch --refetch), another clone or a backup, or hash an unchanged page file again with git hash-object -w, then run gbrain doctor --only git_repo_health. | host_admin | `gbrain doctor --json` | 1 | no |
+
+More: [docs/guides/shared-checkout-git.md#missing-git-objects](../../docs/guides/shared-checkout-git.md#missing-git-objects)
+
 ### git_operation_in_progress
 
 <a id="git_operation_in_progress"></a>

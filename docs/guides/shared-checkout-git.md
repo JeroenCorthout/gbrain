@@ -569,7 +569,8 @@ prune keeps everything a recent object references. What git leaves open is
 the instant between prune's age check and its unlink; a write that refreshes
 the object inside that window can lose it, the same risk `git gc --auto`
 carries beside any concurrent git command
-([git-gc NOTES](https://git-scm.com/docs/git-gc#_notes)).
+([git-gc NOTES](https://git-scm.com/docs/git-gc#_notes)). Doctor checks for it
+after the fact, below.
 
 ```bash
 gbrain git maintenance --source source-a          # preview: sizes, last run, what a run would prune
@@ -585,6 +586,27 @@ packs, after a failed run, and at 2 GB packed when a remote is on github.com,
 where GitHub's soft repository limits start. Its fix is the preview above,
 then `--apply`. A run that finds the maintenance lock held exits with
 `git_maintenance_busy`; retry after the running one finishes.
+
+### Missing Git objects
+
+<a id="missing-git-objects"></a>`git_repo_health` also runs
+`git fsck --connectivity-only` on each strict source and fails with
+`git_objects_missing` when an object that HEAD, a ref or the index needs is
+gone. Git cannot recreate it, so it has to come back from a copy that still has
+it:
+
+1. Stop the writers to that source (pause autopilot and any agent that writes
+   there).
+2. Restore the objects. When the commits were pushed, `git fetch --refetch
+   origin` in the checkout downloads every object again. Otherwise copy them from
+   another clone or a backup. A missing page blob whose file is unchanged in the
+   checkout comes back with `git hash-object -w <file>`.
+3. Run `gbrain doctor --only git_repo_health` until it passes.
+
+The walk reads every reachable object, so doctor bounds it: all sources share
+`GBRAIN_DOCTOR_GIT_FSCK_TIMEOUT_MS` (default 20 s), and never past the check's
+own deadline. A repository the walk did not finish is reported as
+"connectivity not checked", never as healthy; raise the bound to check it.
 
 ## Limits
 
