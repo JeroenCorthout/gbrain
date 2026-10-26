@@ -461,6 +461,7 @@ test/split-layout-publish-recovery.test.ts
 test/split-layout-publish.test.ts
 test/split-layout-raw-readers.test.ts
 test/split-layout-raw-writers.test.ts
+test/split-layout-recovery-whole-unit.test.ts
 test/split-layout-renamed-head.test.ts
 test/split-layout-reserved-key.test.ts
 test/split-layout-sync.test.ts

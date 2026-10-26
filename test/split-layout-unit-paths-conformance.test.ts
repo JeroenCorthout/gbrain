@@ -13,7 +13,8 @@
  * Round 6 widens it to the publication routes: in coordinator.ts and group-publish.ts, a function that writes a page
  * file (publishFile, publishPersistenceFile) runs the unit-state check (split-files.ts assertSplitUnitIntact, or the
  * group's deferral to it, splitUnitTracked); one that restores files decides through splitLandedCommit, which searches
- * the whole unit in HEAD. It fails when a route writes without it, as the planted bypasses below do.
+ * the whole unit in HEAD. It fails when a route writes without it, as the planted bypasses below do. The landed-commit search
+ * itself (rev-list) must name the parts directory (partsDirFor), not only the record paths.
  */
 import { describe, expect, test } from 'bun:test';
 import { readFileSync } from 'node:fs';
@@ -121,5 +122,31 @@ describe('split git layout: every page publication route checks the unit HEAD, t
       async function deferred(binding, prepared) { if (await splitUnitTracked(binding, prepared)) return; publishPersistenceFile(prepared[0]); }
       async function recovered(root, record) { await splitLandedCommit(root, null, [record]); restoreBeforeStage(record); publishFile(record); }`;
     expect(unitStateBypasses('planted.ts', planted)).toEqual(['planted.ts:publishMutation', 'planted.ts:publishGroup', 'planted.ts:recoverPublication']);
+  });
+});
+
+/** Round 6: the landed-commit search of a split page (rev-list) runs over the whole unit, its parts directory included. */
+export function partialUnitSearches(file: string, text: string): string[] {
+  return functions(file, text)
+    .filter(fn => /'rev-list'/.test(fn.body) && SPLIT.test(fn.body) && !/\bpartsDirFor\s*\(/.test(fn.body))
+    .map(fn => `${file}:${fn.name}`);
+}
+
+describe('split git layout: the landed-commit search covers the whole unit in HEAD', () => {
+  test('the door modules search the head and its parts directory', () => {
+    expect(DOOR_FILES.flatMap(file => partialUnitSearches(file, readFileSync(file, 'utf8')))).toEqual([]);
+  });
+
+  test('a planted search over the record paths only is caught', () => {
+    const planted = `
+      export async function splitLandedCommit(root, doorHead, files) {
+        const listed = await git(session, ['rev-list', '-1', doorHead + '..HEAD', '--', ...files.map(file => file.path)]);
+        const unit = await splitUnitPaths(session, root, files[0].path);
+        return listed.stdout.trim();
+      }
+      export async function whole(root, doorHead, files) {
+        return git(session, ['rev-list', '--reverse', doorHead + '..HEAD', '--', files[0].path, partsDirFor(files[0].path)]);
+      }`;
+    expect(partialUnitSearches('planted.ts', planted)).toEqual(['planted.ts:splitLandedCommit']);
   });
 });
