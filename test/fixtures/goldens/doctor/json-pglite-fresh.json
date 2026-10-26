@@ -3387,6 +3387,8 @@
             "sources_walked": [
               "default"
             ],
+            "stale_sample": [],
+            "stale_split_imports": 0,
             "stray_parts_dirs": 0,
             "stray_sample": [],
             "truncated": false

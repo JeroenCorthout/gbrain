@@ -52,7 +52,7 @@ import type { SyncResult, SyncOpts } from '../sync.ts';
 import { syncCheckpointKeys, resolveSyncCheckpointEvery } from './checkpoint.ts';
 import { runConnectorSync } from './connector.ts';
 import { performFullSync } from './full.ts';
-import { applyHoldsToManifest, holdUnreadableRenames, planHoldRescreen, redecideUnreadableRenames, wouldHoldFields, type LegacyHolds } from './holds.ts';
+import { applyHoldsToManifest, holdUnreadableRenames, planHoldRescreen, planStaleSplitRescreen, redecideUnreadableRenames, wouldHoldFields, type LegacyHolds } from './holds.ts';
 import { sweepOrphanedRenameSentinels } from './rename-reconcile.ts';
 import type { SyncPlan, SyncActivePack } from './sync-run.ts';
 import { holdUnsupportedPaths, NO_BYTE_PATHS, selectBytePaths, type BytePaths } from './unsupported-paths.ts';
@@ -148,10 +148,13 @@ export async function preflightIncrementalSync(engine: BrainEngine, opts: SyncOp
   // nothing else to do still re-screens them, and clears holds of gone files.
   const sourceRootMode = scoped && slugRootMode === 'source-root';
   if (holds) {
-    planHoldRescreen(holds, { root: sourceRootMode ? syncScopeRoot : gitContextRoot, gitRoot: gitContextRoot, touched: new Set(), selected: path => {
+    const holdRoot = sourceRootMode ? syncScopeRoot : gitContextRoot;
+    const selected = (path: string) => {
       const gitPath = sourceRootMode ? `${syncScopeRelPath}/${path}` : path;
       return inScope(gitPath) ? !excluded(gitPath) && isSelectedForRun(gitPath, syncOpts) : null;
-    } });
+    };
+    planHoldRescreen(holds, { root: holdRoot, gitRoot: gitContextRoot, touched: new Set(), selected });
+    await planStaleSplitRescreen(engine, holds, { root: holdRoot, selected });
   }
   const holdWork = !!holds && holds.rescreen.length + holds.gone.length + holds.retryTaken.length > 0;
 

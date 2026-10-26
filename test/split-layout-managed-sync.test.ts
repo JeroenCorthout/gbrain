@@ -28,6 +28,11 @@ import { parseMarkdown } from '../src/core/markdown.ts';
 import { PAGE_MAX_BYTES } from '../src/core/page-size-policy.ts';
 import { conversationPage } from './helpers/conversation-page.ts';
 import { reconstructedPage } from './helpers/segmented-page-checks.ts';
+import { importFromContent } from '../src/core/import-file.ts';
+import { performSync } from '../src/commands/sync.ts';
+import type { Check } from '../src/commands/doctor.ts';
+import type { DoctorContext } from '../src/commands/doctor/context.ts';
+import { splitLayoutEntry } from '../src/commands/doctor/checks/split-layout.ts';
 
 const databaseUrl = process.env.GBRAIN_TEST_BACKEND === 'postgres' ? requirePostgresTestDatabase() : undefined;
 const LIMITS = { thresholdMin: 1024, partTarget: 512, partMax: 1024, leadMax: 128, partCountMax: 500 };
@@ -243,4 +248,81 @@ test('a rename that moves only the head, without its parts directory, is held sp
   expect(await livePaths(engine)).toEqual(['notes/big=notes/big.md']);
   expect((await stored(engine))?.compiled_truth).toBe(before!.compiled_truth);
   expect(await engine.readPageSnapshot('notes/moved', { sourceId: 'default' })).toBeNull();
+}), 120_000);
+
+/** What a gbrain before the split read path did with a committed split head: imported the head itself as the short page. */
+async function olderGbrainImport(engine: BrainEngine, root: string, head: string): Promise<void> {
+  expect((await importFromContent(engine, 'notes/big', head, { sourceId: 'default', sourcePath: HEAD, noEmbed: true })).status).toBe('imported');
+  await engine.executeRaw("UPDATE sources SET last_commit=$1 WHERE id='default'", [git(root, 'rev-parse', 'HEAD').trim()]);
+}
+const brainAfter = (older: (b: { engine: BrainEngine; root: string }) => Promise<void>, run: (b: ManagedBrain) => Promise<void>) => managedBrain(async b => {
+  __setSplitLimitsForTests(LIMITS); await run(b);
+}, { databaseUrl, setup: async b => { setup(b); __setSplitLimitsForTests(LIMITS); await older(b); } });
+async function splitDoctor(engine: BrainEngine, remote = false): Promise<Check> {
+  const ctx = { engine, args: [], jsonOutput: true, fastMode: false, doFix: false, dryRun: false, scope: 'brain', tier: 'standard', remote } as unknown as DoctorContext;
+  return (await splitLayoutEntry.run(ctx) as Check[]).find(check => check.name === 'split_layout')!;
+}
+const whole = parseMarkdown(page('v1'), HEAD);
+/** The sync entry point (gbrain sync), which reports the pages it rebuilt. */
+const syncCommand = (engine: BrainEngine) => performSync(engine, { sourceId: 'default', noPull: true, noEmbed: true, noExtract: true });
+
+test('a page an older gbrain stored as its split head is rebuilt whole by the next sync; doctor reports it until then', () => brainAfter(async ({ engine, root }) => {
+  await writeSplitPage(root, HEAD, page('v1'));
+  commit(root, 'Synthetic split page v1');
+  await olderGbrainImport(engine, root, readFileSync(join(root, HEAD), 'utf8'));
+}, async ({ engine, root }) => {
+  expect((await stored(engine))?.frontmatter).toHaveProperty('gbrain_parts');
+  const before = await splitDoctor(engine);
+  expect(before).toMatchObject({ status: 'warn', details: { stale_split_imports: 1, stale_sample: [{ source_id: 'default', slug: 'notes/big' }] },
+    fix: { argv: ['gbrain', 'sync', '--source', 'default', '--no-pull'] } });
+  expect(before.message).toContain('gbrain sync --source default --no-pull');
+  const remote = await splitDoctor(engine, true);
+  expect(remote.details).toMatchObject({ stale_split_imports: 1, stale_sample: [] });
+  expect(JSON.stringify(remote)).not.toContain('notes/big');
+  const result = await syncCommand(engine);
+  expect(result.split_pages_rebuilt).toEqual({ count: 1, slugs: ['notes/big'] });
+  const rebuilt = await stored(engine);
+  expect(rebuilt?.compiled_truth).toBe(whole.compiled_truth);
+  expect(rebuilt?.frontmatter).toEqual(whole.frontmatter);
+  expect(rebuilt?.title).toBe(whole.title);
+  expect(await hold(engine)).toBeNull();
+  expect(git(root, 'status', '--porcelain')).toBe('');
+  expect(await splitDoctor(engine)).toMatchObject({ status: 'ok', details: { stale_split_imports: 0 } });
+  expect((await syncCommand(engine)).split_pages_rebuilt).toBeUndefined();
+}), 120_000);
+
+test('a converged source whose stored page an older gbrain host replaced with the split head rebuilds it', () => brain(async b => {
+  const { engine, root } = b;
+  const written = await syncedV1(b);
+  const good = await stored(engine);
+  // The older host's import, written while the pass state stays converged (an idle tick reads nothing).
+  await engine.executeRaw('UPDATE persistence_brain SET enabled=false WHERE singleton=1');
+  await importFromContent(engine, 'notes/big', written.head, { sourceId: 'default', sourcePath: HEAD, noEmbed: true });
+  await engine.executeRaw('UPDATE persistence_brain SET enabled=true WHERE singleton=1');
+  expect((await stored(engine))?.compiled_truth).not.toContain('Line 79 of v1');
+  const result = await syncCommand(engine);
+  expect(result.split_pages_rebuilt).toEqual({ count: 1, slugs: ['notes/big'] });
+  expect((await stored(engine))?.compiled_truth).toBe(good!.compiled_truth);
+  expect(git(root, 'status', '--porcelain')).toBe('');
+}), 120_000);
+
+test('a page an older gbrain stored as its split head stays as stored while a part is missing, then rebuilds', () => brainAfter(async ({ engine, root }) => {
+  const written = await writeSplitPage(root, HEAD, page('v1'));
+  commit(root, 'Synthetic split page v1');
+  git(root, 'rm', '-q', written.parts[2]!.rel);
+  git(root, 'commit', '-qm', 'Synthetic lost part');
+  await olderGbrainImport(engine, root, written.head);
+}, async ({ engine, root }) => {
+  const short = await stored(engine);
+  const headBytes = readFileSync(join(root, HEAD));
+  const result = await syncCommand(engine);
+  expect(result.split_pages_rebuilt).toBeUndefined();
+  expect(await hold(engine)).toMatchObject({ code: 'split_page_incomplete' });
+  expect(await stored(engine)).toMatchObject({ compiled_truth: short!.compiled_truth, frontmatter: short!.frontmatter });
+  expect(readFileSync(join(root, HEAD)).equals(headBytes)).toBe(true);
+  expect(git(root, 'status', '--porcelain')).toBe('');
+  git(root, 'revert', '--no-edit', 'HEAD');
+  expect((await syncCommand(engine)).split_pages_rebuilt).toEqual({ count: 1, slugs: ['notes/big'] });
+  expect((await stored(engine))?.compiled_truth).toBe(whole.compiled_truth);
+  expect(await hold(engine)).toBeNull();
 }), 120_000);

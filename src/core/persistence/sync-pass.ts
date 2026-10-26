@@ -36,7 +36,7 @@ import { fileDriftSide, holdBasisMoved, holdRescreenDue, type DeletionCandidate,
   type GitHoldRecord, type SyncImportParser, type SyncImportProvenance } from './sync-holds.ts';
 import { movedDriftHolds, sameParser } from './sync-prescreen.ts';
 import { sameSyncOrigin, selectOriginClaimant, syncOriginPath, type SyncOriginScope } from './sync-origin.ts';
-import { splitHeadLevels, splitLevelsOf } from './sync-split.ts';
+import { splitHeadLevels, splitLevelsOf, staleSplitImports } from './sync-split.ts';
 import { hashWorkingLevel, probeDirtiness, readBlobs, readIndexDelta, readIndexLevel, readTreeLevel, workingChanged, type GitIndexEntry, type GitTreeEntry, type WorkingStatCache } from './sync-git-stream.ts';
 import { readOriginEvidence } from './sync-origin-evidence.ts';
 import { levelReuseVerify, readTreeLevelReusing, reportLevelReuseCheck, type TreeReuse } from './sync-tree-reuse.ts';
@@ -735,7 +735,7 @@ export async function readShadowLevel(engine: BrainEngine, input: { sourceId: st
   const probes = hashed?.probes ?? new Map();
   timings.Dp = t();
 
-  const levelOf = levelReader(mode, tree, root, scope, splitLevelsOf(eligibleT));
+  const levelOf = levelReader(mode, tree, root, scope, splitLevelsOf(eligibleT)), staleSplit = new Set((await staleSplitImports(engine, sourceId)).map(page => page.id));
   // `A` only matters where the file or the database moved (no row settles on `fileSame ∧ dbSame` with a proof): read it
   // for those pages alone, so a converged source reads none. The same walk finds whether any path needs the baseline tree.
   t = timer();
@@ -805,7 +805,7 @@ export async function readShadowLevel(engine: BrainEngine, input: { sourceId: st
         : input.full === true && live,
       fullObligation: input.pass ? !!input.pass.episodeFullId : input.full === true,
       keepDb: !mirror && keepDbPrefixes.length > 0 && row && isKeepDbSlug(pages.slug[at!]!, keepDbPrefixes),
-      openWork: row && open.pageIds.has(Number(pages.id[at!])) || open.origins.has(origin),
+      openWork: row && open.pageIds.has(Number(pages.id[at!])) || open.origins.has(origin), ...(live && staleSplit.has(Number(pages.id[at!])) ? { staleSplit: true as const } : {}),
     };
     return { state, ...(row ? { at } : {}), ...(legacyPageless ? { legacyPageless } : {}) };
   };

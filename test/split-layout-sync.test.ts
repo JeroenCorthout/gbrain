@@ -21,6 +21,7 @@ import { join } from 'node:path';
 import type { BrainEngine } from '../src/core/engine.ts';
 import { PGLiteEngine } from '../src/core/pglite-engine.ts';
 import { performSync } from '../src/commands/sync.ts';
+import { importFromContent } from '../src/core/import-file.ts';
 import { readGitSourceHolds } from '../src/core/persistence/sync-holds.ts';
 import { __setSplitLimitsForTests, splitStagingDir } from '../src/core/split-layout/index.ts';
 import { makeGitFixture } from './helpers/git-fixture.ts';
@@ -179,4 +180,43 @@ test('a stray parts directory with no head imports nothing, with or without --in
     expect({ extra, slugs: rows.map(row => row.slug) }).toEqual({ extra, slugs: ['notes/plain'] });
     expect(await holds(s.id)).toEqual([]);
   }
+}), T);
+
+/** A source a gbrain before the split read path synced: it imported the committed split head as the short page itself. */
+async function olderGbrainSplit(breakIt?: (root: string, written: Awaited<ReturnType<typeof writeSplitPage>>) => void) {
+  const s = await source();
+  writeFileSync(join(s.root, 'notes/plain.md'), '---\ntitle: Plain\n---\n\nA plain synthetic page.\n');
+  commitAll(s.root);
+  await sync(s);
+  const written = await writeSplitPage(s.root, HEAD, pageFile('v1'));
+  commitAll(s.root);
+  if (breakIt) { breakIt(s.root, written); commitAll(s.root, 'lost part'); }
+  expect((await importFromContent(engine, 'notes/big-page', written.head, { sourceId: s.id, sourcePath: HEAD, noEmbed: true })).status).toBe('imported');
+  await engine.executeRaw('UPDATE sources SET last_commit=$2 WHERE id=$1', [s.id, git(s.root, 'rev-parse', 'HEAD')]);
+  expect((await page(s.id))?.frontmatter).toHaveProperty('gbrain_parts');
+  return { ...s, written };
+}
+
+test('classic sync rebuilds a page an older gbrain stored as its split head, with no new commit', () => eachEngine(async () => {
+  const s = await olderGbrainSplit();
+  const result = await sync(s);
+  expect(result.split_pages_rebuilt).toEqual({ count: 1, slugs: ['notes/big-page'] });
+  const control = await source();
+  writeFileSync(join(control.root, HEAD), pageFile('v1'));
+  commitAll(control.root);
+  await sync(control);
+  expect(await page(s.id)).toEqual(await page(control.id));
+  expect(await holds(s.id)).toEqual([]);
+  expect(git(s.root, 'status', '--porcelain')).toBe('');
+  expect((await sync(s)).split_pages_rebuilt).toBeUndefined();
+}), T);
+
+test('classic sync holds such a page while a part is missing and leaves it as stored', () => eachEngine(async () => {
+  const s = await olderGbrainSplit((root, written) => unlinkSync(join(root, written.parts[2]!.rel)));
+  const before = await page(s.id);
+  const result = await sync(s);
+  expect(result.split_pages_rebuilt).toBeUndefined();
+  expect(await holds(s.id)).toEqual([{ path: HEAD, code: 'split_page_incomplete' }]);
+  expect(await page(s.id)).toEqual(before);
+  expect(git(s.root, 'status', '--porcelain')).toBe('');
 }), T);

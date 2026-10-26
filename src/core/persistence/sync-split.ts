@@ -25,6 +25,10 @@ import { readSyncFile, syncGitPath, type SyncDiscovery, type SyncEntry } from '.
 import { SYNC_READ_BOUND } from './sync-blobs.ts';
 import type { SyncBodyRef } from './sync-streamed.ts';
 import { PARTS_KEY } from '../split-layout/types.ts';
+import type { BrainEngine } from '../engine.ts';
+import type { SyncOpts, SyncResult } from '../../commands/sync.ts';
+import { currentSubmissionAuthority } from '../minions/submission-authority.ts';
+import { serr } from '../console-prefix.ts';
 
 /** What the intent of a split head's import carries beside F' (SyncIntent.split). */
 export interface SyncSplitMark {
@@ -146,4 +150,36 @@ export function splitLevelsOf(tree: Map<string, GitTreeEntry>): ReadonlyMap<stri
 /** The hash a frozen intent's working-tree bytes (rawHash) have when the file is the one it froze: the head's for a split page. */
 export function frozenFileHash(p: { content: string | null; split?: SyncSplitMark }): string | null {
   return p.split ? p.split.head_sha256 : p.content === null ? null : sha256(p.content);
+}
+
+/** At most this many pages per source are rebuilt (and counted by doctor) per run; a later run takes the rest. */
+export const STALE_SPLIT_SCAN_LIMIT = 10_000;
+
+/**
+ * Wave B PR 5: the live pages of a source an older gbrain stored from a split page head, as the short page the head is
+ * on its own: their frontmatter carries the top-level `gbrain_parts` key, which no current write admits (head.ts
+ * `assertNoReservedPartsKey`). `frontmatter ? 'gbrain_parts'` is the jsonb key-existence operator, served by the GIN
+ * index idx_pages_frontmatter on Postgres and PGLite alike; bounded by `limit`.
+ */
+export async function staleSplitImports(engine: Pick<BrainEngine, 'executeRaw'>, sourceId: string, limit = STALE_SPLIT_SCAN_LIMIT):
+  Promise<Array<{ id: number; slug: string; source_path: string | null }>> {
+  const rows = await engine.executeRaw<{ id: number | string; slug: string; source_path: string | null }>(
+    `SELECT id, slug, source_path FROM pages WHERE source_id=$1 AND deleted_at IS NULL AND frontmatter ? '${PARTS_KEY}' ORDER BY id LIMIT $2`, [sourceId, limit]);
+  return rows.map(row => ({ id: Number(row.id), slug: row.slug, source_path: row.source_path }));
+}
+
+/**
+ * A sync run (managed or classic) that names the pages it rebuilt from their split heads: those `staleSplitImports` found
+ * before the run that are live and free of `gbrain_parts` after it (`split_pages_rebuilt`; a remote caller gets the count).
+ */
+export async function withSplitRebuilds(engine: BrainEngine, opts: Pick<SyncOpts, 'sourceId' | 'dryRun'>, run: () => Promise<SyncResult>): Promise<SyncResult> {
+  const stale = opts.dryRun ? [] : await staleSplitImports(engine, opts.sourceId ?? 'default');
+  const result = await run();
+  if (!stale.length) return result;
+  const rebuilt = await engine.executeRaw<{ slug: string }>(
+    `SELECT slug FROM pages WHERE id = ANY($1::int[]) AND deleted_at IS NULL AND NOT (frontmatter ? '${PARTS_KEY}') ORDER BY slug`, [stale.map(page => page.id)]);
+  if (!rebuilt.length) return result;
+  const remote = currentSubmissionAuthority()?.kind === 'remote_generic';
+  serr(`[sync] rebuilt ${rebuilt.length} page(s) an older gbrain had stored as their split head (the lead and a notice line) from Git${remote ? '' : `: ${rebuilt.map(row => row.slug).join(', ')}`}.`);
+  return { ...result, split_pages_rebuilt: { count: rebuilt.length, ...(remote ? {} : { slugs: rebuilt.map(row => row.slug) }) } };
 }

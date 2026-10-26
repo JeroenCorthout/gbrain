@@ -35,7 +35,7 @@ export interface SyncResult {
   /** #6712 PR 2 (L4): live pages whose canonical file is gone (ghost pages), counted after a managed sync with the read-only repair preview; sync never deletes them. */
   ghostPages?: import('../core/persistence/sync-ghosts.ts').SyncGhostPages; /** #6865: stray slug: lines naming no page this sync removed (repair/slug-autoheal.ts). */ slug_lines_removed?: import('../core/repair/slug-autoheal.ts').SlugHealReport;
   /** #6948: held duplicate-origin files whose verified twins this sync merged, or why it left them (repair/origin-twins-heal.ts). */
-  origin_twins_resolved?: import('../core/repair/origin-twins-heal.ts').OriginHealReport;
+  origin_twins_resolved?: import('../core/repair/origin-twins-heal.ts').OriginHealReport; /** Wave B PR 5: pages an older gbrain stored as a split head, rebuilt whole (persistence/sync-split.ts). */ split_pages_rebuilt?: { count: number; slugs?: string[] };
   /** #6722: pages this run left large or embed_skip (chunked, keyword-searchable) and their embedding state. */ size_states?: import('../core/page-embedding-budget.ts').SyncSizeStates;
   status: 'up_to_date' | 'synced' | 'first_sync' | 'dry_run' | 'blocked_by_failures' | 'partial';
   fromCommit: string | null;
