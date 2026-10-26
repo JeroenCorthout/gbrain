@@ -16,9 +16,10 @@
  */
 
 import { mkdirSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname } from 'node:path';
 
 import type { BrainEngine } from '../core/engine.ts';
+import { oneFileWriteRefusal } from '../core/split-write-through.ts';
 import {
   renderItemPage,
   renderRepoCard,
@@ -28,7 +29,7 @@ import {
 import { DEMO_ITEMS, DEMO_REPOS } from '../fixtures/github-demo.ts';
 
 export async function runSourcesDemo(
-  _engine: BrainEngine,
+  engine: BrainEngine,
   args: string[],
 ): Promise<void> {
   let dir = 'gbrain-demo';
@@ -70,24 +71,20 @@ export async function runSourcesDemo(
     }
   }
 
-  mkdirSync(join(dir, 'gh'), { recursive: true });
-
   const items = DEMO_ITEMS.slice(0, limit);
-  for (const item of items) {
-    const page = renderItemPage(item);
-    const p = itemPagePath(dir, item.repo, item.number);
-    mkdirSync(join(dir, 'gh', item.repo), { recursive: true });
-    writeFileSync(p, page);
-  }
-
   const repoNames = new Set<string>();
   for (const item of items) repoNames.add(item.repo);
-  for (const repo of DEMO_REPOS) {
-    if (!repoNames.has(repo.full_name)) continue;
-    const card = renderRepoCard(repo.full_name, repo);
-    const p = repoCardPath(dir, repo.full_name);
-    mkdirSync(join(dir, 'gh', repo.full_name), { recursive: true });
-    writeFileSync(p, card);
+  const pages = [
+    ...items.map(item => ({ path: itemPagePath(dir, item.repo, item.number), content: renderItemPage(item) })),
+    ...DEMO_REPOS.filter(repo => repoNames.has(repo.full_name)).map(repo => ({ path: repoCardPath(dir, repo.full_name), content: renderRepoCard(repo.full_name, repo) })),
+  ];
+  for (const page of pages) {
+    const refusal = await oneFileWriteRefusal(engine, page.path, dir, page.content);
+    if (refusal) throw refusal;
+  }
+  for (const page of pages) {
+    mkdirSync(dirname(page.path), { recursive: true });
+    writeFileSync(page.path, page.content);
   }
 
   console.log(`wrote ${items.length} item pages + ${repoNames.size} repo cards to ${dir}`);

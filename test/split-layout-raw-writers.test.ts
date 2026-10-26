@@ -31,11 +31,13 @@ import { runFrontmatter } from '../src/commands/frontmatter.ts';
 import { publishClassicConcept } from '../src/core/cycle/concept-publication.ts';
 import { runLintCore } from '../src/commands/lint.ts';
 import { currentExitCode, _resetCliExitVerdictForTests } from '../src/core/cli-force-exit.ts';
+import { runSourcesDemo } from '../src/commands/sources-demo.ts';
 import { runTakes } from '../src/commands/takes.ts';
 import { removeDreamPageFile, writeDerivedPageThrough, writeDreamPageFile } from '../src/core/cycle/derived-write-through.ts';
 import { runPhantomRedirectPass } from '../src/core/cycle/phantom-redirect.ts';
 import { gitHubStateFile, itemPagePath, parseGitHubSourceConfig, runGitHubSync } from '../src/core/github-source.ts';
 import { deletePageByRelPath, importRendered, type GoogleSyncDeps, type GoogleSyncSummary } from '../src/core/google/sweep-shared.ts';
+import { DEMO_ITEMS } from '../src/fixtures/github-demo.ts';
 import { serializePageToMarkdown } from '../src/core/markdown.ts';
 import { operations, type OperationContext } from '../src/core/operations.ts';
 import { __setSplitLimitsForTests, parseHead, partsDirFor, readPageFile, SPLIT_MAX_FILE_BYTES_KEY } from '../src/core/split-layout/index.ts';
@@ -328,6 +330,40 @@ for (const backend of testBackends()) describe(`[${backend}] split git layout: r
       } finally { process.umask(umask); await close(); _resetWriteThroughCacheForTest(); }
     }), 120_000);
   }
+
+  test('the phantom redirect into a database-only canonical page over the split threshold refuses (split_page_unsupported) before it writes the canonical file: no file is left and the phantom stays', () => withHome(async (home, root) => {
+    _resetWriteThroughCacheForTest();
+    const { engine, close } = await isolatedSharedSkillsEngine(databaseUrl);
+    try {
+      await withEnv({ GBRAIN_AUDIT_DIR: join(home, 'audit') }, async () => {
+        await engine.executeRaw("UPDATE sources SET local_path = $1 WHERE id = 'default'", [root]);
+        for (const [slug, title, text] of [['people/alice-example', 'Alice Example', `# Alice Example\n\n${lines('Alice').join('\n')}\n`], ['alice', 'alice', PHANTOM_BODY]] as const) {
+          const page = await engine.putPage(slug, { type: 'person', title, compiled_truth: text, timeline: '', frontmatter: {} });
+          await engine.executeRaw('UPDATE pages SET source_path = $1 WHERE id = $2', [`${slug}.md`, page.id]);
+        }
+        writeFileSync(join(root, 'alice.md'), PHANTOM_BODY);
+        const result = await runPhantomRedirectPass(engine, root, 'default', false);
+        expect(JSON.stringify(result)).toContain('split_page_unsupported');
+        expect(existsSync(join(root, 'people'))).toBe(false);
+        expect(readFileSync(join(root, 'alice.md'), 'utf8')).toBe(PHANTOM_BODY);
+      });
+    } finally { await close(); _resetWriteThroughCacheForTest(); }
+  }), 120_000);
+
+  test('the offline GitHub demo refuses (split_page_unsupported) before it writes any page when a demo page path is a split head: the head, its parts and the other pages stay', () => withSplitPage(databaseUrl, async (engine, root) => {
+    const item = DEMO_ITEMS[0]!;
+    const head = itemPagePath(root, item.repo, item.number);
+    const big = `---\ntype: note\ntitle: Demo example\n---\n\n${lines('Demo').join('\n')}\n`;
+    await writeSplitPage(root, head.slice(root.length + 1), big);
+    const before = layout(head);
+    const listed = readdirSync(join(root, 'gh'), { recursive: true }).map(String).sort();
+    const log = spyOn(console, 'log').mockImplementation(() => undefined);
+    try {
+      expect((await runSourcesDemo(engine, ['github', '--dir', root]).then(() => null, error => error))?.code).toBe('split_page_unsupported');
+    } finally { log.mockRestore(); }
+    expect(layout(head)).toEqual(before);
+    expect(readdirSync(join(root, 'gh'), { recursive: true }).map(String).sort()).toEqual(listed);
+  }), 120_000);
 
   test('the classic Google connector refuses an edit the part files would carry (split_page_unsupported) before its import, and removes the head with its parts on delete', () => withSplitPage(databaseUrl, async (engine, root, head) => {
     const summary = { status: 'synced', added: 0, modified: 0, deleted: 0, chunksCreated: 0, embedded: 0, pagesAffected: [], threadsSeen: 0, attachmentInspection: {} } as unknown as GoogleSyncSummary;

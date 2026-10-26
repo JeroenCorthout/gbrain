@@ -10,8 +10,9 @@
  *   gbrain report --type enrichment-sweep --dir /path/to/brain
  */
 
-import { writeFileSync, mkdirSync } from 'fs';
+import { existsSync, writeFileSync, mkdirSync } from 'fs';
 import { join } from 'path';
+import { partsDirFor } from '../core/split-layout/paths.ts';
 import { readStdinPayload } from '../core/stdin-read.ts';
 
 export async function runReport(args: string[]) {
@@ -84,6 +85,10 @@ ${content.trim()}
 `;
 
   const filepath = join(reportDir, filename);
+  if (existsSync(partsDirFor(filepath))) {
+    console.error(`split_page_unsupported: ${filepath} is a split page head (its page continues in ${partsDirFor(filepath)}), and gbrain report writes one whole file, so nothing was written. Run the report again in a minute, or give it another --dir.`);
+    process.exit(1);
+  }
   writeFileSync(filepath, page);
   console.log(filepath);
 }

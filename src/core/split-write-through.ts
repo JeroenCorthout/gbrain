@@ -66,6 +66,20 @@ export async function splitWriteRefusal(engine: BrainEngine, filePath: string, r
 }
 
 /**
+ * The refusal of a writer that writes `content` (F) at `filePath` as one whole file, read before its first write:
+ * undefined only when F is one ordinary file there (`assertSplitWritable` false), else `split_page_unsupported` (a
+ * split unit, even one whose parts all stay, is not one file). Any other planner refusal throws.
+ */
+export async function oneFileWriteRefusal(engine: BrainEngine, filePath: string, root: string, content: string): Promise<OperationError | undefined> {
+  try {
+    return await assertSplitWritable(engine, filePath, root, content) ? splitPageUnsupported(filePath) : undefined;
+  } catch (error) {
+    if ((error as { code?: string } | null)?.code === 'split_page_unsupported') return error as OperationError;
+    throw error;
+  }
+}
+
+/**
  * Writes a raw writer's temporary copy of the page file at `filePath` (`tmpPath`, renamed over it later) as a new file
  * with the page file's mode from its first byte (0644 when there is none), so a private page's copy is never readable
  * by others and the rename keeps the page's mode.

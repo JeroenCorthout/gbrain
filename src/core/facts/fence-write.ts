@@ -576,11 +576,8 @@ export async function writeFactsToFence(
       const newRowSet = new Set(assignedRowNums);
       const toInsert = allExtracted.filter(r => newRowSet.has(r.row_num));
 
-      // Carry per-input embedding + sessionId across — the fence
-      // parser doesn't reconstruct embeddings (they're not in the
-      // fence text) and source_session is runtime provenance that
-      // isn't a fence column either. Stitch them back by row_num
-      // index.
+      // Carry per-input embedding + sessionId across: the fence parser doesn't reconstruct embeddings (they're not in
+      // the fence text) and source_session is runtime provenance, not a fence column. Stitch them back by row_num index.
       const enriched = toInsert.map((row, i) => ({
         ...row,
         embedding:      facts[i].embedding,
@@ -611,10 +608,8 @@ export async function writeFactsToFence(
         rmSync(tmpPath, { force: true });
         return refusal ? { inserted: 0, ids: [], fenceWriteFailed: true, fenceRefusal: recordedRefusal(target, filePath, refusal), ...withdrawnSkipped } : drift('during');
       }
-      // v0.46 (#3014) — an unresolvable `superseded by #N` reference (self
-      // / dangling / struck target) leaves superseded_by NULL; log it rather
-      // than swallow it. The row still lands (expired_at set for struck
-      // rows), never a bad FK.
+      // v0.46 (#3014): an unresolvable `superseded by #N` reference (self / dangling / struck target) leaves
+      // superseded_by NULL; log it rather than swallow it. The row still lands (expired_at set for struck rows), never a bad FK.
       for (const w of result.warnings) {
         // eslint-disable-next-line no-console
         console.warn(`[facts.supersession] ${w}`);
