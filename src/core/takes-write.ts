@@ -37,7 +37,7 @@
  * limitation — see ops/takes.ts.)
  */
 
-import { existsSync, mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type { BrainEngine, TakeBatchInput, TakeKind } from './engine.ts';
 import {
@@ -58,8 +58,7 @@ import { sanitizeRecordedSourcePath, recordedPathFromFileUri, scannerSlugRootMod
 import { isWriteTargetContained, msysToNativePath } from './path-confine.ts';
 import { atomicWriteFileSync } from './atomic-write.ts';
 import { commitWriteThroughFile, isDurabilityHardened } from './brain-repo-durability.ts';
-import type { PageFileHoldCode } from './split-layout/page-file.ts';
-import { PageFileChanged, readPageFileText, writeSplitPageFile } from './split-write-through.ts';
+import { assertOutsideDoorWritable } from './split-write-through.ts';
 import { maintenanceTransaction } from './persistence/attribution.ts';
 import type { WriteTrust } from './trust/tier.ts';
 
@@ -73,8 +72,6 @@ export type TakesWriteErrorCode =
   | 'mirror_unavailable'  // sync.repo_path unset, page file absent, or write target escapes the source root
   | 'page_locked'         // lock contention within the timeout (retryable)
   | 'fence_unparsed'      // the page's fence has parser-skipped rows a whole-fence re-render would delete
-  | 'file_changed'        // the page file changed while the fence write was laid out
-  | PageFileHoldCode      // the page file is a split page head whose parts do not reassemble
   | 'invalid_input';      // free-text field carries control chars, fence markers, or out-of-range values
 
 export class TakesWriteError extends Error {
@@ -347,7 +344,9 @@ function findFenceRow(takes: ParsedTake[], rowNum: number, allowList: HolderAllo
   return target;
 }
 
-function readPageBody(path: string): string {
+/** The page file's text; a path in a split unit refuses `split_page_unsupported` first (split-write-through.ts). */
+async function readPageBody(path: string, writeRoot: string, slug: string): Promise<string> {
+  await assertOutsideDoorWritable({ root: writeRoot, path, route: 'raw_writer', slug });
   if (!existsSync(path)) {
     throw new TakesWriteError(
       'mirror_unavailable',
@@ -355,20 +354,18 @@ function readPageBody(path: string): string {
       'takes_mirror_unavailable',
     );
   }
-  const file = readPageFileText(path);
-  if (file.hold) throw new TakesWriteError(file.hold.code, file.hold.message);
-  return file.text ?? '';
+  return readFileSync(path, 'utf8');
 }
 
 /**
  * P1-2: contain the target within the source's working tree before any
  * mkdir/write (a pre-existing hostile row or a symlinked intermediate dir must
  * not escape), then atomic temp+rename so a reader never observes a torn file
- * and a crash mid-write leaves only a tmp sibling. A page over the split
- * threshold, or a split page head (Wave B PR 5), is written as its split unit
- * (head plus parts, split-write-through.ts); the body is the whole page file F'.
+ * and a crash mid-write leaves only a tmp sibling. A path in a split unit, or a
+ * body that is a split head, refuses before anything is written (Wave B PR 5,
+ * split-write-through.ts); every other body is one file, whatever its size.
  */
-async function writePageBody(engine: BrainEngine, path: string, body: string, writeRoot: string, slug: string): Promise<void> {
+async function writePageBody(path: string, body: string, writeRoot: string, slug: string): Promise<void> {
   if (!isWriteTargetContained(path, writeRoot)) {
     throw new TakesWriteError(
       'mirror_unavailable',
@@ -376,18 +373,12 @@ async function writePageBody(engine: BrainEngine, path: string, body: string, wr
       'path_escapes_source_root',
     );
   }
+  await assertOutsideDoorWritable({ root: writeRoot, path, route: 'raw_writer', slug }, body);
   mkdirSync(dirname(path), { recursive: true });
-  let splitPaths: string[] | null;
-  try {
-    splitPaths = await writeSplitPageFile(engine, path, writeRoot, body);
-  } catch (error) {
-    if (error instanceof PageFileChanged) throw new TakesWriteError('file_changed', `${error.path} changed while the take was written, so nothing was written; run the command again.`);
-    throw error;
-  }
-  if (!splitPaths) atomicWriteFileSync(path, body);
+  atomicWriteFileSync(path, body);
   // Same #2426 contract as put_page write-through: a durability-hardened repo
   // gets a best-effort, path-limited commit; a failed commit never fails the write.
-  if (isDurabilityHardened(writeRoot)) commitWriteThroughFile(writeRoot, path, slug, 'write-through', splitPaths ?? []);
+  if (isDurabilityHardened(writeRoot)) commitWriteThroughFile(writeRoot, path, slug, 'write-through');
 }
 
 /**
@@ -572,7 +563,7 @@ export async function addTakeToPage(
     const { path, writeRoot } = await resolveTakesFilePath(
       target.engine, target.brainDir, target.slug, target.sourceId,
     );
-    const body = existsSync(path) ? readPageBody(path) : '';
+    const body = existsSync(path) ? await readPageBody(path, writeRoot, target.slug) : '';
     // F1: guard only fires when a fence ALREADY exists (an empty/fence-less body
     // parses to zero warnings) — a whole-fence re-render must not delete rows
     // this version couldn't parse.
@@ -586,7 +577,7 @@ export async function addTakeToPage(
       sinceDate: input.sinceDate,
       active: true,
     });
-    await writePageBody(target.engine, path, nextBody, writeRoot, target.slug);
+    await writePageBody(path, nextBody, writeRoot, target.slug);
     let mirrorWarning: string | undefined;
     try {
       await maintenanceTransaction(target.engine, tx => tx.addTakesBatch([{
@@ -645,9 +636,9 @@ export async function appendTakesToPageMdFirst(
     );
     // Unlike addTakeToPage, a missing file REFUSES (readPageBody's
     // mirror_unavailable) — see the contract note above.
-    const body = readPageBody(path);
+    const body = await readPageBody(path, writeRoot, target.slug);
     const { body: nextBody, rowNums } = appendTakesToPageBody(body, rows);
-    await writePageBody(target.engine, path, nextBody, writeRoot, target.slug);
+    await writePageBody(path, nextBody, writeRoot, target.slug);
     // Mirror md→DB with the reconcile primitive, exactly as the fence now
     // states the appended rows.
     const appended = new Set(rowNums);
@@ -684,7 +675,7 @@ export async function updateTakeOnPage(
     const { path, writeRoot } = await resolveTakesFilePath(
       target.engine, target.brainDir, target.slug, target.sourceId,
     );
-    const body = readPageBody(path);
+    const body = await readPageBody(path, writeRoot, target.slug);
     const parsed = parseTakesFence(body);
     assertFenceRoundTrips(parsed); // F1: refuse a whole-fence re-render that would drop skipped rows.
     const targetRow = findFenceRow(parsed.takes, rowNum, target.allowList, target.slug);
@@ -703,7 +694,7 @@ export async function updateTakeOnPage(
       sinceDate: fields.sinceDate ?? targetRow.sinceDate,
     };
     const allRows = parsed.takes.map(t => (t.rowNum === rowNum ? updated : t));
-    await writePageBody(target.engine, path, replaceFence(body, allRows), writeRoot, target.slug);
+    await writePageBody(path, replaceFence(body, allRows), writeRoot, target.slug);
     // Mirror md→DB with the reconcile primitive (upsert on (page_id,row_num));
     // base columns only, resolution columns preserved by the DO UPDATE list.
     let mirrorWarning: string | undefined;
@@ -741,7 +732,7 @@ export async function supersedeTakeOnPage(
     const { path, writeRoot } = await resolveTakesFilePath(
       target.engine, target.brainDir, target.slug, target.sourceId,
     );
-    const body = readPageBody(path);
+    const body = await readPageBody(path, writeRoot, target.slug);
     const parsed = parseTakesFence(body);
     assertFenceRoundTrips(parsed); // F1: refuse a whole-fence re-render that would drop skipped rows.
     const targetRow = findFenceRow(parsed.takes, rowNum, target.allowList, target.slug);
@@ -765,7 +756,7 @@ export async function supersedeTakeOnPage(
       sinceDate: input.sinceDate,
       source: input.source,
     });
-    await writePageBody(target.engine, path, nextBody, writeRoot, target.slug);
+    await writePageBody(path, nextBody, writeRoot, target.slug);
     // Mirror BOTH affected rows exactly as the fence now states them:
     // old → inactive + superseded_by pointer, new → active append.
     const after = parseTakesFence(nextBody).takes;
@@ -808,7 +799,7 @@ export async function resolveTakeOnPage(
     const { path, writeRoot } = await resolveTakesFilePath(
       target.engine, target.brainDir, target.slug, target.sourceId,
     );
-    const body = readPageBody(path);
+    const body = await readPageBody(path, writeRoot, target.slug);
     const parsed = parseTakesFence(body);
     assertFenceRoundTrips(parsed); // F1: refuse a whole-fence re-render that would drop skipped rows.
     const targetRow = findFenceRow(parsed.takes, rowNum, target.allowList, target.slug);
@@ -835,7 +826,7 @@ export async function resolveTakeOnPage(
       resolvedBy: input.resolvedBy,
     };
     const allRows = parsed.takes.map(t => (t.rowNum === rowNum ? updated : t));
-    await writePageBody(target.engine, path, replaceFence(body, allRows), writeRoot, target.slug);
+    await writePageBody(path, replaceFence(body, allRows), writeRoot, target.slug);
     // Resolution fields aren't in TakeBatchInput — mirror via resolveTake.
     // A drifted DB missing the row is self-healed md→DB (upsert the base row,
     // then resolve): the markdown is the truth being propagated.

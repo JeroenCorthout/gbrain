@@ -17,8 +17,7 @@
  */
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
-import { assertOneFileWritable, writePageTemp } from '../split-write-through.ts';
-import { splitThresholdBytes } from '../split-layout/limits.ts';
+import { writePageTemp } from '../split-write-through.ts';
 import type { BrainEngine } from '../engine.ts';
 import type { GBrainConfig } from '../config.ts';
 import { formatFenceDate, parseFactsFence, type ParsedFact } from '../facts-fence.ts';
@@ -217,17 +216,6 @@ class ProposalFileDrift extends ProposalConflictError {}
 const proposalDrift = (slug: string, sourceId: string, when: 'before' | 'during') =>
   fileDatabaseDriftToken(slug, sourceId, when, 'the proposal and its facts are unchanged');
 
-/** The split preflight of the fence edit: a token when the edited file would no longer be one page file, else null. */
-async function grownPastSplit(engine: BrainEngine, filePath: string, body: string, slug: string): Promise<string | null> {
-  try {
-    assertOneFileWritable(filePath, body, await splitThresholdBytes(engine));
-    return null;
-  } catch (error) {
-    if ((error as { code?: string }).code !== 'split_page_unsupported') throw error;
-    return `${slug} (split_page_unsupported: the edited page would no longer be one page file, which only the publication door writes; the proposal and its facts are unchanged)`;
-  }
-}
-
 function publishFile(filePath: string, body: string, expected: string, slug: string, sourceId: string): void {
   if (!existsSync(filePath) || readFileSync(filePath, 'utf-8') !== expected) throw new ProposalFileDrift(proposalDrift(slug, sourceId, 'during'));
   const tmp = `${filePath}.tmp`;
@@ -269,17 +257,22 @@ async function mirrorBody(tx: BrainEngine, slug: string, sourceId: string, body:
   return (await tx.readPageSnapshot(slug, { sourceId }))?.revision ?? null;
 }
 
-async function withFenceLocks<T>(engine: BrainEngine, slug: string | null, sourceId: string, run: (filePath: string | null) => Promise<T>): Promise<T> {
-  if (!slug) return run(null);
-  if (await isWriteThroughDisabled(engine)) return withPageLock(slug, () => run(null), { timeoutMs: 5_000 });
+async function withFenceLocks<T>(engine: BrainEngine, slug: string | null, sourceId: string, run: (filePath: string | null, root: string | null) => Promise<T>): Promise<T> {
+  if (!slug) return run(null, null);
+  if (await isWriteThroughDisabled(engine)) return withPageLock(slug, () => run(null, null), { timeoutMs: 5_000 });
   const target = await resolvePageWriteTarget(engine, slug, sourceId);
-  if (!target.ok) return withPageLock(slug, () => run(null), { timeoutMs: 5_000 });
-  return withSourceFilesystemLock(engine, target.writeRoot, () => withPageLock(slug, () => run(target.filePath), { timeoutMs: 5_000 }));
+  if (!target.ok) return withPageLock(slug, () => run(null, null), { timeoutMs: 5_000 });
+  return withSourceFilesystemLock(engine, target.writeRoot, () => withPageLock(slug, () => run(target.filePath, target.writeRoot), { timeoutMs: 5_000 }));
+}
+
+/** The split refusal of the fence edit at `filePath` (with `content` once it is planned), as a token, else null. */
+function splitRefusal(filePath: string, root: string, slug: string, sourceId: string, content?: string): Promise<string | null> {
+  return splitPageToken({ root, path: filePath, route: 'raw_writer', sourceId, slug }, 'the proposal and its facts are unchanged', content);
 }
 
 async function acceptUnmanaged(engine: BrainEngine, proposal: PairProposal, store: PairProposalStore): Promise<ProposalActionResult> {
   const first = await loadPairFact(engine, proposal.old_fact_id);
-  return withFenceLocks(engine, first?.source_markdown_slug ?? null, proposal.source_id, async (filePath) => {
+  return withFenceLocks(engine, first?.source_markdown_slug ?? null, proposal.source_id, async (filePath, root) => {
     const fresh = await store.get(engine, proposal.id);
     if (!fresh || fresh.status !== 'pending') return { id: proposal.id, action: 'accept', status: 'refused', reason: fresh?.status ?? 'not_found' };
     const [oldF, newF] = await Promise.all([loadPairFact(engine, fresh.old_fact_id), loadPairFact(engine, fresh.new_fact_id)]);
@@ -289,7 +282,7 @@ async function acceptUnmanaged(engine: BrainEngine, proposal: PairProposal, stor
       return { id: fresh.id, action: 'accept', status: 'stale', reason: stale };
     }
     const slug = oldF!.source_markdown_slug;
-    const split = filePath && slug ? splitPageToken(filePath, slug, 'the proposal and its facts are unchanged') : null;
+    const split = filePath && root && slug ? await splitRefusal(filePath, root, slug, fresh.source_id) : null;
     if (split) return { id: fresh.id, action: 'accept', status: 'refused', reason: split };
     const fileBody = filePath && existsSync(filePath) ? readFileSync(filePath, 'utf-8') : null;
     const snapshot = slug ? await engine.readPageSnapshot(slug, { sourceId: fresh.source_id }) : null;
@@ -300,7 +293,7 @@ async function acceptUnmanaged(engine: BrainEngine, proposal: PairProposal, stor
     }
     const body = fileBody ?? stored?.compiled_truth ?? null;
     const plan = slug && body !== null ? planAcceptFence(body, oldF!, newF!, formatFenceDate(new Date())) : null;
-    const grown = plan && fileBody !== null ? await grownPastSplit(engine, filePath!, plan.body, slug!) : null;
+    const grown = plan && fileBody !== null ? await splitRefusal(filePath!, root!, slug!, fresh.source_id, plan.body) : null;
     if (grown) return { id: fresh.id, action: 'accept', status: 'refused', reason: grown };
     const fence = (row: ParsedFact, revision: string | null): FenceState => ({ slug: slug!, row_num: oldF!.row_num!, row, page_revision: revision, file: fileBody !== null });
     const before: SupersedeState = { old: factFields(oldF!), new: factFields(newF!), fence: plan ? fence(plan.before, snapshot?.revision ?? null) : null };
@@ -324,7 +317,7 @@ async function acceptUnmanaged(engine: BrainEngine, proposal: PairProposal, stor
 
 async function undoUnmanaged(engine: BrainEngine, proposal: PairProposal, store: PairProposalStore): Promise<ProposalActionResult> {
   const first = await loadPairFact(engine, proposal.old_fact_id);
-  return withFenceLocks(engine, first?.source_markdown_slug ?? null, proposal.source_id, async (filePath) => {
+  return withFenceLocks(engine, first?.source_markdown_slug ?? null, proposal.source_id, async (filePath, root) => {
     const fresh = await store.get(engine, proposal.id);
     if (!fresh || fresh.status !== 'accepted') return { id: proposal.id, action: 'undo', status: 'refused', reason: fresh?.status ?? 'not_found' };
     const states = parseStates(fresh);
@@ -337,7 +330,7 @@ async function undoUnmanaged(engine: BrainEngine, proposal: PairProposal, store:
     let fileBody: string | null = null;
     let stored: StoredBody | null = null;
     if (before.fence && after.fence) {
-      const split = before.fence.file && filePath ? splitPageToken(filePath, before.fence.slug, 'the proposal and its facts are unchanged') : null;
+      const split = before.fence.file && filePath && root ? await splitRefusal(filePath, root, before.fence.slug, fresh.source_id) : null;
       if (split) return { id: fresh.id, action: 'undo', status: 'refused', reason: split };
       fileBody = before.fence.file && filePath && existsSync(filePath) ? readFileSync(filePath, 'utf-8') : null;
       if (before.fence.file && fileBody === null && !await isWriteThroughDisabled(engine)) return { id: fresh.id, action: 'undo', status: 'refused', reason: 'fence_file_missing' };
@@ -350,7 +343,7 @@ async function undoUnmanaged(engine: BrainEngine, proposal: PairProposal, store:
       if (fileBody !== null && (!stored || !fileBodyMatchesStored(fileBody, before.fence.slug, stored))) {
         return { id: fresh.id, action: 'undo', status: 'refused', reason: proposalDrift(before.fence.slug, fresh.source_id, 'before') };
       }
-      const grown = fileBody !== null ? await grownPastSplit(engine, filePath!, planned.body, before.fence.slug) : null;
+      const grown = fileBody !== null ? await splitRefusal(filePath!, root!, before.fence.slug, fresh.source_id, planned.body) : null;
       if (grown) return { id: fresh.id, action: 'undo', status: 'refused', reason: grown };
       plan = planned;
     }

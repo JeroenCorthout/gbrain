@@ -61,7 +61,8 @@ import { isAborted } from '../abort-check.ts';
 import { logPhantomEvent, type PhantomOutcome } from '../facts/phantom-audit.ts';
 import { MOVE_WITHDRAWAL_SUBJECT_SQL } from '../facts/withdrawal-schema.ts';
 import { isWriteThroughDisabled, resolvePageWriteTarget } from '../write-through.ts';
-import { assertPageFileRemovable, assertSplitWritable, oneFileWriteRefusal, readPageFileText, writePageTemp, writeSplitPageFile } from '../split-write-through.ts';
+import { assertSplitUnitMutable } from '../persistence/split-unit-guard.ts';
+import { assertOutsideDoorWritable, writePageTemp } from '../split-write-through.ts';
 import { fileBodyMatchesStored, fileDatabaseDriftToken, mirrorFileBody, readStoredBody, replaceStoredBody, replaceableFile } from '../facts/file-body-guard.ts';
 import { recordRenameAlias } from '../page-state/rename-alias.ts';
 import { maintenanceTransaction } from '../persistence/attribution.ts';
@@ -248,9 +249,8 @@ async function acquireLockWithRetry(
  * computes for the new file, and the file is re-read immediately before the
  * `.tmp` is renamed last: a file that moved rolls the transaction back and
  * holds the phantom the same way.
- * A split page head is read as its page file F' (a head whose parts do not reassemble holds the phantom with its hold
- * code) and written back as its split unit (head plus parts) in place of the rename; a page the rows take over the
- * split threshold is laid out the same way.
+ * A canonical file in a split unit refuses `split_page_unsupported` (outside_door) before anything is written
+ * (split-write-through.ts assertOutsideDoorWritable): only the publication door writes a split page.
  * A parse-validation failure throws before any DB state has moved.
  */
 async function mergeIntoCanonicalFile(
@@ -264,10 +264,9 @@ async function mergeIntoCanonicalFile(
   dbMaxRowNum: number,
 ): Promise<{ renumber: Map<number, number> } | { held: string }> {
   if (phantomFacts.length === 0) return { renumber: new Map<number, number>() };
+  await assertOutsideDoorWritable({ root: canonicalRoot, path: canonicalPath, route: 'raw_writer', sourceId, slug: canonical });
   await materializeCanonicalToDisk(engine, canonical, sourceId, canonicalPath, canonicalRoot);
-  const pageFile = readPageFileText(canonicalPath);
-  if (pageFile.hold) return { held: `${canonical} (${pageFile.hold.code}: ${pageFile.hold.message} The phantom ${phantomSlug} was not redirected.)` };
-  const bytes = pageFile.text ?? '';
+  const bytes = pageFileText(canonicalPath) ?? '';
   const { body: newBody, renumber } = mergePhantomFenceRows(bytes, phantomFacts, dbMaxRowNum);
   const stored = await readStoredBody(engine, sourceId, canonical);
   if (stored && !fileBodyMatchesStored(bytes, canonical, stored)) return { held: canonicalDriftToken(canonical, phantomSlug, sourceId, 'before') };
@@ -283,17 +282,16 @@ async function mergeIntoCanonicalFile(
       `phantom-redirect: rendered fence failed re-parse: ${reparsed.warnings.join('; ')}`,
     );
   }
-  // A split write is refused (split_page_unsupported) before the temporary copy exists; a split page whose parts all stay
-  // is written by writeSplitPageFile without one. The copy of an ordinary page file is gone again on every outcome.
-  if (!await assertSplitWritable(engine, canonicalPath, canonicalRoot, newBody)) writeTmp();
-  const writeCanonical = async (target: BrainEngine) => {
-    if (await writeSplitPageFile(target, canonicalPath, canonicalRoot, newBody)) return;
+  // The copy is gone again on every outcome.
+  await assertOutsideDoorWritable({ root: canonicalRoot, path: canonicalPath, route: 'raw_writer', sourceId, slug: canonical }, newBody);
+  writeTmp();
+  const writeCanonical = async () => {
     if (!fs.existsSync(tmpPath)) writeTmp();
     fs.renameSync(tmpPath, canonicalPath);
   };
   try {
     if (!stored) {
-      await writeCanonical(engine);
+      await writeCanonical();
       return { renumber };
     }
     const parsed = parseMarkdown(newBody, `${canonical}.md`);
@@ -303,7 +301,7 @@ async function mergeIntoCanonicalFile(
     const written = await maintenanceTransaction(engine, async tx => {
       if (!await mirrorFileBody(tx, sourceId, canonical, newBody, stored, hash)) return false;
       if (pageFileText(canonicalPath) !== bytes) throw fileMoved;
-      await writeCanonical(tx);
+      await writeCanonical();
       return true;
     }).catch(err => { if (err === fileMoved) return false; throw err; });
     if (written) return { renumber };
@@ -335,10 +333,9 @@ async function mergeIntoCanonicalBody(
   return written ? { renumber } : { held: fileDatabaseDriftToken(canonical.slug, sourceId, 'during', 'the phantom was not redirected; the next cycle retries', 'the phantom redirect') };
 }
 
-/** The page file at `path` as text (F' for a split head; null when absent), or undefined for a head whose parts do not reassemble. */
-function pageFileText(path: string): string | null | undefined {
-  const file = readPageFileText(path);
-  return file.hold ? undefined : file.text;
+/** The file at `path` as text, null when absent. */
+function pageFileText(path: string): string | null {
+  return fs.existsSync(path) ? fs.readFileSync(path, 'utf8') : null;
 }
 
 /** #6982: the hold entry for a phantom whose canonical file and database body differ (or moved during the redirect). */
@@ -537,9 +534,8 @@ function fenceDbDrift(page: Page, brainDir: string): boolean {
 /**
  * Materialize a DB-only canonical page to disk by serializing its full
  * page state (frontmatter + body + timeline). Reuses `serializeMarkdown`
- * so the output round-trips through `parseMarkdown` cleanly. A page that is not
- * one ordinary file there (over the split threshold, or a parts directory at its
- * path) is refused `split_page_unsupported` before anything is written.
+ * so the output round-trips through `parseMarkdown` cleanly. A path in a split
+ * unit is refused `split_page_unsupported` before anything is written.
  */
 async function materializeCanonicalToDisk(
   engine: BrainEngine,
@@ -550,8 +546,7 @@ async function materializeCanonicalToDisk(
 ): Promise<void> {
   if (fs.existsSync(canonicalPath)) return;
   const write = async (text: string) => {
-    const refusal = await oneFileWriteRefusal(engine, canonicalPath, canonicalRoot, text);
-    if (refusal) throw refusal;
+    await assertOutsideDoorWritable({ root: canonicalRoot, path: canonicalPath, route: 'raw_writer', sourceId, slug: canonicalSlug }, text);
     fs.mkdirSync(path.dirname(canonicalPath), { recursive: true });
     fs.writeFileSync(canonicalPath, text, 'utf-8');
   };
@@ -687,7 +682,7 @@ export async function tryRedirectPhantom(
   const writeThroughOff = await isWriteThroughDisabled(engine);
   const phantomPath = path.join(brainDir, `${page.slug}.md`);
   try {
-    if (!writeThroughOff) assertPageFileRemovable(phantomPath);
+    if (!writeThroughOff) await assertSplitUnitMutable({ root: brainDir, path: phantomPath, route: 'remover', strict: false, sourceId, slug: page.slug });
   } catch (error) {
     if ((error as { code?: string }).code !== 'split_page_unsupported') throw error;
     return driftHold(page.slug, sourceId, canonical, `${page.slug} (${(error as Error).message})`);

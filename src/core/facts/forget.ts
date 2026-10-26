@@ -5,11 +5,9 @@
  *
  * With a writable source file, strike the row, set valid_until and append the
  * reason atomically. Without a file, retain the same withdrawal and best-effort
- * DB-body strike. A split page (a head plus part files) is struck in its page
- * file F' and written back as a new head when every part stays
- * (split-write-through.ts); a strike its part files would carry
- * (split_page_unsupported), or a head whose page file cannot be read, holds the
- * page mirror, its DB body untouched. Imports overlay
+ * DB-body strike. A page in a split unit (a head plus part files) refuses
+ * `split_page_unsupported` (outside_door, split-write-through.ts), which holds
+ * the page mirror, its file and DB body untouched. Imports overlay
  * stale matching fence rows before chunking.
  * These are retractions: original prose, files and backups may retain text.
  * A Markdown-only clone does not carry DB-only withdrawal records.
@@ -33,7 +31,8 @@ import { markBeliefCommits } from '../belief/append.ts';
 import { classifyItemFailure } from '../item-failure.ts';
 import { withdrawnFact } from './withdrawal-overlay.ts';
 import { bestEffortStoredBodyMirror, fileBodyMatchesStored, fileDatabaseDriftToken, mirrorFileBody, readStoredBody } from './file-body-guard.ts';
-import { PageFileChanged, readPageFileText, splitWriteRefusal, writePageTemp } from '../split-write-through.ts';
+import type { OperationError } from '../ops/contract.ts';
+import { outsideDoorRefusal, writePageTemp } from '../split-write-through.ts';
 import { publishFenceTmp } from './fence-write.ts';
 
 export interface ForgetFactResult {
@@ -288,14 +287,18 @@ export async function forgetFactInFence(
     }
 
     return withPageLock(slug, async () => {
-      const file = readPageFileText(filePath);
-      if (file.hold) {
-        const warning = `${slug} (${file.hold.code}: ${file.hold.message} Meanwhile the withdrawal or supersession remains authoritative; only its page mirror is held)`;
+      // A route outside the door refuses on a split page (split-write-through.ts): the withdrawal stays authoritative and
+      // the page mirror is held. The refusal is read before the .tmp exists.
+      const splitHeld = (error: OperationError): ForgetFactResult => {
+        const warning = `${slug} (${error.message} Meanwhile the withdrawal or supersession remains authoritative; only its page mirror is held)`;
         console.warn(`[facts.forget] ${warning}`);
         return { ok: true, path: 'legacy_db', reason, warning };
-      }
-      const body = file.text!;
-      const fileMoved = () => { const now = readPageFileText(filePath); return now.hold !== undefined || now.text !== body; };
+      };
+      const splitInput = { root: resolved.writeRoot, path: filePath, route: 'raw_writer' as const, sourceId: row.source_id, slug };
+      const splitRefusal = await outsideDoorRefusal(splitInput);
+      if (splitRefusal) return splitHeld(splitRefusal);
+      const body = readFileSync(filePath, 'utf8');
+      const fileMoved = () => (existsSync(filePath) ? readFileSync(filePath, 'utf8') : null) !== body;
       const page = await engine.getPage(slug, { sourceId: row.source_id });
       const segmented = page && isSegmentedPage(page);
       const stored = segmented ? null : await readStoredBody(engine, row.source_id, slug);
@@ -311,17 +314,8 @@ export async function forgetFactInFence(
       const newBody = strikeFenceRow(body, targetRowNum, strike);
       if (newBody === null) return legacyExpire(true);
 
-      // A write outside the door that would change a split page's part files is refused (split-write-through.ts): the
-      // withdrawal stays authoritative and the page mirror is held, as for a head whose parts do not verify. The refusal
-      // is read before the .tmp exists.
-      const splitHeld = (error: unknown): ForgetFactResult | null => {
-        if ((error as { code?: string } | null)?.code !== 'split_page_unsupported') return null;
-        const warning = `${slug} (${(error as Error).message} Meanwhile the withdrawal or supersession remains authoritative; only its page mirror is held)`;
-        console.warn(`[facts.forget] ${warning}`);
-        return { ok: true, path: 'legacy_db', reason, warning };
-      };
-      const refusal = await splitWriteRefusal(engine, filePath, resolved.writeRoot, newBody);
-      if (refusal) return splitHeld(refusal)!;
+      const contentRefusal = await outsideDoorRefusal(splitInput, newBody);
+      if (contentRefusal) return splitHeld(contentRefusal);
 
       // Atomic .tmp + parse-validate + rename.
       assertSourceFilesystemActive();
@@ -334,7 +328,6 @@ export async function forgetFactInFence(
         return legacyExpire(true);
       }
       if (!segmented) {
-        let refused = null as ForgetFactResult | null;
         const written = await maintenanceTransaction(engine, async tx => {
           if (fileMoved()) return false;
           if (stored ? !await bestEffortStoredBodyMirror(tx, row.source_id, slug, stored,
@@ -344,28 +337,20 @@ export async function forgetFactInFence(
             }) : await readStoredBody(tx, row.source_id, slug, true)) return false;
           if (fileMoved()) throw new WithdrawalFileChanged();
           assertSourceFilesystemActive();
-          await publishFenceTmp(tx, filePath, resolved.writeRoot, tmpBody, () => { if (fileMoved()) throw new WithdrawalFileChanged(); });
+          publishFenceTmp(filePath);
           return true;
         }).catch(err => {
-          if (err instanceof WithdrawalFileChanged || err instanceof PageFileChanged) return false;
-          refused = splitHeld(err);
+          if (err instanceof WithdrawalFileChanged) return false;
           rmSync(tmpPath, { force: true });
-          if (refused) return false;
           throw err;
         });
-        if (refused) return refused;
         if (!written) {
           rmSync(tmpPath, { force: true });
           return held('during');
         }
         return { ok: true, path: 'fence', reason, ...(mirrorWarning ? { warning: mirrorWarning } : {}) };
       }
-      try { await publishFenceTmp(engine, filePath, resolved.writeRoot, tmpBody, () => undefined); } catch (error) {
-        rmSync(tmpPath, { force: true });
-        const held = splitHeld(error);
-        if (held) return held;
-        throw error;
-      }
+      publishFenceTmp(filePath);
 
       // Stamp the DB to match: valid_until = today, expired_at = now().
       // This keeps DB query patterns (active facts WHERE expired_at IS NULL)

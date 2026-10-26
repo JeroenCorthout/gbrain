@@ -37,7 +37,7 @@ export function contentRepairCommit(path: string, receipt: Pick<ContentRepairRec
 export interface ParkedTarget { slug?: string; error_code: string; rule?: string }
 /** `page_body_segmented`: a segmented page an older binary's mirror or Git scan passed by; this one mirrors and commits it. */
 /** `preview_changed`: a `gbrain repair segmented-mirror` target whose file or render no longer has the hash its preview approved (`data.approved_file`). */
-export interface SkippedTarget { slug: string; reason: 'metafile' | 'file_database_drift' | 'page_body_segmented' | 'withdrawal_not_mirrored' | 'preview_changed' }
+export interface SkippedTarget { slug: string; reason: 'metafile' | 'file_database_drift' | 'page_body_segmented' | 'withdrawal_not_mirrored' | 'preview_changed' | 'split_page_unsupported' }
 /** The code a page behind a failed withdrawal mirror is parked with: its file may still hold the withdrawn text. */
 export const WITHHELD_BY_MIRROR = 'withdrawal_mirror_failed';
 /** A Git or withdrawal target parks after this many consecutive execution failures. */
@@ -56,11 +56,9 @@ export function splitGitEffect(effect: Pick<PersistenceEffect, 'kind' | 'data'>)
  * A withdrawal mirror's recovery record. Version 1 embeds the mirrored file (`after`, base64). Version 2 is a segmented
  * page's file, never held whole: `after` is null and `staging.publication` names the file streamed from the page's
  * segments by path, SHA-256 (`afterHash`) and length, written once the record is durable (effect-recovery.ts).
- * Version 3 is a split page's mirror (split-mirror.ts): `files` lists the head (the record's own path and hashes) first,
- * then every part file written or removed, each with its own publication stage; `after` is null.
  */
 export interface EffectRecovery {
-  version: 1 | 2 | 3;
+  version: 1 | 2;
   kind: 'withdrawal-mirror';
   path: string;
   root: string;
@@ -73,16 +71,6 @@ export interface EffectRecovery {
   sourceIncarnation: string;
   slug: string;
   revision: string;
-  staging?: import('./staging.ts').RecoveryStaging;
-  files?: SplitMirrorFile[];
-}
-/** One file of a version 3 mirror record: its prior and new SHA-256 (null: absent), and the stage its new bytes are renamed from. */
-export interface SplitMirrorFile {
-  path: string;
-  root: string;
-  beforeHash: string | null;
-  afterHash: string | null;
-  mode: number | null;
   staging?: import('./staging.ts').RecoveryStaging;
 }
 export interface PersistenceEffect {
@@ -125,7 +113,7 @@ export interface PersistenceEffect {
     /** GBRA-130 A-12: pages whose file this withdrawal mirror rewrote, recorded by its recovery with the cursor step. */
     published?: string[];
     /** The SHA-256 of the bytes this mirror wrote to each published page's file, at the page revision it rendered. */
-    published_files?: Record<string, { hash: string; revision: string; split?: boolean }> };
+    published_files?: Record<string, { hash: string; revision: string }> };
   state: 'queued' | 'running' | 'committed' | 'failed';
   execution_token: string | null;
   claim_expires_at: string | Date | null;

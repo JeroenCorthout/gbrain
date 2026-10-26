@@ -183,7 +183,7 @@ export function singleFileGitEffect(effect: PersistenceEffect): boolean {
  * never revisits them. `files`: the hash of the bytes the mirror wrote to each
  * published page's file and the revision it rendered (`data.published_files`).
  */
-export interface MirrorGate { state: 'pending' | 'failed' | 'committed'; published: Set<string>; passed: Set<string>; files: Map<string, { hash: string; revision: string; split?: boolean }> }
+export interface MirrorGate { state: 'pending' | 'failed' | 'committed'; published: Set<string>; passed: Set<string>; files: Map<string, { hash: string; revision: string }> }
 
 /**
  * Per request id, the gate of its withdrawal mirror: every mirror that has not

@@ -71,7 +71,7 @@ export type { GoogleSourceConfig } from './types.ts';
 export { runGoogleAttachmentBackfill } from './attachment-backfill.ts';
 export { parseGoogleSourceConfig } from './source-config.ts';
 import { parseGoogleSourceConfig } from './source-config.ts';
-import { assertPageFileRemovable } from '../split-write-through.ts';
+import { outsideDoorRefusal } from '../split-write-through.ts';
 
 // ── Config ───────────────────────────────────────────────────────────────────
 
@@ -617,20 +617,16 @@ async function reconcileGmailDeletes(
     return;
   }
   // Containment guard mirrors the write path (defense-in-depth on DB rows). A
-  // split page is refused before any row goes: its row and files stay.
+  // page in a split unit is refused before any row goes: its row and files stay.
   const contained = (s: { source_path: string | null }) => s.source_path !== null && isWriteTargetContained(join(deps.cfg.dir, s.source_path), deps.cfg.dir);
-  const removable = stale.filter((s) => {
-    try {
-      if (contained(s)) assertPageFileRemovable(join(deps.cfg.dir, s.source_path!));
-      return true;
-    } catch (error) {
-      if ((error as { code?: string }).code !== 'split_page_unsupported') throw error;
-      deps.log(`[google] ${(error as Error).message}`);
-      summary.failedFiles++;
-      summary.status = 'partial';
-      return false;
-    }
-  });
+  const removable: typeof stale = [];
+  for (const s of stale) {
+    const refusal = contained(s) ? await outsideDoorRefusal({ root: deps.cfg.dir, path: join(deps.cfg.dir, s.source_path!), route: 'remover', sourceId: deps.sourceId, slug: s.slug }) : null;
+    if (!refusal) { removable.push(s); continue; }
+    deps.log(`[google] ${refusal.message}`);
+    summary.failedFiles++;
+    summary.status = 'partial';
+  }
   await deps.engine.deletePages(removable.map((s) => s.slug), { sourceId: deps.sourceId });
   for (const s of removable) if (contained(s)) rmSync(join(deps.cfg.dir, s.source_path!), { force: true });
   summary.deleted += removable.length;

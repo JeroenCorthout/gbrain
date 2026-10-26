@@ -46,7 +46,8 @@ import { dirname, join, relative } from 'node:path';
 import type { BrainEngine } from './engine.ts';
 import type { SyncOpts } from '../commands/sync.ts';
 import { isWriteTargetContained } from './path-confine.ts';
-import { PageFileChanged, assertPageFileRemovable, assertSplitWritable, readPageFileText, writePageTemp, writeSplitPageFile } from './split-write-through.ts';
+import { assertOutsideDoorWritable, outsideDoorRefusal, writePageTemp } from './split-write-through.ts';
+import { assertSplitUnitMutable } from './persistence/split-unit-guard.ts';
 import { createProgress, startHeartbeat } from './progress.ts';
 import { getCliOptions, cliOptsToProgressOptions } from './cli-options.ts';
 import { replaceableFile } from './facts/file-body-guard.ts';
@@ -976,22 +977,21 @@ async function materializePage(deps: GitHubSyncDeps, filePath: string, content: 
   if (existing) assertInlineBody(existing, 'GitHub connector materialization');
   const databaseOnly = await isWriteThroughDisabled(deps.engine) || isSourceDbOnlySlug(deps.cfg.dir, slug, 'refuse');
   if (databaseOnly) return { ...await importPage(deps, filePath, activePack, rel, content), created: !existing };
+  await assertOutsideDoorWritable({ root: deps.cfg.dir, path: filePath, route: 'connector', sourceId: deps.sourceId, slug }, content);
   const guard = await replaceableFile(deps.engine, deps.sourceId, slug, filePath);
   const drift = () => new OperationError('file_database_drift',
     `${slug}: the checkout file has an edit not retained in the database, or changed during import. The file was not replaced. If the file is newer, run gbrain sync --source ${deps.sourceId}; if the database is newer, re-save its page with write-through on; if both changed, ask the user which version to keep before retrying.`,
     'Import the newer file with gbrain sync, or ask the user which version to keep; the item is held until then.');
   if (!guard.ok) throw drift();
   const created = guard.expectedFileBytes === null;
-  await assertSplitWritable(deps.engine, filePath, deps.cfg.dir, content);
   mkdirSync(dirname(filePath), { recursive: true });
   const tmpPath = `${filePath}.tmp`;
   writePageTemp(tmpPath, filePath, content);
   try {
     const result = await importPage(deps, tmpPath, activePack, rel);
-    const unchanged = () => { const file = readPageFileText(filePath); if (file.hold || file.text !== guard.expectedFileBytes) throw drift(); };
-    unchanged();
-    const split = await writeSplitPageFile(deps.engine, filePath, deps.cfg.dir, content, unchanged).catch(error => { throw error instanceof PageFileChanged ? drift() : error; });
-    if (!split) renameSync(tmpPath, filePath);
+    const current = existsSync(filePath) ? readFileSync(filePath, 'utf8') : null;
+    if (current !== guard.expectedFileBytes) throw drift();
+    renameSync(tmpPath, filePath);
     return { ...result, created };
   } finally { rmSync(tmpPath, { force: true }); }
 }
@@ -1066,19 +1066,15 @@ async function deleteStalePages(
     for (const slug of plan.staleSlugs) if (await deps.managed.delete(slug, bySlug.get(slug) ?? null)) summary.deleted++;
     return;
   }
-  // A split page is refused before any row goes: its row and files stay, and the sweep reports it.
-  const stale = plan.staleSlugs.filter((slug) => {
+  // A page in a split unit is refused before any row goes: its row and files stay, and the sweep reports it.
+  const stale: string[] = [];
+  for (const slug of plan.staleSlugs) {
     const rel = bySlug.get(slug);
-    try {
-      if (rel) assertPageFileRemovable(join(deps.cfg.dir, rel));
-      return true;
-    } catch (error) {
-      if ((error as { code?: string }).code !== 'split_page_unsupported') throw error;
-      deps.client.log?.(`[github] ${(error as Error).message}`);
-      summary.failedFiles++; summary.status = 'partial';
-      return false;
-    }
-  });
+    const refusal = rel ? await outsideDoorRefusal({ root: deps.cfg.dir, path: join(deps.cfg.dir, rel), route: 'remover', sourceId: deps.sourceId, slug }) : null;
+    if (!refusal) { stale.push(slug); continue; }
+    deps.client.log?.(`[github] ${refusal.message}`);
+    summary.failedFiles++; summary.status = 'partial';
+  }
   const batchSize = 500;
   for (let i = 0; i < stale.length; i += batchSize) {
     const batch = stale.slice(i, i + batchSize);
@@ -1420,7 +1416,7 @@ async function refreshSingleItem(
       for (const row of rows) if (await deps.managed.delete(row.slug, relative(deps.cfg.dir, filePath).replace(/\\/g, '/'))) summary.deleted++;
       return;
     }
-    assertPageFileRemovable(filePath);
+    await assertSplitUnitMutable({ root: deps.cfg.dir, path: filePath, route: 'remover', strict: false, sourceId: deps.sourceId, slug });
     if (rows.length > 0) {
       await deps.engine.deletePages([slug], { sourceId: deps.sourceId });
       summary.deleted += rows.length;

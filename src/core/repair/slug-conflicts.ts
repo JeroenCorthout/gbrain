@@ -45,10 +45,8 @@
  * write, import, clear the hold and print the commit step. Every candidate
  * passes the owner check and the `repairBusy` admission re-read, at plan,
  * at apply and again at the write (file-repair.ts). Messages carry paths,
- * slugs, codes and amounts only. Wave B PR 5: a split page head is judged
- * and edited as the page file F' its parts reassemble to; one that does not
- * reassemble is held with its hold code, and a legacy source passes a split
- * head by as `split_page_unsupported`.
+ * slugs, codes and amounts only. Wave B PR 5 (option B): a path in a split
+ * unit is passed by as `split_page_unsupported` and never written.
  */
 import { execFileSync } from '../spawn.ts';
 import { existsSync, lstatSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -73,8 +71,7 @@ import { clearApprovedSet, loadApprovedSet, previewChangedError, previewHash, sa
 import { clearGitHold, readGitHold, readGitSourceHolds, recordContentHoldRepair, recordHoldAttempt, type ContentHoldRepairState, type GitHoldRecord } from '../persistence/sync-holds.ts';
 import { rotate, rotationAfter, rotationBrain, rotationKeyOf, saveRotation } from './rotation.ts';
 import { confinedRepairTarget, prepareRepairPublication, repairScreenConfig, SPLIT_PAGE_UNSUPPORTED, submitManagedFileRepair } from '../persistence/file-repair.ts';
-import { readPageFile, type PageFileHoldCode } from '../split-layout/index.ts';
-import { oneFileWriteRefusal } from '../split-write-through.ts';
+import { outsideDoorRefusal } from '../split-write-through.ts';
 import { repairBusy, repairBusyMessage } from '../persistence/repair-busy.ts';
 import { frozenImportScreenInput, loadSyncScreenRun, screenFrozenContent } from '../persistence/sync-screen.ts';
 import type { PageSnapshot } from '../page-state/types.ts';
@@ -299,12 +296,11 @@ function slugPageMismatch(cand: Candidate, other: string, why: string): Analysis
 }
 
 /**
- * One held or selected file as it is now. A split page head reads as the page file F' its parts reassemble to
- * (`readPageFile`); a head that does not reassemble is its hold code, and a legacy source, which writes the file
- * directly, passes a split head by (`split_page_unsupported`).
+ * One held or selected file as it is now. A path in a split unit is passed by (`split_page_unsupported`,
+ * split-write-through.ts): a content repair is outside the publication door, which alone writes a split page.
  */
 async function readCandidate(engine: BrainEngine, src: FenceSource, path: string): Promise<{ ok: true; cand: Candidate } | { ok: false; reason: 'gone' | 'unsafe_path' | 'not_utf8' | 'no_checkout' }
-  | { ok: false; reason: 'origin_conflict'; message: string } | { ok: false; reason: PageFileHoldCode | typeof SPLIT_PAGE_UNSUPPORTED; message: string; split: true }> {
+  | { ok: false; reason: 'origin_conflict'; message: string } | { ok: false; reason: typeof SPLIT_PAGE_UNSUPPORTED; message: string; split: true }> {
   if (!src.root) return { ok: false, reason: 'no_checkout' };
   const abs = join(src.root, path);
   if (!existsSync(abs)) return { ok: false, reason: 'gone' };
@@ -312,11 +308,9 @@ async function readCandidate(engine: BrainEngine, src: FenceSource, path: string
     if (error instanceof OperationError) return { ok: false, reason: 'unsafe_path' };
     throw error;
   }
-  const file = readPageFile(abs);
-  if (file.hold) return { ok: false, reason: file.hold.code, message: file.hold.message, split: true };
-  if (file.split && !src.managed) return { ok: false, reason: SPLIT_PAGE_UNSUPPORTED, split: true,
-    message: `${path} is a split page head (its page continues in part files), and this brain has no canonical owner to write the page back as a head plus parts, so it was passed by. Remove the slug: line from the head file by hand (it carries the page frontmatter), commit, and sync.` };
-  const bytes = file.bytes;
+  const refusal = await outsideDoorRefusal({ root: src.root, path: abs, route: 'file_repair', sourceId: src.id });
+  if (refusal) return { ok: false, reason: SPLIT_PAGE_UNSUPPORTED, message: refusal.message, split: true };
+  const bytes = readFileSync(abs);
   const content = bytes.toString('utf8');
   if (!Buffer.from(content, 'utf8').equals(bytes)) return { ok: false, reason: 'not_utf8' };
   const hold = await readGitHold(engine, src.id, src.incarnation, path);
@@ -407,9 +401,8 @@ async function candidatePaths(engine: BrainEngine, src: FenceSource, selection: 
     if (paths.has(path) || selection.skip.includes(path)) continue;
     const abs = src.root ? join(src.root, path) : null;
     if (!abs || !existsSync(abs) || !lstatSync(abs).isFile()) { unknown.push(path); continue; }
-    const file = readPageFile(abs);
-    if (file.hold) { paths.add(path); continue; }
-    const content = file.bytes.toString('utf8');
+    if (await outsideDoorRefusal({ root: src.root!, path: abs, route: 'file_repair', sourceId: src.id })) { paths.add(path); continue; }
+    const content = readFileSync(abs, 'utf8');
     const hold = classifyImportHold(parseMarkdown(content, path, { validate: true }), { expectedSlug: resolveSlugForPath(path), byteLength: Buffer.byteLength(content), maxBytes: MAX_FILE_SIZE });
     if (hold?.code === 'frontmatter_slug_conflict') paths.add(path); else unknown.push(path);
   }
@@ -694,8 +687,8 @@ async function write(ctx: OperationContext, src: FenceSource, cand: Candidate, a
   }
   if (sha256(readFileSync(abs)) !== cand.before) return { applied: false, outcome: 'skipped', reason: 'changed_since_read', detail: { ...detail, message: `${cand.path} changed after the repair read it, so nothing was written.` }, ...spend };
   const edits = after !== cand.content;
-  const refusal = edits ? await oneFileWriteRefusal(engine, abs, root, after) : undefined;
-  if (refusal) return held(SPLIT_PAGE_UNSUPPORTED, `${refusal.message} ${refusal.suggestion ?? ''}`.trim(), null, spend);
+  const refusal = edits ? await outsideDoorRefusal({ root, path: abs, route: 'file_repair', sourceId: src.id, slug: cand.slug }, after) : null;
+  if (refusal) return held(refusal.code, `${refusal.message} ${refusal.suggestion ?? ''}`.trim(), null, spend);
   const backup = edits ? createFrontmatterBackup(abs, { sourcePath: root, backupRoot: gbrainPath('backups', 'content-repair', makeFrontmatterBackupRunId()) }) : null;
   if (edits) writeFileSync(abs, after);
   const imported = await importFromFile(engine, abs, cand.sourcePath, { sourceId: src.id, noEmbed: !opts.embed });

@@ -20,7 +20,7 @@ export type FaultPoint = `publication:${PublicationBoundary}` | `effect:${Effect
   // A streamed (version 2) withdrawal mirror (effect-recovery.ts): once its record is durable and before its file is
   // streamed into the publication stage, and after that step (the stage written and flushed, or left as it was found),
   // before the recovery transaction renames it.
-  | 'effect_recovery:before_stage' | 'effect_recovery:staged' | 'effect_recovery:split_staged' | 'sync:mid_checkpoint' | 'sync:before_group_admission' | 'sync:mid_waiver_run' | 'sync:prescreened' | 'consumer:prepared'
+  | 'effect_recovery:before_stage' | 'effect_recovery:staged' | 'sync:mid_checkpoint' | 'sync:before_group_admission' | 'sync:mid_waiver_run' | 'sync:prescreened' | 'consumer:prepared'
   | 'consumer:preparing' | 'lane:applied'
   // Flip lane C: after a statement-cancelled (57014) write's attempt is charged, before its claim is released or finished.
   | 'persistence:interruption_charged'

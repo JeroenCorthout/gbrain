@@ -56,11 +56,7 @@ import { scannerSlugRootMode } from '../write-through.ts';
 import { recoveryStagingFile } from './staging.ts';
 import { selectEffectRecoveries } from './effect-recovery-scan.ts';
 import { nativeFileTarget } from './native-file-target.ts';
-import { withFilesystemPublication } from './filesystem-guard.ts';
-import type { MutationFile } from './bundle-files.ts';
-import { releaseSplitTargets, splitPublicationTargets, type SplitFileFields } from './split-files.ts';
-import { splitMirrorPlan, splitPartsDrifted, stageSplitMirror } from './split-mirror.ts';
-import { isSplitHeadPath, pageFileSha256, partsDirFor } from '../split-layout/index.ts';
+import { outsideDoorRefusal } from '../split-write-through.ts';
 import { sourceMirrorReadOnly } from './mirror-read-only.ts';
 import { isLockOpenFailure, type NativeLockHandle } from './native-lock.ts';
 import { planPageEmbedding } from '../page-embedding-budget.ts';
@@ -268,23 +264,12 @@ async function mirrorPage(engine: BrainEngine, effect: PersistenceEffect, bindin
     await materializeAndAdvance(engine, effect, snapshot, opts.hostId, 'file_database_drift');
     return;
   }
+  // Wave B PR 5 (option B): the mirror is outside the publication door, so a page in a split unit is passed by, its files
+  // untouched (split-write-through.ts outsideDoorRefusal, split_page_unsupported); a render of any size is one file.
+  if (await splitUnitRefused(file.root, file.path, effect, snapshot.page.slug)) { await materializeAndAdvance(engine, effect, snapshot, opts.hostId, 'split_page_unsupported'); return; }
   const target = { kind: 'withdrawal-mirror' as const, path: file.path, root: file.root, beforeHash: file.expectedBeforeHash ?? null,
     mode: statSync(file.path).mode & 0o7777, ownerEpoch: String(binding!.owner_epoch), pageId: snapshot.page.id,
     sourceIncarnation: snapshot.sourceIncarnation, slug: snapshot.page.slug, revision: snapshot.revision };
-  // Wave B PR 5: a split page, or a render over the threshold, is mirrored as one unit (head plus parts, split-mirror.ts).
-  const unit: MutationFile & SplitFileFields = { path: file.path, root: file.root, content, expectedBeforeHash: file.expectedBeforeHash, expectedParts: file.expectedParts };
-  if (await splitPublicationTargets(engine, unit)) {
-    try {
-      // A part that changed since the file was compared is a local edit, passed by like a changed head.
-      if (splitPartsDrifted(unit)) { await materializeAndAdvance(engine, effect, snapshot, opts.hostId, 'file_database_drift'); return; }
-      const plan = await splitMirrorPlan(engine, target, unit);
-      await reserveEffectRecovery(engine, effect, plan.record, plan.bytes, opts.hostId);
-      await withFilesystemPublication([file.root], () => stageSplitMirror(engine, plan));
-      await faultPoint('effect_recovery:split_staged', { effectId: effect.id, requestId: effect.request_id, sourceId: effect.source_id, slug: target.slug });
-      await recoverEffectPublication(engine, effect, opts.hostId, { boundary: opts.boundary, between: keep });
-    } finally { releaseSplitTargets(unit); }
-    return;
-  }
   if (isStreamedContent(content)) {
     // Version 2: the file is staged by path and digest, never embedded; the reservation counts its one staged copy.
     const record: EffectRecovery = { ...target, version: 2, afterHash: content.hash, after: null,
@@ -411,25 +396,22 @@ async function publishGitPage(engine: BrainEngine, effect: PersistenceEffect, bi
   // A page the mirror passed is committed only when its raw bytes are the mirror's rendering of the page as it is now: the
   // hash the mirror recorded writing at this revision, else the rendering measured now (a segmented page's from its
   // segments, unreadPageFile, never held as one string).
-  // A split head is compared through the page file its parts reassemble to (a recorded head hash would not cover its parts).
+  // A page in a split unit is not the mirror's to commit (only the publication door commits a split page's files).
+  if (await splitUnitRefused(join(root, binding.relative_path), path, effect, snapshot.page.slug)) { await skipTarget(engine, effect, snapshot, 'split_page_unsupported'); return; }
   const mirrored = attempt.gate?.files.get(snapshot.page.slug);
-  const split = mirrored?.split === true || (isSplitHeadPath(path) && existsSync(partsDirFor(path)));
-  if (verdict === 'evidence' && (snapshot.page.deleted_at || walkedFileHash(path, split) !== (mirrored?.revision === snapshot.revision && !mirrored.split ? mirrored.hash
+  if (verdict === 'evidence' && (snapshot.page.deleted_at || persistenceFileHash(path) !== (mirrored?.revision === snapshot.revision ? mirrored.hash
     : content === null ? (await unreadPageFile(engine, snapshot, keep)).hash : fileContentHash(content)))) {
     await skipTarget(engine, effect, snapshot, 'withdrawal_not_mirrored');
     return;
   }
-  // Wave B PR 5: a split head commits with its part files.
-  const result = await (split ? publishSplitGitEffect : publishGitEffect)(root, relative(root, path).split(sep).join('/'), opts.signal, hardened, gitCommitNote(effect), undefined, owner);
+  const result = await publishGitEffect(root, relative(root, path).split(sep).join('/'), opts.signal, hardened, gitCommitNote(effect), undefined, owner);
   if (result.reason === 'durability_not_enabled') await completeEffect(engine, effect, result);
   else await finishPage(engine, effect, snapshot, result);
 }
 
-/** The hash a Git walk compares with the page's render: the page file a split head's parts reassemble to, else the file's own. */
-function walkedFileHash(path: string, split: boolean): string | null {
-  if (!split) return persistenceFileHash(path);
-  const page = pageFileSha256(path);
-  return page.hold ? null : page.sha256;
+/** Whether page `slug`'s file at `path` is in a split unit, which a withdrawal mirror (outside the door) passes by. */
+async function splitUnitRefused(root: string, path: string, effect: PersistenceEffect, slug: string): Promise<boolean> {
+  return await outsideDoorRefusal({ root, path, route: 'mirror', sourceId: effect.source_id, slug }) !== null;
 }
 
 /**
