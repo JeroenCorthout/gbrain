@@ -255,12 +255,16 @@ function routeReason(input: Pick<SplitUnitGuardInput, 'route' | 'strict'>): Spli
 
 /**
  * assertSplitUnitMutable for many paths of one root on a route other than the strict door (a Git effect group): the
- * refusal of each path in a split unit, keyed by path; a path absent from the map may be changed.
+ * refusal of each path in a split unit, keyed by path; a path absent from the map may be changed. `pages` (by absolute
+ * path) names each path's source and page, so the refusal names the page and its fix names the source.
  */
-export async function splitUnitRefusals(input: Omit<SplitUnitGuardInput, 'path' | 'planned' | 'phase'> & { paths: readonly string[] }): Promise<Map<string, OperationError>> {
+export async function splitUnitRefusals(input: Omit<SplitUnitGuardInput, 'path' | 'planned' | 'phase'> & { paths: readonly string[];
+  pages?: ReadonlyMap<string, Pick<SplitUnitGuardInput, 'sourceId' | 'slug'>> }): Promise<Map<string, OperationError>> {
   if (input.route === 'door' && input.strict) throw new Error('splitUnitRefusals is for routes other than the strict door');
   const refusals = new Map<string, OperationError>();
-  for (const path of await splitUnitMembers(input.root, input.paths)) refusals.set(path, splitPageUnsupported(routeReason(input), input, splitUnitOf(input.root, path)!));
+  for (const path of await splitUnitMembers(input.root, input.paths)) {
+    refusals.set(path, splitPageUnsupported(routeReason(input), { ...input, ...input.pages?.get(path) }, splitUnitOf(input.root, path)!));
+  }
   return refusals;
 }
 

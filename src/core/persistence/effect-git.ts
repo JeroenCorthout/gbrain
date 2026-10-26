@@ -263,7 +263,8 @@ export function commitMessage(commitPaths: string[], noted: ReadonlyMap<string, 
  * that is provably abandoned is reclaimed and the step retried (#6932).
  */
 export async function commitGitTargets(root: string, relativePaths: string[], signal?: AbortSignal,
-  notes?: ReadonlyMap<string, GitCommitNote>, owner?: GitEffectOwner, strict = false): Promise<Map<string, GitOutcome | OperationError>> {
+  notes?: ReadonlyMap<string, GitCommitNote>, owner?: GitEffectOwner, strict = false,
+  pages?: ReadonlyMap<string, GitTargetPage>): Promise<Map<string, GitOutcome | OperationError>> {
   const results = new Map<string, GitOutcome | OperationError>();
   await withSession(root, signal, owner, true, async session => {
     // One ls-files, one status, one add and one diff for the group; targets
@@ -275,7 +276,8 @@ export async function commitGitTargets(root: string, relativePaths: string[], si
       catch (error) { if (!(error instanceof OperationError)) throw error; results.set(requested, error); }
     }
     // Wave B PR 5 (option B): a Git effect never commits or removes a path of a split unit; only the strict door does.
-    const refused = await splitUnitRefusals({ root, paths: [...normalized.values()].map(rel => join(root, rel)), route: 'git_effect', strict });
+    const refused = await splitUnitRefusals({ root, paths: [...normalized.values()].map(rel => join(root, rel)), route: 'git_effect', strict,
+      pages: new Map([...normalized].flatMap(([requested, rel]) => { const page = pages?.get(requested); return page ? [[join(root, rel), page] as const] : []; })) });
     for (const [requested, rel] of [...normalized]) {
       const refusal = refused.get(join(root, rel));
       if (refusal) { results.set(requested, refusal); normalized.delete(requested); }
@@ -455,15 +457,20 @@ export const DURABILITY_NOT_ENABLED = { git: 'skipped', reason: 'durability_not_
  * root that is not ahead it completes without a push, as before.
  */
 export async function publishGitEffect(root: string, relativePath: string, signal?: AbortSignal,
-  hardened?: boolean, note?: GitCommitNote, binding?: Pick<WorktreeBinding, 'git_durability'> | null, owner?: GitEffectOwner, strict = false): Promise<Record<string, unknown>> {
+  hardened?: boolean, note?: GitCommitNote, binding?: Pick<WorktreeBinding, 'git_durability'> | null, owner?: GitEffectOwner, strict = false,
+  page?: GitTargetPage): Promise<Record<string, unknown>> {
   if (!(hardened ?? (await gitDurabilityPolicy(binding, root)).durable)) return { ...DURABILITY_NOT_ENABLED };
-  const outcome = (await commitGitTargets(root, [relativePath], signal, note ? new Map([[relativePath, note]]) : undefined, owner, strict)).get(relativePath)!;
+  const outcome = (await commitGitTargets(root, [relativePath], signal, note ? new Map([[relativePath, note]]) : undefined, owner, strict,
+    page ? new Map([[relativePath, page]]) : undefined)).get(relativePath)!;
   if (outcome instanceof OperationError) throw outcome;
   if (outcome.reason === 'target_absent' && !(await gitRootAhead(root, signal))) return outcome;
   const pushed = await pushGitRoot(root, signal);
   return { ...outcome, ...pushed };
 }
 
+
+/** The source and page a Git target belongs to: a split-unit refusal (split-unit-guard.ts) names them. */
+export interface GitTargetPage { sourceId: string; slug?: string }
 
 /** A split page's Git unit (splitUnitPaths), relative to the root, `/`-separated. */
 export interface SplitUnit { head: string; parts: string[]; stale: string[]; partsDir: string }
