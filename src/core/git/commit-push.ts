@@ -27,7 +27,7 @@
  */
 import { appendFileSync, existsSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { isAbsolute, join, relative, resolve } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { execFileSync } from '../spawn.ts';
 import { gitChildEnv } from '../git-env.ts';
 import { GIT_ENV, GIT_ENV_AUTH, GIT_SSRF_SUBCOMMAND_FLAGS, durableSsrfFlags } from '../git-transport.ts';
@@ -35,6 +35,8 @@ import { assertManagedFilesystemWrite, hasFilesystemPublication, managedFilesyst
 import { acquireNativeLock, acquireNativeLockSync, type NativeLockSyncHandle } from '../persistence/native-lock.ts';
 import { OperationError, opError } from '../ops/contract.ts';
 import { shellQuote } from '../agent-output.ts';
+import { envPushCap, pushCap, pushRange, type PushIO } from '../persistence/push-preflight.ts';
+import { backstopScanSync, cleanFilterRefused, scanCommitFilesSync } from '../persistence/push-scan.ts';
 
 export const COMMIT_LOCK_NAME = 'brain-commit.lock';
 /** Taken by pre-#6530 helpers and hooks; held too so they still exclude us during the mixed-version window. */
@@ -114,6 +116,8 @@ export interface CommitPushOptions {
   pending?: boolean;
   /** Commit and publish files outside the configured source root(s): the user's explicit choice, or gbrain's own scaffolding at the checkout root. */
   allowOutsideSourceRoot?: boolean;
+  /** `--allow-secret`: the user's explicit choice to commit and push past the secret scan (Wave C 1A) for this run only. */
+  allowSecret?: boolean;
 }
 
 export type Resolution = { kind: 'ours' } | { kind: 'theirs' } | { kind: 'file'; path: string };
@@ -413,7 +417,7 @@ function restoreIndex(root: string, rel: string[], before: string[]): void {
   if (records.length) withIndexRetry(root, ['update-index', '-z', '--index-info'], 'index restore', undefined, records.map(l => `${l}\0`).join(''));
 }
 
-interface CommitScope { roots: string[]; lockPath: string; markHeld: boolean }
+interface CommitScope { roots: string[]; lockPath: string; markHeld: boolean; allowSecret?: boolean }
 
 /**
  * Stage and commit exactly `rel` (the caller holds the commit lock). Refused
@@ -445,6 +449,7 @@ function commitPaths(root: string, rel: string[], message: string, scope: Commit
     const partners = paths.filter(p => !insideSourceRoots(p, scope.roots));
     if (partners.length) throw outsideRootError(root, scope.roots, partners, 'A staged rename would commit');
     if (git(root, ['--literal-pathspecs', 'diff', '--cached', '--quiet', '--', ...paths]).code === 0) return null;
+    if (!scope.allowSecret) scanStaged(root, paths);
     const env = { [COMMIT_VIA_ENV]: scope.lockPath, ...(scope.markHeld ? { [COMMIT_LOCK_ENV]: scope.lockPath } : {}) };
     const commit = withIndexRetry(root, ['--literal-pathspecs', 'commit', '--only', '-m', message, '--', ...paths], 'git commit', env);
     if (commit.code !== 0) {
@@ -880,6 +885,40 @@ export function readQuarantine(repo: string): QuarantineEntry[] {
 }
 
 /**
+ * Wave C 1A: the secret scan of the staged files a commit carries (push-scan.ts covers split parts and files over
+ * 24 MiB, only the bytes new to Git), before `git commit`. The blob each path stages must be the bytes scanned: a
+ * transforming clean filter refuses `git_clean_filter_refused`, a file that changed meanwhile `git_unavailable`.
+ */
+function scanStaged(root: string, paths: string[]): void {
+  const staged = new Map(git(root, ['--literal-pathspecs', 'ls-files', '-s', '-z', '--', ...paths]).stdout.split('\0').filter(Boolean)
+    .map(line => [line.slice(line.indexOf('\t') + 1), line.split(' ')[1]!] as const));
+  const algorithm = git(root, ['rev-parse', '--show-object-format']).stdout.trim() === 'sha256' ? 'sha256' : 'sha1';
+  const scanned = scanCommitFilesSync(root, [...staged.keys()].map(path => ({ rel: path, abs: join(root, path), repoPath: path })), algorithm);
+  for (const [path, oid] of scanned) {
+    if (staged.get(path) === oid) continue;
+    const raw = git(root, ['--literal-pathspecs', 'hash-object', '--no-filters', '--', path]).stdout.trim();
+    if (raw === oid && git(root, ['--literal-pathspecs', 'hash-object', '--', path]).stdout.trim() !== oid) throw cleanFilterRefused(path);
+    throw opError('git_unavailable', `${path} changed while it was being scanned and staged, so nothing was committed.`, 'Another process wrote the file meanwhile; rerun the same gbrain git commit-push command once it is done.');
+  }
+}
+
+/**
+ * Wave C 1A (push-preflight.ts): push `candidate` with a deadline scaled to what it sends, in ordered batches when that is
+ * over `git.push_max_pack_bytes` (the Git effect hands its configured cap down through PUSH_MAX_PACK_BYTES_ENV).
+ */
+function pushCandidate(ctx: Ctx, candidate: string): GitRun {
+  const urls = git(ctx.root, ['remote', 'get-url', '--push', '--all', '--', ctx.remote]).stdout.split('\n').filter(Boolean);
+  const io: PushIO = {
+    gitDir: dirname(absGitPath(ctx.root, 'gbrain-push-progress.json')),
+    remote: ctx.remote,
+    git: args => git(ctx.root, args, { timeoutMs: 600_000 }),
+    push: (refspecs, timeoutMs) => remoteGit(ctx.root, 'push', [...(ctx.keepCheckout ? ['--no-verify'] : []), '--', ctx.remote, ...refspecs], Math.max(120_000, timeoutMs)),
+  };
+  const tracked = git(ctx.root, ['rev-parse', '--quiet', '--verify', `${ctx.trackingRef}^{commit}`]);
+  return pushRange(io, { tip: candidate, ref: ctx.mergeRef, cap: pushCap(envPushCap(), urls), remoteTip: tracked.code === 0 ? tracked.stdout.trim() : null });
+}
+
+/**
  * Push `start` (an immutable sha), merging remote commits in memory as needed.
  * When the remote already holds the candidate, the published tip (which may be
  * a merge built over it earlier) is returned so a lagging checkout catches up.
@@ -898,7 +937,7 @@ function publish(ctx: Ctx, start: string, resolutions: Map<string, Resolution> |
   };
   for (let attempt = 0; attempt < MAX_PUSH_ATTEMPTS; attempt++) {
     if (attempt) Atomics.wait(sleeper, 0, 0, Math.min(2000, 50 * 2 ** attempt) + Math.floor(Math.random() * 100));
-    const push = remoteGit(ctx.root, 'push', [...(ctx.keepCheckout ? ['--no-verify'] : []), '--', ctx.remote, `${candidate}:${ctx.mergeRef}`]);
+    const push = pushCandidate(ctx, candidate);
     if (push.code === 0) return { sha: candidate, integrated, confirmed: 'push', ...notes() };
     lastError = push.stderr.trim();
     if (remoteContains(ctx, candidate)) return onRemote();
@@ -968,7 +1007,7 @@ function assertLocalCommitsInsideRoots(ctx: Ctx, target: string, roots: string[]
     `A commit made without gbrain git commit-push (for example a cron's git add plus git commit) can carry files other writers had staged. Show the user git show --stat ${offending[0].sha.slice(0, 12)}; if they want it published as is, rerun with --allow-outside-source-root. See docs/guides/shared-checkout-git.md#source-roots.`,
     { detail: JSON.stringify({ roots, commits: offending }),
       fix: { ask_user: true, consent: [], actor: 'user', requires_exclusive: false,
-        argv: ['gbrain', 'git', 'commit-push', '--push-only', '--allow-outside-source-root', '--path', ctx.root],
+        argv: ['gbrain', 'git', 'commit-push', '--push-only', ...(ctx.keepCheckout ? ['--keep-checkout'] : []), '--allow-outside-source-root', '--path', ctx.root],
         why: 'These commits change files that are not the brain\'s; publishing them can overwrite other projects\' or writers\' work on the remote.',
         user_message: `Local commit(s) ${shas} change files outside the brain's folder (${files.slice(0, 5).join(', ')}${files.length > 5 ? ', ...' : ''}). Publish them anyway?`,
         docs: 'docs/guides/shared-checkout-git.md#source-roots' } });
@@ -1084,7 +1123,7 @@ function commitPathsOnly(root: string, opts: CommitPushOptions, where: string, r
   let committed: string | null;
   try {
     assertNoOperationInProgress(root);
-    committed = commitPaths(root, rel, opts.message.trim(), { roots, lockPath: lock.lockPath, markHeld: true });
+    committed = commitPaths(root, rel, opts.message.trim(), { roots, lockPath: lock.lockPath, markHeld: true, allowSecret: opts.allowSecret });
   } finally {
     lock.release();
   }
@@ -1117,7 +1156,7 @@ export function commitAndPush(opts: CommitPushOptions): CommitPushResult {
     const lock = acquireCommitLock(root, opts.lockWaitMs);
     try {
       assertNoOperationInProgress(root);
-      committed = rel.length ? commitPaths(root, rel, opts.message!.trim(), { roots: opts.allowOutsideSourceRoot ? [''] : roots, lockPath: lock.lockPath, markHeld: true }) : null;
+      committed = rel.length ? commitPaths(root, rel, opts.message!.trim(), { roots: opts.allowOutsideSourceRoot ? [''] : roots, lockPath: lock.lockPath, markHeld: true, allowSecret: opts.allowSecret }) : null;
       settlePending(root);
     } finally {
       lock.release();
@@ -1137,6 +1176,9 @@ export function commitAndPush(opts: CommitPushOptions): CommitPushResult {
     if (unattended) {
       return { outcome: 'push_deferred', sha: null, committed, branch: ctx.branch, remote: ctx.remote, paths: rel, integrated: 0, checkout: 'unchanged' };
     }
+    if (opts.keepCheckout) throw opError('git_push_in_progress', `Another publish holds the push lock of ${root}, so this push waits for it.`,
+      'A push holds the checkout\'s publish lock until it finishes (a large one can take minutes); the running publish was asked to push HEAD too. Rerun gbrain git commit-push --push-only --keep-checkout once it is done.',
+      { retryable: true });
     throw opError('push_unconfirmed', `${committed ? 'The commit is durable locally, but another' : 'Another'} publish held this checkout's push lock for ${Math.round(waitMs / 1000)}s.`,
       `The running publish was asked to push HEAD too once it finishes. Rerun gbrain git commit-push --push-only to confirm; never git pull --rebase in this checkout.`,
       { detail: committed ?? '', retryable: true });
@@ -1149,6 +1191,7 @@ export function commitAndPush(opts: CommitPushOptions): CommitPushResult {
       const head = gitOk(root, ['rev-parse', 'HEAD'], 'rev-parse HEAD');
       const target = start && !isAncestor(root, start, head) ? start : head;
       if (!opts.allowOutsideSourceRoot) assertLocalCommitsInsideRoots(ctx, target, roots);
+      if (!opts.allowSecret) backstopScanSync(root, target, ctx.remote);
       const published = publish(ctx, target, resolutions, opts.expectRemote, cwd);
       if (!elsewhere) rmSync(absGitPath(root, CONFLICT_STATE_NAME), { force: true });
       const moved = published.sha === head || elsewhere || opts.keepCheckout ? { checkout: 'unchanged' as const } : advanceWithLock(root, published.sha, head, onlyWhenClean, opts.lockWaitMs);
