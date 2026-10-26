@@ -56,7 +56,7 @@ import { markBeliefCommits } from '../belief/append.ts';
 import { classifyPgAccessError } from '../pg-access-classify.ts';
 import { commitThroughDoor, doorCommitLanded, doorMarker, replayAfterDoorCommit, sourceCanonicalGit, strictChanged } from './git-door.ts';
 import { assertNoPrivateCommit, declareStrictPublication } from './git-declared.ts';
-import { assertSplitRecoveryBinding, isSplitRecoveryRecord, releaseSplitTargets, removeEmptyPartsDir, splitFilesChanged, splitKeptPartsChanged, splitLandedCommit, splitPublicationTargets, splitRecoveryRecord, type SplitFileFields } from './split-files.ts';
+import { assertSplitRecoveryBinding, assertSplitUnitIntact, isSplitRecoveryRecord, releaseSplitTargets, removeEmptyPartsDir, splitFilesChanged, splitKeptPartsChanged, splitLandedCommit, splitPublicationTargets, splitRecoveryRecord, type SplitFileFields } from './split-files.ts';
 
 interface PreparedMutationBase {
   sourceExclusive?: boolean;
@@ -532,6 +532,8 @@ export async function publishMutation(engine: BrainEngine, row: WriteRequest, pr
       if (!binding || !lock || !isWriteTargetContained(prepared.file.path, prepared.file.root)) throw opError('storage_error', 'Filesystem publication requires a confined canonical owner.',
         `This host does not hold source ${row.source_id}'s canonical worktree, or the file of ${row.slug} resolves outside it, so request ${row.request_id} wrote no file. Inspect the owner; the write publishes only on the host that owns the source.`,
         { fix: ownerStatusFix(row.source_id) });
+      // Wave B PR 5 round 6: Git HEAD, the index and the disk must hold the page's split unit alike; a divergence refuses, never reconciles.
+      await assertSplitUnitIntact(engine, row, prepared.file, binding);
       // Wave B PR 5: a page over sync.max_file_bytes, or one leaving that layout, publishes its head and part files as one record;
       // every prior file it replaces or removes is named by its staged before-copy (path, SHA-256), never embedded.
       const split = await splitPublicationTargets(engine, prepared.file)

@@ -4079,6 +4079,16 @@ More: [docs/guides/write-refusals.md#split_page_unsupported](../../docs/guides/w
 
 More: [docs/guides/write-refusals.md#split_parts_unexpected](../../docs/guides/write-refusals.md#split_parts_unexpected)
 
+### split_unit_diverged
+
+<a id="split_unit_diverged"></a>
+
+| Meaning | Why | Next step | Who acts · consent | Verify | Exit | Retryable |
+|---|---|---|---|---|---|---|
+| A page write found its split page files (the head at the page's path and everything in its .<name>.gbparts directory) held differently by Git HEAD, the index and the disk: a change made outside gbrain and not committed, such as a split page converted to one file by hand, a part edited or removed, or a removal staged with git rm --cached. Nothing was written, staged or committed. | A split page is one unit in Git: its head and every part commit together. Publishing over a unit whose committed, staged and on-disk states disagree would have to pick one of them, and any pick either commits a plain head beside obsolete parts or discards the uncommitted change. Which version is right is the user's decision, so the write refuses instead of reconciling them. | Ask the user which version is right: commit the hand edit with gbrain git commit-push and the head path and its .gbparts directory as the paths, or restore the head and its parts from HEAD (git restore --staged --worktree --source=HEAD followed by the same paths); then run gbrain sync for the source with --no-pull and submit the write again with a new request_id. Run: gbrain sources writer status --source '{source_id}' --json | user | `repeat the read that failed` | 1 | no |
+
+More: [docs/guides/write-refusals.md#split_unit_diverged](../../docs/guides/write-refusals.md#split_unit_diverged)
+
 ### split_unparseable
 
 <a id="split_unparseable"></a>

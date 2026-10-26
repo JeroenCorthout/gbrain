@@ -1,4 +1,5 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { closeSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readSync, realpathSync, rmSync, statSync } from 'node:fs';
 import { basename, dirname, join, relative, resolve as resolvePath, sep } from 'node:path';
 import { execFileBounded } from '../brain-repo-durability.ts';
 import { gitDurabilityPolicy } from './git-durability-policy.ts';
@@ -526,3 +527,67 @@ export async function publishSplitGitEffect(root: string, head: string, signal?:
   return { ...outcome, ...await pushGitRoot(root, signal) };
 }
 
+
+
+/** The Git blob id of a worktree file's raw bytes (no clean filter: what cat-file blob would return for it), or null when it is not a regular file. */
+export function rawBlobOid(path: string, format: 'sha1' | 'sha256'): string | null {
+  const stat = lstatSync(path, { throwIfNoEntry: false });
+  if (!stat?.isFile()) return null;
+  const hash = createHash(format).update(`blob ${stat.size}\0`);
+  const fd = openSync(path, 'r'), chunk = Buffer.allocUnsafe(1 << 20);
+  try { for (let read; (read = readSync(fd, chunk, 0, chunk.length, null)) > 0;) hash.update(chunk.subarray(0, read)); } finally { closeSync(fd); }
+  return hash.digest('hex');
+}
+
+/** A split page's unit in its three states: path (relative to the root, `/`-separated) to blob id, raw bytes on disk. */
+export interface SplitUnitLayers { head: string; partsDir: string; committed: Map<string, string>; staged: Map<string, string>; disk: Map<string, string>; unmerged: string[] }
+
+/**
+ * Wave B PR 5 round 6: the head at `head` and everything under its parts directory as Git HEAD, the index and the disk
+ * hold them. HEAD and the index name blob ids; the disk is hashed as raw bytes (rawBlobOid), so a clean filter never makes
+ * a changed file look committed. An entry on disk that is not a regular file is `not_a_file`.
+ */
+export async function readSplitUnitLayers(session: GitSession, root: string, head: string): Promise<SplitUnitLayers> {
+  const rel = (path: string) => relative(root, path).split(sep).join('/');
+  const headPath = resolvePath(root, head), headRel = rel(headPath), partsDir = rel(partsDirFor(headPath));
+  const [format, born] = await Promise.all([git(session, ['rev-parse', '--show-object-format']), git(session, ['rev-parse', '-q', '--verify', 'HEAD^{commit}'])]);
+  const [tree, index] = await Promise.all([born.code === 0 ? git(session, ['ls-tree', '-r', '-z', 'HEAD', '--', headRel, partsDir]) : Promise.resolve({ code: 0, stdout: '', stderr: '' }),
+    git(session, ['ls-files', '-s', '-z', '--', headRel, partsDir])]);
+  if (format.code !== 0 || tree.code !== 0 || index.code !== 0) throw gitFailure('Cannot inspect the canonical Git target.', `git ls-tree or git ls-files failed for the split unit of ${headRel}.`);
+  const layers: SplitUnitLayers = { head: headRel, partsDir, committed: new Map(), staged: new Map(), disk: new Map(), unmerged: [] };
+  for (const record of tree.stdout.split('\0').filter(Boolean)) {
+    const tab = record.indexOf('\t'), [, type, oid] = record.slice(0, tab).split(' ');
+    layers.committed.set(record.slice(tab + 1), type === 'blob' ? oid! : `${type}:${oid}`);
+  }
+  for (const record of index.stdout.split('\0').filter(Boolean)) {
+    const tab = record.indexOf('\t'), [, oid, stage] = record.slice(0, tab).split(' '), path = record.slice(tab + 1);
+    if (stage === '0') layers.staged.set(path, oid!); else layers.unmerged.push(path);
+  }
+  const algorithm = format.stdout.trim() === 'sha256' ? 'sha256' : 'sha1';
+  const headOid = rawBlobOid(headPath, algorithm);
+  if (headOid) layers.disk.set(headRel, headOid);
+  const dir = join(root, partsDir);
+  if (lstatSync(dir, { throwIfNoEntry: false })?.isDirectory()) {
+    for (const name of readdirSync(dir)) layers.disk.set(`${partsDir}/${name}`, rawBlobOid(join(dir, name), algorithm) ?? 'not_a_file');
+  }
+  return layers;
+}
+
+/**
+ * Why HEAD, the index and the disk do not hold the same split unit, or null when they do. Every path under the parts
+ * directory must be the same blob in all three (present in all or in none); the head must be too once any of the three
+ * holds a part, so a head converted to one file (or edited) beside committed parts disagrees. A plain page (no part in
+ * any state) is not compared: its head is the page file the drift checks already cover.
+ */
+export function splitUnitDivergence(layers: SplitUnitLayers): string | null {
+  if (layers.unmerged.length) return `${layers.unmerged[0]} has unmerged entries in the index`;
+  const paths = [...new Set([...layers.committed.keys(), ...layers.staged.keys(), ...layers.disk.keys()])].sort();
+  if (!paths.some(path => path !== layers.head)) return null;
+  const state = (oid: string | null, committed: string | null) => oid === null ? 'does not hold it' : oid === committed ? 'holds the committed bytes' : 'holds other bytes';
+  for (const path of paths) {
+    const committed = layers.committed.get(path) ?? null, staged = layers.staged.get(path) ?? null, disk = layers.disk.get(path) ?? null;
+    if (committed === staged && staged === disk) continue;
+    return `${path}: Git HEAD ${committed === null ? 'does not hold it' : 'holds it'}, the index ${state(staged, committed)}, the disk ${disk === 'not_a_file' ? 'holds something that is not a file' : state(disk, committed)}`;
+  }
+  return null;
+}
