@@ -14,7 +14,7 @@ import { connectorRender } from '../connectors/connector-text.ts';
 import { isWriteTargetContained } from '../path-confine.ts';
 import { mkdirPrivate } from '../atomic-write.ts';
 import { replaceableFile } from '../facts/file-body-guard.ts';
-import { PageFileChanged, readPageFileText, removeSplitPageFile, writeSplitPageFile } from '../split-write-through.ts';
+import { PageFileChanged, preflightSplitPageFile, readPageFileText, removeSplitPageFile, writeSplitPageFile } from '../split-write-through.ts';
 import { FACTS_FENCE_BEGIN, FACTS_FENCE_END, replaceOrInsertFactsFence } from '../facts-fence.ts';
 import { TAKES_FENCE_BEGIN } from '../takes-fence.ts';
 import { conceptPreservationHold, preserveCanonicalFences } from '../cycle/concept-publication.ts';
@@ -194,6 +194,7 @@ export async function importRendered(
     `${slug}: the checkout file has an edit not retained in the database, or changed during import. The file was not replaced. If the file is newer, run gbrain sync --source ${deps.sourceId}; if the database is newer, re-save its page with write-through on; if both changed, ask the user which version to keep before retrying.`,
     'Import the newer file with gbrain sync, or ask the user which version to keep; the item is held until then.');
   if (guard && !guard.ok) throw drift();
+  if (guard) await preflightSplitPageFile(deps.engine, filePath, deps.cfg.dir, markdown);
   const before = databaseOnly ? !!existing : existsSync(filePath);
   // Temp-write → import → rename: a failed import never destroys the
   // previously-good page (github-source pattern).

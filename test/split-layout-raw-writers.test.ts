@@ -267,6 +267,46 @@ for (const backend of testBackends()) describe(`[${backend}] split git layout: r
     } finally { await close(); }
   }), 120_000);
 
+  test('the classic Google connector refuses a split write before its database import: nothing is stored and no file is written', () => withSplitPage(databaseUrl, async (engine, root) => {
+    const summary = { status: 'synced', added: 0, modified: 0, deleted: 0, chunksCreated: 0, embedded: 0, pagesAffected: [], threadsSeen: 0, attachmentInspection: {} } as unknown as GoogleSyncSummary;
+    const deps = { managed: null, engine, sourceId: 'default', cfg: { dir: root, account: 'owner@example.invalid' }, opts: {}, entry: {}, log() {}, tick() {} } as unknown as GoogleSyncDeps;
+    const head = join(root, 'notes/connector-example.md');
+    mkdirSync(partsDirFor(head), { recursive: true });
+    writeFileSync(join(partsDirFor(head), 'README.txt'), 'Unrelated local data\n');
+    const refused = await importRendered(deps, 'notes/connector-example.md', file, null as never, summary, new Set()).then(() => null, error => error);
+    expect(refused?.code).toBe('split_parts_unexpected');
+    expect(await engine.getPage('notes/connector-example', { sourceId: 'default' })).toBeNull();
+    expect(layout(head)).toEqual({ head: null, parts: { 'README.txt': 'Unrelated local data\n' } });
+    expect(readdirSync(join(root, 'notes')).filter(name => name.startsWith('connector-example.md'))).toEqual([]);
+  }), 120_000);
+
+  test('the classic GitHub connector refuses a split write before its database import: nothing is stored and no file is written', () => withHome(async (_home, root) => {
+    const { engine, close } = await isolatedSharedSkillsEngine(databaseUrl);
+    try {
+      await withEnv({ CONNECTOR_TEST_TOKEN: 'fixture-token' }, async () => {
+        const repo = 'acme-example/app';
+        const big = Array.from({ length: 60 }, (_, i) => `Issue line ${String(i).padStart(4, '0')} of a long synthetic issue body that fills parts.`).join('\n');
+        const issue = { number: 1, title: 'Example issue', state: 'open', body: big, created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-02T00:00:00Z', labels: [], assignees: [], user: { login: 'example-user' }, html_url: `https://github.com/${repo}/issues/1` };
+        const json = (value: unknown) => new Response(JSON.stringify(value), { status: 200, headers: { 'content-type': 'application/json', 'x-ratelimit-remaining': '4900', 'x-ratelimit-reset': String(Math.floor(Date.now() / 1000) + 3600) } });
+        const fetcher = async (url: string) => {
+          const path = new URL(url).pathname;
+          if (path.endsWith('/issues')) return json([issue]);
+          if (path.endsWith('/pulls') || path.endsWith('/comments')) return json([]);
+          if (path.endsWith('/issues/1')) return json(issue);
+          if (path === `/repos/${repo}`) return json({ full_name: repo, private: true, default_branch: 'main' });
+          throw new Error(`Unexpected fixture route ${path}`);
+        };
+        const cfg = parseGitHubSourceConfig({ kind: 'github', gh_scope: 'repos', gh_repos: repo, gh_token_env: 'CONNECTOR_TEST_TOKEN' }, root);
+        const head = itemPagePath(root, repo, 1);
+        mkdirSync(partsDirFor(head), { recursive: true });
+        writeFileSync(join(partsDirFor(head), 'README.txt'), 'Unrelated local data\n');
+        await runGitHubSync(engine, 'default', cfg, { noPull: true, noEmbed: true } as never, fetcher).catch(() => undefined);
+        expect(await engine.getPage(`gh/${repo}/1`, { sourceId: 'default' })).toBeNull();
+        expect(layout(head)).toEqual({ head: null, parts: { 'README.txt': 'Unrelated local data\n' } });
+      });
+    } finally { await close(); }
+  }), 120_000);
+
   test('an unmanaged lint --fix writes the fixed page as its split unit', () => withSplitPage(databaseUrl, async (engine, root, head) => {
     const content = `---\ntype: note\ntitle: Split example\ncreated: 2026-01-01\n---\n${PREAMBLE}\n\n${body}\n`;
     rmSync(head); rmSync(partsDirFor(head), { recursive: true });

@@ -37,6 +37,16 @@ export function readPageFileText(path: string): { text: string | null; split: bo
 }
 
 /**
+ * Plans the split unit of `content` (F) at `filePath` and releases it, writing nothing: throws every refusal the planner
+ * raises (`split_parts_unexpected`, a part over its bounds), so a writer that commits its database row before its file
+ * (the classic connectors) refuses before that commit. True when the target is a split unit.
+ */
+export async function preflightSplitPageFile(engine: BrainEngine, filePath: string, root: string, content: string): Promise<boolean> {
+  const unit: MutationFile & SplitFileFields = { path: filePath, root, content, expectedBeforeHash: hashFile(filePath) };
+  try { return await splitPublicationTargets(engine, unit); } finally { releaseSplitTargets(unit); }
+}
+
+/**
  * Writes `content` (F) at `filePath` as its split unit; null, writing nothing, when the target is one ordinary file
  * (F at or under the threshold and no parts directory), which the caller writes as before. Returns every path written
  * or removed, head first. Throws `PageFileChanged` when the head or a part changed since the unit was planned, and

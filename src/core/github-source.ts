@@ -46,7 +46,7 @@ import { dirname, join, relative } from 'node:path';
 import type { BrainEngine } from './engine.ts';
 import type { SyncOpts } from '../commands/sync.ts';
 import { isWriteTargetContained } from './path-confine.ts';
-import { PageFileChanged, readPageFileText, removeSplitPageFile, writeSplitPageFile } from './split-write-through.ts';
+import { PageFileChanged, preflightSplitPageFile, readPageFileText, removeSplitPageFile, writeSplitPageFile } from './split-write-through.ts';
 import { createProgress, startHeartbeat } from './progress.ts';
 import { getCliOptions, cliOptsToProgressOptions } from './cli-options.ts';
 import { replaceableFile } from './facts/file-body-guard.ts';
@@ -982,6 +982,7 @@ async function materializePage(deps: GitHubSyncDeps, filePath: string, content: 
     'Import the newer file with gbrain sync, or ask the user which version to keep; the item is held until then.');
   if (!guard.ok) throw drift();
   const created = guard.expectedFileBytes === null;
+  await preflightSplitPageFile(deps.engine, filePath, deps.cfg.dir, content);
   mkdirSync(dirname(filePath), { recursive: true });
   const tmpPath = `${filePath}.tmp`;
   writeFileSync(tmpPath, content, 'utf-8');
