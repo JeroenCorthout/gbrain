@@ -280,7 +280,8 @@ async function settleFileMirror(tx: BrainEngine, current: PersistenceEffect, rec
  * A version 3 record (a split page's head and parts, split-mirror.ts): once any file holds its new bytes the unit is
  * finished forward, every other file renamed from its stage or removed; while none does, a page that moved or a stage that
  * is missing discards the stages and the mirror renders again. A page that moved after the unit was finished is rendered
- * again too.
+ * again too. The unit is read again under the publication lock right before it publishes: a file edited or a part file
+ * added after the first read blocks it like one found then (nothing renamed or removed, the recovery kept).
  */
 async function settleSplitMirror(tx: BrainEngine, current: PersistenceEffect, record: EffectRecovery, hooks: MirrorHooks): Promise<PageSnapshot | null> {
   const state = splitMirrorState(record);
@@ -293,7 +294,11 @@ async function settleSplitMirror(tx: BrainEngine, current: PersistenceEffect, re
     return null;
   }
   await hooks.boundary?.('before_mirror_file');
-  await withFilesystemPublication([record.root], async () => publishSplitMirrorFiles(record, state.pending));
+  await withFilesystemPublication([record.root], async () => {
+    const now = splitMirrorState(record);
+    if (now.unexpected) throw unexpectedMirrorBytes(current, record.slug);
+    publishSplitMirrorFiles(record, now.pending);
+  });
   await hooks.boundary?.('after_mirror_file');
   await discard();
   if (snapshot) return snapshot;

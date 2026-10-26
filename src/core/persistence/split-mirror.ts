@@ -13,12 +13,12 @@
  * removed; while none does, a moved page or a missing stage discards the stages and the mirror renders again.
  */
 import { lstatSync, mkdirSync } from 'node:fs';
-import { basename, dirname } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { atomicStagingPath, mkdirPrivate } from '../atomic-write.ts';
 import type { BrainEngine } from '../engine.ts';
 import { opError } from '../ops/contract.ts';
 import { isWriteTargetContained } from '../path-confine.ts';
-import { PART_FILE_RE, partsDirFor } from '../split-layout/index.ts';
+import { diskParts, PART_FILE_RE, partsDirFor } from '../split-layout/index.ts';
 import type { MutationFile } from './bundle-files.ts';
 import { persistenceFileHash, publishPersistenceFile } from './coordinator.ts';
 import type { EffectRecovery, SplitMirrorFile } from './effect-model.ts';
@@ -103,10 +103,27 @@ export function splitMirrorFilesBelong(record: EffectRecovery): boolean {
   return parts.every(part => dirname(part.path) === dir && PART_FILE_RE.test(basename(part.path)));
 }
 
-/** Where the unit stands on disk: every file must hold its prior or its new bytes (`unexpected` names one that holds neither). */
+/** An entry of the head's parts directory the record does not name (a part file added since the unit was planned), as the reader counts it unlisted; null when there is none. */
+function unlistedPart(record: EffectRecovery): string | null {
+  const dir = partsDirFor(record.path);
+  const entries = diskParts(record.path).list(basename(dir));
+  if (entries === 'missing') return null;
+  if (entries === 'not_a_directory') return dir;
+  const named = new Set((record.files ?? []).slice(1).map(file => basename(file.path)));
+  const extra = entries.find(name => !named.has(name));
+  return extra === undefined ? null : join(dir, extra);
+}
+
+/**
+ * Where the unit stands on disk: every file must hold its prior or its new bytes and the parts directory may hold only
+ * the parts the record names (`unexpected` names a file that holds neither, or an unlisted entry). Read again under the
+ * publication lock right before anything is renamed or removed.
+ */
 export function splitMirrorState(record: EffectRecovery): { unexpected: string | null; moved: boolean; pending: SplitMirrorFile[]; staged: boolean } {
   const pending: SplitMirrorFile[] = [];
   let moved = false;
+  const unlisted = unlistedPart(record);
+  if (unlisted) return { unexpected: unlisted, moved, pending, staged: false };
   for (const file of record.files ?? []) {
     const actual = persistenceFileHash(file.path);
     if (actual !== file.beforeHash && actual !== file.afterHash) return { unexpected: file.path, moved, pending, staged: false };
