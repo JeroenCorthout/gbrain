@@ -57,10 +57,10 @@ describe('#6818 code and extract_receipt page types in the stock base pack', () 
   });
 
   test('a written receipt and a code page keep the consistency check ok; a custom type still warns', async () => {
-    const { slug } = await writeReceipt(engine, {
+    const { slug } = (await writeReceipt(engine, {
       kind: 'links', source_id: 'default', run_id: 'a1b2c3d4e5f6789abcdef', round: 'full',
       extracted_at: '2026-05-27T14:30:00.000Z', total_rows: 3, cost_usd: 0,
-    });
+    }))!;
     expect((await engine.getPage(slug, { sourceId: 'default' }))?.type).toBe('extract_receipt');
     await engine.putPage('src/example.ts', { type: 'code', title: 'example.ts', compiled_truth: 'export const x = 1;' }, { sourceId: 'default' });
     const ok = await checkSchemaPackConsistency(engine, { sourceIds: ['default'] });

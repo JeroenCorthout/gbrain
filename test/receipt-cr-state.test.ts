@@ -53,7 +53,7 @@ function receiptInput(overrides: Partial<ExtractReceiptInput> = {}): ExtractRece
 
 describe('receipts are born CR-evaluated (#4009)', () => {
   test('writeReceipt stamps contextual_retrieval_mode = none', async () => {
-    const { slug } = await writeReceipt(engine, receiptInput());
+    const { slug } = (await writeReceipt(engine, receiptInput()))!;
     const rows = await engine.executeRaw<{ mode: string | null }>(
       `SELECT contextual_retrieval_mode AS mode FROM pages WHERE slug = $1 AND source_id = 'default'`,
       [slug],
@@ -63,7 +63,7 @@ describe('receipts are born CR-evaluated (#4009)', () => {
   });
 
   test('doctor calibration check does not count receipts in mode_null (belt+braces)', async () => {
-    const { slug } = await writeReceipt(engine, receiptInput());
+    const { slug } = (await writeReceipt(engine, receiptInput()))!;
     // Simulate the non-permanence path: a reindex DB fallback clearing the stamp.
     await engine.executeRaw(
       `UPDATE pages SET contextual_retrieval_mode = NULL WHERE slug = $1`,

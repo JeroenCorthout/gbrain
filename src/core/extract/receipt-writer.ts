@@ -33,11 +33,24 @@
  *
  * Resume rounds land under the same run_id_short so the audit trail
  * for a halted-then-resumed run stays coherent.
+ *
+ * Storage (#7620): `extracts/` is a derive-phase folder
+ * (DERIVE_PHASE_DB_ONLY_DEFAULTS), so a receipt is a declared database-only
+ * page that never gets a file or a commit. One transaction stores it and
+ * builds its chunks with the current chunker through the projection
+ * installer, sealing both the chunks and the text projection, so remote reads
+ * never see it as safe_index_pending. Its chunks are embedded by the ordinary
+ * stale-embedding backlog (`gbrain embed --stale`). A managed brain and a strict
+ * (`canonical: git`) source write no receipt: their writes go through the
+ * coordinator and its door, and a row there must never precede Git.
  */
 
 import type { BrainEngine } from '../engine.ts';
 import type { Page } from '../types.ts';
 import { maintenanceTransaction } from '../persistence/attribution.ts';
+import { managedPersistenceEnabled } from '../persistence/ownership.ts';
+import { sourceCanonicalGit } from '../persistence/git-door.ts';
+import { resealSafeChunks } from '../page-state/projections.ts';
 
 /**
  * Round identifier. Matches the progressive-batch primitive's Stage
@@ -188,12 +201,14 @@ function buildReceiptFrontmatter(input: ExtractReceiptInput): Record<string, unk
 }
 
 /**
- * Write an extract receipt page. Returns the slug of the written page
- * for the caller's audit/logging needs.
+ * Write an extract receipt page. Returns the slug and the stored page
+ * for the caller's audit/logging needs, or null when the brain is managed
+ * or the source is strict (no receipt is written there; see the module
+ * comment).
  *
- * Side-effects: calls engine.putPage with the receipt's compiled body +
- * frontmatter. Threads sourceId so federated brains route the receipt
- * to the same source the extraction targeted.
+ * The page is stored, chunked and sealed in one transaction under the source
+ * the extraction targeted. It never gets a file: `extracts/` is a declared
+ * database-only derive folder.
  *
  * Re-running with the same run_id + round overwrites the prior receipt
  * (idempotent on resume). The op-checkpoint id is stable across
@@ -203,22 +218,26 @@ function buildReceiptFrontmatter(input: ExtractReceiptInput): Record<string, unk
 export async function writeReceipt(
   engine: BrainEngine,
   input: ExtractReceiptInput,
-): Promise<{ slug: string; page: Page }> {
+): Promise<{ slug: string; page: Page } | null> {
+  if (await managedPersistenceEnabled(engine) || await sourceCanonicalGit(engine, input.source_id)) return null;
   const slug = receiptSlug(input);
   const title = `${input.kind} — ${input.round} — ${input.source_id}`;
   const frontmatter = buildReceiptFrontmatter(input);
   const compiled_truth = buildReceiptBody(input);
 
-  const page = await maintenanceTransaction(engine, tx => tx.putPage(
-    slug,
-    {
-      type: 'extract_receipt',
-      title,
-      compiled_truth,
-      frontmatter,
-    },
-    { sourceId: input.source_id },
-  ));
+  await maintenanceTransaction(engine, async tx => {
+    await tx.putPage(
+      slug,
+      {
+        type: 'extract_receipt',
+        title,
+        compiled_truth,
+        frontmatter,
+      },
+      { sourceId: input.source_id },
+    );
+    await resealSafeChunks(tx, slug, input.source_id);
+  });
 
   // #4009: receipts are audit artifacts — deliberately never run through
   // the contextual-retrieval ladder. Born with a NULL
@@ -230,5 +249,7 @@ export async function writeReceipt(
   // type='extract_receipt' from mode_null (belt+braces).
   await engine.updatePageContextualRetrievalState(slug, input.source_id, 'none', null);
 
+  const page = await engine.getPage(slug, { sourceId: input.source_id });
+  if (!page) throw new Error(`receipt ${slug} was written but cannot be read back`);
   return { slug, page };
 }

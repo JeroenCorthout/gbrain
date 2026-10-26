@@ -205,8 +205,8 @@ describe('cycle and synthesis writers on an unmanaged brain', () => {
         pagesGathered: 0, takesGathered: 0, graphHits: 0, modelUsed: 'test:stub', rounds: 1, warnings: [], synthesisOk: true } as unknown as ThinkResult, { sourceId: brain.sourceId });
       expect(await revisionActor(engine, brain.sourceId, saved.slug)).toEqual(brain.maintenance);
 
-      const receipt = await writeReceipt(engine, { kind: 'extract_facts', source_id: brain.sourceId, run_id: `run-${brain.sourceId}`, round: 'trial',
-        extracted_at: '2026-09-02T00:00:00.000Z', total_rows: 1, cost_usd: 0 });
+      const receipt = (await writeReceipt(engine, { kind: 'extract_facts', source_id: brain.sourceId, run_id: `run-${brain.sourceId}`, round: 'trial',
+        extracted_at: '2026-09-02T00:00:00.000Z', total_rows: 1, cost_usd: 0 }))!;
       expect(await revisionActor(engine, brain.sourceId, receipt.slug)).toEqual(brain.maintenance);
     }
   }, 120_000);

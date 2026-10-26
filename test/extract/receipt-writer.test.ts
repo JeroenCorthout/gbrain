@@ -135,7 +135,7 @@ describe('writeReceipt — frontmatter D-EXTRACT-19 belt+suspenders', () => {
   });
 
   test('stamps type:extract_receipt + dream_generated:true regardless of input', async () => {
-    const { slug, page } = await writeReceipt(engine, BASE_INPUT);
+    const { slug, page } = (await writeReceipt(engine, BASE_INPUT))!;
     expect(slug).toBe('extracts/2026-05-27/facts.conversation/default/a1b2c3d4/round-full');
     expect(page.type).toBe('extract_receipt');
     // belt + suspenders: both anti-loop flags are present
@@ -149,25 +149,25 @@ describe('writeReceipt — frontmatter D-EXTRACT-19 belt+suspenders', () => {
   });
 
   test('stamps optional model_id + eval_pass + eval_score when supplied', async () => {
-    const { page } = await writeReceipt(engine, {
+    const { page } = (await writeReceipt(engine, {
       ...BASE_INPUT,
       run_id: 'eval-pass-run-id',
       model_id: 'claude-haiku-4-5',
       eval_pass: true,
       eval_score: 8.7,
-    });
+    }))!;
     expect(page.frontmatter?.model_id).toBe('claude-haiku-4-5');
     expect(page.frontmatter?.eval_pass).toBe(true);
     expect(page.frontmatter?.eval_score).toBe(8.7);
   });
 
   test('omits eval_pass / model_id when not supplied (deterministic extractor)', async () => {
-    const { page } = await writeReceipt(engine, {
+    const { page } = (await writeReceipt(engine, {
       ...BASE_INPUT,
       run_id: 'deterministic-run-id',
       kind: 'links',
       cost_usd: 0,
-    });
+    }))!;
     expect(page.frontmatter?.model_id).toBeUndefined();
     expect(page.frontmatter?.eval_pass).toBeUndefined();
     expect(page.frontmatter?.eval_score).toBeUndefined();
@@ -177,30 +177,30 @@ describe('writeReceipt — frontmatter D-EXTRACT-19 belt+suspenders', () => {
   });
 
   test('idempotent on resume: same run_id+round overwrites prior receipt', async () => {
-    const first = await writeReceipt(engine, {
+    const first = (await writeReceipt(engine, {
       ...BASE_INPUT,
       run_id: 'idem-run',
       total_rows: 10,
-    });
-    const second = await writeReceipt(engine, {
+    }))!;
+    const second = (await writeReceipt(engine, {
       ...BASE_INPUT,
       run_id: 'idem-run',
       total_rows: 47, // updated count on resume
-    });
+    }))!;
     expect(first.slug).toBe(second.slug);
     // Read back: row count is the latest write
     expect(second.page.frontmatter?.total_rows).toBe(47);
   });
 
   test('body contains human-readable summary + machine-readable fields', async () => {
-    const { page } = await writeReceipt(engine, {
+    const { page } = (await writeReceipt(engine, {
       ...BASE_INPUT,
       run_id: 'body-test-run',
       summary: 'Extracted 47 facts from 6 conversation pages.',
       model_id: 'claude-haiku-4-5',
       eval_pass: true,
       eval_score: 9.1,
-    });
+    }))!;
     expect(page.compiled_truth).toContain('facts.conversation');
     expect(page.compiled_truth).toContain('Extracted 47 facts from 6 conversation pages.');
     expect(page.compiled_truth).toContain('default');
