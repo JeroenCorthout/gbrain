@@ -27,6 +27,7 @@ import { join } from 'path';
 import { copyArtifacts, walkSourceDir } from './copy.ts';
 import { findGbrainRoot, loadBundleManifest } from './bundle.ts';
 import { findResolverFile } from '../resolver-filenames.ts';
+import { assertOneFileWritable } from '../split-write-through.ts';
 
 const MANAGED_BEGIN = '<!-- gbrain:skillpack:begin -->';
 const MANAGED_END = '<!-- gbrain:skillpack:end -->';
@@ -295,6 +296,7 @@ export function runMigrateFence(opts: MigrateFenceOptions): MigrateFenceResult {
   if (!dryRun) {
     const rewritten = stripFence(content, parsed);
     assertLegacySkillFilesystemWrite(resolverFile);
+    assertOneFileWritable(resolverFile, rewritten);
     writeFileSync(resolverFile, rewritten);
   }
 

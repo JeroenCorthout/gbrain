@@ -336,7 +336,7 @@ function splitHeadFixRefusal(file: string, content: string, fixed: string): stri
   if (before === null) {
     try { assertOneFileWritable(file, fixed); return null; } catch (error) {
       if ((error as { code?: string } | null)?.code !== 'split_page_unsupported') throw error;
-      return `${(error as Error).message} frontmatter validate --fix writes one whole file, so nothing was written.`;
+      return `${(error as Error).message} frontmatter --fix writes one whole file, so nothing was written.`;
     }
   }
   const after = parseHead(fixed);
@@ -843,6 +843,8 @@ async function runGenerate(args: string[]): Promise<void> {
     if (doFix && !dryRun) {
       const fm = serializeFrontmatter(inferred);
       const newContent = fm + '\n' + content;
+      const splitRefusal = splitHeadFixRefusal(absPath, content, newContent);
+      if (splitRefusal) { console.error(`${relPath}: ${splitRefusal}`); return; }
       // Safety: write a centralized backup first.
       createFrontmatterBackup(absPath, { sourcePath: brainRoot, runId: backupRunId });
       assertManagedFilesystemWrite(absPath);

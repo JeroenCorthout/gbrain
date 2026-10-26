@@ -42,6 +42,7 @@ import { createAuditWriter } from '../core/audit/audit-writer.ts';
 import { jsonRequested, writeJsonLine } from '../core/cli-force-exit.ts';
 import { opError, type OperationError } from '../core/ops/contract.ts';
 import { usageError, writeCliRefusal } from '../cli/cli-error.ts';
+import { assertOneFileWritable } from '../core/split-write-through.ts';
 
 interface PublishOpts {
   help?: boolean;
@@ -339,6 +340,7 @@ export async function runBenchPublish(args: string[]): Promise<void> {
   const serialized = serializeBaselineFile(file);
 
   try {
+    assertOneFileWritable(outputPath, serialized);
     writeFileSync(outputPath, serialized);
   } catch (err) {
     const msg = (err as Error).message;

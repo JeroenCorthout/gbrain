@@ -27,6 +27,7 @@ import { join, dirname } from 'path';
 import { loadSkillpackManifest } from './manifest-v1.ts';
 import { walkRubric, type RubricScore } from './rubric.ts';
 import { logSkillpackEvent } from './audit.ts';
+import { assertOneFileWritable } from '../split-write-through.ts';
 
 export type DoctorMode = 'quick' | 'full';
 
@@ -307,7 +308,7 @@ async function applyAutoFixes(
     return [];
   }
 
-  for (const p of plan) assertLegacySkillFilesystemWrite(p.path);
+  for (const p of plan) { assertLegacySkillFilesystemWrite(p.path); assertOneFileWritable(p.path, p.content); }
   for (const p of plan) {
     assertLegacySkillFilesystemWrite(p.path);
     mkdirSync(dirname(p.path), { recursive: true });

@@ -3,6 +3,7 @@ import { readdirSync, lstatSync, existsSync, copyFileSync, mkdirSync, readFileSy
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { homedir } from 'os';
+import { assertOneFileWritable } from '../core/split-write-through.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -1785,6 +1786,7 @@ export function installDefaultTemplates(workspaceDir: string): string[] {
     const srcPath = join(templatesDir, src);
     const destPath = join(workspaceDir, dest);
     if (existsSync(srcPath) && !existsSync(destPath)) {
+      assertOneFileWritable(destPath, readFileSync(srcPath));
       mkdirSync(dirname(destPath), { recursive: true });
       copyFileSync(srcPath, destPath);
       installed.push(dest);

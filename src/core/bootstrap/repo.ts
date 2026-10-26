@@ -52,6 +52,7 @@ import {
   type ManifestState,
 } from './format.ts';
 import { BootstrapError } from './lock.ts';
+import { assertOneFileWritable } from '../split-write-through.ts';
 
 // ---------------------------------------------------------------------------
 // Exec seam (shared by uninstall.ts; the dispatcher passes the real runner)
@@ -323,7 +324,9 @@ function updateGithubMd(workspaceDir: string, url: string): void {
   if (!existsSync(path)) return;
   const raw = readFileSync(path, 'utf8');
   const next = raw.split(GITHUB_URL_PLACEHOLDER).join(url).split('{{GITHUB_REPO_URL}}').join(url);
-  if (next !== raw) writeFileSync(path, next, 'utf8');
+  if (next === raw) return;
+  assertOneFileWritable(path, next);
+  writeFileSync(path, next, 'utf8');
 }
 
 /** Load-or-synthesize the machine-local receipt (minimal one when render's is

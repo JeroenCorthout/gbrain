@@ -27,6 +27,7 @@ import { gbrainPath, loadConfig } from '../core/config.ts';
 import { buildGatewayConfig } from '../core/ai/build-gateway-config.ts';
 import { execSync } from '../core/spawn.ts';
 import { fetchWithSSRFGuard, HttpProxyError, SSRFError } from '../core/ssrf-validate.ts';
+import { assertOneFileWritable } from '../core/split-write-through.ts';
 
 // --- Types ---
 
@@ -1374,6 +1375,7 @@ async function refreshRecipeIntoHostRepo(
       }
       case 'unchanged-stale': {
         // Operator's file matches the recorded SHA; source has moved. Auto-update.
+        assertOneFileWritable(targetAbs, readFileSync(srcAbs));
         copyFileSync(srcAbs, targetAbs);
         if (manifestEntry?.mode) {
           try { chmodSync(targetAbs, parseInt(manifestEntry.mode, 8)); } catch { /* ignore */ }
@@ -1387,6 +1389,7 @@ async function refreshRecipeIntoHostRepo(
       case 'locally-modified': {
         const decision = opts.autoMode || 'keep-mine'; // Default to safety: preserve local edit.
         if (decision === 'take-theirs') {
+          assertOneFileWritable(targetAbs, readFileSync(srcAbs));
           copyFileSync(srcAbs, targetAbs);
           if (manifestEntry?.mode) {
             try { chmodSync(targetAbs, parseInt(manifestEntry.mode, 8)); } catch { /* ignore */ }
@@ -1409,6 +1412,7 @@ async function refreshRecipeIntoHostRepo(
         const decision = opts.autoMode === 'take-theirs' ? 'restore' : 'leave-deleted';
         if (decision === 'restore') {
           mkdirSync(pathDirname(targetAbs), { recursive: true });
+          assertOneFileWritable(targetAbs, readFileSync(srcAbs));
           copyFileSync(srcAbs, targetAbs);
           if (manifestEntry?.mode) {
             try { chmodSync(targetAbs, parseInt(manifestEntry.mode, 8)); } catch { /* ignore */ }
@@ -1446,6 +1450,7 @@ async function refreshRecipeIntoHostRepo(
       case 'new-in-manifest': {
         // Wasn't in the recorded manifest; was added in this refresh. Default: install it.
         mkdirSync(pathDirname(targetAbs), { recursive: true });
+        assertOneFileWritable(targetAbs, readFileSync(srcAbs));
         copyFileSync(srcAbs, targetAbs);
         if (manifestEntry?.mode) {
           try { chmodSync(targetAbs, parseInt(manifestEntry.mode, 8)); } catch { /* ignore */ }
@@ -1542,6 +1547,7 @@ export async function installRecipeIntoHostRepo(
     const srcPath = join(recipeBundleRoot, entry.src);
     const targetPath = join(resolvedTarget, entry.target);
     mkdirSync(pathDirname(targetPath), { recursive: true });
+    assertOneFileWritable(targetPath, readFileSync(srcPath));
     copyFileSync(srcPath, targetPath);
     if (entry.mode) {
       try { chmodSync(targetPath, parseInt(entry.mode, 8)); } catch { /* non-fatal */ }
@@ -1602,6 +1608,7 @@ export async function installRecipeIntoHostRepo(
       const rowsBlock = `\n\n<!-- gbrain:${fenceId}:resolver-rows -->\n` +
         manifest.resolver_rows_to_append.map((r) => `- ${r}`).join('\n') +
         `\n<!-- /gbrain:${fenceId}:resolver-rows -->\n`;
+      assertOneFileWritable(resolverPath, (existsSync(resolverPath) ? readFileSync(resolverPath, 'utf8') : '') + rowsBlock);
       fsAppendFileSync(resolverPath, rowsBlock);
     } else {
       console.warn(

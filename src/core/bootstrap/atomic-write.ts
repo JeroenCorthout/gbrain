@@ -33,6 +33,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { dirname, isAbsolute, resolve } from 'node:path';
+import { assertOneFileWritable } from '../split-write-through.ts';
 
 /** Resolve the write target through symlinks, INCLUDING dangling ones.
  * existsSync follows symlinks, so a DANGLING link reads "absent" and a bare
@@ -73,6 +74,7 @@ export function atomicWriteTextFile(
   opts?: { freshMode?: number; forceMode?: number },
 ): void {
   const target = resolveWriteTarget(path);
+  assertOneFileWritable(target, text);
   mkdirSync(dirname(target), { recursive: true });
   let mode: number | undefined;
   if (opts?.forceMode !== undefined) {

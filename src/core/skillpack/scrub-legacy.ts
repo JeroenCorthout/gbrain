@@ -21,6 +21,7 @@ import { join } from 'path';
 
 import { findResolverFile } from '../resolver-filenames.ts';
 import { parseMarkdown } from '../markdown.ts';
+import { assertOneFileWritable } from '../split-write-through.ts';
 
 const MANAGED_BEGIN = '<!-- gbrain:skillpack:begin -->';
 const MANAGED_END = '<!-- gbrain:skillpack:end -->';
@@ -102,8 +103,10 @@ export function runScrubLegacy(opts: ScrubLegacyOptions): ScrubLegacyResult {
   }
 
   if (!dryRun && removed.length > 0) {
+    const rewritten = outLines.join('\n');
     assertLegacySkillFilesystemWrite(resolverFile);
-    writeFileSync(resolverFile, outLines.join('\n'));
+    assertOneFileWritable(resolverFile, rewritten);
+    writeFileSync(resolverFile, rewritten);
   }
 
   return { resolverFile, removed, preserved, dryRun };

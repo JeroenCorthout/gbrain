@@ -10,6 +10,7 @@
 
 import { existsSync, lstatSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { assertOneFileWritable } from '../split-write-through.ts';
 
 export const WRITEBACK_CONTRACT_BEGIN = '<!-- gbrain:writeback-contract:begin -->';
 export const WRITEBACK_CONTRACT_END = '<!-- gbrain:writeback-contract:end -->';
@@ -102,12 +103,13 @@ export function repairWritebackContract(workspaceDir: string): WritebackContract
   }
 
   const original = readFileSync(audit.agentsPath, 'utf8');
+  const next = `${original.trimEnd()}\n\n${WRITEBACK_CONTRACT_BLOCK}\n`;
+  assertOneFileWritable(audit.agentsPath, next);
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
   const backupPath = join(workspaceDir, '.gbrain-bootstrap-backups', stamp, 'AGENTS.md');
   mkdirSync(dirname(backupPath), { recursive: true });
   writeFileSync(backupPath, original, { flag: 'wx' });
 
-  const next = `${original.trimEnd()}\n\n${WRITEBACK_CONTRACT_BLOCK}\n`;
   const tmp = `${audit.agentsPath}.tmp-${process.pid}`;
   writeFileSync(tmp, next, 'utf8');
   renameSync(tmp, audit.agentsPath);

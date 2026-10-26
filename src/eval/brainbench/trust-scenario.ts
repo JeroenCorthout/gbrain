@@ -50,6 +50,7 @@ import { mintLegacyToken } from '../../core/token-mint.ts';
 import { __setConfirmationIoForTests } from '../../core/trust/confirm.ts';
 import { storedTrustTier, type TrustTier } from '../../core/trust/tier.ts';
 import type { BrainBenchFixture, TrustStep } from './types.ts';
+import { assertOneFileWritable } from '../../core/split-write-through.ts';
 
 /** The tables a scenario row can live in. */
 export type TrustRowTable = 'facts' | 'pages';
@@ -363,6 +364,7 @@ async function executeStep(run: TrustFixtureRun, step: TrustStep): Promise<StepR
   switch (step.op) {
     case 'write_file': {
       const path = join(run.repoDir, `${step.slug}.md`);
+      assertOneFileWritable(path, step.content!);
       mkdirSync(dirname(path), { recursive: true });
       writeFileSync(path, step.content!);
       commitAll(run, `owner: ${step.slug}`);

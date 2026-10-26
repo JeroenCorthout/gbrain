@@ -60,6 +60,7 @@ import {
   type BridgeMode,
   type BridgeWriteRecord,
 } from './bridge-state.ts';
+import { assertOneFileWritable } from '../split-write-through.ts';
 
 /**
  * Bridge harness vocabulary. Deliberately its own union: bootstrap.ts's
@@ -811,6 +812,7 @@ export function runHarnessReferenceApply(
     const res = applyHunks(actual, parsed);
     if (!dryRun && res.applied > 0) {
       assertLegacySkillFilesystemWrite(f.target);
+      assertOneFileWritable(f.target, res.text);
       try {
         writeFileSync(f.target, res.text);
       } catch (err) {

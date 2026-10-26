@@ -5,6 +5,7 @@ import { COMPANY_BRAIN_PROFILE, type CompanyBrainPlan } from '../core/company-br
 import { isThinClient, loadConfig } from '../core/config.ts';
 import { opError, OperationError } from '../core/ops/contract.ts';
 import { setCliExitVerdict, writeStdoutFinal } from '../core/cli-force-exit.ts';
+import { assertOneFileWritable } from '../core/split-write-through.ts';
 
 export const COMPANY_BRAIN_INSPECT_HELP = `Inspect an existing company repository without importing it:
   gbrain sources inspect <path> [--profile company-brain] [--json]
@@ -104,6 +105,7 @@ export async function runCompanyBrainInspection(args: string[]): Promise<void> {
       const out = resolve(options.out);
       mkdirSync(dirname(out), { recursive: true, mode: 0o700 });
       try {
+        assertOneFileWritable(out, '');
         writeFileSync(out, `${JSON.stringify(plan, null, 2)}\n`, { flag: 'wx', mode: 0o600 });
       } catch (error) {
         const exists = (error as NodeJS.ErrnoException).code === 'EEXIST';

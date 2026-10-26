@@ -1,6 +1,7 @@
 import { readFileSync, writeFileSync, unlinkSync, existsSync, mkdirSync, readdirSync, realpathSync } from 'fs';
 import { join, dirname, resolve } from 'path';
 import type { StorageBackend } from '../storage.ts';
+import { assertOneFileWritable } from '../split-write-through.ts';
 
 /**
  * Local filesystem storage — for testing and development.
@@ -24,6 +25,7 @@ export class LocalStorage implements StorageBackend {
 
   async upload(path: string, data: Buffer, _mime?: string): Promise<void> {
     const full = this.contained(path);
+    assertOneFileWritable(full, data);
     mkdirSync(dirname(full), { recursive: true });
     writeFileSync(full, data);
   }

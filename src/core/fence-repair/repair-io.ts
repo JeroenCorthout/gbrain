@@ -44,6 +44,8 @@ import { sourceMirrorReadOnly } from '../persistence/mirror-read-only.ts';
 import { isSourceDbOnlySlug } from '../persistence/source-storage.ts';
 import { confinedRepairTarget, prepareRepairPublication, repairScreenConfig, SPLIT_PAGE_UNSUPPORTED, submitManagedFileRepair } from '../persistence/file-repair.ts';
 import { readPageFile, type PageFileHoldCode } from '../split-layout/index.ts';
+import { splitThresholdBytes } from '../split-layout/limits.ts';
+import { assertOneFileWritable } from '../split-write-through.ts';
 import { clearGitHold, readGitHold, type GitHoldRecord } from '../persistence/sync-holds.ts';
 import { submitPageMutation } from '../persistence/page-mutations.ts';
 import type { PageSnapshot } from '../page-state/types.ts';
@@ -278,6 +280,10 @@ export async function writeFenceRepair(ctx: OperationContext, src: FenceSource, 
       throw error;
     }
     if (sha256(readFileSync(abs)) !== target.before) return { ok: false, reason: 'changed_since_read', message: `${target.path} changed after the repair read it, so nothing was written.` };
+    try { assertOneFileWritable(abs, fileContent!, await splitThresholdBytes(engine)); } catch (error) {
+      if ((error as { code?: string }).code !== SPLIT_PAGE_UNSUPPORTED) throw error;
+      return { ok: false, reason: SPLIT_PAGE_UNSUPPORTED, message: `${target.path} would grow past the split threshold with the repair, and only the publication door writes a head and its part files, so nothing was written.` };
+    }
     const receipt: FenceRepairReceipt = { ...parts, before_sha256: target.before, after_sha256: sha256(Buffer.from(fileContent!, 'utf8')) };
     const backup = createFrontmatterBackup(abs, { sourcePath: root, backupRoot: gbrainPath('backups', 'fences', makeFrontmatterBackupRunId()) });
     writeFileSync(abs, fileContent!);

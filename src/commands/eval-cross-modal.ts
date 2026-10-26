@@ -39,6 +39,7 @@ import type {
 } from '../core/cross-modal-eval/runner.ts';
 import type { ParsedModelResult } from '../core/cross-modal-eval/json-repair.ts';
 import { splitProviderModelId } from '../core/model-id.ts';
+import { assertOneFileWritable } from '../core/split-write-through.ts';
 
 const HELP = `gbrain eval cross-modal — multi-model quality gate
 
@@ -967,7 +968,9 @@ async function runBatchMode(parsed: ParsedArgs, opts: RunCrossModalOpts): Promis
         mkdirSync(summaryDir, { recursive: true });
       }
     } catch { /* best-effort */ }
-    writeFileSync(summaryPath, JSON.stringify(summary, null, 2) + '\n', 'utf8');
+    const summaryText = JSON.stringify(summary, null, 2) + '\n';
+    assertOneFileWritable(summaryPath, summaryText);
+    writeFileSync(summaryPath, summaryText, 'utf8');
 
     process.stderr.write(
       `\n[eval cross-modal batch] verdict=${batchVerdict} ` +

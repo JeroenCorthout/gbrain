@@ -8,6 +8,7 @@ import { sqlQueryForEngine, executeRawJsonb, FILES_METADATA_MERGE_SQL } from '..
 import { humanSize } from '../core/file-resolver.ts';
 import { createProgress } from '../core/progress.ts';
 import { getCliOptions, cliOptsToProgressOptions } from '../core/cli-options.ts';
+import { assertOneFileWritable } from '../core/split-write-through.ts';
 
 /** Size threshold: files >= 100 MB use TUS resumable upload */
 const SIZE_THRESHOLD = 100 * 1024 * 1024;
@@ -787,6 +788,7 @@ async function restoreFiles(args: string[]) {
       const storagePath = info.storage_path || info.path; // v0.9 or legacy format
       const data = await storage.download(storagePath);
       assertManagedFilesystemWrite(originalPath);
+      assertOneFileWritable(originalPath, data);
       writeFileSync(originalPath, data);
       unlinkSync(redirectPath);
       restored++;

@@ -40,6 +40,7 @@ import {
   type BundleManifest,
 } from './bundle.ts';
 import { findResolverFile } from '../resolver-filenames.ts';
+import { assertOneFileWritable } from '../split-write-through.ts';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -342,6 +343,7 @@ export function updateManagedBlock(
 
 function writeAtomic(file: string, content: string): void {
   assertLegacySkillFilesystemWrite(file);
+  assertOneFileWritable(file, content);
   const tmp = file + '.tmp.' + process.pid + '.' + Date.now();
   assertLegacySkillFilesystemWrite(tmp);
   mkdirSync(dirname(file), { recursive: true });
@@ -391,6 +393,7 @@ export function applyInstall(
         if (!opts.dryRun) {
           const content = readFileSync(entry.source);
           assertLegacySkillFilesystemWrite(target);
+          assertOneFileWritable(target, content);
           mkdirSync(dirname(target), { recursive: true });
           writeFileSync(target, content);
         }
@@ -401,6 +404,7 @@ export function applyInstall(
         if (!opts.dryRun) {
           const content = readFileSync(entry.source);
           assertLegacySkillFilesystemWrite(target);
+          assertOneFileWritable(target, content);
           writeFileSync(target, content);
         }
       } else {

@@ -48,6 +48,7 @@ import {
   type CompareOutcome,
   type HarnessName,
 } from '../eval/brainbench/types.ts';
+import { assertOneFileWritable } from '../core/split-write-through.ts';
 
 const DEFAULT_FIXTURES_RELATIVE = 'evals/brainbench/fixtures';
 const DEFAULT_GOLD_RELATIVE = 'evals/brainbench/gold';
@@ -394,7 +395,9 @@ export async function runEvalBrainBench(argv: string[]): Promise<never> {
     } else {
       const baseline = toCanonicalBaseline(result, args.justification ?? undefined, runConfig);
       mkdirSync(dirname(args.updateBaseline), { recursive: true });
-      writeFileSync(args.updateBaseline, serializeBaseline(baseline));
+      const text = serializeBaseline(baseline);
+      assertOneFileWritable(args.updateBaseline, text);
+      writeFileSync(args.updateBaseline, text);
       process.stderr.write(`[eval brainbench] baseline written: ${args.updateBaseline}\n`);
     }
   }
@@ -425,7 +428,9 @@ export async function runEvalBrainBench(argv: string[]): Promise<never> {
   if (args.out) {
     const outDoc = { ...result, compare: compareOutcome ?? undefined };
     mkdirSync(dirname(args.out), { recursive: true });
-    writeFileSync(args.out, JSON.stringify(outDoc, null, 2) + '\n');
+    const text = JSON.stringify(outDoc, null, 2) + '\n';
+    assertOneFileWritable(args.out, text);
+    writeFileSync(args.out, text);
     process.stderr.write(`[eval brainbench] result written: ${args.out}\n`);
   }
 

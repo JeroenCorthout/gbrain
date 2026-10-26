@@ -34,6 +34,7 @@ import { configPath, gbrainPath } from '../../core/config.ts';
 // Bug 3 — appendCompletedMigration moved to the runner (apply-migrations.ts).
 import { promptLine } from '../../core/cli-util.ts';
 import { VERSION } from '../../version.ts';
+import { assertOneFileWritable } from '../../core/split-write-through.ts';
 
 const BUILTIN_HANDLERS = new Set(['sync', 'embed', 'lint', 'import', 'extract', 'backlinks', 'autopilot-cycle']);
 const AGENTS_MD_MARKER = '<!-- gbrain:subagent-routing v0.11.0 -->';
@@ -198,8 +199,9 @@ function injectAgentsMdMarker(path: string, opts: OrchestratorOpts): { injected:
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
   const bakPath = `${path}.bak.${stamp}`;
   try {
-    writeFileSync(bakPath, content);
     const snippet = `\n\n${AGENTS_MD_MARKER}\n## Subagent routing (gbrain v0.11.0)\n\nSee \`skills/conventions/subagent-routing.md\` for the runtime routing convention.\n\`~/.gbrain/preferences.json\` controls \`minion_mode\` (always / pain_triggered / off).\n`;
+    assertOneFileWritable(path, content.trimEnd() + snippet);
+    writeFileSync(bakPath, content);
     // Re-check mtime
     const nowMtime = statSync(path).mtimeMs;
     if (nowMtime !== beforeMtime) {

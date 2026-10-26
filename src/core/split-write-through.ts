@@ -87,9 +87,11 @@ export async function oneFileWriteRefusal(engine: BrainEngine, filePath: string,
  * `split_page_unsupported`, writing nothing, when the file there is a split head (its text carries a `gbrain_parts`
  * manifest, whether or not its parts directory exists), its path has a parts directory, or `content` is over the split
  * threshold (`threshold`, the built-in default unless the caller read the brain's), so a page never grows into the
- * layout here.
+ * layout here. A path that can never be a split head (not a .md file) passes, so a generic write helper can call it on
+ * every file it writes.
  */
 export function assertOneFileWritable(filePath: string, content: string | Uint8Array, threshold = parseSplitThreshold(null)): void {
+  if (!isSplitHeadPath(filePath)) return;
   const size = statSync(filePath, { throwIfNoEntry: false })?.size ?? 0;
   const bytes = typeof content === 'string' ? Buffer.byteLength(content) : content.byteLength;
   if (bytes > threshold || lstatSync(partsDirFor(filePath), { throwIfNoEntry: false })

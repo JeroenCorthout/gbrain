@@ -29,6 +29,7 @@ import { evidenceCoPackedSlots, resetDecideSearchCache } from '../../core/search
 import { injectionQuestion } from '../../core/ai/decide/injection.ts';
 import { flagValue, loadDecideState, slotPackShape } from '../decide.ts';
 import '../../core/ai/decide/recall-needed.ts';
+import { assertOneFileWritable } from '../../core/split-write-through.ts';
 
 const REPEATS = 3;
 
@@ -209,6 +210,7 @@ async function cmdQualify(engine: BrainEngine, args: string[]): Promise<number> 
       const header = { calibration: `local:${cal.id}`, slot, call_site: callSite, provider, model_resolved: answered.model, split_hash: cal.split_hash, policy_fingerprint: fingerprint, min_action_precision: minPrecision, status: q.status };
       const items = judged.map((a) => ({ id: a.item.id, family: a.item.family, split: a.item.split, slice: a.item.slice ?? null, protected: a.item.protected === true, value: answered.values[a.item.id] ?? null, correct: a.correct }));
       try {
+        assertOneFileWritable(itemsOut, '');
         writeFileSync(itemsOut, JSON.stringify({ header, items }, null, 2) + '\n', { mode: 0o600 });
         chmodSync(itemsOut, 0o600);
       } catch (err) {
@@ -293,7 +295,7 @@ async function cmdDataset(args: string[]): Promise<number> {
   const items = await builder(path, { slot });
   const out = flagValue(args, '--out');
   const body = toJsonl(items);
-  if (out) writeFileSync(out, body);
+  if (out) { assertOneFileWritable(out, body); writeFileSync(out, body); }
   else process.stdout.write(body);
   const fams = families(items);
   console.error(`${items.length} items in ${fams.size} families (calibrate ${items.filter((i) => i.split === 'calibrate').length}, eval ${items.filter((i) => i.split === 'eval').length}); split_hash ${splitHash(items)}`);

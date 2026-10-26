@@ -14,6 +14,7 @@ import { applyAttendanceRepair, previewAttendanceRepair, attendanceRepairHash, a
   validateAttendanceRepairScope, ATTENDANCE_REPAIR_LIMIT, type AttendanceRepairPreview,
   type AttendanceRepairAuthority } from '../core/attendance-repair.ts';
 import { usageError } from '../cli/cli-error.ts';
+import { assertOneFileWritable } from '../core/split-write-through.ts';
 
 export const ATTENDANCE_REPAIR_HELP = `  gbrain extract links --source db --repair-attendance --source-id ID
                           [--limit 250] [--after-slug SLUG] [--json]
@@ -142,6 +143,7 @@ export async function runAttendanceRepair(engine: BrainEngine, args: string[], a
     checkpoint: async state => {
       privateStat(dirname(checkpoint), true);
       if (existsSync(checkpoint)) privateStat(checkpoint);
+      assertOneFileWritable(checkpoint, JSON.stringify(state) + '\n');
       const temporary = `${checkpoint}.${randomUUID()}.tmp`;
       const fd = openSync(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
       try { writeFileSync(fd, JSON.stringify(state) + '\n'); fsyncSync(fd); }

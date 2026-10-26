@@ -25,6 +25,7 @@ import {
 import type { ScaffoldEntry } from './bundle.ts';
 import { unifiedDiff } from './diff-text.ts';
 import { applyHunks, parseUnifiedDiff } from './apply-hunks.ts';
+import { assertOneFileWritable } from '../split-write-through.ts';
 
 export interface ReferenceOptions {
   /** Absolute path to gbrain repo root (source-of-truth bundle). */
@@ -274,6 +275,7 @@ function applyOne(
 
   if (!dryRun && result.applied > 0) {
     assertLegacySkillFilesystemWrite(target);
+    assertOneFileWritable(target, result.text);
     writeFileSync(target, result.text);
   }
 
