@@ -2,22 +2,25 @@
  * Wave B PR 5 lane 5e (split git layout, spec §9 option B): writers that edit a canonical file outside the publication
  * door, on a split page.
  *
- * 1. Protects: git stays the parent and a failed or interrupted write never breaks a good page. A raw writer on an
- *    unmanaged brain (the takes fence writers, `gbrain think --take`, the timeline write-through, lint --fix, the dream
- *    page files, the phantom redirect's canonical merge, the classic GitHub and Google connectors) reads a split head as
- *    its page file F' and writes back only a new head whose parts all stay (split-write-through.ts), atomically and with
- *    the head file's mode. Any write that would write or remove a part file (an edit in the parts, a page growing into
- *    the layout or shrinking out of it) refuses `split_page_unsupported` before any file is written and before the
- *    database takes the edit, so the files and the database are as they were and no part is left behind; a reader would
- *    hold a parts directory that differs from its head's manifest, and outside the door no recovery record finishes a
- *    head and parts written one by one. A connector plans the unit before its database import. A delete removes the
- *    head with every part. A writer that cannot lay a page out (check-backlinks fix, takes revisit, lint with no brain)
- *    refuses before any write too. Scans (lint, the backlink scan) read the whole page.
- * 2. Fails when: a writer edits the head body (the next sync holds `split_head_modified`), renames a whole file over the
- *    head (orphaning its parts), writes or removes a part outside the door, leaves a part behind after a refusal, lets
- *    the database take an edit the files refused, unlinks the head alone, or a scan reads only the head's lead.
+ * 1. Protects: git stays the parent, and only the publication door of a git-canonical source (canonical: git) creates,
+ *    changes or removes a split page (a head plus part files in `.<name>.gbparts/`). A raw writer outside the door (the
+ *    takes fence writers, `gbrain think --take`, the timeline write-through, the derived and dream page files, the
+ *    phantom redirect, the offline GitHub demo, the classic GitHub and Google connectors, lint --fix, check-backlinks fix,
+ *    takes revisit, frontmatter validate --fix) refuses `split_page_unsupported` (reason `outside_door`) on any path of a
+ *    split unit (a head, a part, a head declaring gbrain_parts whose parts directory is missing, a page path beside an
+ *    orphaned parts directory) before its first file or database write, so the head, every part and the rows stay byte
+ *    for byte, no temporary copy is left and no file gets a wider mode. A page in no split unit is written as one file at
+ *    any size, as master writes it (the brainstorm save, the classic concept publication, the phantom redirect into a
+ *    database-only canonical page, a long GitHub item, a backlink that grows a page): no parts directory, no head. A
+ *    managed lint fix on a git-canonical source publishes through the door, which keeps the page a head plus parts.
+ *    Scans (lint, the backlink scan) read the whole page; lint's scan still holds a split head whose parts directory is
+ *    missing (split_page_incomplete) and never fixes it.
+ * 2. Fails when: a writer outside the door writes, renames or removes any file of a split unit, lets the database take
+ *    an edit the files refused, leaves a temporary copy, refuses with another code than split_page_unsupported, lays a
+ *    page out as a head plus parts, refuses a page in no split unit for its size, or a scan reads only the head's lead.
  * 3. PGLite always; PostgreSQL when DATABASE_URL is set (test/postgres-unit-arms.txt) for every case that uses an
- *    engine. KB-sized limits through __setSplitLimitsForTests (thresholdDefault 1024, so an unmanaged brain splits too).
+ *    engine. KB-sized limits through __setSplitLimitsForTests (thresholdDefault 1024). Split pages outside a door are
+ *    laid out by test/helpers/split-page.ts; the managed door case makes its source git-canonical.
  */
 import { afterEach, describe, expect, spyOn, test } from 'bun:test';
 import { randomUUID } from 'node:crypto';
@@ -29,6 +32,7 @@ import { findBacklinkGaps, fixBacklinkGaps } from '../src/commands/backlinks.ts'
 import { formatSaveOutcome, persistSavedIdea } from '../src/commands/brainstorm.ts';
 import { runFrontmatter } from '../src/commands/frontmatter.ts';
 import { publishClassicConcept } from '../src/core/cycle/concept-publication.ts';
+import { importFromContent } from '../src/core/import-file.ts';
 import { runLintCore } from '../src/commands/lint.ts';
 import { currentExitCode, _resetCliExitVerdictForTests } from '../src/core/cli-force-exit.ts';
 import { runSourcesDemo } from '../src/commands/sources-demo.ts';
@@ -149,22 +153,22 @@ for (const backend of testBackends()) describe(`[${backend}] split git layout: r
   const databaseUrl = backend === 'postgres' ? requirePostgresTestDatabase() : undefined;
   afterEach(() => { __setSplitLimitsForTests(null); });
 
-  test('the takes fence writers refuse a split page whose part files the edit would change (split_page_unsupported); files and takes rows stay', () => withSplitPage(databaseUrl, async (engine, root, head) => {
+  test('the takes fence writers refuse a split page (split_page_unsupported, outside_door); files and takes rows stay', () => withSplitPage(databaseUrl, async (engine, root, head) => {
     const target = { engine, slug: SLUG, brainDir: root, sourceId: 'default' };
     const before = await snapshot(engine, head);
     for (const write of [() => addTakeToPage(target, take), () => appendTakesToPageMdFirst(target, [{ ...take, claim: 'Acme-example opens a second office' }]), () => updateTakeOnPage(target, 1, { weight: 0.9 })]) {
-      expect(await outcomeOf(write)).toContain('split_page_unsupported');
+      expect(await outcomeOf(write)).toContain('split_page_unsupported (outside_door)');
       expect(await snapshot(engine, head)).toEqual(before);
     }
   }, takesBody), 120_000);
 
-  test('think --take on a split anchor refuses a take the part files would carry (split_page_unsupported); files and takes rows stay', () => withSplitPage(databaseUrl, async (engine, _root, head) => {
+  test('think --take on a split anchor refuses (split_page_unsupported, outside_door); files and takes rows stay', () => withSplitPage(databaseUrl, async (engine, _root, head) => {
     const before = await snapshot(engine, head);
-    expect(await outcomeOf(() => persistTakeFromSynthesis(engine, { answer: 'Acme-example ships weekly.', synthesisOk: true }, { anchor: SLUG }))).toContain('split_page_unsupported');
+    expect(await outcomeOf(() => persistTakeFromSynthesis(engine, { answer: 'Acme-example ships weekly.', synthesisOk: true }, { anchor: SLUG }))).toContain('split_page_unsupported (outside_door)');
     expect(await snapshot(engine, head)).toEqual(before);
   }, takesBody), 120_000);
 
-  test('the timeline write-through refuses an entry the part files would carry (split_page_unsupported); files and timeline rows stay', () => withSplitPage(databaseUrl, async (engine, _root, head) => {
+  test('the timeline write-through refuses an entry on a split page (split_page_unsupported); files and timeline rows stay', () => withSplitPage(databaseUrl, async (engine, _root, head) => {
     const before = await snapshot(engine, head);
     expect(await outcomeOf(() => writeTimelineEntryThrough(engine, SLUG, 'default', { date: '2026-01-02', summary: 'Acme-example shipped' }))).toContain('split_page_unsupported');
     expect(await snapshot(engine, head)).toEqual(before);
@@ -227,7 +231,7 @@ for (const backend of testBackends()) describe(`[${backend}] split git layout: r
     expect(readdirSync(join(root, 'notes')).filter(name => name !== 'big-example.md')).toEqual([]);
   }), 120_000);
 
-  test('a derived page and a dream page file whose part files would change are refused (split_page_unsupported); the files stay', () => withSplitPage(databaseUrl, async (engine, root, head) => {
+  test('a derived page and a dream page file on a split page are refused (split_page_unsupported, outside_door); the files stay', () => withSplitPage(databaseUrl, async (engine, root, head) => {
     await engine.createVersion(SLUG);
     await engine.putPage(SLUG, { type: 'note', title: 'Split example', compiled_truth: `${body}\n\nA derived edit.\n` });
     const files = layout(head);
@@ -240,7 +244,7 @@ for (const backend of testBackends()) describe(`[${backend}] split git layout: r
     expect(layout(head)).toEqual(files);
   }), 120_000);
 
-  test('the phantom redirect refuses to merge rows into a split canonical page whose part files would change (split_page_unsupported); files and pages stay', () => withHome(async (home, root) => {
+  test('the phantom redirect refuses to merge rows into a split canonical page (split_page_unsupported, outside_door); files and pages stay', () => withHome(async (home, root) => {
     _resetWriteThroughCacheForTest();
     const { engine, close } = await isolatedSharedSkillsEngine(databaseUrl);
     try {
@@ -265,7 +269,7 @@ for (const backend of testBackends()) describe(`[${backend}] split git layout: r
     } finally { await close(); _resetWriteThroughCacheForTest(); }
   }), 120_000);
 
-  test('a brainstorm save of a page that needs part files refuses (split_page_unsupported) before its database import: no row, no file, exit 1', () => withHome(async (_home, root) => {
+  test('a brainstorm save of a page over the split threshold on a source that is not git-canonical writes one file, as master does: the row and one page file, no parts directory, exit 0', () => withHome(async (_home, root) => {
     _resetWriteThroughCacheForTest();
     const { engine, close } = await isolatedSharedSkillsEngine(databaseUrl);
     try {
@@ -273,16 +277,18 @@ for (const backend of testBackends()) describe(`[${backend}] split git layout: r
       await engine.setConfig('sync.repo_path', root);
       const slug = 'ideas/large-example';
       const outcome = await persistSavedIdea(engine, { slug, content: `---\ntype: note\ntitle: Saved idea example\n---\n\n${body}\n`, provenanceVia: 'brainstorm' });
-      expect(await engine.getPage(slug, { sourceId: 'default' })).toBeNull();
-      expect(existsSync(join(root, `${slug}.md`))).toBe(false);
       const message = formatSaveOutcome(outcome, { profileLabel: 'brainstorm', slug });
-      expect(message.exitCode).toBe(1);
-      expect(message.stderr.join('\n')).toContain('split_page_unsupported');
-      expect(message.stdout ?? '').not.toContain('reconcile');
+      expect(message.exitCode).toBe(0);
+      expect(message.stderr.join('\n')).not.toContain('split_page_unsupported');
+      expect((await engine.getPage(slug, { sourceId: 'default' }))?.compiled_truth).toContain(lines('Body')[79]);
+      const page = join(root, `${slug}.md`);
+      expect(Buffer.byteLength(readFileSync(page))).toBeGreaterThan(LIMITS.thresholdDefault);
+      expect(pageFile(page)).toMatchObject({ split: false, text: expect.stringContaining(lines('Body')[79]) });
+      expect(existsSync(partsDirFor(page))).toBe(false);
     } finally { await close(); _resetWriteThroughCacheForTest(); }
   }), 120_000);
 
-  test('a classic concept publication whose page file would need part files refuses (concept_write_through_failed) before its import', () => withHome(async (_home, root) => {
+  test('a classic concept publication over the split threshold on a source that is not git-canonical writes one file, as master does, then imports', () => withHome(async (_home, root) => {
     _resetWriteThroughCacheForTest();
     const { engine, close } = await isolatedSharedSkillsEngine(databaseUrl);
     try {
@@ -290,10 +296,13 @@ for (const backend of testBackends()) describe(`[${backend}] split git layout: r
       const slug = 'concepts/big-example';
       let imported = false;
       const publish = publishClassicConcept(engine, slug, 'default', { synthesized_by: 'synthesize_concepts' }, body, '',
-        { writeThrough: true, importPage: async () => { imported = true; } });
-      await expect(publish).rejects.toMatchObject({ code: 'concept_write_through_failed', message: expect.stringContaining('split_page_unsupported') });
-      expect(imported).toBe(false);
-      expect(existsSync(join(root, `${slug}.md`))).toBe(false);
+        { writeThrough: true, importPage: async markdown => { imported = true; return importFromContent(engine, slug, markdown, { noEmbed: true }); } });
+      await publish;
+      expect(imported).toBe(true);
+      const page = join(root, `${slug}.md`);
+      expect(Buffer.byteLength(readFileSync(page))).toBeGreaterThan(LIMITS.thresholdDefault);
+      expect(pageFile(page)).toMatchObject({ split: false, text: expect.stringContaining(lines('Body')[79]) });
+      expect(existsSync(partsDirFor(page))).toBe(false);
     } finally { await close(); _resetWriteThroughCacheForTest(); }
   }), 120_000);
 
@@ -327,7 +336,7 @@ for (const backend of testBackends()) describe(`[${backend}] split git layout: r
     }), 120_000);
   }
 
-  test('the phantom redirect into a database-only canonical page over the split threshold refuses (split_page_unsupported) before it writes the canonical file: no file is left and the phantom stays', () => withHome(async (home, root) => {
+  test('the phantom redirect into a database-only canonical page over the split threshold writes the canonical file as one file, as master does: no parts directory', () => withHome(async (home, root) => {
     _resetWriteThroughCacheForTest();
     const { engine, close } = await isolatedSharedSkillsEngine(databaseUrl);
     try {
@@ -339,9 +348,12 @@ for (const backend of testBackends()) describe(`[${backend}] split git layout: r
         }
         writeFileSync(join(root, 'alice.md'), PHANTOM_BODY);
         const result = await runPhantomRedirectPass(engine, root, 'default', false);
-        expect(JSON.stringify(result)).toContain('split_page_unsupported');
-        expect(existsSync(join(root, 'people'))).toBe(false);
-        expect(readFileSync(join(root, 'alice.md'), 'utf8')).toBe(PHANTOM_BODY);
+        expect(result).toMatchObject({ redirected: 1, failures: [], touched_canonicals: ['people/alice-example'] });
+        const canonical = join(root, 'people/alice-example.md');
+        expect(Buffer.byteLength(readFileSync(canonical))).toBeGreaterThan(LIMITS.thresholdDefault);
+        expect(pageFile(canonical)).toMatchObject({ split: false, text: expect.stringContaining('Founded acme-example') });
+        expect(pageFile(canonical).text).toContain(lines('Alice')[79]);
+        expect(readdirSync(join(root, 'people'))).toEqual(['alice-example.md']);
       });
     } finally { await close(); _resetWriteThroughCacheForTest(); }
   }), 120_000);
@@ -361,7 +373,7 @@ for (const backend of testBackends()) describe(`[${backend}] split git layout: r
     expect(readdirSync(join(root, 'gh'), { recursive: true }).map(String).sort()).toEqual(listed);
   }), 120_000);
 
-  test('the classic Google connector refuses an edit the part files would carry (split_page_unsupported) before its import, and refuses a delete of the split page before its row goes', () => withSplitPage(databaseUrl, async (engine, root, head) => {
+  test('the classic Google connector refuses an edit of a split page (split_page_unsupported, outside_door) before its import, and refuses a delete of the split page before its row goes', () => withSplitPage(databaseUrl, async (engine, root, head) => {
     const summary = { status: 'synced', added: 0, modified: 0, deleted: 0, chunksCreated: 0, embedded: 0, pagesAffected: [], threadsSeen: 0, attachmentInspection: {} } as unknown as GoogleSyncSummary;
     const deps = { managed: null, engine, sourceId: 'default', cfg: { dir: root, account: 'owner@example.invalid' }, opts: {}, entry: {}, log() {}, tick() {} } as unknown as GoogleSyncDeps;
     const before = await snapshot(engine, head);
@@ -424,7 +436,7 @@ for (const backend of testBackends()) describe(`[${backend}] split git layout: r
     } finally { await close(); _resetWriteThroughCacheForTest(); }
   }), 120_000);
 
-  test('the classic GitHub connector refuses an item that would be stored as a split page (split_page_unsupported) before its import; a short item is one file', () => withHome(async (_home, root) => {
+  test('the classic GitHub connector writes an item over the split threshold as one file, as master does: a long item, a short edit and a long edit again are each one page file, and a delete removes it', () => withHome(async (_home, root) => {
     const { engine, close } = await isolatedSharedSkillsEngine(databaseUrl);
     try {
       await withEnv({ CONNECTOR_TEST_TOKEN: 'fixture-token' }, async () => {
@@ -444,22 +456,26 @@ for (const backend of testBackends()) describe(`[${backend}] split git layout: r
         const head = itemPagePath(root, repo, 1);
         const sync = (opts: Record<string, unknown> = {}) => runGitHubSync(engine, 'default', cfg, { noPull: true, noEmbed: true, full: true, ...opts } as never, fetcher);
         const held = () => JSON.stringify(JSON.parse(readFileSync(gitHubStateFile(root), 'utf8')).item_holds?.items?.[repo + '#1'] ?? null);
+        const oneFile = async (text: string) => {
+          expect(held()).toBe('null');
+          expect(pageFile(head)).toMatchObject({ split: false, text: expect.stringContaining(text) });
+          expect(existsSync(partsDirFor(head))).toBe(false);
+          expect((await engine.getPage('gh/' + repo + '/1', { sourceId: 'default' }))?.compiled_truth).toContain(text);
+        };
+        const lastLine = big.split('\n').pop()!;
         issue.body = big;
-        await sync();
-        expect(held()).toContain('split_page_unsupported');
-        expect(layout(head)).toEqual({ head: null, parts: null });
-        expect(await engine.getPage('gh/' + repo + '/1', { sourceId: 'default' })).toBeNull();
+        expect((await sync()).status).not.toBe('partial');
+        expect(Buffer.byteLength(readFileSync(head))).toBeGreaterThan(LIMITS.thresholdDefault);
+        await oneFile(lastLine);
         issue.updated_at = '2026-01-03T00:00:00Z';
         issue.body = 'A short synthetic issue body.';
         expect((await sync()).status).not.toBe('partial');
-        expect(pageFile(head)).toMatchObject({ split: false, text: expect.stringContaining('A short synthetic issue body.') });
-        const item = async () => ({ files: layout(head), row: await engine.executeRaw('SELECT compiled_truth, timeline, frontmatter FROM pages WHERE slug = $1', ['gh/' + repo + '/1']) });
-        const short = await item();
+        await oneFile('A short synthetic issue body.');
+        expect(readFileSync(head, 'utf8')).not.toContain(lastLine);
         issue.updated_at = '2026-01-04T00:00:00Z';
         issue.body = big;
-        await sync();
-        expect(held()).toContain('split_page_unsupported');
-        expect(await item()).toEqual(short);
+        expect((await sync()).status).not.toBe('partial');
+        await oneFile(lastLine);
         await sync({ githubItem: { repo, number: 1, kind: 'issue', deleted: true } });
         expect(layout(head)).toEqual({ head: null, parts: null });
         expect(await engine.getPage('gh/' + repo + '/1', { sourceId: 'default' })).toBeNull();
@@ -467,14 +483,14 @@ for (const backend of testBackends()) describe(`[${backend}] split git layout: r
     } finally { await close(); }
   }), 120_000);
 
-  test('the classic Google connector refuses a split write before its database import: nothing is stored and no file is written', () => withSplitPage(databaseUrl, async (engine, root) => {
+  test('the classic Google connector refuses a page beside an orphaned parts directory (split_page_unsupported, outside_door) before its database import: nothing is stored and no file is written', () => withSplitPage(databaseUrl, async (engine, root) => {
     const summary = { status: 'synced', added: 0, modified: 0, deleted: 0, chunksCreated: 0, embedded: 0, pagesAffected: [], threadsSeen: 0, attachmentInspection: {} } as unknown as GoogleSyncSummary;
     const deps = { managed: null, engine, sourceId: 'default', cfg: { dir: root, account: 'owner@example.invalid' }, opts: {}, entry: {}, log() {}, tick() {} } as unknown as GoogleSyncDeps;
     const head = join(root, 'notes/connector-example.md');
     mkdirSync(partsDirFor(head), { recursive: true });
     writeFileSync(join(partsDirFor(head), 'README.txt'), 'Unrelated local data\n');
     const refused = await importRendered(deps, 'notes/connector-example.md', file, null as never, summary, new Set()).then(() => null, error => error);
-    expect(refused?.code).toBe('split_parts_unexpected');
+    expect([refused?.code, refused?.reason]).toEqual(['split_page_unsupported', 'outside_door']);
     expect(await engine.getPage('notes/connector-example', { sourceId: 'default' })).toBeNull();
     expect(layout(head)).toEqual({ head: null, parts: { 'README.txt': 'Unrelated local data\n' } });
     expect(readdirSync(join(root, 'notes')).filter(name => name.startsWith('connector-example.md'))).toEqual([]);
@@ -507,7 +523,7 @@ for (const backend of testBackends()) describe(`[${backend}] split git layout: r
     } finally { await close(); }
   }), 120_000);
 
-  test('an unmanaged lint --fix refuses a fix the part files would carry (split_page_unsupported) and leaves the page as it was', () => withSplitPage(databaseUrl, async (engine, root, head) => {
+  test('an unmanaged lint --fix refuses a fix of a split page (split_page_unsupported, outside_door) and leaves the page as it was', () => withSplitPage(databaseUrl, async (engine, root, head) => {
     const content = '---\ntype: note\ntitle: Split example\ncreated: 2026-01-01\n---\n' + PREAMBLE + '\n\n' + body + '\n';
     rmSync(head); rmSync(partsDirFor(head), { recursive: true });
     await writeSplitPage(root, SLUG + '.md', content);
@@ -534,7 +550,7 @@ for (const backend of testBackends()) describe(`[${backend}] split git layout: r
     }), 120_000);
   }
 
-  test('a managed lint fix publishes the whole page file through the door; the page stays a head plus parts', () => managedBrain(async ({ engine, ctx, root }) => {
+  test('a managed lint fix on a git-canonical source publishes the whole page file through the door; the page stays a head plus parts', () => managedBrain(async ({ engine, ctx, root }) => {
     __setSplitLimitsForTests(LIMITS);
     await engine.setConfig(SPLIT_MAX_FILE_BYTES_KEY, '4096');
     const content = `---\ntype: note\ntitle: Split example\n---\n${PREAMBLE}\n\n${body}\n`;
@@ -551,7 +567,11 @@ for (const backend of testBackends()) describe(`[${backend}] split git layout: r
     expect(page.text).not.toContain(PREAMBLE);
     expect(page.text).toContain(lines('Body')[79]);
     expect((await engine.getPage(SLUG, { sourceId: 'default' }))!.compiled_truth).not.toContain(PREAMBLE);
-  }, { databaseUrl, setup: ({ root }) => { writeFileSync(join(root, '.gitignore'), '\n'); durableGitRepo(root, ['.gitignore']); } }), 120_000);
+  }, { databaseUrl, setup: async ({ engine, root }) => {
+    writeFileSync(join(root, '.gitignore'), '\n');
+    durableGitRepo(root, ['.gitignore']);
+    await engine.executeRaw(`UPDATE sources SET config = config || '{"canonical":"git"}'::jsonb WHERE id='default'`);
+  } }), 120_000);
 });
 
 describe('split git layout: filesystem scans and writers on an unmanaged checkout', () => {
@@ -565,14 +585,14 @@ describe('split git layout: filesystem scans and writers on an unmanaged checkou
     const result = await runLintCore({ target: root, fix: true, contentSanity: undefined, typePack: null });
     expect(layout(head)).toEqual(before);
     expect(result.total_fixed).toBe(0);
-    expect(result.pending_issues).toEqual([expect.objectContaining({ file: `${SLUG}.md`, code: 'split_page_unsupported', fixable: false,
-      message: expect.stringContaining('gbrain dream --phase lint --once') })]);
+    expect(result.pending_issues).toEqual([expect.objectContaining({ file: `${SLUG}.md`, code: 'split_page_unsupported', rule: 'split-page-unsupported', fixable: false,
+      message: expect.stringContaining('split_page_unsupported (outside_door)') })]);
     const rules: string[] = [];
     await runLintCore({ target: root, contentSanity: undefined, typePack: null, onPageIssues: (_rel, found) => { rules.push(...found.map(i => i.rule)); } });
     expect(rules).toContain('placeholder-date');
   }), 120_000);
 
-  test('check-backlinks fix runs the split preflight on the bytes it would write: a page the backlink grows past the split threshold, or a split head whose parts directory is missing, is refused (split_page_unsupported) and stays as it was', () => withHome(async (_home, root) => {
+  test('check-backlinks fix writes a backlink that grows a one-file page past the split threshold as one file, as master does, and refuses a split head whose parts directory is missing (split_page_unsupported, outside_door): it stays as it was', () => withHome(async (_home, root) => {
     mkdirSync(join(root, 'people'), { recursive: true });
     const gap = (target: string) => ({ sourcePage: 'notes/meeting.md', targetPage: target, entityName: 'Alice Example', sourceTitle: 'Meeting' });
     const near = join(root, 'people/alice-example.md');
@@ -583,9 +603,13 @@ describe('split git layout: filesystem scans and writers on an unmanaged checkou
     rmSync(partsDirFor(headless), { recursive: true });
     const headBefore = readFileSync(headless, 'utf8');
     const result = await fixBacklinkGaps(root, [gap('people/alice-example.md'), gap('people/bob-example.md')], false, { lockRoot: root });
-    expect(result.fixed).toBe(0);
-    expect(result.skipped.map(skip => [skip.page, skip.reason.startsWith('split_page_unsupported')])).toEqual([['people/alice-example.md', true], ['people/bob-example.md', true]]);
-    expect(readFileSync(near, 'utf8')).toBe(before);
+    expect(result.fixed).toBe(1);
+    expect(result.skipped.map(skip => [skip.page, skip.reason.startsWith('split_page_unsupported (outside_door)')])).toEqual([['people/bob-example.md', true]]);
+    const grown = readFileSync(near, 'utf8');
+    expect(grown.startsWith(before.trimEnd())).toBe(true);
+    expect(grown).toContain('notes/meeting');
+    expect(Buffer.byteLength(grown)).toBeGreaterThan(LIMITS.thresholdDefault);
+    expect(pageFile(near).split).toBe(false);
     expect(readFileSync(headless, 'utf8')).toBe(headBefore);
     expect([existsSync(partsDirFor(near)), existsSync(partsDirFor(headless))]).toEqual([false, false]);
   }), 120_000);
@@ -601,7 +625,7 @@ describe('split git layout: filesystem scans and writers on an unmanaged checkou
     const head = join(root, 'people/alice-example.md');
     const before = layout(head);
     const outcome = await fixBacklinkGaps(root, [{ sourcePage: 'notes/other.md', targetPage: 'people/alice-example.md', entityName: 'Alice Example', sourceTitle: 'Other' }], false, { lockRoot: root });
-    expect(outcome).toEqual({ fixed: 0, skipped: [{ page: 'people/alice-example.md', reason: expect.stringMatching(/^split_page_unsupported/) }] });
+    expect(outcome).toEqual({ fixed: 0, skipped: [{ page: 'people/alice-example.md', reason: expect.stringMatching(/^split_page_unsupported \(outside_door\)/) }] });
     expect(layout(head)).toEqual(before);
   }), 120_000);
 
@@ -619,25 +643,23 @@ describe('split git layout: filesystem scans and writers on an unmanaged checkou
         await expect(runTakes(null as unknown as BrainEngine, ['revisit', SLUG])).rejects.toThrow('exit 1');
       });
     } finally { write.mockRestore(); exit.mockRestore(); }
-    expect(stderr.join('')).toContain('split_page_unsupported');
+    expect(stderr.join('')).toContain('split_page_unsupported (outside_door)');
     expect(stderr.join('')).not.toContain('Opening');
     expect(layout(head)).toEqual(before);
   }), 120_000);
 
-  test('frontmatter validate --fix repairs a split head\'s frontmatter in the head alone; the gbrain_parts block and every part stay', () => withHome(async (_home, root) => {
+  test('frontmatter validate --fix refuses a frontmatter fix on a split head (split_page_unsupported, outside_door): the head and every part stay byte for byte', () => withHome(async (_home, root) => {
     await writeSplitPage(root, `${SLUG}.md`, `---\ntype: note\ntitle: "a "quoted" title"\n---\n\n${body}\n`);
     const head = join(root, `${SLUG}.md`);
     const before = layout(head);
     const run = await validateFix(head);
-    expect(run.verdict).toBe(0);
-    const after = layout(head);
-    expect(after.parts).toEqual(before.parts);
-    expect(after.head).toContain(`title: 'a "quoted" title'`);
-    expect(after.head!.slice(after.head!.indexOf('gbrain_parts:'))).toBe(before.head!.slice(before.head!.indexOf('gbrain_parts:')));
-    expect(pageFile(head)).toEqual({ split: true, text: `---\ntype: note\ntitle: 'a "quoted" title'\n---\n\n${body}\n` });
+    expect(run.verdict).toBe(1);
+    expect(run.out).toContain('split_page_unsupported (outside_door)');
+    expect(layout(head)).toEqual(before);
+    expect(pageFile(head)).toEqual({ split: true, text: `---\ntype: note\ntitle: "a "quoted" title"\n---\n\n${body}\n` });
   }), 120_000);
 
-  test('frontmatter validate --fix refuses a fix that would change a split head\'s body (split_page_unsupported) and writes nothing', () => withHome(async (_home, root) => {
+  test('frontmatter validate --fix refuses a fix that would change a split head\'s body (split_page_unsupported, outside_door) and writes nothing', () => withHome(async (_home, root) => {
     await writeSplitPage(root, `${SLUG}.md`, `---\ntype: note\ntitle: "a "quoted" title"\n---\n\nLead\u0000 line.\n${body}\n`);
     const head = join(root, `${SLUG}.md`);
     const before = layout(head);
@@ -645,7 +667,7 @@ describe('split git layout: filesystem scans and writers on an unmanaged checkou
     for (const args of [['--fix'], ['--fix', '--json']]) {
       const run = await validateFix(head, args);
       expect(run.verdict).toBe(1);
-      expect(run.out).toContain('split_page_unsupported');
+      expect(run.out).toContain('split_page_unsupported (outside_door)');
       expect(layout(head)).toEqual(before);
     }
     expect(readPageFile(head).hold).toBeUndefined();
