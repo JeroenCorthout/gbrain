@@ -7,7 +7,7 @@
  *
  * `readPageFile` holds F' in memory, so it is bounded (`PAGE_FILE_MEMORY_MAX_BYTES`, the largest in-memory canonical
  * file the door accepts); a larger split page is the hold `split_page_too_large`. `pageFileSha256` streams instead and
- * has no bound.
+ * has no bound, and so does `withPageFileOnDisk`, which hands a streaming reader a scratch copy of F'.
  */
 import { createHash } from 'node:crypto';
 import { closeSync, constants, lstatSync, openSync, readFileSync, readSync, rmSync } from 'node:fs';
@@ -75,6 +75,26 @@ export function readPageFile(path: string, opts: { maxBytes?: number } = {}): Pa
 
 /** A head is small, so only a file at most this large is read whole to look for one; a larger file is hashed streamed. */
 const HEAD_WINDOW_BYTES = 16 * 1024 ** 2;
+
+/**
+ * Runs `read` on the page file at `path` (which must exist) as a file on disk: `path` itself for an ordinary file, a
+ * private scratch copy of F' (removed once `read` settles) for a split head whose parts verify. Unbounded: F' is
+ * copied part by part, never held in memory.
+ */
+export async function withPageFileOnDisk<T>(path: string, read: (pagePath: string) => Promise<T>):
+  Promise<{ split: boolean; value: T; hold?: undefined } | { split: true; hold: PageFileHold }> {
+  const head = lstatSync(path).size > HEAD_WINDOW_BYTES ? null : parsedHead(path, readFileSync(path));
+  if (!head) return { split: false, value: await read(path) };
+  if (isHold(head)) return { split: true, hold: head };
+  const scratch = splitScratchPath();
+  try {
+    const copied = reassemble(path, head, scratch);
+    if (!copied.ok) return { split: true, hold: holdFor(path, copied) };
+    return { split: true, value: await read(scratch) };
+  } finally {
+    rmSync(scratch, { force: true });
+  }
+}
 
 function hashWhole(path: string): string {
   const hash = createHash('sha256');
