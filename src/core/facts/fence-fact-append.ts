@@ -29,12 +29,12 @@ import type { PageSnapshot } from '../page-state/types.ts';
 import type { Page } from '../types.ts';
 import { opError } from '../ops/contract.ts';
 import { readFix } from '../ops/op-fix.ts';
-import { factsFenceSection, fenceCellReadBackProblem, formatFenceDate, parseFactsFence, strikeFactRowInPage, upsertFactRow } from '../facts-fence.ts';
+import { factsFenceSection, fenceCellReadBackProblem, formatFenceDate, parseFactsFence, renderFactsTable, replaceOrInsertFactsFence, strikeFactRowInPage, upsertFactRow } from '../facts-fence.ts';
 import { serializePageToMarkdown } from '../markdown.ts';
 import { pageBodyOverCeilingError } from '../page-body/page-shape.ts';
 import { materializedPage, segmentedOverCeiling } from '../persistence/segmented-apply.ts';
 import { preparePageMutation } from '../persistence/page-prepare.ts';
-import type { PreparedMutation } from '../persistence/coordinator.ts';
+import type { CompanionPage, PreparedMutation } from '../persistence/coordinator.ts';
 import type { WriteRequest } from '../persistence/model.ts';
 import { normalizeTargetFences } from '../fence-repair/import-step.ts';
 import { refuseUnparsedRewrite } from '../fence-repair/refusal.ts';
@@ -148,3 +148,30 @@ export async function prepareFenceFactAppend(engine: BrainEngine, row: WriteRequ
     return { id: await insert(tx, rowNum, fact), pageReceipt };
   } };
 }
+
+
+/**
+ * GBRA-190 G4: the fence row `rowNum` of another page, struck in the same publication as the request's own page (a
+ * CompanionPage): remember linking a fact saved without an entity strikes its memory/unattributed row, noting the
+ * entity it now lives under, so the file never keeps a row whose facts row the link retired. Null when that page or
+ * row is gone (nothing in a file to strike). The page write is prepared unprojected, as remember's own is.
+ */
+export async function prepareFenceRowRetirement(engine: BrainEngine, row: WriteRequest, config: GBrainConfig, slug: string,
+  retire: { rowNum: number; note: string; validUntil: Date | null }, signal?: AbortSignal): Promise<CompanionPage | null> {
+  const snapshot = await engine.readPageSnapshot(slug, { sourceId: row.source_id, includeDeleted: true });
+  if (!snapshot || snapshot.page.deleted_at) return null;
+  if (segmentedOverCeiling(snapshot.page)) throw pageBodyOverCeilingError(snapshot.page, `${row.operation} facts fence write`);
+  const base = await materializedPage(engine, snapshot.page);
+  const fenced = { compiled_truth: base.compiled_truth, timeline: base.timeline ?? '' };
+  const section = (['compiled_truth', 'timeline'] as const).find(key => parseFactsFence(fenced[key]).facts.some(f => f.rowNum === retire.rowNum && f.active));
+  if (!section) return null;
+  const until = retire.validUntil ? formatFenceDate(retire.validUntil) : undefined;
+  const rows = parseFactsFence(fenced[section]).facts.map(f => f.rowNum === retire.rowNum
+    ? { ...f, active: false, context: [retire.note, f.context?.trim()].filter(Boolean).join(' | '), ...(until ? { validUntil: until } : {}) } : f);
+  const content = serializePageToMarkdown({ ...base, ...fenced, [section]: replaceOrInsertFactsFence(fenced[section], renderFactsTable(rows)) }, snapshot.tags);
+  const prepared = await preparePageMutation(engine, { ...row, slug, page_id: snapshot.page.id,
+    intent: { ...row.intent, content, expected_revision: snapshot.revision, force: false } }, config, undefined, signal, { unprojected: true });
+  return { slug, pageId: snapshot.page.id, observedRevision: prepared.observedRevision, ...(prepared.file ? { file: prepared.file } : {}),
+    ...(prepared.validate ? { validate: (tx: BrainEngine) => prepared.validate!(tx) } : {}), apply: (tx, preimage) => prepared.apply(tx, preimage) };
+}
+

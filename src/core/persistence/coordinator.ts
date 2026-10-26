@@ -105,17 +105,18 @@ interface PreparedMutationBase {
 export type PageMutationFile = MutationFile & { publishMode?: number; commit?: GitCommitNote };
 /**
  * GBRA-190 G4 (D2): another page a page publication writes in the same transaction, under the same recovery record and
- * in the same Git commit as the request's own page (a withdrawal's other pages). Its key is locked with the request's,
- * its revision and identity are checked under that lock, its file (when the source has one) is published with the
- * request's, and `apply` runs in the publication transaction after the request's own apply. Only a protocol 2 page
- * request carries companions; the single-page path is unchanged.
+ * in the same Git commit as the request's own page (a withdrawal's other pages, or the memory/unattributed row a
+ * remember links). Its key is locked with the request's, its revision and identity are checked under that lock, its
+ * file (when the source has one) is published with the request's, and `validate` and `apply` run in the publication
+ * transaction after the request's own. A request without companions publishes exactly as before.
  */
 export interface CompanionPage {
   slug: string;
   pageId: number | null;
   observedRevision: string | null;
   file?: PageMutationFile;
-  apply(tx: BrainEngine, preimage: PageSnapshot | null): Promise<void>;
+  validate?(tx: BrainEngine): Promise<void>;
+  apply(tx: BrainEngine, preimage: PageSnapshot | null): Promise<unknown>;
 }
 export type PreparedMutation = PreparedMutationBase & (
   | { target?: 'page'; file?: PageMutationFile; files?: never; companions?: readonly CompanionPage[] }
@@ -482,7 +483,7 @@ export async function publishMutation(engine: BrainEngine, row: WriteRequest, pr
   try {
     assertMutationProtocol(row);
     if ((row.target_kind ?? 'page') !== (prepared.target ?? 'page') || (skill ? !!prepared.file || !files.length : prepared.files !== undefined)
-      || (companions.length > 0 && row.protocol_version !== 2)) {
+      || companions.some(companion => companion.slug === row.slug) || new Set(companions.map(companion => companion.slug)).size !== companions.length) {
       throw opError('unsupported_mutation_protocol', 'Prepared mutation does not match its accepted target.',
         `Request ${row.request_id} in source ${row.source_id} was prepared for a different target than it was accepted for, so nothing was published. This is an internal mismatch, not a caller error: inspect the request and report it to the user; do not resubmit it unchanged.`,
         { fix: requestFix(row) });
@@ -618,6 +619,7 @@ export async function publishMutation(engine: BrainEngine, row: WriteRequest, pr
         }
       }
       await prepared.validate?.(tx);
+      for (const companion of companions) await companion.validate?.(tx);
       // #5409: a file target prepared before the source became a read-only mirror is never published.
       if (!skill && prepared.file && await sourceMirrorReadOnly(tx, row.source_id, true)) {
         throw new OperationError('source_changed', 'The source became a read-only mirror after this write was prepared; nothing was written to its checkout.',
