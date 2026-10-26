@@ -28,6 +28,8 @@ import type { AutoDecision } from './reconcile-additive.ts';
 import { publishesDatabaseOnly, readCanonicalAsImported } from './page-prepare.ts';
 import { isMirrorOnlyPage } from './mirror-read-only.ts';
 import { hardenedGitSync } from '../hardened-git.ts';
+import { pageFileSha256, type PageFileHold } from '../split-layout/page-file.ts';
+import { SPLIT_PAGE_UNSUPPORTED } from './file-repair.ts';
 
 export interface ReconcilePins {
   brain_id: string; source_id: string; source_incarnation: string; slug: string; page_id: number;
@@ -264,6 +266,8 @@ export async function readReconcileState(engine: BrainEngine, sourceId: string, 
       file: reconcileCanonical(snapshot.page, snapshot.tags), origin, originSourcePath: null,
       pins: await reconcilePins(engine, { brain_id: brain.brain_id, sourceId, binding, snapshot, slug, assessmentAt, root, path, canonicalPath, rawFileHash: ABSENT_FILE_HASH }) };
   }
+  const split = pageFileSha256(path);
+  if (split.split) throw splitHeadRefusal(sourceId, slug, relative(root, path), split.hold);
   const { readJournalLimits } = await import('./limits.ts');
   const limits = await readJournalLimits(engine);
   if (size > Math.min(limits.principalIntentBytes, limits.brainIntentBytes, limits.worktreeRecoveryBytes)) {
@@ -300,6 +304,26 @@ export async function readReconcileState(engine: BrainEngine, sourceId: string, 
   }
   const pins = await reconcilePins(engine, { brain_id: brain.brain_id, sourceId, binding, snapshot, slug, assessmentAt, root, path, canonicalPath, rawFileHash: sha256(raw) });
   return { binding, root, path, importPath, raw, snapshot, storedPage, file: reconcileCanonical(parsed, parsed.tags), pins, origin, originSourcePath: derived?.sourcePath ?? null };
+}
+/**
+ * Wave B PR 5: the refusal of a canonical file that is a split page head. Reconciliation reads, compares and publishes one
+ * canonical file, and a split page continues in part files, so its head is never reconciled as the page; the refusal
+ * routes to `gbrain pages split-storage` (`--resolve-head` for an edited head), or names the head's hold.
+ */
+function splitHeadRefusal(sourceId: string, slug: string, rel: string, hold: PageFileHold | undefined): OperationError {
+  const route = `gbrain pages split-storage ${slug} --source ${sourceId}`;
+  const suggestion = hold?.code === 'split_head_modified'
+    ? `Nothing changed. ${rel} is a split page head whose body was edited, so the page it names cannot be read. Preview the resolution with ${route} --resolve-head keep-edit|discard and ask the user which one to apply.`
+    : hold ? `Nothing changed. ${hold.message}`
+    : `Nothing changed. ${rel} is a split page head (its page continues in part files), so it is not reconciled as the page; sync imports the page its parts reassemble to. Preview how it is stored with ${route}.`;
+  return opError('source_changed', 'The canonical file is a split page head; reconciliation compares one canonical file.', suggestion,
+    { detail: hold?.code ?? SPLIT_PAGE_UNSUPPORTED,
+      fix: readFix('Previews how the page is stored on disk (one file, or a head plus part files) and what --apply would write, read-only.',
+        { argv: ['gbrain', 'pages', 'split-storage', slug, '--source', sourceId, '--json'] }) });
+}
+/** Whether `error` is readReconcileState's refusal of a split page head (any of its details). */
+export function isSplitHeadRefusal(error: unknown): error is OperationError {
+  return error instanceof OperationError && [SPLIT_PAGE_UNSUPPORTED, 'split_page_incomplete', 'split_head_modified', 'split_page_too_large'].includes(String(error.detail));
 }
 async function reconcilePins(engine: BrainEngine, input: { brain_id: string; sourceId: string; binding: WorktreeBinding; snapshot: PageSnapshot; slug: string; assessmentAt: string;
   root: string; path: string; canonicalPath: string; rawFileHash: string }): Promise<ReconcilePins> {

@@ -450,6 +450,7 @@ test/split-layout-git-blobs.test.ts
 test/split-layout-git-effect-unit.test.ts
 test/split-layout-head-content.test.ts
 test/split-layout-lifecycle.test.ts
+test/split-layout-managed-readers.test.ts
 test/split-layout-parts-unexpected.test.ts
 test/split-layout-publish-drift.test.ts
 test/split-layout-publish-mode.test.ts

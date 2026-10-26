@@ -36,7 +36,7 @@ import { sha256 } from './digest.ts';
 import { existingLocalHostId } from './identity.ts';
 import { getWorktreeBinding } from './ownership.ts';
 import { prepareFileTarget } from './page-prepare.ts';
-import { readReconcileState } from './reconcile-state.ts';
+import { isSplitHeadRefusal, readReconcileState } from './reconcile-state.ts';
 import { reconcileCanonical } from './reconcile-merge.ts';
 import { classifyDrift } from './reconcile-additive.ts';
 
@@ -50,8 +50,11 @@ export const CONFLICT_WINDOW_MAX = 1_000_000;
 export const auditConflictsCommand = (sourceId: string) => `gbrain sources reconcile ${sourceId} --brain host --audit --conflicts`;
 export const fileDriftRepairCommand = (sourceId: string) => `gbrain repair file-drift --source ${sourceId} --all-drifted --prefer file`;
 
-/** The drift classes `--all-drifted` groups by (reconcile-additive.ts verdicts; `no_drift` reads as formatting only). */
-export const DRIFT_CLASSES = ['structurally_additive', 'additive_with_suggestions', 'review_required', 'formatting_only', 'error'] as const;
+/**
+ * The drift classes `--all-drifted` groups by (reconcile-additive.ts verdicts; `no_drift` reads as formatting only;
+ * `split_page_unsupported` for a canonical file that is a split page head, which reconcile never compares as the page).
+ */
+export const DRIFT_CLASSES = ['structurally_additive', 'additive_with_suggestions', 'review_required', 'formatting_only', 'split_page_unsupported', 'error'] as const;
 export type DriftClass = typeof DRIFT_CLASSES[number];
 
 /**
@@ -124,7 +127,7 @@ export async function driftClass(engine: BrainEngine, sourceId: string, slug: st
     const state = await readReconcileState(engine, sourceId, slug, undefined, { adoptSlugPath });
     const verdict = classifyDrift(state.file, reconcileCanonical(state.snapshot.page, state.snapshot.tags)).verdict;
     return verdict === 'no_drift' ? 'formatting_only' : verdict;
-  } catch { return 'error'; }
+  } catch (error) { return isSplitHeadRefusal(error) ? 'split_page_unsupported' : 'error'; }
 }
 
 export interface ConflictAuditAccess {
