@@ -41,7 +41,7 @@ import { DEMO_ITEMS } from '../src/fixtures/github-demo.ts';
 import { serializePageToMarkdown } from '../src/core/markdown.ts';
 import { operations, type OperationContext } from '../src/core/operations.ts';
 import { __setSplitLimitsForTests, parseHead, partsDirFor, readPageFile, SPLIT_MAX_FILE_BYTES_KEY } from '../src/core/split-layout/index.ts';
-import { writeSplitPageFile } from '../src/core/split-write-through.ts';
+import { assertOutsideDoorWritable } from '../src/core/split-write-through.ts';
 import { parseTakesFence, upsertTakeRow } from '../src/core/takes-fence.ts';
 import { addTakeToPage, appendTakesToPageMdFirst, updateTakeOnPage } from '../src/core/takes-write.ts';
 import { persistTakeFromSynthesis } from '../src/core/think/persist-take.ts';
@@ -170,29 +170,25 @@ for (const backend of testBackends()) describe(`[${backend}] split git layout: r
     expect(await snapshot(engine, head)).toEqual(before);
   }), 120_000);
 
-  test('a raw writer rewrites only the head of a split page whose parts all stay, atomically and with the head file\'s mode', () => withSplitPage(databaseUrl, async (engine, root, head) => {
-    for (const path of [head, ...readdirSync(partsDirFor(head)).map(name => join(partsDirFor(head), name))]) chmodSync(path, 0o600);
-    const parts = layout(head).parts;
+  test('a raw writer refuses any path of a split unit (split_page_unsupported, outside_door), even an edit whose parts would all stay: the head and every part stay', () => withSplitPage(databaseUrl, async (_engine, root, head) => {
+    const before = layout(head);
     const retitled = file.replace('title: Split example', 'title: Split example retitled');
-    expect(await writeSplitPageFile(engine, head, root, retitled)).toEqual([head]);
-    expect(pageFile(head)).toEqual({ split: true, text: retitled });
-    expect(layout(head).parts).toEqual(parts);
-    expect(statSync(head).mode & 0o777).toBe(0o600);
+    const part = join(partsDirFor(head), readdirSync(partsDirFor(head))[0]!);
+    for (const [path, content] of [[head, retitled], [head, '---\ntype: note\ntitle: Split example\n---\n\nShort again.\n'], [part, 'part bytes\n']] as const) {
+      const refused = await assertOutsideDoorWritable({ root, path, route: 'raw_writer', sourceId: 'default', slug: SLUG }, content).then(() => null, error => error);
+      expect(refused?.code).toBe('split_page_unsupported');
+      expect(refused?.reason).toBe('outside_door');
+      expect(layout(head)).toEqual(before);
+    }
     expect(readdirSync(join(root, 'notes')).filter(name => name.includes('.tmp'))).toEqual([]);
   }), 120_000);
 
-  test('a raw writer refuses a write that would write or remove a part (split_page_unsupported) before any file is written: a refused write leaves nothing behind', () => withSplitPage(databaseUrl, async (engine, root, head) => {
+  test('a page in no split unit passes the check outside the door at any size: a raw writer writes it as one file, as master does', () => withSplitPage(databaseUrl, async (_engine, root) => {
     const grown = join(root, 'notes/grown-example.md');
     writeFileSync(grown, '---\ntype: note\ntitle: Grown example\n---\n\nShort.\n');
-    const cases = [[head, `${file}Appended line of the split page body.\n`], [head, '---\ntype: note\ntitle: Split example\n---\n\nShort again.\n'], [grown, file]] as const;
-    for (const [path, content] of cases) {
-      const before = { page: layout(path), dir: readdirSync(join(root, 'notes')).sort() };
-      let precondition = 0;
-      const refused = await writeSplitPageFile(engine, path, root, content, () => { precondition++; }).then(() => null, error => error);
-      expect(refused?.code).toBe('split_page_unsupported');
-      expect(precondition).toBe(0);
-      expect({ page: layout(path), dir: readdirSync(join(root, 'notes')).sort() }).toEqual(before);
-    }
+    expect(Buffer.byteLength(file)).toBeGreaterThan(LIMITS.thresholdDefault);
+    await assertOutsideDoorWritable({ root, path: grown, route: 'raw_writer', sourceId: 'default', slug: 'notes/grown-example' }, file);
+    expect(existsSync(partsDirFor(grown))).toBe(false);
   }), 120_000);
 
   test('on a private (0600) split page the timeline, derived and dream page writers refuse before any temporary copy (split_page_unsupported): nothing is left beside the head and no file is wider than 0600', () => withSplitPage(databaseUrl, async (engine, root, head) => {
