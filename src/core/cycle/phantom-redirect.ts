@@ -61,7 +61,7 @@ import { isAborted } from '../abort-check.ts';
 import { logPhantomEvent, type PhantomOutcome } from '../facts/phantom-audit.ts';
 import { MOVE_WITHDRAWAL_SUBJECT_SQL } from '../facts/withdrawal-schema.ts';
 import { isWriteThroughDisabled, resolvePageWriteTarget } from '../write-through.ts';
-import { readPageFileText, removeSplitPageFile, writeSplitPageFile } from '../split-write-through.ts';
+import { assertSplitWritable, readPageFileText, removeSplitPageFile, writePageTemp, writeSplitPageFile } from '../split-write-through.ts';
 import { fileBodyMatchesStored, fileDatabaseDriftToken, mirrorFileBody, readStoredBody, replaceStoredBody, replaceableFile } from '../facts/file-body-guard.ts';
 import { recordRenameAlias } from '../page-state/rename-alias.ts';
 import { maintenanceTransaction } from '../persistence/attribution.ts';
@@ -274,33 +274,43 @@ async function mergeIntoCanonicalFile(
   if (newBody === null) return { renumber };
 
   const tmpPath = `${canonicalPath}.tmp`;
-  fs.writeFileSync(tmpPath, newBody, 'utf-8');
+  const writeTmp = () => writePageTemp(tmpPath, canonicalPath, newBody);
   const reparsed = parseFactsFence(newBody);
   if (reparsed.warnings.length > 0) {
     // Leave .tmp as quarantine evidence; do NOT rename.
+    writeTmp();
     throw new Error(
       `phantom-redirect: rendered fence failed re-parse: ${reparsed.warnings.join('; ')}`,
     );
   }
-  if (!stored) {
-    if (await writeSplitPageFile(engine, canonicalPath, canonicalRoot, newBody)) fs.rmSync(tmpPath, { force: true });
-    else fs.renameSync(tmpPath, canonicalPath);
-    return { renumber };
+  // A split write is refused (split_page_unsupported) before the temporary copy exists; a split page whose parts all stay
+  // is written by writeSplitPageFile without one. The copy of an ordinary page file is gone again on every outcome.
+  if (!await assertSplitWritable(engine, canonicalPath, canonicalRoot, newBody)) writeTmp();
+  const writeCanonical = async (target: BrainEngine) => {
+    if (await writeSplitPageFile(target, canonicalPath, canonicalRoot, newBody)) return;
+    if (!fs.existsSync(tmpPath)) writeTmp();
+    fs.renameSync(tmpPath, canonicalPath);
+  };
+  try {
+    if (!stored) {
+      await writeCanonical(engine);
+      return { renumber };
+    }
+    const parsed = parseMarkdown(newBody, `${canonical}.md`);
+    const hash = contentHash({ title: parsed.title, type: parsed.type, compiled_truth: parsed.compiled_truth, timeline: parsed.timeline,
+      frontmatter: parsed.frontmatter, tags: await engine.getTags(canonical, { sourceId }) });
+    const fileMoved = new Error('canonical file changed during the phantom redirect');
+    const written = await maintenanceTransaction(engine, async tx => {
+      if (!await mirrorFileBody(tx, sourceId, canonical, newBody, stored, hash)) return false;
+      if (pageFileText(canonicalPath) !== bytes) throw fileMoved;
+      await writeCanonical(tx);
+      return true;
+    }).catch(err => { if (err === fileMoved) return false; throw err; });
+    if (written) return { renumber };
+    return { held: canonicalDriftToken(canonical, phantomSlug, sourceId, 'during') };
+  } finally {
+    fs.rmSync(tmpPath, { force: true });
   }
-  const parsed = parseMarkdown(newBody, `${canonical}.md`);
-  const hash = contentHash({ title: parsed.title, type: parsed.type, compiled_truth: parsed.compiled_truth, timeline: parsed.timeline,
-    frontmatter: parsed.frontmatter, tags: await engine.getTags(canonical, { sourceId }) });
-  const fileMoved = new Error('canonical file changed during the phantom redirect');
-  const written = await maintenanceTransaction(engine, async tx => {
-    if (!await mirrorFileBody(tx, sourceId, canonical, newBody, stored, hash)) return false;
-    if (pageFileText(canonicalPath) !== bytes) throw fileMoved;
-    if (await writeSplitPageFile(tx, canonicalPath, canonicalRoot, newBody)) fs.rmSync(tmpPath, { force: true });
-    else fs.renameSync(tmpPath, canonicalPath);
-    return true;
-  }).catch(err => { if (err === fileMoved) return false; throw err; });
-  if (written) return { renumber };
-  fs.rmSync(tmpPath, { force: true });
-  return { held: canonicalDriftToken(canonical, phantomSlug, sourceId, 'during') };
 }
 
 /**

@@ -35,7 +35,7 @@
  */
 
 import { execFileSync } from '../spawn.ts';
-import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, appendFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, renameSync, appendFileSync, rmSync } from 'node:fs';
 import { dirname, isAbsolute, relative } from 'node:path';
 
 import type { BrainEngine, NewFact, FactVisibility, FactKind, FactAttribution } from '../engine.ts';
@@ -51,7 +51,7 @@ import { isDurabilityHardened, commitWriteThroughFile } from '../brain-repo-dura
 import { upsertFactRow, parseFactsFence, formatFenceDate } from '../facts-fence.ts';
 import { unparsedFenceRefusal } from '../fence-repair/refusal.ts';
 import { OperationError } from '../ops/contract.ts';
-import { PageFileChanged, readPageFileText, writeSplitPageFile } from '../split-write-through.ts';
+import { PageFileChanged, readPageFileText, splitWriteRefusal, writePageTemp, writeSplitPageFile } from '../split-write-through.ts';
 import type { PageFileHold } from '../split-layout/page-file.ts';
 import { extractFactsFromFenceText } from './extract-from-fence.ts';
 import { logStubGuardEvent } from './stub-guard-audit.ts';
@@ -556,9 +556,11 @@ export async function writeFactsToFence(
         ? gitPathState(writeRoot, filePath)
         : 'clean';
 
-      // 3. Atomic write: .tmp first, then parse-validate, then rename.
+      // 3. Atomic write: .tmp first (after any split refusal), then parse-validate, then rename.
+      const splitRefusal = await splitWriteRefusal(engine, filePath, writeRoot, body);
+      if (splitRefusal) return { inserted: 0, ids: [], fenceWriteFailed: true, fenceRefusal: recordedRefusal(target, filePath, splitRefusal), ...withdrawnSkipped };
       assertSourceFilesystemActive();
-      writeFileSync(tmpPath, body, 'utf-8');
+      writePageTemp(tmpPath, filePath, body);
 
       // 4. Parse-before-rename: re-read the .tmp content and verify the
       //    fence is well-formed. Anything malformed → leave .tmp in

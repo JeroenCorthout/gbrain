@@ -16,7 +16,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { existsSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
+import { existsSync, readFileSync, rmSync } from 'node:fs';
 
 import type { BrainEngine } from '../engine.ts';
 import { withPageLock } from '../page-lock.ts';
@@ -33,7 +33,7 @@ import { markBeliefCommits } from '../belief/append.ts';
 import { classifyItemFailure } from '../item-failure.ts';
 import { withdrawnFact } from './withdrawal-overlay.ts';
 import { bestEffortStoredBodyMirror, fileBodyMatchesStored, fileDatabaseDriftToken, mirrorFileBody, readStoredBody } from './file-body-guard.ts';
-import { PageFileChanged, readPageFileText } from '../split-write-through.ts';
+import { PageFileChanged, readPageFileText, splitWriteRefusal, writePageTemp } from '../split-write-through.ts';
 import { publishFenceTmp } from './fence-write.ts';
 
 export interface ForgetFactResult {
@@ -311,9 +311,21 @@ export async function forgetFactInFence(
       const newBody = strikeFenceRow(body, targetRowNum, strike);
       if (newBody === null) return legacyExpire(true);
 
+      // A write outside the door that would change a split page's part files is refused (split-write-through.ts): the
+      // withdrawal stays authoritative and the page mirror is held, as for a head whose parts do not verify. The refusal
+      // is read before the .tmp exists.
+      const splitHeld = (error: unknown): ForgetFactResult | null => {
+        if ((error as { code?: string } | null)?.code !== 'split_page_unsupported') return null;
+        const warning = `${slug} (${(error as Error).message} Meanwhile the withdrawal or supersession remains authoritative; only its page mirror is held)`;
+        console.warn(`[facts.forget] ${warning}`);
+        return { ok: true, path: 'legacy_db', reason, warning };
+      };
+      const refusal = await splitWriteRefusal(engine, filePath, resolved.writeRoot, newBody);
+      if (refusal) return splitHeld(refusal)!;
+
       // Atomic .tmp + parse-validate + rename.
       assertSourceFilesystemActive();
-      writeFileSync(tmpPath, newBody, 'utf-8');
+      writePageTemp(tmpPath, filePath, newBody);
       const tmpBody = readFileSync(tmpPath, 'utf-8');
       const validate = parseFactsFence(tmpBody);
       if (validate.warnings.length > 0) {
@@ -321,15 +333,6 @@ export async function forgetFactInFence(
         // DB expire so the user's forget intent still succeeds.
         return legacyExpire(true);
       }
-      // A write outside the door that would change a split page's part files is refused (split-write-through.ts): the
-      // withdrawal stays authoritative and the page mirror is held, as for a head whose parts do not verify.
-      const splitHeld = (error: unknown): ForgetFactResult | null => {
-        if ((error as { code?: string } | null)?.code !== 'split_page_unsupported') return null;
-        rmSync(tmpPath, { force: true });
-        const warning = `${slug} (${(error as Error).message} Meanwhile the withdrawal or supersession remains authoritative; only its page mirror is held)`;
-        console.warn(`[facts.forget] ${warning}`);
-        return { ok: true, path: 'legacy_db', reason, warning };
-      };
       if (!segmented) {
         let refused = null as ForgetFactResult | null;
         const written = await maintenanceTransaction(engine, async tx => {
@@ -346,7 +349,7 @@ export async function forgetFactInFence(
         }).catch(err => {
           if (err instanceof WithdrawalFileChanged || err instanceof PageFileChanged) return false;
           refused = splitHeld(err);
-          if (refused) return false;
+          if (refused) { rmSync(tmpPath, { force: true }); return false; }
           throw err;
         });
         if (refused) return refused;
@@ -358,7 +361,7 @@ export async function forgetFactInFence(
       }
       try { await publishFenceTmp(engine, filePath, resolved.writeRoot, tmpBody, () => undefined); } catch (error) {
         const held = splitHeld(error);
-        if (held) return held;
+        if (held) { rmSync(tmpPath, { force: true }); return held; }
         throw error;
       }
 

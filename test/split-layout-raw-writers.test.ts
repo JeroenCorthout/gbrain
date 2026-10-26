@@ -229,6 +229,36 @@ for (const backend of testBackends()) describe(`[${backend}] split git layout: r
     } finally { await close(); _resetWriteThroughCacheForTest(); }
   }), 120_000);
 
+  for (const layout of ['split', 'one file'] as const) {
+    test(`the phantom redirect on a private ${layout} canonical page leaves no temporary copy and keeps the page file's 0600 mode${layout === 'split' ? ' (split_page_unsupported)' : ''}`, () => withHome(async (home, root) => {
+      _resetWriteThroughCacheForTest();
+      const { engine, close } = await isolatedSharedSkillsEngine(databaseUrl);
+      const umask = process.umask(0o022);
+      try {
+        await withEnv({ GBRAIN_AUDIT_DIR: join(home, 'audit') }, async () => {
+          await engine.executeRaw("UPDATE sources SET local_path = $1 WHERE id = 'default'", [root]);
+          const canonicalBody = layout === 'split' ? `# Alice Example\n\n${lines('Alice').join('\n')}\n` : '# Alice Example\n\nA short page.\n';
+          for (const [slug, title, text] of [['people/alice-example', 'Alice Example', canonicalBody], ['alice', 'alice', PHANTOM_BODY]] as const) {
+            const page = await engine.putPage(slug, { type: 'person', title, compiled_truth: text, timeline: '', frontmatter: {} });
+            await engine.executeRaw('UPDATE pages SET source_path = $1 WHERE id = $2', [`${slug}.md`, page.id]);
+          }
+          mkdirSync(join(root, 'people'), { recursive: true });
+          const head = join(root, 'people/alice-example.md');
+          const canonical = `---\ntype: person\ntitle: Alice Example\n---\n\n${canonicalBody}`;
+          if (layout === 'split') await writeSplitPage(root, 'people/alice-example.md', canonical);
+          else writeFileSync(head, canonical);
+          for (const path of [head, ...(existsSync(partsDirFor(head)) ? readdirSync(partsDirFor(head)).map(name => join(partsDirFor(head), name)) : [])]) chmodSync(path, 0o600);
+          writeFileSync(join(root, 'alice.md'), PHANTOM_BODY);
+          const result = await runPhantomRedirectPass(engine, root, 'default', false);
+          if (layout === 'split') expect(JSON.stringify(result)).toContain('split_page_unsupported');
+          else expect(readFileSync(head, 'utf8')).toContain('Founded acme-example');
+          expect(readdirSync(join(root, 'people')).filter(name => name.includes('.tmp'))).toEqual([]);
+          expect(statSync(head).mode & 0o777).toBe(0o600);
+        });
+      } finally { process.umask(umask); await close(); _resetWriteThroughCacheForTest(); }
+    }), 120_000);
+  }
+
   test('the classic Google connector refuses an edit the part files would carry (split_page_unsupported) before its import, and removes the head with its parts on delete', () => withSplitPage(databaseUrl, async (engine, root, head) => {
     const summary = { status: 'synced', added: 0, modified: 0, deleted: 0, chunksCreated: 0, embedded: 0, pagesAffected: [], threadsSeen: 0, attachmentInspection: {} } as unknown as GoogleSyncSummary;
     const deps = { managed: null, engine, sourceId: 'default', cfg: { dir: root, account: 'owner@example.invalid' }, opts: {}, entry: {}, log() {}, tick() {} } as unknown as GoogleSyncDeps;

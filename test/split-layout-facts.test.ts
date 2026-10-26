@@ -21,7 +21,7 @@
  */
 import { afterEach, describe, expect, test } from 'bun:test';
 import { createHash, randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import type { BrainEngine } from '../src/core/engine.ts';
@@ -119,7 +119,7 @@ interface SplitBrain { engine: BrainEngine; root: string; file: string }
  * An unmanaged brain whose default source checkout holds SLUG as a split head of content, and whose page row was
  * imported from the same content (what sync imports from the reassembled page file). segmented stores it in segments.
  */
-async function withSplitBrain(databaseUrl: string | undefined, content: string, run: (b: SplitBrain) => Promise<void>, opts: { segmented?: boolean } = {}) {
+async function withSplitBrain(databaseUrl: string | undefined, content: string, run: (b: SplitBrain) => Promise<void>, opts: { segmented?: boolean; oneFile?: boolean } = {}) {
   const home = mkdtempSync(join(tmpdir(), 'split-facts-'));
   try {
     await withEnv({ GBRAIN_HOME: home, DATABASE_URL: undefined, GBRAIN_DATABASE_URL: undefined }, async () => {
@@ -132,7 +132,8 @@ async function withSplitBrain(databaseUrl: string | undefined, content: string, 
         await engine.executeRaw("UPDATE sources SET local_path = $1 WHERE id = 'default'", [root]);
         if (opts.segmented) await engine.setConfig('pages.segmented_storage', 'on');
         expect(await importFromContent(engine, SLUG, content, { sourceId: 'default', noEmbed: true })).toMatchObject({ status: 'imported' });
-        await writeSplit(file, content);
+        if (opts.oneFile) writeFileSync(file, content);
+        else await writeSplit(file, content);
         await run({ engine, root, file });
       } finally { await close(); _resetWriteThroughCacheForTest(); }
     });
@@ -295,6 +296,38 @@ for (const backend of testBackends()) describe('[' + backend + '] split git layo
       expect(await activeRows(engine)).toEqual([]);
     }, { segmented: true });
   }, 300_000);
+
+  test('writeFactsToFence and forget refuse a split write (split_page_unsupported) before they touch a temporary file beside the head', async () => {
+    __setSplitLimitsForTests(WRITE_LIMITS);
+    const content = fenceInParts(60, CLAIM);
+    await withSplitBrain(databaseUrl, content, async ({ engine, root, file }) => {
+      const [id] = await indexFence(engine, content);
+      mkdirSync(file + '.tmp');
+      const written = await writeFactsToFence(engine, target(root), [fact(SECOND)]);
+      expect(written.fenceRefusal?.code).toBe('split_page_unsupported');
+      const forgot = await forgetFactInFence(engine, id!);
+      expect(forgot).toMatchObject({ ok: true, path: 'legacy_db', warning: expect.stringContaining('split_page_unsupported') });
+      expect(statSync(file + '.tmp').isDirectory()).toBe(true);
+    });
+  }, 180_000);
+
+  test('writeFactsToFence and forget on a private one-file page write it through a temporary copy with its 0600 mode; the page keeps the mode', async () => {
+    __setSplitLimitsForTests(LIMITS);
+    const content = page(facts(CLAIM));
+    await withSplitBrain(databaseUrl, content, async ({ engine, root, file }) => {
+      const [id] = await indexFence(engine, content);
+      chmodSync(file, 0o600);
+      const umask = process.umask(0o022);
+      try {
+        expect(await writeFactsToFence(engine, target(root), [fact(SECOND)])).toMatchObject({ inserted: 1 });
+        expect(readFileSync(file, 'utf8')).toContain(SECOND);
+        expect(statSync(file).mode & 0o777).toBe(0o600);
+        expect(await forgetFactInFence(engine, id!)).toMatchObject({ ok: true, path: 'fence' });
+        expect(statSync(file).mode & 0o777).toBe(0o600);
+        expect(existsSync(file + '.tmp')).toBe(false);
+      } finally { process.umask(umask); }
+    }, { oneFile: true });
+  }, 180_000);
 
   test('the unfenced-row fence step passes an unmanaged split page by with reason split_page', async () => {
     __setSplitLimitsForTests(LIMITS);
