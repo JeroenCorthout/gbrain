@@ -97,8 +97,9 @@ async function assertNothingHiddenDropped(engine: BrainEngine, row: WriteRequest
  * renders the stored page after commit (export's serializer). The head is serializePageToMarkdown over the prepared
  * columns: the frontmatter after the gate and the stamp, read back through jsonb so its keys take their stored order,
  * and the tags the page will hold (its tags that frontmatter did not set, plus the frontmatter's). The body is the
- * scan's stored regions read from the staged upload parts in order: the truth, TIMELINE_SEPARATOR before the timeline,
- * then a final newline. The parts stay staged until the request is final, so the file is produced again at
+ * scan's stored regions read from the staged upload parts: the truth, TIMELINE_SEPARATOR before the timeline, then a
+ * final newline. Each region reads the parts in its own forward pass, since a bare `## Timeline` section with truth after
+ * it puts the timeline before the truth's last ranges in the upload. The parts stay staged until the request is final, so the file is produced again at
  * publication; it is never one string. A no-op upload's file is the stored page's.
  */
 async function uploadPageFile(engine: BrainEngine, row: WriteRequest, ref: StagingBodyRef, snapshot: PageSnapshot | null,
@@ -117,8 +118,8 @@ async function uploadPageFile(engine: BrainEngine, row: WriteRequest, ref: Stagi
   const head = serializePageToMarkdown({ slug: row.slug, type: render.type, title: render.title, frontmatter, compiled_truth: '', timeline: '' } as never, tags).slice(0, -1);
   const hasTimeline = render.timelinePieces.some(piece => 'text' in piece ? piece.text.length > 0 : piece.end > piece.start);
   return StreamedFileContent.measure(engine, async function* (exec) {
-    const read = stagedReader(exec, row, ref);
     const region = async function* (pieces: StreamedPageRender['truthPieces']): AsyncIterable<Uint8Array> {
+      const read = stagedReader(exec, row, ref);
       for (const piece of pieces) {
         if ('text' in piece) { yield Buffer.from(sanitizeText(piece.text), 'utf8'); continue; }
         if (piece.start < render.prefix.length) yield render.prefix.subarray(piece.start, Math.min(piece.end, render.prefix.length));
@@ -133,7 +134,7 @@ async function uploadPageFile(engine: BrainEngine, row: WriteRequest, ref: Stagi
   }, { type: render.type, frontmatter });
 }
 
-/** Bytes `[start, end)` of the staged upload, read part by part in one forward pass (ranges come in increasing order). */
+/** Bytes `[start, end)` of the staged upload, read part by part in one forward pass (one region's ranges, in increasing order). */
 function stagedReader(exec: BrainEngine, row: WriteRequest, ref: StagingBodyRef): (start: number, end: number) => AsyncIterable<Uint8Array> {
   const parts = stagedUploadParts(exec, ref)[Symbol.asyncIterator]();
   let chunk: Uint8Array = new Uint8Array(0), at = 0;
