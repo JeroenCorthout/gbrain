@@ -45,6 +45,8 @@ import {
 import { collectGitVisibleFiles } from '../core/git-visible-files.ts';
 import { isMarkdownFilePath, pruneDir, slugifyPath } from '../core/sync.ts';
 import { isPathContained } from '../core/path-confine.ts';
+import { isSplitHeadPath, parseHead, partsDirFor } from '../core/split-layout/index.ts';
+import { isDeepStrictEqual } from 'util';
 
 /** Test seams: the stream `validate --stdin` reads, and the directory `--staged` runs git in. */
 export interface FrontmatterIo {
@@ -219,8 +221,10 @@ interface FileValidation {
   remaining_hold?: ContentRefusal | null;
   /** --staged: whether the working-tree copy passes the same check (false when absent or failing). */
   working_copy_ok?: boolean;
-  /** Why the file could not be checked at all. */
+  /** Why the file could not be checked at all, or why --fix left it as it was. */
   note?: string;
+  /** --fix: the refusal that kept the fixes from being written. */
+  fix_refused?: 'split_page_unsupported';
   failed: boolean;
 }
 
@@ -315,6 +319,22 @@ function readStagedBlobs(paths: string[], cwd = process.cwd()): { root: string; 
     }
   }
   return { root, files };
+}
+
+/**
+ * `validate --fix` on the head of a split page (a head plus part files in its parts directory): the fix may change the
+ * head's frontmatter only, so it is written when the fixed head keeps its manifest and its body byte for byte (the parts
+ * stay valid and a frontmatter edit verifies as is). Returns the refusal note otherwise, including a head that does not
+ * parse or a parts directory beside a file that declares none; null for an ordinary page file.
+ */
+function splitHeadFixRefusal(file: string, content: string, fixed: string): string | null {
+  if (!isSplitHeadPath(file)) return null;
+  const before = parseHead(content);
+  if (before === null && !existsSync(partsDirFor(file))) return null;
+  const after = parseHead(fixed);
+  if (before && !('error' in before) && after && !('error' in after)
+    && isDeepStrictEqual(after.manifest, before.manifest) && after.headBody === before.headBody) return null;
+  return `split_page_unsupported: ${file} is the head of a split page (its part files are in ${partsDirFor(file)}) and this fix would change more than the head's frontmatter, so nothing was written. Edit the head's frontmatter by hand and leave its gbrain_parts block as it is, or read the whole page with gbrain get and, on a brain with a canonical owner, write it through put_page.`;
 }
 
 /** `validate --fix` on a managed brain: name the coordinated repair instead of a bare coordinator error. */
@@ -460,7 +480,13 @@ async function runValidate(rest: string[], io: FrontmatterIo): Promise<void> {
         // the absolute path re-keyed every declared slug as a mismatch.
         const auto = autoFixFrontmatter(content, { filePath: slugPath });
         const repaired = repairRecoverableFrontmatter(auto.content, { includeAmbiguous: flags.includeAmbiguous });
-        result.fixesApplied = [...auto.fixes, ...repaired.fixes];
+        const fixes = [...auto.fixes, ...repaired.fixes];
+        const splitRefusal = fixes.length > 0 ? splitHeadFixRefusal(file, content, repaired.content) : null;
+        if (splitRefusal) {
+          results.push({ ...result, note: splitRefusal, fix_refused: 'split_page_unsupported', failed: true });
+          continue;
+        }
+        result.fixesApplied = fixes;
         if (result.fixesApplied.length > 0 && !flags.dryRun) {
           assertManagedFilesystemWrite(file);
           result.backupPath = createFrontmatterBackup(file, { sourcePath: resolved, runId: backupRunId });

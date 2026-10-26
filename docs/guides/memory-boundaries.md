@@ -305,6 +305,9 @@ or grow a page into this layout or shrink it out of it, is refused with
 `split_page_unsupported` before any file is written and before the database
 takes it, so the files and the stored page stay as they were. A forget on such a
 page still withdraws the fact; only its strike in the page file waits.
+`gbrain frontmatter validate --fix` fixes a head's frontmatter in place and refuses a
+fix that would change the head's body or its `gbrain_parts` block
+(`split_page_unsupported`; nothing is written).
 
 **What older versions see.** A gbrain from before this layout imports the head
 as a short page: the first 64 KiB, the notice line and a `gbrain_parts`

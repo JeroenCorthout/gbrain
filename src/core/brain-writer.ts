@@ -1,4 +1,3 @@
-import { assertManagedFilesystemWrite } from './persistence/filesystem-guard.ts';
 /**
  * brain-writer — frontmatter validation/audit/auto-fix orchestrator.
  *
@@ -9,8 +8,7 @@ import { assertManagedFilesystemWrite } from './persistence/filesystem-guard.ts'
  * the v0.22.4 migration audit phase. Single source of truth — no parallel
  * validation stack.
  *
- * Path-guard contract: writeBrainPage refuses to write outside the source
- * path. Pre-write backups are the safety contract (works for both git and
+ * Pre-write backups are the safety contract (works for both git and
  * non-git brain repos; the existing src/core/dry-fix.ts:getWorkingTreeStatus
  * rejects non-git repos as unsafe, which is the wrong shape for brain
  * rewrites). Backups live under ~/.gbrain/backups/frontmatter/... instead of
@@ -19,7 +17,7 @@ import { assertManagedFilesystemWrite } from './persistence/filesystem-guard.ts'
 
 import { createHash } from 'crypto';
 import { loadBoundedYaml as yamlLoad } from './data-frontmatter.ts';
-import { existsSync, readFileSync, readdirSync, copyFileSync, writeFileSync, mkdirSync, lstatSync } from 'fs';
+import { existsSync, readFileSync, readdirSync, copyFileSync, mkdirSync, lstatSync } from 'fs';
 import { join, relative, resolve, dirname, basename, isAbsolute } from 'path';
 import type { BrainEngine } from './engine.ts';
 import type { ProgressReporter } from './progress.ts';
@@ -507,65 +505,6 @@ export function repairRecoverableFrontmatter(
   }
 
   return { content: working, fixes };
-}
-
-// ---------------------------------------------------------------------------
-// writeBrainPage — path-guarded write with centralized backup
-// ---------------------------------------------------------------------------
-
-export class BrainWriterError extends Error {
-  code: string;
-  hint?: string;
-  constructor(code: string, message: string, hint?: string) {
-    super(message);
-    this.name = 'BrainWriterError';
-    this.code = code;
-    this.hint = hint;
-  }
-}
-
-/**
- * Path-guarded brain page writer. Always writes a backup under
- * ~/.gbrain/backups/frontmatter/... before any in-place mutation (the contract
- * that replaces git-tree-clean for non-git brain repos). Throws
- * BrainWriterError if filePath is not under sourcePath.
- */
-export function writeBrainPage(
-  filePath: string,
-  content: string,
-  opts: { sourcePath: string; autoFix?: boolean; backupRoot?: string; backupRunId?: string },
-): { fixes: AuditFix[]; backupPath?: string } {
-  assertManagedFilesystemWrite(filePath);
-  const resolvedSource = resolve(opts.sourcePath);
-  const resolvedTarget = resolve(filePath);
-  if (resolvedTarget !== resolvedSource && !resolvedTarget.startsWith(resolvedSource + '/')) {
-    throw new BrainWriterError(
-      'PATH_OUTSIDE_SOURCE',
-      `writeBrainPage: ${filePath} is not under ${opts.sourcePath}`,
-      'Pass --source <id> matching the source the file lives in.',
-    );
-  }
-
-  let toWrite = content;
-  let fixes: AuditFix[] = [];
-  if (opts.autoFix) {
-    const result = autoFixFrontmatter(content, { filePath: relative(resolvedSource, resolvedTarget) });
-    toWrite = result.content;
-    fixes = result.fixes;
-  }
-
-  let backupPath: string | undefined;
-  if (existsSync(filePath)) {
-    backupPath = createFrontmatterBackup(filePath, {
-      sourcePath: opts.sourcePath,
-      backupRoot: opts.backupRoot,
-      runId: opts.backupRunId,
-    });
-  } else {
-    mkdirSync(dirname(filePath), { recursive: true });
-  }
-  writeFileSync(filePath, toWrite, 'utf8');
-  return { fixes, backupPath };
 }
 
 // ---------------------------------------------------------------------------

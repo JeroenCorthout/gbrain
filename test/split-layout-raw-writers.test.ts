@@ -26,7 +26,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { BrainEngine } from '../src/core/engine.ts';
 import { findBacklinkGaps, fixBacklinkGaps } from '../src/commands/backlinks.ts';
+import { runFrontmatter } from '../src/commands/frontmatter.ts';
 import { runLintCore } from '../src/commands/lint.ts';
+import { currentExitCode, _resetCliExitVerdictForTests } from '../src/core/cli-force-exit.ts';
 import { runTakes } from '../src/commands/takes.ts';
 import { removeDreamPageFile, writeDerivedPageThrough, writeDreamPageFile } from '../src/core/cycle/derived-write-through.ts';
 import { runPhantomRedirectPass } from '../src/core/cycle/phantom-redirect.ts';
@@ -91,6 +93,22 @@ const snapshot = async (engine: BrainEngine, head: string) => ({ files: layout(h
 
 /** What a writer returned, or the code and message it threw, as JSON: where it reports a refusal code. */
 const outcomeOf = async (run: () => Promise<unknown>) => JSON.stringify(await run().then(value => value, (error: { code?: string; message?: string }) => ({ code: error.code, message: error.message })));
+
+/** `gbrain frontmatter validate <path> <args>` in-process: its output and exit verdict (reset afterwards). */
+async function validateFix(path: string, args = ['--fix']): Promise<{ out: string; verdict: number }> {
+  const out: string[] = [];
+  const log = spyOn(console, 'log').mockImplementation((...a: unknown[]) => { out.push(a.map(String).join(' ')); });
+  const prevExitCode = process.exitCode;
+  _resetCliExitVerdictForTests();
+  try {
+    await runFrontmatter(['validate', path, ...args]);
+    return { out: out.join('\n'), verdict: currentExitCode() };
+  } finally {
+    log.mockRestore();
+    _resetCliExitVerdictForTests();
+    process.exitCode = prevExitCode ?? 0;
+  }
+}
 
 /** A GBRAIN_HOME with the split limits set and an empty checkout root. */
 async function withHome(run: (home: string, root: string) => Promise<void>) {
@@ -386,5 +404,32 @@ describe('split git layout: filesystem scans and writers on an unmanaged checkou
     expect(stderr.join('')).toContain('split_page_unsupported');
     expect(stderr.join('')).not.toContain('Opening');
     expect(layout(head)).toEqual(before);
+  }), 120_000);
+
+  test('frontmatter validate --fix repairs a split head\'s frontmatter in the head alone; the gbrain_parts block and every part stay', () => withHome(async (_home, root) => {
+    await writeSplitPage(root, `${SLUG}.md`, `---\ntype: note\ntitle: "a "quoted" title"\n---\n\n${body}\n`);
+    const head = join(root, `${SLUG}.md`);
+    const before = layout(head);
+    const run = await validateFix(head);
+    expect(run.verdict).toBe(0);
+    const after = layout(head);
+    expect(after.parts).toEqual(before.parts);
+    expect(after.head).toContain(`title: 'a "quoted" title'`);
+    expect(after.head!.slice(after.head!.indexOf('gbrain_parts:'))).toBe(before.head!.slice(before.head!.indexOf('gbrain_parts:')));
+    expect(pageFile(head)).toEqual({ split: true, text: `---\ntype: note\ntitle: 'a "quoted" title'\n---\n\n${body}\n` });
+  }), 120_000);
+
+  test('frontmatter validate --fix refuses a fix that would change a split head\'s body (split_page_unsupported) and writes nothing', () => withHome(async (_home, root) => {
+    await writeSplitPage(root, `${SLUG}.md`, `---\ntype: note\ntitle: "a "quoted" title"\n---\n\nLead\u0000 line.\n${body}\n`);
+    const head = join(root, `${SLUG}.md`);
+    const before = layout(head);
+    expect(before.head).toContain('\u0000');
+    for (const args of [['--fix'], ['--fix', '--json']]) {
+      const run = await validateFix(head, args);
+      expect(run.verdict).toBe(1);
+      expect(run.out).toContain('split_page_unsupported');
+      expect(layout(head)).toEqual(before);
+    }
+    expect(readPageFile(head).hold).toBeUndefined();
   }), 120_000);
 });

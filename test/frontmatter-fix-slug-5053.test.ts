@@ -1,17 +1,15 @@
 /**
  * #5053 — `frontmatter validate --fix` passed the ABSOLUTE file path to the
  * fixer, whose slug check then saw every declared `slug:` as a mismatch and
- * deleted it (re-keying the page on the next import). Both callers of
- * `autoFixFrontmatter` now pass the path the slug derives from: validate
- * passes the brain-root-relative path (or the basename outside a brain), and
- * `writeBrainPage` passes the path relative to its source.
+ * deleted it (re-keying the page on the next import). validate now passes
+ * `autoFixFrontmatter` the path the slug derives from: the brain-root-relative
+ * path, or the basename outside a brain.
  */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { writeBrainPage } from '../src/core/brain-writer.ts';
 
 // A NESTED_QUOTES error gives --fix something to repair, so the fixer runs.
 const page = (slug: string) => `---\ntype: note\ntitle: "a "quoted" title"\nslug: ${slug}\n---\n\nbody\n`;
@@ -69,17 +67,4 @@ describe('#5053 frontmatter validate --fix', () => {
     validateFix(file);
     expect(readFileSync(file, 'utf8')).toContain('slug: note');
   }, 60_000);
-});
-
-describe('#5053 writeBrainPage autoFix', () => {
-  test('derives the slug relative to its source: a correct slug survives, a mismatched one is removed', () => {
-    const backupRoot = join(scratch, 'backups');
-    const kept = writeBrainPage(join(brain, 'notes', 'foo-bar.md'), page('notes/foo-bar'), { sourcePath: brain, autoFix: true, backupRoot });
-    expect(kept.fixes.map((fix) => fix.code)).not.toContain('SLUG_MISMATCH');
-    expect(readFileSync(join(brain, 'notes', 'foo-bar.md'), 'utf8')).toContain('slug: notes/foo-bar');
-
-    const removed = writeBrainPage(join(brain, 'notes', 'other.md'), page('notes/foo-bar'), { sourcePath: brain, autoFix: true, backupRoot });
-    expect(removed.fixes.map((fix) => fix.code)).toContain('SLUG_MISMATCH');
-    expect(readFileSync(join(brain, 'notes', 'other.md'), 'utf8')).not.toContain('slug:');
-  });
 });
