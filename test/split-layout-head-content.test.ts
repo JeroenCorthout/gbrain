@@ -4,9 +4,9 @@
  * (persistence/split-files.ts `splitPublicationTargets`, `mayTakeSplitLayout`), whoever submits it.
  *
  * 1. Protects: a managed file repair that reads the head raw and republishes it with a frontmatter edit (bound to the
- *    page file's hash, so it passes the repair's own split-aware check and reaches the door), a put_page of
- *    the head's text at its own page, and a put_page of the head's text at another page path all refuse: the head, every
- *    part and the stored body stay as they were.
+ *    page file's hash) refuses as a route outside the door (split_page_unsupported, outside_door, before the content
+ *    check), and a put_page of the head's text at its own page or at another page path refuses split_head_content: the
+ *    head, every part and the stored body stay as they were.
  * 2. Fails when: the head is published as the page (the page becomes its lead and notice and every part is removed), or
  *    a head is written as a page file anywhere.
  * 3. PGLite always; PostgreSQL when DATABASE_URL is set. KB-sized split limits through __setSplitLimitsForTests.
@@ -59,7 +59,7 @@ for (const backend of testBackends()) describe(`[${backend}] split git layout: a
   const databaseUrl = backend === 'postgres' ? requirePostgresTestDatabase() : undefined;
   afterEach(() => __setSplitLimitsForTests(null));
 
-  test('a managed file repair of the head (a frontmatter edit) refuses split_head_content; the head, parts and body stay', () => managedBrain(async ({ engine, ctx, root }) => {
+  test('a managed file repair of the head (a frontmatter edit) is outside the door: split_page_unsupported (outside_door); the head, parts and body stay', () => managedBrain(async ({ engine, ctx, root }) => {
     const { head, before } = await splitPage(engine, ctx, root);
     const repaired = head.replace('title: Split example', 'title: Split example repaired');
     const pageFile = pageFileSha256(join(root, 'notes/big.md'));
@@ -70,7 +70,8 @@ for (const backend of testBackends()) describe(`[${backend}] split git layout: a
     expect(prepared.status).toBe('ready');
     const refused = await refusal(submitManagedFileRepair(ctx, { sourceId: 'default', requestId: randomUUID(), slug: 'notes/big', path: 'notes/big.md', sourcePath: 'notes/big.md',
       content: repaired, beforeHash: pageFile.sha256, resultDigest: (prepared as { digest: string }).digest, expected_revision: snapshot!.revision, noEmbed: true }));
-    expect(refused).toMatchObject({ code: 'split_head_content' });
+    expect(refused).toMatchObject({ code: 'split_page_unsupported' });
+    expect(refused.message).toContain('split_page_unsupported (outside_door)');
     expect(await state(engine, root)).toEqual(before);
   }, { databaseUrl, setup }), 120_000);
 

@@ -26,12 +26,13 @@ function assertNotSplitHead(path: string, content: string | Uint8Array): void {
 
 /**
  * The split check of a route outside the door before its first database or file write at `input.path`:
- * `split_head_content` when `content` is a split head, then assertSplitUnitMutable (`split_page_unsupported`, outside_door,
- * when the path is in a split unit on disk, in the index or in HEAD).
+ * assertSplitUnitMutable first (`split_page_unsupported`, outside_door, when the path is in a split unit on disk, in the
+ * index or in HEAD), so a writer that read a head and writes it back edited reports the unit; then `split_head_content`
+ * when `content` for a path in no unit is itself a split head.
  */
 export async function assertOutsideDoorWritable(input: OutsideDoorInput, content?: string | Uint8Array): Promise<void> {
-  if (content !== undefined) assertNotSplitHead(input.path, content);
   await assertSplitUnitMutable({ ...input, strict: input.strict ?? false });
+  if (content !== undefined) assertNotSplitHead(input.path, content);
 }
 
 /** assertOutsideDoorWritable for a route that returns its refusal: the split_page_unsupported or split_head_content error, or null. */
@@ -44,12 +45,13 @@ export async function outsideDoorRefusal(input: OutsideDoorInput, content?: stri
 
 /**
  * assertOutsideDoorWritable for a writer that cannot await (skill tooling, the generic write helpers, writers with no
- * brain) and writes `content` as one file at `filePath`: `split_head_content`, then assertSplitUnitMutableSync (a unit the
- * disk shows). A path that can never be in a unit passes, so a generic write helper can call it on every file it writes.
+ * brain) and writes `content` as one file at `filePath`: assertSplitUnitMutableSync (a unit the disk shows), then
+ * `split_head_content`. A path that can never be in a unit passes, so a generic write helper can call it on every file it
+ * writes.
  */
 export function assertOneFileWritable(filePath: string, content: string | Uint8Array): void {
-  assertNotSplitHead(filePath, content);
   assertSplitUnitMutableSync({ root: parse(filePath).root, path: filePath, route: 'raw_writer' });
+  assertNotSplitHead(filePath, content);
 }
 
 /**

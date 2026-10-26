@@ -4,8 +4,8 @@
  * Protects: only the publication door of a git-canonical source writes a split page (a head plus part files in
  * .<name>.gbparts/), and every file-repair lane is outside it (split-write-through.ts assertOutsideDoorWritable,
  * route file_repair). So a managed file repair of a split page refuses split_page_unsupported (outside_door) when it
- * binds the page file F' its head and parts reassemble to, and split_head_content when its content is the raw head,
- * before it writes anything; a head that no longer reassembles (a missing part, an edited head body) refuses the same
+ * binds the page file F' its head and parts reassemble to or the raw head (the split unit is checked before the
+ * content), before it writes anything; a head that no longer reassembles (a missing part, an edited head body) refuses the same
  * way and is never reported with its hold code; a split unit that appears after the repair was submitted refuses
  * (outside_door) at validation. The frontmatter, fence and slug-conflict repairs and file-drift preview a split page as
  * split_page_unsupported and apply nothing, on a managed brain and on one with no canonical owner; the fence census,
@@ -131,12 +131,12 @@ for (const backend of testBackends()) describe(`[${backend}] split git layout: f
   afterEach(() => { __setSplitLimitsForTests(null); });
   const brain = (fn: Parameters<typeof managedBrain>[0]) => withEnv(env, () => managedBrain(fn, { databaseUrl, setup }));
 
-  test('a managed file repair of a split page refuses split_page_unsupported (outside_door) bound to F\', and split_head_content bound to the raw head; nothing is written', () => brain(async ({ engine, ctx, root }) => {
+  test('a managed file repair of a split page refuses split_page_unsupported (outside_door) bound to F\' or to the raw head; nothing is written', () => brain(async ({ engine, ctx, root }) => {
     const { head, file, before } = await splitBrain(engine, ctx, root);
     expect(pageFileSha256(join(root, 'notes/big.md'))).toMatchObject({ split: true, sha256: sha256(file), headSha256: sha256(head) });
     const untouched = snapshotFiles(root, 'notes/big.md');
     const rawHead = await refusal(() => submitRepair(engine, ctx, root, 'notes/big', head.replace('title: Split example', 'title: Split example repaired'), sha256(head)));
-    expect(rawHead.code).toBe('split_head_content');
+    expect(rawHead).toMatchObject(outsideDoor('notes/big'));
     const onFile = await refusal(() => submitRepair(engine, ctx, root, 'notes/big', file.replace('title: Split example', 'title: Split example repaired'), sha256(file)));
     expect(onFile).toMatchObject(outsideDoor('notes/big'));
     await settleManagedGitEffects(engine);
@@ -204,7 +204,7 @@ for (const backend of testBackends()) describe(`[${backend}] split git layout: f
       const broken = readFileSync(join(root, 'notes/big.md'), 'utf8');
       const untouched = snapshotFiles(root, 'notes/big.md');
       const onHead = await refusal(() => submitRepair(engine, ctx, root, 'notes/big', broken.replace('title: Split example', 'title: Repaired'), sha256(broken)));
-      expect(onHead.code).toBe('split_head_content');
+      expect(onHead).toMatchObject(outsideDoor('notes/big'));
       const onFile = await refusal(() => submitRepair(engine, ctx, root, 'notes/big', file.replace('title: Split example', 'title: Repaired'), sha256(file)));
       expect(onFile).toMatchObject(outsideDoor('notes/big'));
       for (const refused of [onHead, onFile]) expect(refused.message).not.toContain(breaking.code);

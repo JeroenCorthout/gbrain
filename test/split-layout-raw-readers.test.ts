@@ -6,8 +6,8 @@
  *    links and timeline rows whose text lives in the parts; the v0.32.2 verify reads a facts fence in the parts; capture
  *    --source markdown-greenfield emits F'; gbrain publish renders F'; repair rename-identity sees the new file's facts
  *    fence in the parts; repair url-clone-fences, a route outside the publication door, passes a split head by instead
- *    of importing the head as the page (split_head_content: the HEAD bytes it would restore are a split head, which
- *    split-write-through.ts outsideDoorRefusal checks before the split unit itself). A head whose parts do not verify
+ *    of importing the head as the page (split_page_unsupported: split-write-through.ts outsideDoorRefusal finds the
+ *    split unit before it checks the HEAD bytes it would restore). A head whose parts do not verify
  *    is skipped with its hold code and leaves the page stale.
  * 2. Fails when: a reader parses the raw head (lead + notice), so rows whose text is past the lead are dropped, retracted
  *    or reported missing, or the head is emitted or rendered as the page.
@@ -135,7 +135,7 @@ for (const backend of testBackends()) describe(`[${backend}] split git layout: r
     expect(held.detail).toContain(`split_page_unsupported=1 (${BIG}: split_page_incomplete)`);
   }), 120_000);
 
-  test('repair url-clone-fences passes a split head by (split_head_content): the head is never imported as the page', () => withBrain(databaseUrl, async (engine, root) => {
+  test('repair url-clone-fences passes a split head by (split_page_unsupported): the head is never imported as the page', () => withBrain(databaseUrl, async (engine, root) => {
     const upstream = join(root, '..', 'upstream'), clone = join(root, '..', 'clones', 'source-a');
     mkdirSync(join(upstream, 'notes'), { recursive: true });
     git(upstream, 'init', '-q', '-b', 'main');
@@ -154,7 +154,7 @@ for (const backend of testBackends()) describe(`[${backend}] split git layout: r
     const scope = await resolveRepairScope(engine, 'source-a');
     const preview = await (await repairRunner(engine, { apply: false, logger: { info() {}, warn() {}, error() {} } as never }))
       .run('url-clone-fences' as RepairKind, scope, { explicit: true, sourceFlag: 'source-a' });
-    expect(preview.listing!.map(entry => [entry.item, entry.class])).toEqual([[`source-a:${BIG}.md`, 'split_head_content']]);
+    expect(preview.listing!.map(entry => [entry.item, entry.class])).toEqual([[`source-a:${BIG}.md`, 'split_page_unsupported']]);
     expect(preview.preview_hash).toBeUndefined();
     expect(readFileSync(head, 'utf8')).toBe(withRows);
     const stored = await body();
