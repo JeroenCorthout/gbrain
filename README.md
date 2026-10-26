@@ -39,9 +39,6 @@ harness configuration state stay local. Configured cloud embedding, reranking,
 extraction, and synthesis providers can receive text, and the harness model sees
 recalled memory even in keyless mode. Markdown export is not a full database
 backup. Read [memory boundaries](docs/guides/memory-boundaries.md).
-A page whose file would pass 24 MiB is stored in Git as a head file plus hidden
-part files; an older gbrain sees only its first 64 KiB, and the next sync by a
-current gbrain restores it whole ([large pages in Git](docs/guides/memory-boundaries.md#large-pages-in-git)).
 
 > **LLMs:** fetch [`llms.txt`](llms.txt) for the documentation map, or [`llms-full.txt`](llms-full.txt) for the same map with core docs inlined in one fetch. **Agents:** start with [`AGENTS.md`](AGENTS.md) (or [`CLAUDE.md`](CLAUDE.md) if you're Claude Code).
 
