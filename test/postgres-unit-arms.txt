@@ -459,6 +459,7 @@ test/split-layout-publish-mode.test.ts
 test/split-layout-publish-recovery.test.ts
 test/split-layout-publish.test.ts
 test/split-layout-raw-readers.test.ts
+test/split-layout-raw-writers.test.ts
 test/split-layout-reserved-key.test.ts
 test/split-layout-sync.test.ts
 test/split-layout-withdrawal-mirror.test.ts
