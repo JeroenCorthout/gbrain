@@ -518,7 +518,11 @@ const splitUnitIncomplete = (head: string, reason: string) => opError('split_pag
 export async function publishSplitGitEffect(root: string, head: string, signal?: AbortSignal, hardened?: boolean, note?: GitCommitNote,
   binding?: Pick<WorktreeBinding, 'git_durability'> | null, owner?: GitEffectOwner): Promise<Record<string, unknown>> {
   if (!(hardened ?? (await gitDurabilityPolicy(binding, root)).durable)) return { ...DURABILITY_NOT_ENABLED };
-  const unit = await withSession(root, signal, owner, false, session => splitUnitPaths(session, root, head));
+  const unit = await withSession(root, signal, owner, false, async session => {
+    const found = await splitUnitPaths(session, root, head);
+    await assertSplitBytesVerbatim(session, root, found, reason => splitGitAttributesError(head, reason));
+    return found;
+  });
   const outcomes = await commitGitTargets(root, [head, ...unit.parts, ...unit.stale], signal, note ? new Map([[head, note]]) : undefined, owner, true);
   for (const outcome of outcomes.values()) if (outcome instanceof OperationError) throw outcome;
   const settled = [...outcomes.values()] as GitOutcome[];
@@ -590,4 +594,53 @@ export function splitUnitDivergence(layers: SplitUnitLayers): string | null {
     return `${path}: Git HEAD ${committed === null ? 'does not hold it' : 'holds it'}, the index ${state(staged, committed)}, the disk ${disk === 'not_a_file' ? 'holds something that is not a file' : state(disk, committed)}`;
   }
   return null;
+}
+
+
+const CONVERSION_ATTRIBUTES = ['text', 'eol', 'filter', 'working-tree-encoding', 'diff'];
+
+/**
+ * Wave B PR 5 round 6: why Git would store (or diff) a split page's files as other bytes than they hold, or null. A
+ * text, eol, filter or working-tree-encoding attribute (any value but unset/unspecified), or a diff driver with a
+ * textconv, on the head or a part (relative paths): their bytes are hashed in the head's manifest, so a converted commit
+ * would not reassemble. The split layout refuses them as G7a refuses an unconfigured LFS rule, before anything is written.
+ */
+export async function splitConvertingAttribute(session: GitSession, rels: string[]): Promise<string | null> {
+  if (!rels.length) return null;
+  const out = await git(session, ['check-attr', '-z', ...CONVERSION_ATTRIBUTES, '--', ...rels]);
+  if (out.code !== 0) throw gitFailure('Cannot inspect the canonical Git target.', `git check-attr failed for the split unit of ${rels[0]}.`);
+  const fields = out.stdout.split('\0');
+  for (let i = 0; i + 2 < fields.length; i += 3) {
+    const path = fields[i]!, attr = fields[i + 1]!, value = fields[i + 2]!;
+    if (value === 'unspecified' || value === 'unset') continue;
+    if (attr === 'diff' && (value === 'set' || (await git(session, ['config', '--get', `diff.${value}.textconv`])).code !== 0)) continue;
+    return `${path} has the Git attribute ${attr}${value === 'set' ? '' : `=${value}`}`;
+  }
+  return null;
+}
+
+/**
+ * Refuses a split commit (the strict door commit, the split Git effect) whose head or parts Git would store as other
+ * bytes than the disk holds: a converting attribute (splitConvertingAttribute), or what Git's clean path does without
+ * one (core.autocrlf): `hash-object` (the bytes a commit would store) must be the raw blob id of every file.
+ */
+export async function assertSplitBytesVerbatim(session: GitSession, root: string, unit: Pick<SplitUnit, 'head' | 'parts'>, refuse: (reason: string) => Error): Promise<void> {
+  const rels = [unit.head, ...unit.parts].filter(rel => existsSync(join(root, rel)));
+  const attribute = await splitConvertingAttribute(session, rels);
+  if (attribute) throw refuse(attribute);
+  if (!rels.length) return;
+  const [format, hashed] = await Promise.all([git(session, ['rev-parse', '--show-object-format']), git(session, ['hash-object', '--', ...rels])]);
+  const oids = hashed.stdout.split('\n').filter(Boolean);
+  if (format.code !== 0 || hashed.code !== 0 || oids.length !== rels.length) throw gitFailure('Cannot hash the canonical Git target.', `git hash-object failed for the split unit of ${unit.head}.`);
+  const algorithm = format.stdout.trim() === 'sha256' ? 'sha256' : 'sha1';
+  const converted = rels.find((rel, index) => rawBlobOid(join(root, rel), algorithm) !== oids[index]);
+  if (converted) throw refuse(`Git would store ${converted} as other bytes than the file holds (core.autocrlf or another conversion)`);
+}
+
+/** The refusal of a split unit Git would convert (split_git_attributes); remote callers get the page, never a path. */
+export function splitGitAttributesError(target: string, reason: string, sourceId?: string): OperationError {
+  return opError('split_git_attributes', `Git would convert the bytes of the split page files of ${target}, so nothing was written or committed.`,
+    `${reason}. A split page's head and parts are stored byte for byte (the head's manifest hashes them), so a text, eol, filter or working-tree-encoding attribute, a diff textconv or core.autocrlf on them would commit a page that no checkout reassembles. Ask the user to narrow the .gitattributes rule (or core.autocrlf) so the page's head file and its .gbparts directory get none of them, for example by adding -text -filter -diff for those paths, commit that, then submit the write again with a new request_id.`,
+    { fix: readFix('Shows each source\'s canonical owner with its pending, failed and parked writes, read-only.', { argv: ['gbrain', 'sources', 'writer', 'status', ...(sourceId ? ['--source', sourceId] : []), '--json'] }),
+      docs: 'docs/guides/write-refusals.md#split_git_attributes' });
 }

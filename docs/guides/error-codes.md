@@ -4029,6 +4029,16 @@ More: [docs/guides/write-refusals.md#slug_page_mismatch](../../docs/guides/write
 |---|---|---|---|---|---|---|
 | Split bad ratio. | The request itself was wrong or no longer matches the brain; nothing was changed. | Correct the request using the message above, then retry. | agent | `repeat the read that failed` | 1 | no |
 
+### split_git_attributes
+
+<a id="split_git_attributes"></a>
+
+| Meaning | Why | Next step | Who acts · consent | Verify | Exit | Retryable |
+|---|---|---|---|---|---|---|
+| A page write would write or commit a split page (a head file plus part files in a .<name>.gbparts directory) whose files Git would store as other bytes: a .gitattributes text, eol, filter or working-tree-encoding attribute, a diff driver with a textconv, or core.autocrlf applies to the head or a part. Nothing was written; a door commit or Git effect that finds it commits nothing. | A split page's head manifest hashes every part and the head's own lead byte for byte, so a part Git converts on commit (CRLF to LF, a clean filter, an LFS pointer, a re-encoding) would be committed as bytes no checkout can reassemble into the page. gbrain never stages around the attributes; whether the rule should cover these files is the user's decision. | Ask the user to narrow the .gitattributes rule (or core.autocrlf) so the page head file and its .gbparts directory get none of those attributes, for example a later line giving those paths -text -filter -diff; commit it, then submit the write again with a new request_id. For a parked split Git effect, run gbrain sources writer retry-effects for the source with --parked-code split_git_attributes once the rule is fixed. Run: gbrain sources writer status --source '{source_id}' --json | user | `repeat the read that failed` | 1 | no |
+
+More: [docs/guides/write-refusals.md#split_git_attributes](../../docs/guides/write-refusals.md#split_git_attributes)
+
 ### split_head_content
 
 <a id="split_head_content"></a>

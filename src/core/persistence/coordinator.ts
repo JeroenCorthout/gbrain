@@ -1,6 +1,6 @@
 import { closeSync, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { splitUnitPaths, withSession } from './effect-git.ts';
+import { assertSplitBytesVerbatim, splitGitAttributesError, splitUnitPaths, withSession } from './effect-git.ts';
 import type { BrainEngine } from '../engine.ts';
 import type { PageSnapshot } from '../page-state/types.ts';
 import { OperationError, opError } from '../ops/contract.ts';
@@ -56,7 +56,7 @@ import { markBeliefCommits } from '../belief/append.ts';
 import { classifyPgAccessError } from '../pg-access-classify.ts';
 import { commitThroughDoor, doorCommitLanded, doorMarker, replayAfterDoorCommit, sourceCanonicalGit, strictChanged } from './git-door.ts';
 import { assertNoPrivateCommit, declareStrictPublication } from './git-declared.ts';
-import { assertSplitRecoveryBinding, assertSplitUnitIntact, isSplitRecoveryRecord, releaseSplitTargets, removeEmptyPartsDir, splitFilesChanged, splitKeptPartsChanged, splitLandedCommit, splitPublicationTargets, splitRecoveryRecord, type SplitFileFields } from './split-files.ts';
+import { assertSplitRecoveryBinding, assertSplitUnitCommittable, assertSplitUnitIntact, isSplitRecoveryRecord, releaseSplitTargets, removeEmptyPartsDir, splitFilesChanged, splitKeptPartsChanged, splitLandedCommit, splitPublicationTargets, splitRecoveryRecord, type SplitFileFields } from './split-files.ts';
 
 interface PreparedMutationBase {
   sourceExclusive?: boolean;
@@ -538,6 +538,7 @@ export async function publishMutation(engine: BrainEngine, row: WriteRequest, pr
       // every prior file it replaces or removes is named by its staged before-copy (path, SHA-256), never embedded.
       const split = await splitPublicationTargets(engine, prepared.file)
         ? splitRecoveryRecord(row, prepared.file, binding, (r, file, b) => largeRecoveryRecord(r, file, b, 0) ?? pageRecoveryRecord(r, file, b)) : null;
+      if (split) await assertSplitUnitCommittable(row, prepared.file, binding);
       if (split) files.push(...prepared.file.parts!);
       const { record, bytes } = split ?? pageRecoveryRecord(row, prepared.file, binding);
       if (binding.canonical_git === true) record.door = await doorMarker(binding.local_path!);
@@ -647,9 +648,14 @@ export async function publishMutation(engine: BrainEngine, row: WriteRequest, pr
       // Wave B PR 5: a split page lands as its whole unit (splitUnitPaths) in one door commit: the head, every manifest part
       // (the parts it kept unwritten included) and the removal of anything else Git holds in its parts directory.
       if (splitDoor) {
-        const unit = await withSession(splitDoor.root, undefined, undefined, false, session => splitUnitPaths(session, splitDoor.root, files[0]!.path,
-          reason => opError('split_page_incomplete', 'The split page just published does not match its part files, so it was not committed.',
-            `${reason}. The strict door commit of a split page holds its head with every part, so nothing was committed and recovery restores the prior files. Inspect the checkout with git status on the brain host before retrying the write with a new request_id.`), { staged: true }));
+        const unit = await withSession(splitDoor.root, undefined, undefined, false, async session => {
+          const found = await splitUnitPaths(session, splitDoor.root, files[0]!.path,
+            reason => opError('split_page_incomplete', 'The split page just published does not match its part files, so it was not committed.',
+              `${reason}. The strict door commit of a split page holds its head with every part, so nothing was committed and recovery restores the prior files. Inspect the checkout with git status on the brain host before retrying the write with a new request_id.`), { staged: true });
+          // Round 6: Git stores the head and parts byte for byte, or the door commits nothing (recovery restores the prior files).
+          await assertSplitBytesVerbatim(session, splitDoor.root, found, reason => splitGitAttributesError(row.slug, reason, row.source_id));
+          return found;
+        });
         Object.assign(outcome.persistence as object, { git_state: 'committed', git_commit: await commitThroughDoor(splitDoor.root,
           [unit.head, ...unit.parts, ...unit.stale].map((rel, index) => ({ path: join(splitDoor.root, rel), ...(index ? {} : { note: prepared.file?.commit }) })), lock ?? undefined) });
       }

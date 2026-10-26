@@ -32,7 +32,7 @@ import { FRONTMATTER_HEAD_MAX_BYTES, SEGMENT_MAX_BYTES } from '../page-body/limi
 import { assertNoPartsKey, headBodyFor, parseHead, partFilePath, partsDirFor, planSplit, PART_FILE_RE, reassemble, splitLimits, SplitLayoutError, splitNotice, splitScratchPath, splitThresholdBytes, type ParsedHead, type SplitPlan } from '../split-layout/index.ts';
 import type { MutationFile } from './bundle-files.ts';
 import type { PageMutationFile } from './coordinator.ts';
-import { git, rawBlobOid, readSplitUnitLayers, splitUnitDivergence, splitUnitPaths, withSession } from './effect-git.ts';
+import { git, rawBlobOid, readSplitUnitLayers, splitConvertingAttribute, splitGitAttributesError, splitUnitDivergence, splitUnitPaths, withSession } from './effect-git.ts';
 import { gitDurabilityPolicy } from './git-durability-policy.ts';
 import { SPLIT_GIT_EFFECT_VERSION } from './effect-model.ts';
 import { fileContentBytes, FileBytes, hashFile, isStreamedContent, type StreamedFileContent } from './large-file.ts';
@@ -545,4 +545,16 @@ export async function splitUnitTracked(binding: WorktreeBinding, files: Readonly
     const [index, tree] = await Promise.all([git(session, ['ls-files', '-z', '--', ...dirs]), born ? git(session, ['ls-tree', '-r', '-z', '--name-only', 'HEAD', '--', ...dirs]) : Promise.resolve({ code: 0, stdout: '', stderr: '' })]);
     return index.code !== 0 || tree.code !== 0 || index.stdout.length > 0 || tree.stdout.length > 0;
   });
+}
+
+/**
+ * Round 6: refuses a split publication (one that writes or removes part files) on a root gbrain commits when Git would
+ * convert the bytes of its head or a manifest part (effect-git.ts splitConvertingAttribute): split_git_attributes,
+ * before anything is written. The door commit and the split Git effect check the same again on the files they commit.
+ */
+export async function assertSplitUnitCommittable(row: Pick<WriteRequest, 'source_id' | 'slug'>, file: SplitTarget, binding: WorktreeBinding): Promise<void> {
+  if (!file.split || !await gbrainCommits(binding, file.root)) return;
+  const rels = [file.path, ...file.split.manifest].map(path => relative(file.root, path).split(sep).join('/'));
+  const attribute = await withSession(file.root, undefined, undefined, false, session => splitConvertingAttribute(session, rels));
+  if (attribute) throw splitGitAttributesError(row.slug, attribute, row.source_id);
 }
