@@ -47,7 +47,122 @@
     ],
     "plugin-variants/*/.codex-plugin/plugin.json": [
       "test/codex-plugin-manifest.test.ts"
-    ]
+    ],
+    ".github/workflows/*.yml": [
+      "test/scripts/run-verify-parallel.test.ts",
+      "test/snapshot-inputs-closure.test.ts",
+      "test/scripts/nightly-issue.test.ts"
+    ],
+    ".github/workflows/actionlint.yml": [
+      "test/scripts/ci-runner-routing.test.ts"
+    ],
+    ".github/workflows/convergence-nightly.yml": [
+      "test/scripts/ci-pr-scope.test.ts",
+      "test/scripts/ci-runner-routing.test.ts"
+    ],
+    ".github/workflows/e2e.yml": [
+      "test/e2e/job-isolation.test.ts",
+      "test/paid-lanes-switch-5903.test.ts",
+      "test/scripts/ci-gates.test.ts",
+      "test/scripts/ci-reuse.test.ts",
+      "test/scripts/ci-runner-routing.test.ts",
+      "test/scripts/e2e-backend-matrix.test.ts",
+      "test/scripts/e2e-provider-key-notice.test.ts",
+      "test/scripts/e2e-wiring.test.ts",
+      "test/scripts/full-ci-workflow.test.ts",
+      "test/scripts/nightly-e2e.test.ts",
+      "test/scripts/release-gate.test.ts",
+      "test/scripts/unit-shard-budget.test.ts",
+      "test/select-e2e.test.ts"
+    ],
+    ".github/workflows/fix-wave-closeout.yml": [
+      "test/scripts/fix-wave-closeout.test.ts"
+    ],
+    ".github/workflows/fix-wave-gate.yml": [
+      "test/scripts/fix-wave-gate.test.ts"
+    ],
+    ".github/workflows/full-ci.yml": [
+      "test/scripts/full-ci-workflow.test.ts"
+    ],
+    ".github/workflows/heavy-tests.yml": [
+      "test/check-bootstrap-guards.test.ts",
+      "test/paid-lanes-switch-5903.test.ts",
+      "test/scripts/ci-gates.test.ts",
+      "test/scripts/ci-runner-routing.test.ts",
+      "test/scripts/heavy-door-workflow.test.ts",
+      "test/scripts/test-stress.test.ts"
+    ],
+    ".github/workflows/macos-validation.yml": [
+      "test/scripts/ci-gates.test.ts",
+      "test/scripts/ci-runner-routing.test.ts"
+    ],
+    ".github/workflows/native-locks.yml": [
+      "test/release-workflow.test.ts",
+      "test/scripts/ci-pr-scope.test.ts",
+      "test/scripts/ci-runner-routing.test.ts",
+      "test/scripts/data-safety-native-workflow.test.ts",
+      "test/scripts/native-lock-prebuilds.test.ts",
+      "test/scripts/native-only-workflow.test.ts",
+      "test/scripts/native-setup-toolchain.test.ts"
+    ],
+    ".github/workflows/nightly-watch.yml": [
+      "test/scripts/ci-health-report.test.ts"
+    ],
+    ".github/workflows/osv-scanner.yml": [
+      "test/scripts/ci-gates.test.ts",
+      "test/scripts/ci-runner-routing.test.ts"
+    ],
+    ".github/workflows/persistence-validation.yml": [
+      "test/scripts/ci-pr-scope.test.ts",
+      "test/scripts/ci-runner-routing.test.ts",
+      "test/scripts/data-safety-native-workflow.test.ts",
+      "test/scripts/e2e-wiring.test.ts",
+      "test/scripts/postgres-unit-arms.test.ts",
+      "test/scripts/test-shard.slow.test.ts",
+      "test/scripts/test-stress.test.ts"
+    ],
+    ".github/workflows/promote-stable.yml": [
+      "test/scripts/promote-stable.test.ts"
+    ],
+    ".github/workflows/release.yml": [
+      "test/binary-self-update.test.ts",
+      "test/check-bootstrap-guards.test.ts",
+      "test/release-workflow.test.ts",
+      "test/scripts/ci-gates.test.ts",
+      "test/scripts/ci-runner-routing.test.ts",
+      "test/scripts/promote-stable.test.ts",
+      "test/scripts/release-gate.test.ts"
+    ],
+    ".github/workflows/semgrep.yml": [
+      "test/scripts/ci-runner-routing.test.ts"
+    ],
+    ".github/workflows/stress.yml": [
+      "test/scripts/stress-gate.test.ts"
+    ],
+    ".github/workflows/test.yml": [
+      "test/check-bootstrap-guards.test.ts",
+      "test/scripts/ci-bounded-run.test.ts",
+      "test/scripts/ci-gates.test.ts",
+      "test/scripts/ci-health-report.test.ts",
+      "test/scripts/ci-manifest-diff.test.ts",
+      "test/scripts/ci-pr-scope.test.ts",
+      "test/scripts/ci-reuse.test.ts",
+      "test/scripts/ci-runner-routing.test.ts",
+      "test/scripts/data-safety-native-workflow.test.ts",
+      "test/scripts/full-ci-workflow.test.ts",
+      "test/scripts/native-only-workflow.test.ts",
+      "test/scripts/promote-stable.test.ts",
+      "test/scripts/release-gate.test.ts",
+      "test/scripts/stress-plan.test.ts",
+      "test/scripts/test-shard.slow.test.ts",
+      "test/scripts/unit-shard-budget.test.ts"
+    ],
+    ".github/workflows/tla-spec.yml": [
+      "test/spec-drain-lease-constants.test.ts"
+    ],
+    "scripts/bench/**": [],
+    "docs/eval/system-one/runners/**": [],
+    "docs/eval/system-one/generators/**": []
   },
   "guards": [
     {
