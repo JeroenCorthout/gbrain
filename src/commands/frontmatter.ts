@@ -45,7 +45,8 @@ import {
 import { collectGitVisibleFiles } from '../core/git-visible-files.ts';
 import { isMarkdownFilePath, pruneDir, slugifyPath } from '../core/sync.ts';
 import { isPathContained } from '../core/path-confine.ts';
-import { isSplitHeadPath, parseHead, partsDirFor } from '../core/split-layout/index.ts';
+import { isSplitHeadPath, parseHead } from '../core/split-layout/index.ts';
+import { assertOneFileWritable } from '../core/split-write-through.ts';
 import { isDeepStrictEqual } from 'util';
 
 /** Test seams: the stream `validate --stdin` reads, and the directory `--staged` runs git in. */
@@ -325,16 +326,23 @@ function readStagedBlobs(paths: string[], cwd = process.cwd()): { root: string; 
  * `validate --fix` on the head of a split page (a head plus part files in its parts directory): the fix may change the
  * head's frontmatter only, so it is written when the fixed head keeps its manifest and its body byte for byte (the parts
  * stay valid and a frontmatter edit verifies as is). Returns the refusal note otherwise, including a head that does not
- * parse or a parts directory beside a file that declares none; null for an ordinary page file.
+ * parse; any other file runs the split preflight (assertOneFileWritable) on the fixed bytes, so a parts directory beside a
+ * file that declares none, or a fix that grows the page past the split threshold, is refused too. Null when the fix may
+ * be written.
  */
 function splitHeadFixRefusal(file: string, content: string, fixed: string): string | null {
   if (!isSplitHeadPath(file)) return null;
   const before = parseHead(content);
-  if (before === null && !existsSync(partsDirFor(file))) return null;
+  if (before === null) {
+    try { assertOneFileWritable(file, fixed); return null; } catch (error) {
+      if ((error as { code?: string } | null)?.code !== 'split_page_unsupported') throw error;
+      return `${(error as Error).message} frontmatter validate --fix writes one whole file, so nothing was written.`;
+    }
+  }
   const after = parseHead(fixed);
-  if (before && !('error' in before) && after && !('error' in after)
+  if (!('error' in before) && after && !('error' in after)
     && isDeepStrictEqual(after.manifest, before.manifest) && after.headBody === before.headBody) return null;
-  return `split_page_unsupported: ${file} is the head of a split page (its part files are in ${partsDirFor(file)}) and this fix would change more than the head's frontmatter, so nothing was written. Edit the head's frontmatter by hand and leave its gbrain_parts block as it is, or read the whole page with gbrain get and, on a brain with a canonical owner, write it through put_page.`;
+  return `split_page_unsupported: ${file} is the head of a split page (its page continues in part files) and this fix would change more than the head's frontmatter, so nothing was written. Edit the head's frontmatter by hand and leave its gbrain_parts block as it is, or read the whole page with gbrain get and, on a brain with a canonical owner, write it through put_page.`;
 }
 
 /** `validate --fix` on a managed brain: name the coordinated repair instead of a bare coordinator error. */

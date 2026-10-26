@@ -49,7 +49,8 @@ import { maintenanceTransaction } from '../persistence/attribution.ts';
 import { managedPersistenceEnabled } from '../persistence/ownership.ts';
 import { clearApprovedSet, loadApprovedSet, previewChangedError, previewHash, saveApprovedSet, type ApprovedSetKey } from '../persistence/preview-approval.ts';
 import { SPLIT_PAGE_UNSUPPORTED } from '../persistence/file-repair.ts';
-import { isSplitHeadPath, partsDirFor } from '../split-layout/paths.ts';
+import { splitThresholdBytes } from '../split-layout/limits.ts';
+import { assertOneFileWritable } from '../split-write-through.ts';
 import { resolveSlugForPath } from '../sync.ts';
 import { isOwnedClone, trackedChanges, urlCloneReadOnly, urlCloneRepairPreviewArgv } from '../url-clone.ts';
 import { afterCursor, type RepairHandler, type RepairItem, type RepairItemOutcome, type RepairListing, type RepairPlan } from './core.ts';
@@ -76,6 +77,14 @@ function git(root: string, args: string[]): string {
 }
 
 /** HEAD's bytes of a root-relative path; null when HEAD has no such file. */
+/** The split preflight on the HEAD bytes the restore writes back as one whole file at `abs` (a split head there included). */
+function splitRestoreRefusal(abs: string, head: string, threshold: number): boolean {
+  try { assertOneFileWritable(abs, head, threshold); return false; } catch (error) {
+    if ((error as { code?: string } | null)?.code === 'split_page_unsupported') return true;
+    throw error;
+  }
+}
+
 function headBytes(root: string, path: string): string | null {
   try { return git(root, ['show', `HEAD:${path}`]); } catch { return null; }
 }
@@ -118,6 +127,7 @@ async function identityChange(engine: BrainEngine, file: ClonedFile): Promise<st
 
 /** Every changed file of every owned clone in scope, proven or refused. */
 async function survey(engine: BrainEngine, sourceIds: string[]): Promise<{ files: ClonedFile[]; listing: RepairListing[] }> {
+  const threshold = await splitThresholdBytes(engine);
   const files: ClonedFile[] = [];
   const listing: RepairListing[] = [];
   const sources = await engine.executeRaw<{ id: string; incarnation: string; local_path: string | null; config: unknown }>(
@@ -136,12 +146,12 @@ async function survey(engine: BrainEngine, sourceIds: string[]): Promise<{ files
     }
     for (const path of paths) {
       const item = `${source.id}:${path}`;
-      if (isSplitHeadPath(path) && existsSync(partsDirFor(join(root, path)))) {
-        listing.push({ item, class: SPLIT_PAGE_UNSUPPORTED, detail: `${path} is a split page head (its page continues in part files), and this repair imports and restores one file, so it is left as it is. Keep or remove that change yourself (git -C ${root} diff HEAD -- ${path} shows it), then preview again: ${preview(source.id)}` });
+      const head = headBytes(root, path);
+      if (head !== null && splitRestoreRefusal(join(root, path), head, threshold)) {
+        listing.push({ item, class: SPLIT_PAGE_UNSUPPORTED, detail: `${path} is a split page head (its page continues in part files), or its restored file would be over the split threshold, and this repair imports and restores one file, so it is left as it is. Keep or remove that change yourself (git -C ${root} diff HEAD -- ${path} shows it), then preview again: ${preview(source.id)}` });
         continue;
       }
       const work = existsSync(join(root, path)) ? readFileSync(join(root, path), 'utf8') : null;
-      const head = headBytes(root, path);
       const proof: Proof = staged.has(path) ? { ok: false, class: 'staged_change', reason: 'the file has a staged change, which gbrain never makes' } : proveFenceRowsOnly(head, work);
       if (!proof.ok) {
         listing.push({ item, class: proof.class, detail: `${proof.reason}, so it is left as it is. Keep or remove that change yourself (git -C ${root} diff HEAD -- ${path} shows it), then preview again: ${preview(source.id)}` });
@@ -195,6 +205,7 @@ async function restoreFile(engine: BrainEngine, file: ClonedFile, runId: string)
   if (!proof.ok || sha256(head!) !== file.head_sha256 || sha256(work!) !== file.work_sha256) {
     return { applied: false, outcome: 'changed_since_preview', detail: { path: file.path } };
   }
+  if (splitRestoreRefusal(abs, head!, await splitThresholdBytes(engine))) return { applied: false, outcome: 'refused', reason: SPLIT_PAGE_UNSUPPORTED, detail: { path: file.path } };
   const backup = createFrontmatterBackup(abs, { sourcePath: file.root, backupRoot: gbrainPath('backups', 'url-clone-fences', runId) });
   const { moved, inserted } = await keepRowsDatabaseOnly(engine, file, proof.added);
   await importFromContent(engine, file.slug, head!, { sourceId: file.source_id, sourcePath: file.path, sourceRoot: file.root, noEmbed: true });

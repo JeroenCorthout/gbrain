@@ -15,12 +15,11 @@
  *   guide:      docs/guides/github-source.md
  */
 
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 
 import type { BrainEngine } from '../core/engine.ts';
-import { opError } from '../core/ops/contract.ts';
-import { partsDirFor } from '../core/split-layout/paths.ts';
+import { assertOneFileWritable } from '../core/split-write-through.ts';
 import {
   renderItemPage,
   renderRepoCard,
@@ -79,9 +78,7 @@ export async function runSourcesDemo(
     ...items.map(item => ({ path: itemPagePath(dir, item.repo, item.number), content: renderItemPage(item) })),
     ...DEMO_REPOS.filter(repo => repoNames.has(repo.full_name)).map(repo => ({ path: repoCardPath(dir, repo.full_name), content: renderRepoCard(repo.full_name, repo) })),
   ];
-  const split = pages.find(page => existsSync(partsDirFor(page.path)));
-  if (split) throw opError('split_page_unsupported', `split_page_unsupported: ${split.path} is a split page head, and the demo writes one whole file, so nothing was written.`,
-    `Give the demo a --dir that holds no brain (the default is ./gbrain-demo).`);
+  for (const page of pages) assertOneFileWritable(page.path, page.content);
   for (const page of pages) {
     mkdirSync(dirname(page.path), { recursive: true });
     writeFileSync(page.path, page.content);
