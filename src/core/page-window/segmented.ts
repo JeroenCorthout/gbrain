@@ -291,12 +291,13 @@ async function readDigest(doc: SegmentedDocument, key: string, view: 'read' | 'm
 }
 
 /**
- * Best effort: a reader that cannot write the cache recomputes next time. Rows of other views go. The `revision` column
+ * Best effort: a reader that cannot write the cache recomputes next time. Older rows of the same view and audience go
+ * (one row each, so trusted and remote readers of one page never evict each other's digest). The `revision` column
  * holds the digest key (read-pins.ts digestKey), so rows written by an older binary under a page revision never match.
  */
 async function writeDigest(doc: SegmentedDocument, key: string, view: 'read' | 'markdown', audience: ViewAudience, d: Digest): Promise<void> {
   try {
-    await doc.engine.executeRaw('DELETE FROM page_view_digests WHERE page_id=$1 AND revision<>$2', [doc.body.pageId, key]);
+    await doc.engine.executeRaw('DELETE FROM page_view_digests WHERE page_id=$1 AND view=$3 AND audience=$4 AND revision<>$2', [doc.body.pageId, key, view, audience]);
     await doc.engine.executeRaw(`INSERT INTO page_view_digests (page_id, revision, view, audience, total_bytes, total_lines, sha256) VALUES ($1, $2, $3, $4, $5, $6, $7)
       ON CONFLICT (page_id, revision, view, audience) DO UPDATE SET total_bytes=EXCLUDED.total_bytes, total_lines=EXCLUDED.total_lines, sha256=EXCLUDED.sha256, created_at=now()`,
     [doc.body.pageId, key, view, audience, d.total_bytes, d.total_lines, d.sha256]);

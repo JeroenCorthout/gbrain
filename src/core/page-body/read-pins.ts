@@ -111,6 +111,13 @@ export async function useReadPin(engine: BrainEngine, want: { token: string; pag
   };
 }
 
+/** Push a live pin's expiry out by READ_PIN_TTL_MS; false when it has expired or was released. */
+export async function renewReadPin(engine: BrainEngine, token: string): Promise<boolean> {
+  const rows = await engine.executeRaw<{ token: string }>(`UPDATE page_read_pins SET expires_at = now() + ($2::bigint * interval '1 millisecond')
+    WHERE token=$1 AND expires_at > now() RETURNING token`, [token, READ_PIN_TTL_MS]).catch(() => [] as { token: string }[]);
+  return rows.length > 0;
+}
+
 export async function releaseReadPin(engine: BrainEngine, token: string): Promise<void> {
   await engine.executeRaw('DELETE FROM page_read_pins WHERE token=$1', [token]).catch(() => undefined);
 }

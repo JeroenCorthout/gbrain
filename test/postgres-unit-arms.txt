@@ -119,8 +119,10 @@ test/large-pages/chunk-retirement-plan.test.ts
 test/large-pages/chunk-visibility.test.ts
 test/large-pages/contextual-reembed-segmented.test.ts
 test/large-pages/credential-reseal-segments.test.ts
+test/large-pages/doctor-oversized-segmented.test.ts
 test/large-pages/doctor-skipped-segmented.test.ts
 test/large-pages/edit-segmented.test.ts
+test/large-pages/export-pinned-stream.test.ts
 test/large-pages/forget-reason-segmented.test.ts
 test/large-pages/forget-scope.test.ts
 test/large-pages/gbra117-segmented-classes-window.test.ts
@@ -147,6 +149,7 @@ test/large-pages/purge-replay-segments.test.ts
 test/large-pages/purge-segment-residue.test.ts
 test/large-pages/purge-segmented-versions-batch.test.ts
 test/large-pages/purge-segments.test.ts
+test/large-pages/read-pins.test.ts
 test/large-pages/recovery-budget-ceiling.slow.test.ts
 test/large-pages/recovery-budget-default.test.ts
 test/large-pages/remote-get-page-privacy.test.ts

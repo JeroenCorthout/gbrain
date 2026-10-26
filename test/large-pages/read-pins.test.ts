@@ -132,6 +132,14 @@ for (const kind of testBackends()) {
       }
     }, 300_000);
 
+    test('trusted and remote readers of one page keep their own cached digest, so neither re-hashes the page for the other', async () => {
+      const slug = await seed();
+      const id = Number((await brain.engine.executeRaw<{ id: number }>("SELECT id FROM pages WHERE source_id='default' AND slug=$1", [slug]))[0]!.id);
+      for (const c of [{ remote: false }, {}] as Caller[]) await markdown(slug, { bytes: { offset: 0, length: 64 } }, c);
+      const rows = await brain.engine.executeRaw<{ audience: string }>("SELECT audience FROM page_view_digests WHERE page_id=$1 AND view='markdown' ORDER BY audience", [id]);
+      expect(rows.map(r => r.audience)).toEqual(['remote', 'trusted']);
+    }, 300_000);
+
     test('an append mid-read continues the pinned read to its end without revision_changed', async () => {
       const slug = await seed();
       for (const c of [{}, { remote: false }] as Caller[]) {
