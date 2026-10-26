@@ -5,11 +5,13 @@
  *
  * 1. Protects: a non-strict source's queued Git effect whose page path became a split unit (a parts directory beside it,
  *    put there outside gbrain) parks on its first attempt as split_page_unsupported (non_strict_source), keeping the
- *    reason and its fix on the parked target, and commits and stages nothing; on a strict source the same check refuses
+ *    reason and its fix on the parked target, and commits and stages nothing; its parked group (doctor parked_effects,
+ *    sources writer status) names that fix and offers no bulk retry, which would only refuse again; on a strict source the same check refuses
  *    outside_door; a strict source's split publication lands in its door commit and its Git effect is push-only,
  *    committing nothing else.
  * 2. Fails when: a Git effect commits a head without its parts or a part without its head, a strict effect stages a
- *    unit path itself, or the refusal is retried PARK_AFTER_FAILURES times instead of parking at once.
+ *    unit path itself, the refusal is retried PARK_AFTER_FAILURES times instead of parking at once, or its parked group
+ *    suggests retry-effects --parked-code.
  * 3. PGLite always; PostgreSQL when DATABASE_URL is set. KB-sized split limits through __setSplitLimitsForTests.
  */
 import { afterEach, describe, expect, test } from 'bun:test';
@@ -19,6 +21,7 @@ import { join } from 'node:path';
 import type { BrainEngine } from '../src/core/engine.ts';
 import { operations, type OperationContext } from '../src/core/operations.ts';
 import { commitGitTargets } from '../src/core/persistence/effect-git.ts';
+import { readParkedGroups } from '../src/core/persistence/parked-groups.ts';
 import { runPersistenceEffects } from '../src/core/persistence/effects.ts';
 import { localHostId } from '../src/core/persistence/identity.ts';
 import { __setSplitLimitsForTests, partsDirFor, SPLIT_MAX_FILE_BYTES_KEY } from '../src/core/split-layout/index.ts';
@@ -68,6 +71,14 @@ for (const backend of testBackends()) describe(`[${backend}] split git layout: o
     expect(data.target_failures).toBeUndefined();
     expect(data.parked).toEqual([{ slug: 'notes/big', error_code: 'split_page_unsupported', reason: 'non_strict_source',
       fix: expect.objectContaining({ ask_user: true, verify: { argv: ['gbrain', 'sources', 'writer', 'status', '--json'] } }) }]);
+    const [group, ...others] = await readParkedGroups(engine, ['default']);
+    expect(others).toEqual([]);
+    expect(group).toMatchObject({ code: 'split_page_unsupported', reason: 'non_strict_source', targets: 1, fix: data.parked[0].fix,
+      command: ['gbrain', 'sources', 'writer', 'status', '--json'] });
+    expect(group!.command).not.toContain('retry-effects');
+    expect(group!.next).toContain('no bulk retry');
+    expect(group!.next).toContain('git-canonical');
+    expect(group!.next).not.toContain('--parked-code');
     expect(pageCommits(root)).toEqual([]);
     expect(git(root, 'diff', '--cached', '--name-only')).toBe('');
   }, { databaseUrl, setup }), 120_000);
