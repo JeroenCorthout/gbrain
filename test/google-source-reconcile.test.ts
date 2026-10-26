@@ -16,11 +16,12 @@
  * Synthetic data only: example.com addresses, hex message/thread ids.
  */
 import { describe, expect, test, beforeAll, afterAll, beforeEach } from 'bun:test';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { PGLiteEngine } from '../src/core/pglite-engine.ts';
+import { partsDirFor } from '../src/core/split-layout/paths.ts';
 import { resetPgliteState } from './helpers/reset-pglite.ts';
 import { withEnv } from './helpers/with-env.ts';
 import type { SyncOpts } from '../src/commands/sync.ts';
@@ -468,6 +469,34 @@ describe('gmail --full reconcile', () => {
         expect(after).not.toContain(bSlug);
         expect(existsSync(join(dir, `${bSlug}.md`))).toBe(false); // file removed too
         expect(existsSync(join(dir, `${aSlug}.md`))).toBe(true);
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('a vanished thread whose page file is a split page is refused (split_page_unsupported) before its row goes: row and files stay, the sweep is partial', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'gsrc-reconcile-split-'));
+    const fx = emptyFx();
+    const vault = makeVault();
+    fx.messages.push(gmsg('18c2f4a9b3d21e01', T_A, daysAgoMs(2)), gmsg('18c2f4a9b3d21e03', T_B, daysAgoMs(3), {
+      headers: { From: 'Dana Example <dana@example.com>', To: 'a@example.com', Subject: 'Contract question' },
+      body: 'Could you confirm the contract terms?',
+    }));
+    try {
+      await insertGoogleSource(dir);
+      await withHome(async () => {
+        await sweep(dir, fx, vault);
+        const bSlug = (await emailSlugs()).find((s) => s.includes('contract-question'))!;
+        const head = join(dir, `${bSlug}.md`);
+        mkdirSync(partsDirFor(head));
+        writeFileSync(join(partsDirFor(head), '0001-00000000.gbpart'), 'A part file of a split page.\n');
+        const page = async () => ({ head: readFileSync(head, 'utf8'), part: readFileSync(join(partsDirFor(head), '0001-00000000.gbpart'), 'utf8'),
+          row: await engine.executeRaw('SELECT compiled_truth, source_path, deleted_at FROM pages WHERE slug = $1', [bSlug]) });
+        const before = await page();
+        fx.messages = fx.messages.filter((m) => m.threadId !== T_B);
+        expect(await sweep(dir, fx, vault, { full: true })).toMatchObject({ status: 'partial', deleted: 0, failedFiles: 1 });
+        expect(await page()).toEqual(before);
       });
     } finally {
       rmSync(dir, { recursive: true, force: true });

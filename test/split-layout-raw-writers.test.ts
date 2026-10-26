@@ -240,8 +240,8 @@ for (const backend of testBackends()) describe(`[${backend}] split git layout: r
     const dream = `${pageFile(head).text.trimEnd()}\n\nA dream edit.\n`;
     expect(await outcomeOf(() => writeDreamPageFile(engine, root, SLUG, 'default', { nativeSourceId: 'default', markdown: dream }))).toContain('split_page_unsupported');
     expect(layout(head)).toEqual(files);
-    expect(await removeDreamPageFile(engine, root, SLUG, 'default', 'default')).toEqual({ removed: true });
-    expect(layout(head)).toEqual({ head: null, parts: null });
+    expect(await removeDreamPageFile(engine, root, SLUG, 'default', 'default')).toMatchObject({ removed: false, held: expect.stringContaining('split_page_unsupported') });
+    expect(layout(head)).toEqual(files);
   }), 120_000);
 
   test('the phantom redirect refuses to merge rows into a split canonical page whose part files would change (split_page_unsupported); files and pages stay', () => withHome(async (home, root) => {
@@ -365,16 +365,67 @@ for (const backend of testBackends()) describe(`[${backend}] split git layout: r
     expect(readdirSync(join(root, 'gh'), { recursive: true }).map(String).sort()).toEqual(listed);
   }), 120_000);
 
-  test('the classic Google connector refuses an edit the part files would carry (split_page_unsupported) before its import, and removes the head with its parts on delete', () => withSplitPage(databaseUrl, async (engine, root, head) => {
+  test('the classic Google connector refuses an edit the part files would carry (split_page_unsupported) before its import, and refuses a delete of the split page before its row goes', () => withSplitPage(databaseUrl, async (engine, root, head) => {
     const summary = { status: 'synced', added: 0, modified: 0, deleted: 0, chunksCreated: 0, embedded: 0, pagesAffected: [], threadsSeen: 0, attachmentInspection: {} } as unknown as GoogleSyncSummary;
     const deps = { managed: null, engine, sourceId: 'default', cfg: { dir: root, account: 'owner@example.invalid' }, opts: {}, entry: {}, log() {}, tick() {} } as unknown as GoogleSyncDeps;
     const before = await snapshot(engine, head);
     expect(await outcomeOf(() => importRendered(deps, `${SLUG}.md`, file.replace('Body line 0001', 'Edited line 0001'), null as never, summary, new Set()))).toContain('split_page_unsupported');
     expect(await snapshot(engine, head)).toEqual(before);
     await engine.executeRaw("UPDATE pages SET source_path = $1 WHERE source_id = 'default' AND slug = $2", [`${SLUG}.md`, SLUG]);
-    await deletePageByRelPath(deps, `${SLUG}.md`, summary);
-    expect(layout(head)).toEqual({ head: null, parts: null });
-    expect(await engine.getPage(SLUG, { sourceId: 'default' })).toBeNull();
+    const stored = await snapshot(engine, head);
+    expect(await outcomeOf(() => deletePageByRelPath(deps, `${SLUG}.md`, summary))).toContain('split_page_unsupported');
+    expect(await snapshot(engine, head)).toEqual(stored);
+    expect(await engine.getPage(SLUG, { sourceId: 'default' })).not.toBeNull();
+    expect(summary.deleted).toBe(0);
+  }), 120_000);
+
+  test('the classic GitHub connector refuses to reconcile away a split item page (split_page_unsupported) before its row goes: row and files stay, the sweep is partial', () => withHome(async (_home, root) => {
+    const { engine, close } = await isolatedSharedSkillsEngine(databaseUrl);
+    try {
+      await withEnv({ CONNECTOR_TEST_TOKEN: 'fixture-token' }, async () => {
+        const repo = 'acme-example/app';
+        const json = (value: unknown) => new Response(JSON.stringify(value), { status: 200, headers: { 'content-type': 'application/json', 'x-ratelimit-remaining': '4900', 'x-ratelimit-reset': String(Math.floor(Date.now() / 1000) + 3600) } });
+        const fetcher = async (url: string) => {
+          const path = new URL(url).pathname;
+          if (path.endsWith('/issues') || path.endsWith('/pulls') || path.endsWith('/comments')) return json([]);
+          if (path === `/repos/${repo}`) return json({ full_name: repo, private: true, default_branch: 'main' });
+          throw new Error(`Unexpected fixture route ${path}`);
+        };
+        const cfg = parseGitHubSourceConfig({ kind: 'github', gh_scope: 'repos', gh_repos: repo, gh_token_env: 'CONNECTOR_TEST_TOKEN' }, root);
+        const slug = `gh/${repo}/1`, head = itemPagePath(root, repo, 1);
+        await engine.putPage(slug, { type: 'note', title: 'Split example', compiled_truth: body });
+        await engine.executeRaw('UPDATE pages SET source_path = $1 WHERE slug = $2', [`${slug}.md`, slug]);
+        await writeSplitPage(root, `${slug}.md`, file);
+        const item = async () => ({ files: layout(head), row: await engine.executeRaw('SELECT compiled_truth, source_path, deleted_at FROM pages WHERE slug = $1', [slug]) });
+        const before = await item();
+        expect(await runGitHubSync(engine, 'default', cfg, { noPull: true, noEmbed: true, full: true } as never, fetcher)).toMatchObject({ status: 'partial', deleted: 0, failedFiles: 1 });
+        expect(await item()).toEqual(before);
+      });
+    } finally { await close(); }
+  }), 120_000);
+
+  test('the phantom redirect refuses a phantom page file with a parts directory (split_page_unsupported) before it merges a row: files and pages stay', () => withHome(async (home, root) => {
+    _resetWriteThroughCacheForTest();
+    const { engine, close } = await isolatedSharedSkillsEngine(databaseUrl);
+    try {
+      await withEnv({ GBRAIN_AUDIT_DIR: join(home, 'audit') }, async () => {
+        await engine.executeRaw("UPDATE sources SET local_path = $1 WHERE id = 'default'", [root]);
+        const canonicalBody = '# Alice Example\n\nA short synthetic canonical page.\n';
+        for (const [slug, title, text] of [['people/alice-example', 'Alice Example', canonicalBody], ['alice', 'alice', PHANTOM_BODY]] as const) {
+          const page = await engine.putPage(slug, { type: 'person', title, compiled_truth: text, timeline: '', frontmatter: {} });
+          await engine.executeRaw('UPDATE pages SET source_path = $1 WHERE id = $2', [`${slug}.md`, page.id]);
+        }
+        mkdirSync(join(root, 'people'), { recursive: true });
+        writeFileSync(join(root, 'people/alice-example.md'), `---\ntype: person\ntitle: Alice Example\n---\n\n${canonicalBody}`);
+        const phantom = join(root, 'alice.md');
+        writeFileSync(phantom, PHANTOM_BODY);
+        mkdirSync(partsDirFor(phantom));
+        writeFileSync(join(partsDirFor(phantom), '0001-00000000.gbpart'), 'A part file of an earlier split layout.\n');
+        const before = { ...(await snapshot(engine, phantom)), canonical: readFileSync(join(root, 'people/alice-example.md'), 'utf8') };
+        expect(JSON.stringify(await runPhantomRedirectPass(engine, root, 'default', false))).toContain('split_page_unsupported');
+        expect({ ...(await snapshot(engine, phantom)), canonical: readFileSync(join(root, 'people/alice-example.md'), 'utf8') }).toEqual(before);
+      });
+    } finally { await close(); _resetWriteThroughCacheForTest(); }
   }), 120_000);
 
   test('the classic GitHub connector refuses an item that would be stored as a split page (split_page_unsupported) before its import; a short item is one file', () => withHome(async (_home, root) => {

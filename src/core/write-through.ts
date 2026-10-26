@@ -33,7 +33,7 @@ import { readSlugRootMode, resolveSlugRootMode, type SlugRootMode } from './sync
 import { resolveSlugForPath } from './sync.ts';
 import { PUSH_SCAN_MAX_FILE_BYTES } from './page-size-policy.ts';
 import { splitThresholdBytes } from './split-layout/limits.ts';
-import { assertSplitWritable, PageFileChanged, readPageFileText, removeSplitPageFile, writeSplitPageFile } from './split-write-through.ts';
+import { assertPageFileRemovable, assertSplitWritable, PageFileChanged, readPageFileText, writeSplitPageFile } from './split-write-through.ts';
 import { canonicalFilesystemPath } from './persistence/root-registry.ts';
 import {
   isDurabilityHardened, commitWriteThroughFile, currentBranch, getLastPushOutcome,
@@ -601,8 +601,11 @@ export interface DeleteThroughResult {
    *   - file_changed: the caller passed `expectedFileBytes` and the page file
    *     (F' for a split head) no longer holds them (an edit landed after the
    *     caller read it) — kept.
+   *   - split_page_unsupported: the file is a split page (a head plus part
+   *     files), which only the publication door removes — kept, with the
+   *     refusal logged.
    */
-  skipped?: 'disabled_by_config' | 'url_clone' | 'file_not_present' | 'file_changed' | Extract<PageWriteTarget, { ok: false }>['skipped'];
+  skipped?: 'disabled_by_config' | 'url_clone' | 'file_not_present' | 'file_changed' | 'split_page_unsupported' | Extract<PageWriteTarget, { ok: false }>['skipped'];
   /** Set when the unlink itself threw (EACCES, EPERM, read-only mount). */
   error?: string;
 }
@@ -665,9 +668,15 @@ export async function deletePageThrough(
       if (file.hold || file.text !== opts.expectedFileBytes) return { removed: false, path: filePath, skipped: 'file_changed' };
     }
 
+    try {
+      assertPageFileRemovable(filePath);
+    } catch (error) {
+      if ((error as { code?: string }).code !== 'split_page_unsupported') throw error;
+      opts.logger?.warn(`[write-through] ${slug}: ${(error as Error).message}`);
+      return { removed: false, path: filePath, skipped: 'split_page_unsupported' };
+    }
     assertSourceFilesystemActive();
-    const paths = removeSplitPageFile(filePath, writeRoot);
-    if (!paths) unlinkSync(filePath);
+    unlinkSync(filePath);
     // Mirror writePageThrough (#2426): on a durability-hardened repo, commit
     // the removal (path-limited) so the post-commit hook pushes it. Pre-fix
     // the deletion sat in the working tree as an uncommitted ` D` — invisible
@@ -678,7 +687,7 @@ export async function deletePageThrough(
     let committed = false;
     try {
       if (isDurabilityHardened(writeRoot)) {
-        committed = commitWriteThroughFile(writeRoot, filePath, slug, 'delete write-through', paths ?? []);
+        committed = commitWriteThroughFile(writeRoot, filePath, slug, 'delete write-through');
       }
     } catch { /* best-effort */ }
     return { removed: true, path: filePath, ...(committed ? { committed } : {}) };

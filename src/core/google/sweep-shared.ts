@@ -14,7 +14,7 @@ import { connectorRender } from '../connectors/connector-text.ts';
 import { isWriteTargetContained } from '../path-confine.ts';
 import { mkdirPrivate } from '../atomic-write.ts';
 import { replaceableFile } from '../facts/file-body-guard.ts';
-import { PageFileChanged, assertSplitWritable, readPageFileText, removeSplitPageFile, writeSplitPageFile } from '../split-write-through.ts';
+import { PageFileChanged, assertPageFileRemovable, assertSplitWritable, readPageFileText, writeSplitPageFile } from '../split-write-through.ts';
 import { FACTS_FENCE_BEGIN, FACTS_FENCE_END, replaceOrInsertFactsFence } from '../facts-fence.ts';
 import { TAKES_FENCE_BEGIN } from '../takes-fence.ts';
 import { conceptPreservationHold, preserveCanonicalFences } from '../cycle/concept-publication.ts';
@@ -250,13 +250,15 @@ export async function deletePageByRelPath(
     for (const row of rows) if (await deps.managed.delete(row.slug, relPath)) summary.deleted++;
     return;
   }
+  // Same containment guard as the write path: a hostile/corrupt DB path
+  // carrying `../` must never unlink outside the managed dir. A split page
+  // is refused before its rows are deleted, so nothing changes.
+  const target = join(deps.cfg.dir, relPath);
+  const contained = isWriteTargetContained(target, deps.cfg.dir);
+  if (contained) assertPageFileRemovable(target);
   if (rows.length > 0) {
     await deps.engine.deletePages(rows.map((r) => r.slug), { sourceId: deps.sourceId });
     summary.deleted += rows.length;
   }
-  // Same containment guard as the write path: a hostile/corrupt DB path
-  // carrying `../` must never unlink outside the managed dir.
-  const target = join(deps.cfg.dir, relPath);
-  if (!isWriteTargetContained(target, deps.cfg.dir)) return;
-  if (!existsSync(target) || !removeSplitPageFile(target, deps.cfg.dir)) rmSync(target, { force: true });
+  if (contained) rmSync(target, { force: true });
 }

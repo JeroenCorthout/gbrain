@@ -33,7 +33,7 @@ import { deletePageThrough, isWriteThroughDisabled, resolvePageWriteTarget, writ
 import { urlCloneReadOnly } from '../url-clone.ts';
 import { gitChildEnv } from '../git-env.ts';
 import { fileDatabaseDriftToken, replaceableFile } from '../facts/file-body-guard.ts';
-import { PageFileChanged, readPageFileText, removeSplitPageFile, writePageTemp, writeSplitPageFile } from '../split-write-through.ts';
+import { PageFileChanged, assertPageFileRemovable, readPageFileText, writePageTemp, writeSplitPageFile } from '../split-write-through.ts';
 
 export const DERIVED_WRITE_THROUGH_KEYS = {
   extract_atoms: 'cycle.extract_atoms.write_through',
@@ -224,8 +224,8 @@ export async function writeDreamPageFile(engine: BrainEngine, brainDir: string, 
 /**
  * GBRA-161 PR 4: remove the file of a dream page a generation retired, resolved the way `writeDreamPageFile` wrote it, only
  * when the retired page (or one of its versions) holds everything in it; re-read right before the unlink. A file holding
- * an edit the database lacks stays, with its `file_database_drift` entry returned as `held`. A split page head is compared as
- * its page file F' and removed with its part files.
+ * an edit the database lacks stays, with its `file_database_drift` entry returned as `held`. A split page stays as it is,
+ * its `split_page_unsupported` refusal returned as `held`: only the publication door removes a head and its parts.
  */
 export async function removeDreamPageFile(engine: BrainEngine, brainDir: string, slug: string, sourceId: string,
   nativeSourceId: string): Promise<{ removed: boolean; held?: string }> {
@@ -235,12 +235,18 @@ export async function removeDreamPageFile(engine: BrainEngine, brainDir: string,
   const filePath = target.ok ? target.filePath
     : sourceId === nativeSourceId ? join(brainDir, `${slug}.md`) : join(brainDir, '.sources', sourceId, `${slug}.md`);
   if (!existsSync(filePath)) return { removed: false };
+  try {
+    assertPageFileRemovable(filePath);
+  } catch (error) {
+    if ((error as { code?: string }).code !== 'split_page_unsupported') throw error;
+    return { removed: false, held: `${slug} (${(error as Error).message})` };
+  }
   const check = await replaceableFile(engine, sourceId, slug, filePath);
   const file = readPageFileText(filePath);
   if (!check.ok || file.hold || file.text !== check.expectedFileBytes) {
     return { removed: false, held: fileDatabaseDriftToken(slug, sourceId, 'before', "the retired dream page's file was not removed") };
   }
-  if (!removeSplitPageFile(filePath, target.ok ? target.writeRoot : brainDir)) rmSync(filePath, { force: true });
+  rmSync(filePath, { force: true });
   return { removed: true };
 }
 

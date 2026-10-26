@@ -61,7 +61,7 @@ import { isAborted } from '../abort-check.ts';
 import { logPhantomEvent, type PhantomOutcome } from '../facts/phantom-audit.ts';
 import { MOVE_WITHDRAWAL_SUBJECT_SQL } from '../facts/withdrawal-schema.ts';
 import { isWriteThroughDisabled, resolvePageWriteTarget } from '../write-through.ts';
-import { assertSplitWritable, oneFileWriteRefusal, readPageFileText, removeSplitPageFile, writePageTemp, writeSplitPageFile } from '../split-write-through.ts';
+import { assertPageFileRemovable, assertSplitWritable, oneFileWriteRefusal, readPageFileText, writePageTemp, writeSplitPageFile } from '../split-write-through.ts';
 import { fileBodyMatchesStored, fileDatabaseDriftToken, mirrorFileBody, readStoredBody, replaceStoredBody, replaceableFile } from '../facts/file-body-guard.ts';
 import { recordRenameAlias } from '../page-state/rename-alias.ts';
 import { maintenanceTransaction } from '../persistence/attribution.ts';
@@ -686,6 +686,12 @@ export async function tryRedirectPhantom(
   // the canonical's database body.
   const writeThroughOff = await isWriteThroughDisabled(engine);
   const phantomPath = path.join(brainDir, `${page.slug}.md`);
+  try {
+    if (!writeThroughOff) assertPageFileRemovable(phantomPath);
+  } catch (error) {
+    if ((error as { code?: string }).code !== 'split_page_unsupported') throw error;
+    return driftHold(page.slug, sourceId, canonical, `${page.slug} (${(error as Error).message})`);
+  }
   const phantomFile = writeThroughOff ? null : await replaceableFile(engine, sourceId, page.slug, phantomPath);
   if (phantomFile && !phantomFile.ok) return driftHold(page.slug, sourceId, canonical, phantomFileDriftToken(page.slug, sourceId, 'before'));
 
@@ -741,7 +747,7 @@ export async function tryRedirectPhantom(
     if (current !== null && current !== phantomFile.expectedFileBytes) held = phantomFileDriftToken(page.slug, sourceId, 'during');
     else if (current !== null) {
       try {
-        if (!removeSplitPageFile(phantomPath, brainDir)) fs.unlinkSync(phantomPath);
+        fs.unlinkSync(phantomPath);
       } catch (err) {
         // ENOENT is fine (someone else got there first). Anything else
         // is logged but doesn't unwind the redirect — the next sync will

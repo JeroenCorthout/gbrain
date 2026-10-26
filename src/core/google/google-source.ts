@@ -71,6 +71,7 @@ export type { GoogleSourceConfig } from './types.ts';
 export { runGoogleAttachmentBackfill } from './attachment-backfill.ts';
 export { parseGoogleSourceConfig } from './source-config.ts';
 import { parseGoogleSourceConfig } from './source-config.ts';
+import { assertPageFileRemovable } from '../split-write-through.ts';
 
 // ── Config ───────────────────────────────────────────────────────────────────
 
@@ -615,14 +616,24 @@ async function reconcileGmailDeletes(
     for (const page of stale) if (await deps.managed.delete(page.slug, page.source_path)) summary.deleted++;
     return;
   }
-  await deps.engine.deletePages(stale.map((s) => s.slug), { sourceId: deps.sourceId });
-  for (const s of stale) {
-    if (!s.source_path) continue;
-    // Containment guard mirrors the write path (defense-in-depth on DB rows).
-    const target = join(deps.cfg.dir, s.source_path);
-    if (isWriteTargetContained(target, deps.cfg.dir)) rmSync(target, { force: true });
-  }
-  summary.deleted += stale.length;
+  // Containment guard mirrors the write path (defense-in-depth on DB rows). A
+  // split page is refused before any row goes: its row and files stay.
+  const contained = (s: { source_path: string | null }) => s.source_path !== null && isWriteTargetContained(join(deps.cfg.dir, s.source_path), deps.cfg.dir);
+  const removable = stale.filter((s) => {
+    try {
+      if (contained(s)) assertPageFileRemovable(join(deps.cfg.dir, s.source_path!));
+      return true;
+    } catch (error) {
+      if ((error as { code?: string }).code !== 'split_page_unsupported') throw error;
+      deps.log(`[google] ${(error as Error).message}`);
+      summary.failedFiles++;
+      summary.status = 'partial';
+      return false;
+    }
+  });
+  await deps.engine.deletePages(removable.map((s) => s.slug), { sourceId: deps.sourceId });
+  for (const s of removable) if (contained(s)) rmSync(join(deps.cfg.dir, s.source_path!), { force: true });
+  summary.deleted += removable.length;
 }
 
 // ── Extract + embed (mirrors github-source's size-gated tail) ───────────────

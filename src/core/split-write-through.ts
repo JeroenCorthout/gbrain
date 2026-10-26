@@ -6,18 +6,16 @@
  * (`split_page_incomplete`), so no order of writing a head and parts one by one survives a crash between them. An
  * unmanaged writer therefore writes only a unit whose parts all stay as they are (a new head, renamed into place
  * atomically) and refuses `split_page_unsupported` before any file is written when a part would be written or
- * removed, including a page that would grow into the layout or shrink out of it. A refused write leaves every file as
- * it was. Callers hold the source filesystem lock.
+ * removed, including a page that would grow into the layout or shrink out of it. A remover never removes a split page
+ * (`assertPageFileRemovable`). A refused write leaves every file as it was. Callers hold the source filesystem lock.
  */
-import { existsSync, lstatSync, readFileSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { existsSync, lstatSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { atomicWriteFileSync } from './atomic-write.ts';
 import type { BrainEngine } from './engine.ts';
-import { flushDirectory } from './fs-durable.ts';
 import { opError, type OperationError } from './ops/contract.ts';
 import type { MutationFile } from './persistence/bundle-files.ts';
 import { hashFile } from './persistence/large-file.ts';
-import { partFilesOnly, releaseSplitTargets, removeEmptyPartsDir, splitKeptPartsChanged, splitPublicationTargets, type SplitFileFields } from './persistence/split-files.ts';
+import { releaseSplitTargets, splitKeptPartsChanged, splitPublicationTargets, type SplitFileFields } from './persistence/split-files.ts';
 import { parseHead } from './split-layout/head.ts';
 import { parseSplitThreshold } from './split-layout/limits.ts';
 import { readPageFile, type PageFileHold } from './split-layout/page-file.ts';
@@ -92,10 +90,29 @@ export async function oneFileWriteRefusal(engine: BrainEngine, filePath: string,
  */
 export function assertOneFileWritable(filePath: string, content: string | Uint8Array, threshold = parseSplitThreshold(null)): void {
   if (!isSplitHeadPath(filePath)) return;
-  const size = statSync(filePath, { throwIfNoEntry: false })?.size ?? 0;
   const bytes = typeof content === 'string' ? Buffer.byteLength(content) : content.byteLength;
-  if (bytes > threshold || lstatSync(partsDirFor(filePath), { throwIfNoEntry: false })
-    || (size > 0 && size <= threshold && parseHead(readFileSync(filePath, 'utf8')) !== null)) throw splitPageUnsupported(filePath);
+  if (bytes > threshold || isSplitPageFile(filePath, threshold)) throw splitPageUnsupported(filePath);
+}
+
+/**
+ * True when the file at `filePath` is a split page: a head path whose parts directory exists, or whose text (at most
+ * `threshold` bytes) carries a `gbrain_parts` manifest whether or not its parts directory exists.
+ */
+export function isSplitPageFile(filePath: string, threshold = parseSplitThreshold(null)): boolean {
+  if (!isSplitHeadPath(filePath)) return false;
+  if (lstatSync(partsDirFor(filePath), { throwIfNoEntry: false })) return true;
+  const size = statSync(filePath, { throwIfNoEntry: false })?.size ?? 0;
+  return size > 0 && size <= threshold && parseHead(readFileSync(filePath, 'utf8')) !== null;
+}
+
+/**
+ * The check of every removal outside the publication door (unlink, rm or rename over a page path), called before the
+ * remover's first database or file change: throws `split_page_unsupported`, removing nothing, when the file at
+ * `filePath` is a split page (`isSplitPageFile`). A remover outside the door cannot remove a head and its parts as one
+ * unit, nor prove they hold only what it compared, so the page goes only through the door.
+ */
+export function assertPageFileRemovable(filePath: string): void {
+  if (isSplitPageFile(filePath)) throw splitPageOutsideDoor(filePath, 'removed');
 }
 
 /**
@@ -112,6 +129,13 @@ export function writePageTemp(tmpPath: string, filePath: string, content: string
 function splitPageUnsupported(filePath: string): OperationError {
   return opError('split_page_unsupported', 'split_page_unsupported: a split page whose part files would change cannot be written outside the publication door.',
     `${filePath} is, or would become, a split page (a head plus part files in ${partsDirFor(filePath)}) whose part files this write changes. A writer outside the publication door has no recovery record for a head and parts written one by one, so nothing was written. On a brain with a canonical owner the page is written through its door; otherwise ask the user how the page should be edited.`);
+}
+
+/** The refusal of a removal or unverified overwrite outside the publication door of the split page at `filePath`, naming the door. */
+function splitPageOutsideDoor(filePath: string, action: 'removed' | 'overwritten'): OperationError {
+  return opError('split_page_unsupported', `split_page_unsupported: ${filePath} is a split page (a head plus part files in ${partsDirFor(filePath)}), so it was not ${action} outside the publication door; nothing changed in the files or the database. `
+    + 'Change it through the door: edit or delete the head and its parts directory in the checkout and publish them with gbrain git commit-push, write or delete the page with put_page or delete_page on a brain with a canonical owner, or change how it is stored with gbrain pages split-storage <slug> --source <id> (preview, then --apply).',
+    'A writer outside the publication door cannot prove that the head and parts it would replace or remove hold only what it compared, and has no recovery record for removing them one by one. Ask the user how the page should change, then make the change through the door.');
 }
 
 /**
@@ -138,17 +162,3 @@ export async function writeSplitPageFile(engine: BrainEngine, filePath: string, 
   }
 }
 
-/**
- * Removes the split page at `filePath`: the head first (a crash then leaves unreferenced parts, never a head naming a
- * missing part), then every part file and the parts directory. Null, removing nothing, when the path has no parts
- * directory. Refuses `split_parts_unexpected` for anything in the parts directory that is not a part file.
- */
-export function removeSplitPageFile(filePath: string, root: string): string[] | null {
-  if (!isSplitHeadPath(filePath) || !lstatSync(partsDirFor(filePath), { throwIfNoEntry: false })) return null;
-  const parts = partFilesOnly(filePath, root);
-  unlinkSync(filePath);
-  flushDirectory(dirname(filePath));
-  for (const part of parts) unlinkSync(part);
-  removeEmptyPartsDir(filePath);
-  return [filePath, ...parts];
-}

@@ -121,8 +121,9 @@ for (const backend of testBackends()) describe(`[${backend}] split git layout: t
     expect(layout(root)).toEqual(broken);
   }), 120_000);
 
-  test('deletePageThrough removes the head and every part', () => withSplitPage(databaseUrl, async (engine, root) => {
-    expect(await deletePageThrough(engine, SLUG, { expectedFileBytes: file })).toMatchObject({ removed: true, path: join(root, SLUG + '.md') });
-    expect(layout(root)).toEqual({ head: null, parts: null });
+  test('deletePageThrough refuses a split page (split_page_unsupported), even bound to its bytes: the head and every part stay', () => withSplitPage(databaseUrl, async (engine, root) => {
+    const before = layout(root);
+    expect(await deletePageThrough(engine, SLUG, { expectedFileBytes: file })).toEqual({ removed: false, path: join(root, SLUG + '.md'), skipped: 'split_page_unsupported' });
+    expect(layout(root)).toEqual(before);
   }), 120_000);
 });

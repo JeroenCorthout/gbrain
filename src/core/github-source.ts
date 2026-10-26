@@ -46,7 +46,7 @@ import { dirname, join, relative } from 'node:path';
 import type { BrainEngine } from './engine.ts';
 import type { SyncOpts } from '../commands/sync.ts';
 import { isWriteTargetContained } from './path-confine.ts';
-import { PageFileChanged, assertSplitWritable, readPageFileText, removeSplitPageFile, writePageTemp, writeSplitPageFile } from './split-write-through.ts';
+import { PageFileChanged, assertPageFileRemovable, assertSplitWritable, readPageFileText, writePageTemp, writeSplitPageFile } from './split-write-through.ts';
 import { createProgress, startHeartbeat } from './progress.ts';
 import { getCliOptions, cliOptsToProgressOptions } from './cli-options.ts';
 import { replaceableFile } from './facts/file-body-guard.ts';
@@ -996,11 +996,6 @@ async function materializePage(deps: GitHubSyncDeps, filePath: string, content: 
   } finally { rmSync(tmpPath, { force: true }); }
 }
 
-/** Removes an item file the connector owns; a split page head goes together with its part files, never alone. */
-function removeItemFile(root: string, filePath: string): void {
-  if (!existsSync(filePath) || !removeSplitPageFile(filePath, root)) rmSync(filePath, { force: true });
-}
-
 async function storedPage(deps: GitHubSyncDeps, filePath: string, apiUpdatedAt: string) {
   const slug = relative(deps.cfg.dir, filePath).replace(/\\/g, '/').replace(/\.md$/, '');
   if (!deps.managed && !await isWriteThroughDisabled(deps.engine) && !isSourceDbOnlySlug(deps.cfg.dir, slugifyPath(slug), 'refuse')) {
@@ -1071,21 +1066,31 @@ async function deleteStalePages(
     for (const slug of plan.staleSlugs) if (await deps.managed.delete(slug, bySlug.get(slug) ?? null)) summary.deleted++;
     return;
   }
+  // A split page is refused before any row goes: its row and files stay, and the sweep reports it.
+  const stale = plan.staleSlugs.filter((slug) => {
+    const rel = bySlug.get(slug);
+    try {
+      if (rel) assertPageFileRemovable(join(deps.cfg.dir, rel));
+      return true;
+    } catch (error) {
+      if ((error as { code?: string }).code !== 'split_page_unsupported') throw error;
+      deps.client.log?.(`[github] ${(error as Error).message}`);
+      summary.failedFiles++; summary.status = 'partial';
+      return false;
+    }
+  });
   const batchSize = 500;
-  for (let i = 0; i < plan.staleSlugs.length; i += batchSize) {
-    const batch = plan.staleSlugs.slice(i, i + batchSize);
+  for (let i = 0; i < stale.length; i += batchSize) {
+    const batch = stale.slice(i, i + batchSize);
     await deps.engine.deletePages(batch, { sourceId: deps.sourceId });
     // We own these files (unlike git sources): remove them so a re-add of
     // the same number starts from a clean page.
     for (const slug of batch) {
       const rel = bySlug.get(slug);
-      if (!rel) continue;
-      try {
-        removeItemFile(deps.cfg.dir, join(deps.cfg.dir, rel));
-      } catch { /* best-effort */ }
+      if (rel) rmSync(join(deps.cfg.dir, rel), { force: true });
     }
   }
-  summary.deleted += plan.staleSlugs.length;
+  summary.deleted += stale.length;
 }
 
 /**
@@ -1415,11 +1420,12 @@ async function refreshSingleItem(
       for (const row of rows) if (await deps.managed.delete(row.slug, relative(deps.cfg.dir, filePath).replace(/\\/g, '/'))) summary.deleted++;
       return;
     }
+    assertPageFileRemovable(filePath);
     if (rows.length > 0) {
       await deps.engine.deletePages([slug], { sourceId: deps.sourceId });
       summary.deleted += rows.length;
     }
-    removeItemFile(deps.cfg.dir, filePath);
+    rmSync(filePath, { force: true });
     return;
   }
   const data = await fetchItemData(repo, item.number, item.kind, deps.client, { signal: deps.opts.signal });
