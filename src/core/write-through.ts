@@ -22,7 +22,7 @@ import { hasSourceFilesystemLock, withSourceFilesystemLock, assertSourceFilesyst
  * only does "row exists + repo is a real dir → render + atomic write".
  */
 
-import { existsSync, statSync, mkdirSync, unlinkSync, readdirSync, readFileSync } from 'fs';
+import { existsSync, statSync, mkdirSync, unlinkSync, readdirSync } from 'fs';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'path';
 import { atomicWriteFileSync } from './atomic-write.ts';
 import type { BrainEngine } from './engine.ts';
@@ -31,7 +31,8 @@ import { isWriteTargetContained, msysToNativePath } from './path-confine.ts';
 import { readSlugRootMode, resolveSlugRootMode, type SlugRootMode } from './sync-anchor.ts';
 import { resolveSlugForPath } from './sync.ts';
 import { PUSH_SCAN_MAX_FILE_BYTES } from './page-size-policy.ts';
-import { partsDirFor } from './split-layout/paths.ts';
+import { splitThresholdBytes } from './split-layout/limits.ts';
+import { PageFileChanged, readPageFileText, removeSplitPageFile, writeSplitPageFile } from './split-write-through.ts';
 import { canonicalFilesystemPath } from './persistence/root-registry.ts';
 import {
   isDurabilityHardened, commitWriteThroughFile, currentBranch, getLastPushOutcome,
@@ -93,16 +94,15 @@ export interface WriteThroughResult {
    *     (macOS/Windows default), the target directory already holds a
    *     differently-cased entry that the FS folds onto this page's file, so
    *     writing would silently clobber the OTHER slug's file (#2831) — refused.
-   *   - file_changed: the caller passed `expectedFileBytes` and the file on
-   *     disk no longer holds them (an edit landed after the caller read it) —
-   *     the edit is kept and nothing is written.
-   *   - over_push_scan_cap: the rendered file is over the pre-push secret-scan
-   *     cap (PUSH_SCAN_MAX_FILE_BYTES), so committing it would block every push.
-   *   - split_page_unsupported: the file is a split page head (Wave B PR 5) with
-   *     its parts directory beside it; only the publication door lays a page out
-   *     as a head plus parts, so the head and its parts are left as they are.
+   *   - file_changed: the caller passed `expectedFileBytes` and the page file on
+   *     disk (F' for a split head) no longer holds them (an edit landed after the
+   *     caller read it, or a split head's parts no longer verify) — the edit is
+   *     kept and nothing is written.
+   *   - over_push_scan_cap: the rendered file stays one file (at or under the
+   *     split threshold) yet is over the pre-push secret-scan cap
+   *     (PUSH_SCAN_MAX_FILE_BYTES), so committing it would block every push.
    */
-  skipped?: 'disabled_by_config' | 'url_clone' | 'no_repo_configured' | 'repo_not_found' | 'source_repo_belongs_to_other_source' | 'page_not_found_after_write' | 'path_escapes_source_root' | 'case_insensitive_collision' | 'file_changed' | 'over_push_scan_cap' | 'split_page_unsupported';
+  skipped?: 'disabled_by_config' | 'url_clone' | 'no_repo_configured' | 'repo_not_found' | 'source_repo_belongs_to_other_source' | 'page_not_found_after_write' | 'path_escapes_source_root' | 'case_insensitive_collision' | 'file_changed' | 'over_push_scan_cap';
   /** Caller-visible advisory when a permitted DB-only outcome is still risky. */
   warning?: string;
   /** Set when the render/write/rename itself threw (EACCES, ENOTDIR, disk full). */
@@ -464,8 +464,10 @@ export async function writePageThrough(
       frontmatterOverrides: opts.frontmatterOverrides,
     });
     // The pre-push secret scan refuses to push any file it cannot scan, so a
-    // file over its cap would block every later push of the brain repo.
-    if (Buffer.byteLength(md, 'utf-8') > PUSH_SCAN_MAX_FILE_BYTES) {
+    // file over its cap would block every later push of the brain repo. A page
+    // over the split threshold is written as a head plus parts, each under it.
+    const mdBytes = Buffer.byteLength(md, 'utf-8');
+    if (mdBytes > PUSH_SCAN_MAX_FILE_BYTES && mdBytes <= await splitThresholdBytes(engine)) {
       opts.logger?.warn(`[write-through] ${slug}: the rendered file is over the ${PUSH_SCAN_MAX_FILE_BYTES}-byte pre-push secret-scan cap — file not written (DB row is intact)`);
       return { written: false, skipped: 'over_push_scan_cap' };
     }
@@ -498,10 +500,13 @@ export async function writePageThrough(
     // EEXIST when the directory already exists (POSIX no-ops it). That aborts
     // the put_page / enrich / capture write-through whenever the prefix dir
     // already exists, silently leaving the DB and the .md file plane out of sync.
-    const fileChanged = () => opts.expectedFileBytes !== undefined
-      && (existsSync(filePath) ? readFileSync(filePath, 'utf-8') : null) !== opts.expectedFileBytes;
+    // `expectedFileBytes` is the page file: F' for a split head, whose head and parts are written as one unit.
+    const fileChanged = () => {
+      if (opts.expectedFileBytes === undefined) return false;
+      const file = readPageFileText(filePath);
+      return file.hold !== undefined || file.text !== opts.expectedFileBytes;
+    };
     if (fileChanged()) return { written: false, skipped: 'file_changed' };
-    if (existsSync(partsDirFor(filePath))) return { written: false, path: filePath, skipped: 'split_page_unsupported' };
 
     await engine.transaction(tx => bindOrigin(tx, { sourceId, slug, sourcePath: sourcePathToBind, onlyIfUnset: true, liveOnly: true }));
     assertSourceFilesystemActive();
@@ -509,10 +514,13 @@ export async function writePageThrough(
     assertSourceFilesystemActive();
     if (fileChanged()) return { written: false, skipped: 'file_changed' };
     const changedWhileStaging = new Error('file_changed');
+    const verify = () => { assertSourceFilesystemActive(); if (fileChanged()) throw changedWhileStaging; };
+    let paths: string[] | null;
     try {
-      atomicWriteFileSync(filePath, md, { verify: () => { assertSourceFilesystemActive(); if (fileChanged()) throw changedWhileStaging; } });
+      paths = await writeSplitPageFile(engine, filePath, writeRoot, md, verify);
+      if (!paths) atomicWriteFileSync(filePath, md, { verify });
     } catch (error) {
-      if (error === changedWhileStaging) return { written: false, skipped: 'file_changed' };
+      if (error === changedWhileStaging || error instanceof PageFileChanged) return { written: false, skipped: 'file_changed' };
       throw error;
     }
 
@@ -528,7 +536,7 @@ export async function writePageThrough(
     try {
       assertSourceFilesystemActive();
       if (isDurabilityHardened(writeRoot)) {
-        committed = commitWriteThroughFile(writeRoot, filePath, slug);
+        committed = commitWriteThroughFile(writeRoot, filePath, slug, 'write-through', paths ?? []);
         if (committed) {
           pushed = 'pending';
           lastPushStatus = getLastPushOutcome(currentBranch(writeRoot), writeRoot);
@@ -567,12 +575,11 @@ export interface DeleteThroughResult {
    *   - url_clone: the source is a clone gbrain owns and pulls (#6946); its checkout is never written.
    *   - file_not_present: the page had no artifact on disk (DB-only page, or
    *     already removed by hand) — a clean no-op, not a failure.
-   *   - file_changed: the caller passed `expectedFileBytes` and the file no
-   *     longer holds them (an edit landed after the caller read it) — kept.
-   *   - split_page_unsupported: the file is a split page head; unlinking it
-   *     alone would orphan its parts, so both are kept.
+   *   - file_changed: the caller passed `expectedFileBytes` and the page file
+   *     (F' for a split head) no longer holds them (an edit landed after the
+   *     caller read it) — kept.
    */
-  skipped?: 'disabled_by_config' | 'url_clone' | 'file_not_present' | 'file_changed' | 'split_page_unsupported' | Extract<PageWriteTarget, { ok: false }>['skipped'];
+  skipped?: 'disabled_by_config' | 'url_clone' | 'file_not_present' | 'file_changed' | Extract<PageWriteTarget, { ok: false }>['skipped'];
   /** Set when the unlink itself threw (EACCES, EPERM, read-only mount). */
   error?: string;
 }
@@ -630,13 +637,14 @@ export async function deletePageThrough(
     if (!existsSync(filePath)) {
       return { removed: false, path: filePath, skipped: 'file_not_present' };
     }
-    if (opts.expectedFileBytes !== undefined && readFileSync(filePath, 'utf-8') !== opts.expectedFileBytes) {
-      return { removed: false, path: filePath, skipped: 'file_changed' };
+    if (opts.expectedFileBytes !== undefined) {
+      const file = readPageFileText(filePath);
+      if (file.hold || file.text !== opts.expectedFileBytes) return { removed: false, path: filePath, skipped: 'file_changed' };
     }
-    if (existsSync(partsDirFor(filePath))) return { removed: false, path: filePath, skipped: 'split_page_unsupported' };
 
     assertSourceFilesystemActive();
-    unlinkSync(filePath);
+    const paths = removeSplitPageFile(filePath, writeRoot);
+    if (!paths) unlinkSync(filePath);
     // Mirror writePageThrough (#2426): on a durability-hardened repo, commit
     // the removal (path-limited) so the post-commit hook pushes it. Pre-fix
     // the deletion sat in the working tree as an uncommitted ` D` — invisible
@@ -647,7 +655,7 @@ export async function deletePageThrough(
     let committed = false;
     try {
       if (isDurabilityHardened(writeRoot)) {
-        committed = commitWriteThroughFile(writeRoot, filePath, slug, 'delete write-through');
+        committed = commitWriteThroughFile(writeRoot, filePath, slug, 'delete write-through', paths ?? []);
       }
     } catch { /* best-effort */ }
     return { removed: true, path: filePath, ...(committed ? { committed } : {}) };
