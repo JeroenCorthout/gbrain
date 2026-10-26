@@ -150,7 +150,7 @@ function fileHeldBy(fileBytes: string, slug: string, state: StoredState): boolea
  *
  * `expectedFileBytes` is what the caller passes to `writePageThrough` (null: the file must still be absent), so a file
  * that changes between this check and the write is refused there too. For a split head it is the page file F' (a head
- * whose parts do not verify is never replaceable), which `writePageThrough` compares and writes back as its split unit.
+ * whose parts do not verify is never replaceable), which `writePageThrough` compares and writes back through split-write-through.ts.
  *
  * `alsoHeldAs` (GBRA-133, #7292): other bytes the file stands for, or null. A connector passes the file with the live
  * page's `## Facts` fence put back: that fence is gbrain's own content, which the provider's render never had, so a

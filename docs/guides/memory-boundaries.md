@@ -294,6 +294,18 @@ imported: sync holds the page (`split_head_modified` or
 `split_page_incomplete`) and keeps the last imported content until you resolve
 it.
 
+**Writers outside the publication door.** On a brain with a canonical owner,
+every page write goes through its publication door, which writes a head and its
+parts under a recovery record and finishes them after a crash. A writer outside
+that door (an unmanaged brain's takes, facts, timeline and lint fixes, dream
+files, the classic GitHub and Google connectors) has no such record, so it
+writes a split page only when every part stays as it is: a new head, renamed
+into place in one step (a frontmatter edit). A write that would change a part,
+or grow a page into this layout or shrink it out of it, is refused with
+`split_page_unsupported` before any file is written and before the database
+takes it, so the files and the stored page stay as they were. A forget on such a
+page still withdraws the fact; only its strike in the page file waits.
+
 **What older versions see.** A gbrain from before this layout imports the head
 as a short page: the first 64 KiB, the notice line and a `gbrain_parts`
 frontmatter key. It never reads the part files (they are in a hidden folder and

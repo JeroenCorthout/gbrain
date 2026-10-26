@@ -6,8 +6,10 @@
  * With a writable source file, strike the row, set valid_until and append the
  * reason atomically. Without a file, retain the same withdrawal and best-effort
  * DB-body strike. A split page (a head plus part files) is struck in its page
- * file F' and written back as its split unit (split-write-through.ts); a head
- * whose page file cannot be read is held, its DB body untouched. Imports overlay
+ * file F' and written back as a new head when every part stays
+ * (split-write-through.ts); a strike its part files would carry
+ * (split_page_unsupported), or a head whose page file cannot be read, holds the
+ * page mirror, its DB body untouched. Imports overlay
  * stale matching fence rows before chunking.
  * These are retractions: original prose, files and backups may retain text.
  * A Markdown-only clone does not carry DB-only withdrawal records.
@@ -319,7 +321,17 @@ export async function forgetFactInFence(
         // DB expire so the user's forget intent still succeeds.
         return legacyExpire(true);
       }
+      // A write outside the door that would change a split page's part files is refused (split-write-through.ts): the
+      // withdrawal stays authoritative and the page mirror is held, as for a head whose parts do not verify.
+      const splitHeld = (error: unknown): ForgetFactResult | null => {
+        if ((error as { code?: string } | null)?.code !== 'split_page_unsupported') return null;
+        rmSync(tmpPath, { force: true });
+        const warning = `${slug} (${(error as Error).message} Meanwhile the withdrawal or supersession remains authoritative; only its page mirror is held)`;
+        console.warn(`[facts.forget] ${warning}`);
+        return { ok: true, path: 'legacy_db', reason, warning };
+      };
       if (!segmented) {
+        let refused = null as ForgetFactResult | null;
         const written = await maintenanceTransaction(engine, async tx => {
           if (fileMoved()) return false;
           if (stored ? !await bestEffortStoredBodyMirror(tx, row.source_id, slug, stored,
@@ -333,15 +345,22 @@ export async function forgetFactInFence(
           return true;
         }).catch(err => {
           if (err instanceof WithdrawalFileChanged || err instanceof PageFileChanged) return false;
+          refused = splitHeld(err);
+          if (refused) return false;
           throw err;
         });
+        if (refused) return refused;
         if (!written) {
           rmSync(tmpPath, { force: true });
           return held('during');
         }
         return { ok: true, path: 'fence', reason, ...(mirrorWarning ? { warning: mirrorWarning } : {}) };
       }
-      await publishFenceTmp(engine, filePath, resolved.writeRoot, tmpBody, () => undefined);
+      try { await publishFenceTmp(engine, filePath, resolved.writeRoot, tmpBody, () => undefined); } catch (error) {
+        const held = splitHeld(error);
+        if (held) return held;
+        throw error;
+      }
 
       // Stamp the DB to match: valid_until = today, expired_at = now().
       // This keeps DB query patterns (active facts WHERE expired_at IS NULL)

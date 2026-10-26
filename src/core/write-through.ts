@@ -101,8 +101,11 @@ export interface WriteThroughResult {
    *   - over_push_scan_cap: the rendered file stays one file (at or under the
    *     split threshold) yet is over the pre-push secret-scan cap
    *     (PUSH_SCAN_MAX_FILE_BYTES), so committing it would block every push.
+   *   - split_page_unsupported: the page is, or would become, a split page whose
+   *     part files the write changes, which only the publication door writes
+   *     with recovery (split-write-through.ts) — nothing is written.
    */
-  skipped?: 'disabled_by_config' | 'url_clone' | 'no_repo_configured' | 'repo_not_found' | 'source_repo_belongs_to_other_source' | 'page_not_found_after_write' | 'path_escapes_source_root' | 'case_insensitive_collision' | 'file_changed' | 'over_push_scan_cap';
+  skipped?: 'disabled_by_config' | 'url_clone' | 'no_repo_configured' | 'repo_not_found' | 'source_repo_belongs_to_other_source' | 'page_not_found_after_write' | 'path_escapes_source_root' | 'case_insensitive_collision' | 'file_changed' | 'over_push_scan_cap' | 'split_page_unsupported';
   /** Caller-visible advisory when a permitted DB-only outcome is still risky. */
   warning?: string;
   /** Set when the render/write/rename itself threw (EACCES, ENOTDIR, disk full). */
@@ -465,7 +468,7 @@ export async function writePageThrough(
     });
     // The pre-push secret scan refuses to push any file it cannot scan, so a
     // file over its cap would block every later push of the brain repo. A page
-    // over the split threshold is written as a head plus parts, each under it.
+    // over the split threshold is a head plus parts, each under it.
     const mdBytes = Buffer.byteLength(md, 'utf-8');
     if (mdBytes > PUSH_SCAN_MAX_FILE_BYTES && mdBytes <= await splitThresholdBytes(engine)) {
       opts.logger?.warn(`[write-through] ${slug}: the rendered file is over the ${PUSH_SCAN_MAX_FILE_BYTES}-byte pre-push secret-scan cap — file not written (DB row is intact)`);
@@ -521,6 +524,7 @@ export async function writePageThrough(
       if (!paths) atomicWriteFileSync(filePath, md, { verify });
     } catch (error) {
       if (error === changedWhileStaging || error instanceof PageFileChanged) return { written: false, skipped: 'file_changed' };
+      if ((error as { code?: string }).code === 'split_page_unsupported') return { written: false, skipped: 'split_page_unsupported' };
       throw error;
     }
 

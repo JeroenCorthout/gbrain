@@ -1,25 +1,22 @@
 /**
  * Wave B PR 5 lane 5e (split git layout, spec §9 option B): the unmanaged writers' page file. A page whose canonical
- * file F is over `sync.max_file_bytes`, or whose path already has a parts directory, is written as the split unit the
- * publication door writes (`splitPublicationTargets`, split-files.ts): a head plus its new or changed parts, the removal
- * of every part the new manifest drops, or one file with every part removed once F is at or under the threshold. So an
- * unmanaged writer stays file-first for a split page exactly as for any other page: the files take the new page or the
- * writer refuses and nothing changes.
- *
- * Order: `precondition` (the caller's check of the page file it planned on) before any file is touched, then the new
- * parts (content-addressed names, so an old head never names one), then the head (atomically, refused when its bytes
- * changed since the unit was planned), then the removals. A crash leaves the old head with its parts plus unreferenced new
- * parts, or the new head with its parts plus unreferenced old ones, never a head naming a missing part. Callers hold
- * the source filesystem lock.
+ * file F is over `sync.max_file_bytes`, or whose path already has a parts directory, is planned as the split unit the
+ * publication door writes (`splitPublicationTargets`, split-files.ts). Outside the door there is no recovery record, and
+ * a reader holds a head whose parts directory lists a part it does not name or misses one it does
+ * (`split_page_incomplete`), so no order of writing a head and parts one by one survives a crash between them. An
+ * unmanaged writer therefore writes only a unit whose parts all stay as they are (a new head, renamed into place
+ * atomically) and refuses `split_page_unsupported` before any file is written when a part would be written or
+ * removed, including a page that would grow into the layout or shrink out of it. A refused write leaves every file as
+ * it was. Callers hold the source filesystem lock.
  */
-import { existsSync, lstatSync, mkdirSync, unlinkSync } from 'node:fs';
+import { existsSync, lstatSync, unlinkSync } from 'node:fs';
 import { dirname } from 'node:path';
-import { atomicWriteFileSync, mkdirPrivate } from './atomic-write.ts';
+import { atomicWriteFileSync } from './atomic-write.ts';
 import type { BrainEngine } from './engine.ts';
 import { flushDirectory } from './fs-durable.ts';
-import { isWriteTargetContained } from './path-confine.ts';
+import { opError, type OperationError } from './ops/contract.ts';
 import type { MutationFile } from './persistence/bundle-files.ts';
-import { hashFile, isStreamedContent } from './persistence/large-file.ts';
+import { hashFile } from './persistence/large-file.ts';
 import { partFilesOnly, releaseSplitTargets, removeEmptyPartsDir, splitKeptPartsChanged, splitPublicationTargets, type SplitFileFields } from './persistence/split-files.ts';
 import { readPageFile, type PageFileHold } from './split-layout/page-file.ts';
 import { partsDirFor } from './split-layout/paths.ts';
@@ -38,53 +35,44 @@ export function readPageFileText(path: string): { text: string | null; split: bo
 
 /**
  * Plans the split unit of `content` (F) at `filePath` and releases it, writing nothing: throws every refusal the planner
- * raises (`split_parts_unexpected`, a part over its bounds), so a writer that commits its database row before its file
- * (the classic connectors) refuses before that commit. True when the target is a split unit.
+ * raises (`split_parts_unexpected`, a part over its bounds) and `split_page_unsupported` as `writeSplitPageFile` does,
+ * so a writer that commits its database row before its file (the classic connectors) refuses before that commit. True
+ * when the target is a split unit whose parts all stay.
  */
 export async function preflightSplitPageFile(engine: BrainEngine, filePath: string, root: string, content: string): Promise<boolean> {
   const unit: MutationFile & SplitFileFields = { path: filePath, root, content, expectedBeforeHash: hashFile(filePath) };
-  try { return await splitPublicationTargets(engine, unit); } finally { releaseSplitTargets(unit); }
+  try {
+    if (!await splitPublicationTargets(engine, unit)) return false;
+    if (unit.parts?.length) throw splitPageUnsupported(filePath);
+    return true;
+  } finally { releaseSplitTargets(unit); }
+}
+
+/** The refusal of a write outside the publication door that would write or remove a part file of `filePath`. */
+function splitPageUnsupported(filePath: string): OperationError {
+  return opError('split_page_unsupported', 'split_page_unsupported: a split page whose part files would change cannot be written outside the publication door.',
+    `${filePath} is, or would become, a split page (a head plus part files in ${partsDirFor(filePath)}) whose part files this write changes. A writer outside the publication door has no recovery record for a head and parts written one by one, so nothing was written. On a brain with a canonical owner the page is written through its door; otherwise ask the user how the page should be edited.`);
 }
 
 /**
- * Writes `content` (F) at `filePath` as its split unit; null, writing nothing, when the target is one ordinary file
- * (F at or under the threshold and no parts directory), which the caller writes as before. Returns every path written
- * or removed, head first. Throws `PageFileChanged` when the head or a part changed since the unit was planned, and
- * whatever `precondition` throws, before any file is written. `mode` is the head's exact mode (the Google connector's 0600);
- * omitted, the head keeps its file's mode. Every part takes the head's mode from its first byte, and a new parts directory
- * is 0700 when that mode grants nothing to group or other.
+ * Writes `content` (F) at `filePath`: null, writing nothing, when the target is one ordinary file (F at or under the
+ * threshold and no parts directory), which the caller writes as before; the head path when F is a split unit whose parts
+ * all stay, its head written atomically (refused when its bytes changed since the unit was planned) with the exact `mode`
+ * if given (the Google connector's 0600), else its file's mode. Throws `split_page_unsupported` when a part would be
+ * written or removed, `PageFileChanged` when a kept part changed, and whatever `precondition` throws, before any file
+ * is written.
  */
 export async function writeSplitPageFile(engine: BrainEngine, filePath: string, root: string, content: string,
   precondition?: () => void, mode?: number): Promise<string[] | null> {
   const headHash = hashFile(filePath);
-  const unit: MutationFile & SplitFileFields & { publishMode?: number } = { path: filePath, root, content, expectedBeforeHash: headHash, ...(mode === undefined ? {} : { publishMode: mode }) };
+  const unit: MutationFile & SplitFileFields = { path: filePath, root, content, expectedBeforeHash: headHash };
   if (!await splitPublicationTargets(engine, unit)) return null;
   try {
-    const parts = unit.parts ?? [];
+    if (unit.parts?.length) throw splitPageUnsupported(filePath);
     if (splitKeptPartsChanged(unit)) throw new PageFileChanged(partsDirFor(filePath));
-    for (const part of parts) if (hashFile(part.path) !== (part.expectedBeforeHash ?? null)) throw new PageFileChanged(part.path);
     precondition?.();
-    const touched = [filePath];
-    for (const part of parts) {
-      if (part.content === null) continue;
-      if (part.publishMode === undefined || part.publishMode & 0o077) mkdirSync(dirname(part.path), { recursive: true });
-      else mkdirPrivate(dirname(part.path), dirname(filePath));
-      if (!isWriteTargetContained(part.path, root) || !lstatSync(dirname(part.path)).isDirectory()) throw new Error(`${part.path} resolves outside its source root`);
-      const pieces: Uint8Array[] = [];
-      if (isStreamedContent(part.content)) for await (const piece of part.content.pieces(engine)) pieces.push(piece);
-      else pieces.push(typeof part.content === 'string' ? Buffer.from(part.content, 'utf8') : part.content);
-      atomicWriteFileSync(part.path, Buffer.concat(pieces), { durable: true, mode: part.publishMode });
-      touched.push(part.path);
-    }
     atomicWriteFileSync(filePath, unit.content as string, { durable: true, mode, verify: () => { if (hashFile(filePath) !== headHash) throw new PageFileChanged(filePath); } });
-    for (const part of parts) {
-      if (part.content !== null) continue;
-      unlinkSync(part.path);
-      touched.push(part.path);
-    }
-    if (parts.some(part => part.content === null) && existsSync(partsDirFor(filePath))) flushDirectory(partsDirFor(filePath));
-    removeEmptyPartsDir(filePath);
-    return touched;
+    return [filePath];
   } finally {
     releaseSplitTargets(unit);
   }

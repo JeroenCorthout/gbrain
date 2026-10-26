@@ -179,8 +179,9 @@ export type DreamPageFileWrite = { written: true; path: string } | { written: fa
  * checkout (no root configured, or the root is missing) keeps the caller's brainDir layout (`<brainDir>/<slug>.md`,
  * foreign sources under `.sources/<id>/`). The file is replaced only when `replaceableFile` finds nothing in it the
  * database lacks, and is re-read after the replacement is staged, right before the rename, so an edit that lands in
- * between is kept as well. A page over the split threshold, or a split page head, is written as its split unit (head
- * plus parts, split-write-through.ts) under the same comparison of its page file F'.
+ * between is kept as well. A page over the split threshold, or a split page head, goes through split-write-through.ts
+ * under the same comparison of its page file F': a new head whose parts all stay, or `split_page_unsupported` with
+ * nothing written.
  *
  * This is the reverse-write's own direct write (a staged sibling renamed over the file), as before, not
  * `writePageThrough` or `atomicWriteFileSync`: once a subagent's tool write has gone through the coordinator, the

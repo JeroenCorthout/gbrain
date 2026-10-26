@@ -681,16 +681,22 @@ function readLintPage(page: string, relPath: string): { content: string; split: 
 }
 
 /**
- * Writes the fixed page of a split page head as its split unit (head plus parts, split-write-through.ts); with no
- * brain engine to read the split threshold from, the fix is a non-fixable `split-page-unsupported` issue instead and
- * nothing is written. Returns the issue, or the paths written for the durability commit.
+ * Writes the fixed page of a split page head through split-write-through.ts, which writes a new head whose parts all
+ * stay; a fix that would change a part, or a lint with no brain engine to read the split threshold from, is a
+ * non-fixable `split-page-unsupported` issue instead and nothing is written. Returns the issue, or the paths written for
+ * the durability commit.
  */
 async function writeSplitLintFix(engine: BrainEngine | undefined, page: string, root: string, relPath: string, fixed: string): Promise<{ issue: LintIssue | null; paths: string[] }> {
   if (!engine) {
     return { issue: { file: relPath, line: 1, rule: 'split-page-unsupported', fixable: false, code: 'split_page_unsupported',
-      message: `fix not applied: ${relPath} is a split page head (its page continues in part files), and lint ran without a brain to read the split threshold from, so the file was left unchanged. Run gbrain dream --phase lint --once, which lints with the brain and writes the fixed page as a head plus part files.` }, paths: [] };
+      message: `fix not applied: ${relPath} is a split page head (its page continues in part files), and lint ran without a brain to read the split threshold from, so the file was left unchanged. On a brain with a canonical owner, gbrain dream --phase lint --once lints with the brain and its door writes the fixed page as a head plus part files.` }, paths: [] };
   }
-  const paths = await writeSplitPageFile(engine, page, root, fixed);
+  let paths: string[] | null;
+  try { paths = await writeSplitPageFile(engine, page, root, fixed); } catch (error) {
+    if ((error as { code?: string }).code !== 'split_page_unsupported') throw error;
+    return { issue: { file: relPath, line: 1, rule: 'split-page-unsupported', fixable: false, code: 'split_page_unsupported',
+      message: `fix not applied: ${relPath} is a split page head whose part files the fix would change, and only the publication door of a brain with a canonical owner writes a head and its parts together, so the files were left unchanged.` }, paths: [] };
+  }
   return paths ? { issue: null, paths } : { issue: writeLintFixOrRefusal(page, relPath, fixed), paths: [] };
 }
 

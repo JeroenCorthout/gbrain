@@ -327,8 +327,9 @@ export function stubEntityPage(
  * file is a split head whose page file cannot be read (its hold code).
  *
  * Wave B PR 5: a split page (split-layout/) is edited as its page file F' and
- * written back as its split unit (split-write-through.ts), the head and parts
- * as one file write, so the facts reach the files before the database.
+ * written back as a new head when every part stays (split-write-through.ts),
+ * so the facts reach the files before the database; a fact its part files
+ * would carry is refused (split_page_unsupported) and nothing is recorded.
  */
 export async function writeFactsToFence(
   engine: BrainEngine,
@@ -586,7 +587,7 @@ export async function writeFactsToFence(
       }));
 
       const fileMoved = () => { const now = readPageFileText(filePath); return now.hold !== undefined || now.text !== fileBefore; };
-      let splitPaths: string[] = [];
+      let splitPaths: string[] = [], refusal = undefined as OperationError | undefined;
       const result = await maintenanceTransaction(engine, async tx => {
         if (fileMoved()) return null;
         if (stored && !await bestEffortStoredBodyMirror(tx, target.sourceId, target.slug, stored,
@@ -600,11 +601,12 @@ export async function writeFactsToFence(
         return inserted;
       }).catch(err => {
         if (err instanceof FenceFileChanged || err instanceof PageFileChanged) return null;
+        if (err instanceof OperationError && err.code === 'split_page_unsupported') { refusal = err; return null; }
         throw err;
       });
       if (!result) {
         rmSync(tmpPath, { force: true });
-        return drift('during');
+        return refusal ? { inserted: 0, ids: [], fenceWriteFailed: true, fenceRefusal: recordedRefusal(target, filePath, refusal), ...withdrawnSkipped } : drift('during');
       }
       // v0.46 (#3014) — an unresolvable `superseded by #N` reference (self
       // / dangling / struck target) leaves superseded_by NULL; log it rather
@@ -632,6 +634,12 @@ export async function writeFactsToFence(
 
 class FenceFileChanged extends Error {}
 
+/** A fact write refused before any file was written (a split page whose parts would change): recorded, nothing stored. */
+function recordedRefusal(target: FenceTarget, filePath: string, refusal: OperationError): OperationError {
+  recordWriteFailure(target.slug, target.sourceId, [refusal.message], filePath);
+  return refusal;
+}
+
 /** A split head whose page file cannot be read: the fact write refuses with the hold code and records nothing. */
 function splitHoldRefusal(target: FenceTarget, filePath: string, hold: PageFileHold): OperationError {
   recordWriteFailure(target.slug, target.sourceId, [`${hold.code}: ${hold.message}`], filePath);
@@ -639,9 +647,10 @@ function splitHoldRefusal(target: FenceTarget, filePath: string, hold: PageFileH
 }
 
 /**
- * Puts a validated `.tmp` page file in place: renamed over an ordinary file, or written as its split unit
- * (split-write-through.ts; `precondition` runs before any file is touched) and the `.tmp` removed. Returns the split
- * unit's paths, for the durability commit.
+ * Puts a validated `.tmp` page file in place: renamed over an ordinary file, or written as a split page's new head
+ * whose parts all stay (split-write-through.ts; `precondition` runs before any file is touched) and the `.tmp` removed;
+ * a write that would change a part refuses `split_page_unsupported` with no file touched. Returns the head's path for a
+ * split page, for the durability commit.
  */
 export async function publishFenceTmp(engine: BrainEngine, filePath: string, root: string, tmpBody: string, precondition: () => void): Promise<string[]> {
   const tmpPath = `${filePath}.tmp`;
