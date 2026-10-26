@@ -29,7 +29,7 @@ import { readFix } from '../ops/op-fix.ts';
 import type { Action } from '../agent-output.ts';
 import { isWriteTargetContained } from '../path-confine.ts';
 import { FRONTMATTER_HEAD_MAX_BYTES, SEGMENT_MAX_BYTES } from '../page-body/limits.ts';
-import { assertNoPartsKey, headBodyFor, parseHead, partsDirFor, planSplit, PART_FILE_RE, reassemble, splitLimits, SplitLayoutError, splitNotice, splitScratchPath, splitThresholdBytes, type ParsedHead, type SplitPlan } from '../split-layout/index.ts';
+import { assertNoPartsKey, headBodyFor, parseHead, partFilePath, partsDirFor, planSplit, PART_FILE_RE, reassemble, splitLimits, SplitLayoutError, splitNotice, splitScratchPath, splitThresholdBytes, type ParsedHead, type SplitPlan } from '../split-layout/index.ts';
 import type { MutationFile } from './bundle-files.ts';
 import type { PageMutationFile } from './coordinator.ts';
 import { git, withSession } from './effect-git.ts';
@@ -56,7 +56,7 @@ export interface SplitFileFields {
    */
   expectedParts?: Record<string, string>;
   /** Part files written (content) or removed (null) beside the head: the new manifest's changed parts, then removals. */
-  /** Part files written (content) or removed (null) beside the head; each takes the head's exact publish mode, if any. */
+  /** Part files written (content) or removed (null) beside the head; each takes the head's exact publish mode, else the head file's prior mode. */
   parts?: PartTarget[];
   split?: SplitLayout;
 }
@@ -196,7 +196,8 @@ export async function splitPublicationTargets(engine: BrainEngine, file: SplitTa
   if (bytes <= threshold && !existing.size) return false;
   const original = file.content;
   const parts: PartTarget[] = [];
-  const publishMode = file.publishMode === undefined ? {} : { publishMode: file.publishMode };
+  const headMode = file.publishMode ?? (lstatSync(file.path, { throwIfNoEntry: false })?.isFile() ? lstatSync(file.path).mode & 0o7777 : undefined);
+  const publishMode = headMode === undefined ? {} : { publishMode: headMode };
   const manifest: string[] = [];
   const kept: Record<string, string> = {};
   let plan: SplitPlan | null = null;
@@ -309,7 +310,7 @@ export function readSplitHead(path: string, before: Buffer | FileBytes): SplitHe
   const headHash = before instanceof FileBytes ? before.hash() : createHash('sha256').update(bytes).digest('hex');
   const scratch = splitScratchPath();
   const verdict = reassemble(path, parsed, scratch);
-  const parts = Object.fromEntries(parsed.manifest.parts.map(part => [join(dirname(path), part.path), part.sha256]));
+  const parts = Object.fromEntries(parsed.manifest.parts.map(part => [partFilePath(path, part.path), part.sha256]));
   if (!verdict.ok) return verdict.code === 'split_head_modified' ? { reassembled: null, headHash, modified: parsed, parts, dispose: () => {} } : null;
   const reassembled = FileBytes.open(scratch);
   return { reassembled, headHash, modified: null, parts, dispose: () => { try { reassembled.close(); } finally { rmSync(scratch, { force: true }); } } };
@@ -338,7 +339,7 @@ function partsTailSha256(path: string, parsed: ParsedHead): string | null {
   let offset = 0;
   for (const part of parsed.manifest.parts) {
     let fd: number;
-    try { fd = openSync(join(dirname(path), part.path), constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0)); } catch { return null; }
+    try { fd = openSync(partFilePath(path, part.path), constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0)); } catch { return null; }
     try {
       for (let read = 0, n: number; read < part.bytes; read += n, offset += n) {
         n = readSync(fd, buffer, 0, Math.min(buffer.length, part.bytes - read), read);

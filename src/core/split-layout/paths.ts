@@ -33,6 +33,11 @@ export function partPathFor(headName: string, manifestPath: string): string {
   return partsDirName(headName) + '/' + manifestPath.slice(manifestPath.indexOf('/') + 1);
 }
 
+/** The path of manifest part `manifestPath` for the head at `headPath` (absolute or relative): partPathFor beside the head. */
+export function partFilePath(headPath: string, manifestPath: string): string {
+  return join(dirname(headPath), partPathFor(basename(headPath), manifestPath));
+}
+
 /** A part's file name. */
 export function partFileName(index: number, sha256: string): string {
   return String(index).padStart(4, '0') + '-' + sha256.slice(0, 8) + '.gbpart';

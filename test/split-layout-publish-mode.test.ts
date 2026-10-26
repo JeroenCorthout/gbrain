@@ -4,13 +4,17 @@
  *
  * 1. Protects: every part file of a split page with `publishMode` is staged and published with that mode from its first
  *    byte, as its head is, and the `.<name>.gbparts` directory is created 0700, as the head's own created directories are.
- * 2. Fails when: a part, its staging file or the parts directory takes the process umask's default mode instead.
+ *    Without an exact mode, an ordinary put_page that grows an existing page into the split layout gives every part the
+ *    head's own prior mode, as single-file publication keeps a file's mode: a 0600 page gets 0600 parts in a 0700 parts
+ *    directory, and a page at the default mode keeps default parts in a default directory.
+ * 2. Fails when: a part, its staging file or the parts directory takes the process umask's default mode instead, or a
+ *    page at the default mode gets a private parts directory.
  * 3. PGLite always; PostgreSQL when DATABASE_URL is set. POSIX only (file modes). KB-sized split limits through
  *    __setSplitLimitsForTests; the publication is driven through publishMutation, as the Google connector's is.
  */
 import { afterEach, describe, expect, test } from 'bun:test';
 import { randomUUID } from 'node:crypto';
-import { lstatSync, readdirSync, writeFileSync } from 'node:fs';
+import { chmodSync, lstatSync, readdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { operations } from '../src/core/operations.ts';
 import { submissionAuthority } from '../src/core/persistence/authority.ts';
@@ -21,7 +25,7 @@ import { getWorktreeBinding } from '../src/core/persistence/ownership.ts';
 import { disposePersistenceConsumer } from '../src/core/persistence/service.ts';
 import { __setSplitLimitsForTests, partsDirFor, SPLIT_MAX_FILE_BYTES_KEY } from '../src/core/split-layout/index.ts';
 import { durableGitRepo } from './helpers/git-publication.ts';
-import { managedBrain } from './helpers/managed-brain.ts';
+import { managedBrain, settleManagedGitEffects } from './helpers/managed-brain.ts';
 import { requirePostgresTestDatabase, testBackends } from './helpers/test-backends.ts';
 
 const LIMITS = { thresholdMin: 1024, partTarget: 512, partMax: 1024, leadMax: 128, partCountMax: 500 };
@@ -29,6 +33,8 @@ const mode = (path: string) => lstatSync(path).mode & 0o7777;
 const body = Array.from({ length: 80 }, (_, i) => `Line ${String(i).padStart(4, '0')} of the private split page body, long enough to fill a part.`).join('\n');
 const content = `---\ntype: note\ntitle: Private example\n---\n\n${body}\n`;
 const setup = ({ root }: { root: string }) => { writeFileSync(join(root, '.gitignore'), '\n'); durableGitRepo(root, ['.gitignore']); };
+const put = (ctx: Parameters<typeof operations[number]['handler']>[0], slug: string, text: string, expected_revision?: string) =>
+  operations.find(o => o.name === 'put_page')!.handler(ctx, { slug, content: text, request_id: randomUUID(), wait_ms: 30_000, ...(expected_revision ? { expected_revision } : {}) });
 const page = (text: string) => ({ type: 'note' as const, title: 'Private example', compiled_truth: text, timeline: '', frontmatter: {} });
 
 for (const backend of testBackends()) describe.skipIf(process.platform === 'win32')(`[${backend}] split git layout: an exact publish mode covers every part`, () => {
@@ -66,4 +72,25 @@ for (const backend of testBackends()) describe.skipIf(process.platform === 'win3
     expect({ head: mode(path), parts: parts.map(part => mode(join(dir, part))), staged: [...new Set(staged)], gbparts: mode(dir) })
       .toEqual({ head: 0o600, parts: parts.map(() => 0o600), staged: [0o600], gbparts: 0o700 });
   }, { databaseUrl, setup }), 120_000);
+
+  for (const [label, headMode] of [['a 0600 page', 0o600], ['a page at the default mode', null]] as const) {
+    test(`an ordinary put_page growing ${label} into the split layout gives every part the head's prior mode`, () => managedBrain(async ({ engine, ctx, root }) => {
+      __setSplitLimitsForTests(LIMITS);
+      await engine.setConfig(SPLIT_MAX_FILE_BYTES_KEY, '2048');
+      const slug = 'notes/private-example';
+      expect(await put(ctx, slug, '---\ntype: note\ntitle: Private example\n---\n\nBefore.\n')).toMatchObject({ state: 'committed' });
+      await settleManagedGitEffects(engine);
+      const path = join(root, `${slug}.md`);
+      if (headMode !== null) chmodSync(path, headMode);
+      const prior = mode(path);
+      const revision = (await engine.readPageSnapshot(slug, { sourceId: 'default' }))!.revision;
+      expect(await put(ctx, slug, content, revision)).toMatchObject({ state: 'committed' });
+      const dir = partsDirFor(path);
+      const parts = readdirSync(dir);
+      expect(parts.length).toBeGreaterThan(2);
+      const defaultDir = 0o777 & ~process.umask();
+      expect({ head: mode(path), parts: parts.map(part => mode(join(dir, part))), gbparts: mode(dir) })
+        .toEqual({ head: prior, parts: parts.map(() => prior), gbparts: headMode === null ? defaultDir : 0o700 });
+    }, { databaseUrl, setup }), 120_000);
+  }
 });

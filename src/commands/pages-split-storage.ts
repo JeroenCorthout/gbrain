@@ -34,7 +34,7 @@ import { FileBytes } from '../core/persistence/large-file.ts';
 import { canonicalPath, sourceContext } from '../core/ghost-pages.ts';
 import { setCliExitVerdict } from '../core/cli-force-exit.ts';
 import { loadConfig } from '../core/config.ts';
-import { partsDirFor } from '../core/split-layout/paths.ts';
+import { partPathFor, partsDirFor } from '../core/split-layout/paths.ts';
 import { planSplit, splitScratchPath } from '../core/split-layout/plan.ts';
 import { SPLIT_MAX_FILE_BYTES_KEY, splitThresholdBytes } from '../core/split-layout/limits.ts';
 import { SplitLayoutError } from '../core/split-layout/types.ts';
@@ -151,7 +151,7 @@ function currentLayout(at: Located, layout: CanonicalLayout): CurrentLayout {
   const verdict = layout.verdict.ok ? { ok: true } : { ok: false, code: layout.verdict.code, reason: layout.verdict.reason,
     ...(layout.verdict.code === 'split_page_incomplete' ? { missing: layout.verdict.missing, extra: layout.verdict.extra, mismatched: layout.verdict.mismatched } : {}) };
   return { ...base, kind: 'split', bytes: layout.headBytes, verdict,
-    parts: (layout.parsed?.manifest.parts ?? []).map(part => ({ name: part.path.slice(part.path.indexOf('/') + 1), path: posix.join(headDir, part.path), bytes: part.bytes, sha256: part.sha256 })) };
+    parts: (layout.parsed?.manifest.parts ?? []).map(part => ({ name: part.path.slice(part.path.indexOf('/') + 1), path: posix.join(headDir, partPathFor(posix.basename(base.path), part.path)), bytes: part.bytes, sha256: part.sha256 })) };
 }
 
 function matchesRender(at: Located, layout: CanonicalLayout, source: FileSource): boolean | null {
@@ -173,7 +173,7 @@ async function planTarget(source: FileSource, at: Located, threshold: number, la
   const plan = await planSplit(source.pieces(), { headPath: at.path });
   try {
     const head = plan.head();
-    const listed = new Map(layout.kind === 'split' ? (layout.parsed?.manifest.parts ?? []).map(part => [part.path, part]) : []);
+    const listed = new Map(layout.kind === 'split' ? (layout.parsed?.manifest.parts ?? []).map(part => [partPathFor(posix.basename(headRel), part.path), part]) : []);
     const faulty = new Set(layout.kind === 'split' && !layout.verdict.ok && layout.verdict.code === 'split_page_incomplete'
       ? [...layout.verdict.missing, ...layout.verdict.mismatched] : []);
     const parts = plan.parts.map(part => {

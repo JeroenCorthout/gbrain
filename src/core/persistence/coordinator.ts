@@ -100,7 +100,8 @@ interface PreparedMutationBase {
   mentionRange?: AppendedRange;
 }
 /**
- * A page file target; `publishMode` (Google pages) is the exact mode it publishes with, and its created directories get 0700.
+ * A page file target; `publishMode` (Google pages, a split page's parts) is the exact mode it publishes with, and when it
+ * grants nothing to group or other its created directories get 0700.
  * `commit` (trusted local preparers only) rides the Git effect into the commit message.
  */
 export type PageMutationFile = MutationFile & SplitFileFields & { publishMode?: number; commit?: GitCommitNote };
@@ -148,7 +149,7 @@ function prepareParent(file: Pick<PageMutationFile, 'path' | 'root' | 'publishMo
   if (!isWriteTargetContained(file.path, file.root)) throw opError('storage_error', 'Canonical file target escapes its source root.',
     `The file path resolves outside its source's canonical root (a symlinked directory or a moved checkout), so the file was not written. ${confinementCheck}`,
     { fix: ownerStatusFix() });
-  if (file.publishMode === undefined) mkdirSync(dirname(file.path), { recursive: true });
+  if (file.publishMode === undefined || file.publishMode & 0o077) mkdirSync(dirname(file.path), { recursive: true });
   else mkdirPrivate(dirname(file.path), file.root);
   if (!isWriteTargetContained(file.path, file.root)) throw opError('storage_error', 'Canonical parent path changed during publication.',
     `A directory on the file's path was replaced (for example by a symlink) while gbrain created it, so the file was not written. ${confinementCheck}`,

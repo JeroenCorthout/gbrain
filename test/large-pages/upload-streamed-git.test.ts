@@ -17,7 +17,7 @@
  *    (d) The file is built from the upload's own outputs, never a database apply: the prepared page applies exactly once
  *    (one segmented:flipped), and the file matches the stored page's render byte for byte for a remote writer whose
  *    frontmatter the gate strips and stamps, with a timeline region, and for a replace that keeps a tag frontmatter did
- *    not set.
+ *    not set, and for a bare ## Timeline section with truth on both sides of it (the regions are not in upload order).
  * 3. PGLite always; PostgreSQL when DATABASE_URL is set. Production split limits (25 MiB uploads, 8 MiB parts).
  */
 import { afterEach, describe, expect, test } from 'bun:test';
@@ -173,6 +173,20 @@ for (const backend of testBackends()) describe(`[${backend}] uploads over the ce
     const tail = readFileSync(reassembled, 'utf8').slice(-200);
     expect(tail).toContain('<!-- timeline -->');
     expect(tail).toContain('Met alice-example at acme-example.');
+  }, { databaseUrl, setup }), 600_000);
+
+  test('(d) a middle bare ## Timeline section (truth on both sides of it) renders byte for byte as the stored page', () => managedBrain(async ({ engine, root }) => {
+    const lines = (n: number, what: string) => Array.from({ length: n }, (_, i) => `${what} line ${i} of the acme-example field log kept by alice-example, long enough to fill it.`).join('\n');
+    const text = `---\ntype: note\ntitle: Field log\n---\n\n# Notes\n\n${lines(200, 'Opening')}\n\n## Timeline\n\n- **2026-01-01** | Met alice-example at acme-example.\n\n## Later material\n\n${lines(Math.ceil(25 * MiB / 90), 'Later')}\n`;
+    const ctx = { engine, config: { engine: engine.kind, embedding_disabled: true }, sourceId: 'default', remote: false, dryRun: false, logger: { info() {}, warn() {}, error() {} } } as OperationContext;
+    expect(await upload(ctx, 'notes/middle-timeline', text)).toMatchObject({ state: 'committed' });
+    const path = join(root, 'notes/middle-timeline.md');
+    expect(headFileSha(path)).toBe(await renderSha(engine, 'notes/middle-timeline'));
+    const reassembled = splitScratchPath();
+    expect(reassemble(path, parseHead(readFileSync(path, 'utf8')) as Exclude<ReturnType<typeof parseHead>, null | { error: unknown }>, reassembled)).toMatchObject({ ok: true });
+    const file = readFileSync(reassembled, 'utf8');
+    expect(file).toContain('Met alice-example at acme-example.');
+    expect(file).toContain('Later line 0 of');
   }, { databaseUrl, setup }), 600_000);
 
   test('(d) a replace keeps the tags frontmatter did not set: F renders byte for byte as the stored page; the apply runs once', () => managedBrain(async ({ engine, ctx, root }) => {
