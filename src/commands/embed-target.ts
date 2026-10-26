@@ -14,7 +14,7 @@ export function slugsAfter(args: readonly string[], at: number): string[] {
 }
 
 /** Flags of `gbrain embed` that take a value, so a positional slug is never read from one (`--max-usd 5 my-page`). */
-const EMBED_VALUE_FLAGS: ReadonlySet<string> = new Set(['--source', '--max-usd', '--max-cost', '--batch-size', '--priority', '--pace-max-concurrency', '--expect']);
+const EMBED_VALUE_FLAGS: ReadonlySet<string> = new Set(['--source', '--max-usd', '--max-cost', '--batch-size', '--priority', '--pace-max-concurrency']);
 
 /** The positional `<slug>`: the first argument that is neither a flag nor a flag's value. */
 export function embedPositionalSlug(args: readonly string[]): string | undefined {

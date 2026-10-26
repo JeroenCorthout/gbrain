@@ -55,9 +55,11 @@ for (const kind of testBackends()) {
           WHERE m.page_id = $1 AND m.staging_id IS NULL AND m.gen_from = p.body_generation`, [page!.id]);
       expect([...effect!.data.occurrence_ids!].map(Number).sort()).toEqual(live.map(row => Number(row.occurrence_id)).sort());
 
-      for (let i = 0; i < 20; i++) {
+      // The brain's own persistence consumer may hold the effect (state 'running') while it embeds, so wait for it to settle.
+      for (const deadline = Date.now() + 120_000; Date.now() < deadline;) {
         const [state] = await engine.executeRaw<{ state: string }>('SELECT state FROM persistence_effects WHERE id = $1', [effect!.id]);
         if (state!.state === 'committed') break;
+        if (state!.state === 'running') { await Bun.sleep(100); continue; }
         await engine.executeRaw('UPDATE persistence_effects SET next_attempt_at = now() WHERE id = $1', [effect!.id]);
         await runPersistenceEffects(engine, { engine: engine.kind }, { hostId: localHostId(), limit: 10 });
       }
