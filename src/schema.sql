@@ -2820,7 +2820,7 @@ CREATE OR REPLACE FUNCTION gbrain_guard_request_protocol() RETURNS trigger LANGU
         WHERE w.id=NEW.worktree_id AND w.state='active') THEN
         RAISE EXCEPTION 'writer_not_quiesced: canonical owner capability must be revalidated' USING ERRCODE='42501';
       END IF;
-    ELSIF version NOT IN (1,2) THEN
+    ELSIF version<>1 THEN
       RAISE EXCEPTION 'unsupported_mutation_protocol: invalid page target' USING ERRCODE='42501';
     END IF;
     record:=NEW.recovery;
