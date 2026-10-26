@@ -14,7 +14,7 @@ import { parseHead, type ParsedHead } from './head.ts';
 import { partsDirFor } from './paths.ts';
 import { splitScratchPath } from './plan.ts';
 import { PARTS_KEY } from './types.ts';
-import { reassemble, verifyParts, type SplitVerdict } from './verify.ts';
+import { reassemble, verifyParts, type PartsSource, type SplitVerdict } from './verify.ts';
 import { slugifyPath } from '../sync.ts';
 
 export type SplitRefusalCode = 'split_page_incomplete' | 'split_head_modified';
@@ -34,10 +34,16 @@ function refusalFor(relPath: string, verdict: Exclude<SplitVerdict, { ok: true }
     return { code: verdict.code, message: `${relPath} is a split page head whose body (the lead and the gbrain notice line) was edited, so the page it names `
       + 'cannot be reassembled from it; sync held it and kept the stored page. Preview the resolution with gbrain pages split-storage <slug> --resolve-head keep-edit|discard.' };
   }
+  if (verdict.noDir) {
+    return { code: verdict.code, message: `${relPath} is a split page head whose parts directory ${partsDirOf(relPath)} does not exist (missing: ${sample(verdict.missing)}); `
+      + 'sync held it and kept the stored page. If the head was moved or renamed, move its parts directory with it (git mv the old .<name>.gbparts directory beside it '
+      + `to ${partsDirOf(relPath)}) and commit; otherwise restore the head and its parts from Git (git checkout -- ${relPath} ${partsDirOf(relPath)}). Then sync again.` };
+  }
   const sets = [['missing', verdict.missing], ['changed', verdict.mismatched], ['unlisted', verdict.extra]] as const;
   const named = sets.filter(([, paths]) => paths.length).map(([label, paths]) => `${label}: ${sample(paths)}`).join('; ');
+  const untracked = verdict.extra.length ? `Move or delete the files the manifest does not list (${sample(verdict.extra)}), which git checkout leaves in place, and restore ` : 'Restore ';
   return { code: verdict.code, message: `${relPath} is a split page head whose part files in ${partsDirOf(relPath)} do not match its manifest (${named || verdict.reason}); `
-    + `sync held it and kept the stored page. Restore them from Git (git checkout -- ${relPath} ${partsDirOf(relPath)}), then sync again.` };
+    + `sync held it and kept the stored page. ${untracked}the listed parts from Git (git checkout -- ${relPath} ${partsDirOf(relPath)}), then sync again.` };
 }
 
 function unreadable(relPath: string, reason: string): SplitRefusal {
@@ -61,16 +67,20 @@ export function screenSplitHead(headPath: string, relPath: string, text: string)
   return verdict.ok ? null : refusalFor(relPath, verdict);
 }
 
+/** A split page opened for import: its reassembled file F' (a private scratch file `dispose` removes), with F''s size and SHA-256. */
+export interface OpenedSplitPage { path: string; bytes: number; sha256: string; dispose: () => void }
+
 /**
- * Opens the page a split head at `headPath` names: its reassembled file F' in a private scratch file (`dispose`
- * removes it), a refusal, or null when `text` (the head's content as import read it) is an ordinary page.
+ * Opens the page a split head names, its parts read beside `headPath` on disk or from `parts` (a commit's tree,
+ * git-parts.ts): F' in a private scratch file, a refusal, or null when `text` (the head's content as import read it)
+ * is an ordinary page.
  */
-export function openSplitPage(headPath: string, relPath: string, text: string): { refusal: SplitRefusal } | { path: string; dispose: () => void } | null {
+export function openSplitPage(headPath: string | PartsSource, relPath: string, text: string): { refusal: SplitRefusal } | OpenedSplitPage | null {
   const head = parseSplitHead(relPath, text);
   if (!head || 'refusal' in head) return head;
   const path = splitScratchPath();
   const verdict = reassemble(headPath, head.parsed, path);
-  return verdict.ok ? { path, dispose: () => rmSync(path, { force: true }) } : { refusal: refusalFor(relPath, verdict) };
+  return verdict.ok ? { path, bytes: verdict.bytes, sha256: verdict.sha256, dispose: () => rmSync(path, { force: true }) } : { refusal: refusalFor(relPath, verdict) };
 }
 
 /**

@@ -35,6 +35,7 @@ import { bytePathHoldGone } from '../../core/sync-byte-paths.ts';
 import { bindOrigin } from '../../core/persistence/origin-guard.ts';
 import { CLASSIC_FILE_HOLD_CODES, classifyClassicFile, type ClassicFileHold } from '../../core/classic-file-holds.ts';
 import { screenSplitHead } from '../../core/split-layout/read.ts';
+import { staleSplitImports } from '../../core/persistence/sync-split.ts';
 
 /** The file at a repo-relative path from git or a hold row, or null when it is missing or resolves outside the source root. */
 function fileUnderRoot(root: string, path: string): string | null {
@@ -151,6 +152,22 @@ export function planHoldRescreen(holds: LegacyHolds, input: { root: string; gitR
     if (!due) continue;
     holds.rescreen.push(path);
     if (holds.retryPaths.has(path)) holds.retryTaken.push(path);
+  }
+}
+
+/**
+ * Wave B PR 5: a live page an older gbrain stored from its split head (persistence/sync-split.ts `staleSplitImports`)
+ * re-screens like a held file though Git did not touch it, so its head imports as the whole page, or is held when its
+ * parts do not verify. A path already held follows its hold; one outside this run's scope or absent from disk is left.
+ */
+export async function planStaleSplitRescreen(engine: BrainEngine, holds: LegacyHolds, input: { root: string; selected: (path: string) => boolean | null }): Promise<void> {
+  const queued = new Set(holds.rescreen);
+  for (const { source_path: path } of await staleSplitImports(engine, holds.sourceId)) {
+    if (!path || queued.has(path) || holds.existing.has(path) || input.selected(path) !== true) continue;
+    const filePath = fileUnderRoot(input.root, path);
+    if (!filePath || !existsSync(filePath)) continue;
+    holds.rescreen.push(path);
+    queued.add(path);
   }
 }
 

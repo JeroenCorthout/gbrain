@@ -53,6 +53,8 @@ import { partsDirFor } from '../split-layout/paths.ts';
 import { resolveSlugForPath } from '../sync.ts';
 import { isOwnedClone, trackedChanges, urlCloneReadOnly, urlCloneRepairPreviewArgv } from '../url-clone.ts';
 import { afterCursor, type RepairHandler, type RepairItem, type RepairItemOutcome, type RepairListing, type RepairPlan } from './core.ts';
+import { parseHead } from '../split-layout/head.ts';
+import { PARTS_KEY } from '../split-layout/types.ts';
 
 const DOCS = 'docs/guides/repair.md#url-clone-fences';
 /** preview-approval's command union predates this kind; the store keys on the string alone. */
@@ -84,6 +86,7 @@ type Proof = { ok: true; added: ParsedFact[] } | { ok: false; class: string; rea
 export function proveFenceRowsOnly(head: string | null, work: string | null): Proof {
   if (work === null) return { ok: false, class: 'deleted', reason: 'the file is deleted in the checkout' };
   if (head === null) return { ok: false, class: 'not_in_head', reason: 'HEAD has no such file' };
+  if (head.includes(PARTS_KEY) && parseHead(head) !== null) return { ok: false, class: 'split_page_head', reason: 'the file is a split page head, whose parts carry the body, and sync imports that whole page' };
   const before = parseFactsFence(head);
   const after = parseFactsFence(work);
   if (before.warnings.length || after.warnings.length) return { ok: false, class: 'unparsed_fence', reason: 'a facts fence does not parse cleanly' };

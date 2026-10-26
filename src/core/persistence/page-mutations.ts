@@ -42,6 +42,7 @@ import { liveSearchable } from './searchable.ts';
 import { cachedPreadmitBrain, dropPreadmitCache, preadmitReads, preadmitRecheckFailed } from './preadmit-cache.ts';
 import { pipelined } from '../page-state/transactions.ts';
 import { isMirrorOnlyPage, sourceMirrorReadOnly } from './mirror-read-only.ts';
+import { assertNoReservedPartsKey } from './split-head-admission.ts';
 
 export async function requestPrincipalForContext(ctx: OperationContext): Promise<Principal> {
   // #5994: a failed-writes replay is admitted under the original writer.
@@ -296,6 +297,7 @@ export async function preparePageAdmission(ctx: OperationContext,
   if (input.batch) p.page_batch = { id: input.batch.id, index: input.batch.index, size: input.batch.size, ...(input.batch.repeats?.length ? { repeats: input.batch.repeats } : {}) };
   const requestId = input.batch ? input.batch.requestId : typeof p.request_id === 'string' ? p.request_id : randomUUID();
   const sourceId = pageMutationSource(ctx, p, input.operation);
+  if ((input.operation === 'put_page' || input.operation === 'capture') && typeof p.content === 'string') assertNoReservedPartsKey(p.content, sourceId);
   await initializeLocalPersistence(ctx);
   const captureSlug = input.operation === 'capture' ? await resolveCaptureFile(ctx, sourceId, p) : null;
   const principal = await requestPrincipalForContext(ctx);

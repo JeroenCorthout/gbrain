@@ -10990,7 +10990,9 @@ names the missing, changed and unlisted part files.
 
 1. Restore the head and its parts from Git: `git checkout -- notes/big-page.md notes/.big-page.gbparts` (or
    from the commit that last wrote them, `git checkout <commit> -- ...`), and remove any file in the parts directory
-   that the manifest does not list.
+   that the manifest does not list. A head that was moved or renamed without its parts directory (the hold says the
+   parts directory does not exist) needs the directory moved too: `git mv notes/.big-page.gbparts notes/.new-name.gbparts`
+   and commit. Until then the page keeps its old path and its last good version.
 2. Run `gbrain sync --source <id> --no-pull`. Every sync re-screens this hold, so the restore needs no new commit
    of the head; once the parts verify, the page imports and the hold clears.
 

@@ -6,7 +6,9 @@
  *   held split pages (sync holds with code `split_page_incomplete` or `split_head_modified` in each source's current
  *   incarnation), with counts, a sample and the fix: `gbrain pages split-storage <slug> --source <id>` for a held page
  *   (preview first; `--resolve-head keep-edit|discard` for an edited head), restoring the parts from Git for an
- *   incomplete one, and removing a stray directory (the user's call) for the rest.
+ *   incomplete one, and removing a stray directory (the user's call) for the rest. It also counts live pages an older
+ *   gbrain stored from their split head (top-level `gbrain_parts` in the stored frontmatter, the lead and a notice line
+ *   for a body); the next `gbrain sync --source <id> --no-pull` rebuilds them from Git. Doctor never rebuilds them.
  * - `oversize_canonical_file`: a single canonical `.md` larger than `sync.max_file_bytes`, which the split layout would
  *   store as a head plus parts; fix: `gbrain pages split-storage <slug> --source <id>` (preview, then `--apply`).
  *
@@ -18,7 +20,7 @@
  */
 import type { Dirent } from 'node:fs';
 import { readdirSync } from 'node:fs';
-import { basename, join, posix } from 'node:path';
+import { join, posix } from 'node:path';
 import type { Check } from '../../doctor.ts';
 import type { BrainEngine } from '../../../core/engine.ts';
 import type { Action } from '../../../core/agent-output.ts';
@@ -29,6 +31,8 @@ import { GIT_HOLD_OP } from '../../../core/persistence/sync-holds.ts';
 import { headPathForPartsDir, isPartsDirName } from '../../../core/split-layout/paths.ts';
 import { splitThresholdBytes, SPLIT_MAX_FILE_BYTES_KEY } from '../../../core/split-layout/limits.ts';
 import { readHead } from '../../../core/split-layout/disk-layout.ts';
+import { PARTS_KEY } from '../../../core/split-layout/types.ts';
+import { STALE_SPLIT_SCAN_LIMIT } from '../../../core/persistence/sync-split.ts';
 
 const DOCS = 'docs/guides/memory-boundaries.md#large-pages-in-git';
 /** Directory entries one doctor run reads across every source checkout. */
@@ -39,18 +43,17 @@ export function __setSplitWalkLimitForTests(limit: number | null): void { walkLi
 const SAMPLE = 5;
 export const SPLIT_HOLD_CODES = ['split_page_incomplete', 'split_head_modified'] as const;
 
-export interface StrayPartsDir { source_id: string; path: string; reason: 'no_head' | 'head_not_split' | 'not_in_manifest' }
+export interface StrayPartsDir { source_id: string; path: string; reason: 'no_head' | 'head_not_split' }
 export interface OversizeFile { source_id: string; path: string; bytes: number; slug: string }
 export interface HeldSplitPage { source_id: string; path: string; slug: string | null; code: string }
+export interface StaleSplitImport { source_id: string; slug: string }
 interface Walk { stray: StrayPartsDir[]; oversize: OversizeFile[]; sources: string[]; entries: number; truncated: boolean }
 
 function strayReason(root: string, rel: string): StrayPartsDir['reason'] | null {
   const head = readHead(join(root, headPathForPartsDir(rel)!));
   if (head.kind === 'missing') return 'no_head';
   if (head.kind === 'single') return 'head_not_split';
-  if (head.kind === 'invalid_head') return null;
-  const dir = head.parsed.manifest.parts[0]!.path.split('/')[0];
-  return dir === basename(rel) ? null : 'not_in_manifest';
+  return null;
 }
 
 /** One source checkout: stray parts directories and oversize single files, within the shared entry budget. */
@@ -108,7 +111,28 @@ async function readHeldSplitPages(engine: BrainEngine, sourceIds: string[]): Pro
   return { count: Number(counted?.n ?? 0), sample };
 }
 
-function heldFix(first: HeldSplitPage) {
+/**
+ * Live pages an older gbrain stored from their split head: the count (up to `STALE_SPLIT_SCAN_LIMIT`) and the first in
+ * slug order. `frontmatter ? key` is the jsonb key-existence operator, served by the GIN index idx_pages_frontmatter.
+ */
+async function readStaleSplitImports(engine: BrainEngine, sourceIds: string[]): Promise<{ count: number; sample: StaleSplitImport[] }> {
+  const from = `FROM pages WHERE source_id = ANY($1::text[]) AND deleted_at IS NULL AND frontmatter ? '${PARTS_KEY}'`;
+  const [counted] = await engine.executeRaw<{ n: number | string }>(`SELECT count(*)::int AS n FROM (SELECT 1 ${from} LIMIT ${STALE_SPLIT_SCAN_LIMIT}) bounded`, [sourceIds]);
+  const sample = await engine.executeRaw<StaleSplitImport>(`SELECT source_id, slug ${from} ORDER BY source_id, slug LIMIT ${SAMPLE}`, [sourceIds]);
+  return { count: Number(counted?.n ?? 0), sample };
+}
+
+function staleFix(first: StaleSplitImport, remote: boolean) {
+  if (remote) return agentFix(['gbrain', 'doctor', '--only', 'split_layout', '--json'],
+    'Read-only, on the brain host: names the source whose pages an older gbrain stored as their split head; gbrain sync for that source with --no-pull rebuilds them from Git.', 'split_layout', { docs: DOCS });
+  return agentFix(['gbrain', 'sync', '--source', first.source_id, '--no-pull'],
+    'Re-imports each such page from its split head and parts in Git (no pull); a head whose parts do not verify is held split_page_incomplete and the stored page is left as it is.', 'split_layout', { docs: DOCS });
+}
+
+/** A remote caller's fix names no page or source (the details carry counts only); the brain host's own read names them. */
+function heldFix(first: HeldSplitPage, remote: boolean) {
+  if (remote) return agentFix(['gbrain', 'sources', 'status', '--json'],
+    'Read-only, on the brain host: lists each source\'s held files, the held split pages among them, with the fix for each.', 'split_layout', { docs: DOCS });
   const slug = first.slug ?? first.path.replace(/\.md$/, '');
   return first.code === 'split_head_modified'
     ? agentFix(['gbrain', 'pages', 'split-storage', slug, '--source', first.source_id, '--resolve-head', 'keep-edit', '--json'],
@@ -123,24 +147,27 @@ async function runSplitLayout(ctx: DoctorContext): Promise<Check[]> {
     const engine = connectedEngine(ctx);
     const sourceIds = doctorSourceIds(ctx) ?? (await engine.executeRaw<{ id: string }>('SELECT id FROM sources WHERE archived IS NOT TRUE ORDER BY id')).map(row => row.id);
     const threshold = await splitThresholdBytes(engine);
-    const [walk, held] = [await walkSources(engine, sourceIds, threshold, ctx.entryDeadlineAt), await readHeldSplitPages(engine, sourceIds)];
+    const [walk, held, stale] = [await walkSources(engine, sourceIds, threshold, ctx.entryDeadlineAt), await readHeldSplitPages(engine, sourceIds), await readStaleSplitImports(engine, sourceIds)];
     const shown = <T>(rows: T[]) => (ctx.remote ? [] : rows.slice(0, SAMPLE));
     const bound = walk.truncated ? { truncated: true, limit: walkLimit, exact: false } : { truncated: false, exact: true };
     const layoutDetails = { stray_parts_dirs: walk.stray.length, held_split_pages: held.count, stray_sample: shown(walk.stray), held_sample: shown(held.sample),
-      sources_walked: walk.sources, entries_read: walk.entries, ...bound, docs: DOCS };
-    if (!walk.sources.length && !held.count) {
+      stale_split_imports: stale.count, stale_sample: shown(stale.sample),
+      sources_walked: ctx.remote ? [] : walk.sources, source_count: walk.sources.length, entries_read: walk.entries, ...bound, docs: DOCS };
+    if (!walk.sources.length && !held.count && !stale.count) {
       checks.push(infoCheck('split_layout', 'Not applicable: no source has a canonical checkout on this host and no split page is held.', 'not_applicable', undefined, layoutDetails));
-    } else if (walk.stray.length || held.count) {
+    } else if (walk.stray.length || held.count || stale.count) {
       const parts = [
         ...(held.count ? [`${held.count} split page(s) held by sync (${SPLIT_HOLD_CODES.join(' / ')})${ctx.remote ? '' : `, e.g. ${held.sample.map(row => `${row.source_id}:${row.path} (${row.code})`).join(', ')}`}`] : []),
+        ...(stale.count ? [`${stale.count} page(s) an older gbrain stored as their split head (the lead and a notice line)${ctx.remote ? ', which gbrain sync with --no-pull on the brain host rebuilds from Git'
+          : `, e.g. ${stale.sample.map(row => `${row.source_id}:${row.slug}`).join(', ')}; gbrain sync --source ${stale.sample[0]!.source_id} --no-pull rebuilds them from Git`}`] : []),
         ...(walk.stray.length ? [`${walk.stray.length}${walk.truncated ? '+' : ''} stray parts director${walk.stray.length === 1 ? 'y' : 'ies'} with no split head naming them${ctx.remote ? '' : `, e.g. ${walk.stray.slice(0, SAMPLE).map(row => `${row.source_id}:${row.path} (${row.reason})`).join(', ')}`}`] : []),
       ];
-      const fix: Action = held.count ? heldFix(held.sample[0]!)
+      const fix: Action = held.count ? heldFix(held.sample[0]!, ctx.remote === true) : stale.count ? staleFix(stale.sample[0]!, ctx.remote === true)
         : { consent: [], actor: 'agent', ask_user: true, requires_exclusive: false, docs: DOCS,
           why: 'A parts directory no head names holds bytes no page reads; whether to remove it (git rm -r <dir>, then commit) or restore its head from Git is the user\'s call.',
           user_message: `${walk.stray.length} hidden part-file director${walk.stray.length === 1 ? 'y has' : 'ies have'} no page head that names ${walk.stray.length === 1 ? 'it' : 'them'}. Remove ${walk.stray.length === 1 ? 'it' : 'them'}, or restore the head from Git?` };
       checks.push({ name: 'split_layout', status: 'warn', details: layoutDetails, fix,
-        message: `${parts.join('; ')}. A held page keeps its last imported content until it is resolved: preview with gbrain pages split-storage <slug> --source <id> (--resolve-head keep-edit|discard for an edited head), or restore missing part files from Git and sync.` });
+        message: `${parts.join('; ')}.${held.count || walk.stray.length ? ' A held page keeps its last imported content until it is resolved: preview with gbrain pages split-storage <slug> --source <id> (--resolve-head keep-edit|discard for an edited head), or restore missing part files from Git and sync.' : ''}` });
     } else {
       checks.push({ name: 'split_layout', status: 'ok', details: layoutDetails,
         message: `No stray parts directory and no held split page (${walk.entries} entries read in ${walk.sources.length} checkout(s)${walk.truncated ? `; the walk stopped at its bound of ${walkLimit} entries` : ''}).` });
@@ -153,8 +180,10 @@ async function runSplitLayout(ctx: DoctorContext): Promise<Check[]> {
       checks.push({ name: 'oversize_canonical_file', status: 'warn', details: oversizeDetails,
         message: `${walk.oversize.length}${walk.truncated ? '+' : ''} canonical file(s) are single files over ${SPLIT_MAX_FILE_BYTES_KEY} (${threshold} bytes)${ctx.remote ? '' : `, e.g. ${walk.oversize.slice(0, SAMPLE).map(row => `${row.source_id}:${row.path} (${row.bytes} bytes)`).join(', ')}`}. `
           + 'The split git layout stores such a page as a head file plus hidden part files; preview the change with gbrain pages split-storage <slug> --source <id>, then --apply.',
-        fix: agentFix(['gbrain', 'pages', 'split-storage', first.slug, '--source', first.source_id, '--json'],
-          'Read-only preview: the head and part files the split layout would write for this page; nothing is written until --apply.', 'oversize_canonical_file', { docs: DOCS }) });
+        fix: ctx.remote ? agentFix(['gbrain', 'doctor', '--only', 'oversize_canonical_file', '--json'],
+          'Read-only, on the brain host: names each oversize file and the split-storage preview for it.', 'oversize_canonical_file', { docs: DOCS })
+          : agentFix(['gbrain', 'pages', 'split-storage', first.slug, '--source', first.source_id, '--json'],
+            'Read-only preview: the head and part files the split layout would write for this page; nothing is written until --apply.', 'oversize_canonical_file', { docs: DOCS }) });
     } else {
       checks.push({ name: 'oversize_canonical_file', status: 'ok', details: oversizeDetails,
         message: `No single canonical file is over ${SPLIT_MAX_FILE_BYTES_KEY} (${threshold} bytes)${walk.truncated ? ` among the ${walk.entries} entries read (the walk stopped at its bound)` : ''}.` });

@@ -299,7 +299,13 @@ as a short page: the first 64 KiB, the notice line and a `gbrain_parts`
 frontmatter key. It never reads the part files (they are in a hidden folder and
 are not `.md` files). Upgrade every machine that syncs the brain before a page
 grows past the threshold, or keep large pages on a source only current versions
-sync.
+sync. A short page an older version stored this way is not lost: the next
+`gbrain sync` by a current version (`gbrain sync --source <id> --no-pull` runs
+it now) re-reads the head and its parts from Git and rebuilds the whole page, with
+no flag, and lists it under `split_pages_rebuilt` in its result. If a part is
+missing, the head is held `split_page_incomplete` and the stored page stays as
+it is until the part is restored. Doctor's `split_layout` check counts such
+pages and names that command; it never rebuilds them itself.
 
 **Git history keeps every part.** Each part file is a normal file in Git, so
 every version of every part stays in the history after the page changes, is

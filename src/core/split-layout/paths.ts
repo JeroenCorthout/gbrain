@@ -24,6 +24,15 @@ export function partsDirFor(headPath: string): string {
   return join(dirname(headPath), partsDirName(basename(headPath)));
 }
 
+/**
+ * Where manifest part `manifestPath` (`.<name>.gbparts/<file>`) lives for the head named `headName`: in that head's own
+ * parts directory, by its file name. A head moved together with its directory (`git mv`) keeps the manifest's old
+ * directory name, which therefore never decides where a part is read.
+ */
+export function partPathFor(headName: string, manifestPath: string): string {
+  return partsDirName(headName) + '/' + manifestPath.slice(manifestPath.indexOf('/') + 1);
+}
+
 /** A part's file name. */
 export function partFileName(index: number, sha256: string): string {
   return String(index).padStart(4, '0') + '-' + sha256.slice(0, 8) + '.gbpart';
@@ -40,6 +49,17 @@ export function headPathForPartsDir(rel: string): string | null {
   const slash = trimmed.lastIndexOf('/');
   const match = PARTS_DIR_RE.exec(trimmed.slice(slash + 1));
   return match ? trimmed.slice(0, slash + 1) + match[1] + HEAD_EXTENSION : null;
+}
+
+/** The head of the parts directory that holds Git path `rel`, and `rel`'s path inside it; null outside any parts directory. */
+export function splitPartOf(rel: string): { head: string; part: string } | null {
+  const segments = rel.split('/');
+  for (let i = segments.length - 2; i >= 0; i--) {
+    if (!PARTS_DIR_RE.test(segments[i]!)) continue;
+    const head = headPathForPartsDir(segments.slice(0, i + 1).join('/'));
+    return head ? { head, part: segments.slice(i + 1).join('/') } : null;
+  }
+  return null;
 }
 
 /** Whether a directory name is a parts directory name. */

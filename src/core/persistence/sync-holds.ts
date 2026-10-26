@@ -990,8 +990,9 @@ function splitHoldFix(record: Pick<GitHoldRecord, 'source_id' | 'path' | 'code'>
   }
   const partsDir = partsDirFor(record.path).split('\\').join('/');
   return { argv: verify.argv, consent: [], actor: 'user', requires_exclusive: false, docs: gitHoldDocs(record.code), then, verify,
-    user_message: `The part files of the split page ${record.path} (in ${partsDir}) are missing, unlisted or changed, so sync held it and kept the stored page. Restore the head and its parts `
-      + `from Git (git checkout -- ${record.path} ${partsDir}, or from the commit that last wrote them), then run gbrain sync --source ${source} --no-pull.`,
+    user_message: `The part files of the split page ${record.path} (in ${partsDir}) are missing, unlisted or changed, so sync held it and kept the stored page. Move or delete any file in ${partsDir} `
+      + `the manifest does not list (the hold names them; git checkout leaves untracked files in place), restore the head and its parts from Git (git checkout -- ${record.path} ${partsDir}, `
+      + `or from the commit that last wrote them), then run gbrain sync --source ${source} --no-pull.`,
     why: 'A split page is its head plus every part its manifest lists, byte for byte; sync never imports a page from an incomplete set.' };
 }
 

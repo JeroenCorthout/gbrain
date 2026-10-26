@@ -492,6 +492,8 @@ async function importScanned(engine: BrainEngine, input: { file: FileHandle; bom
     return opts.coordinated.prepare({ slug, observedRevision: opts.coordinated.snapshot?.revision ?? null, noop: false, contentHash: hash, result: imported, frontmatter: parsed.frontmatter,
       render: { title: parsed.title, type: parsed.type, frontmatter: parsed.frontmatter, tags: parsed.tags, truthPieces: scan.truth, timelinePieces: scan.timeline, bom, prefix },
       validate: async () => {
+        // Wave B PR 5: a split page's F' is its caller's private copy, checked and disposed by it (persistence/sync-split.ts).
+        if (opts.splitBody) return;
         const now = await lstat(input.filePath);
         if (now.size !== size || now.mtimeMs !== input.stat.mtimeMs) throw opError('source_changed', 'The input file changed after import preparation.',
           `${relativePath} changed after its import request was prepared, so the request published nothing. Import it again to publish the current bytes.`);

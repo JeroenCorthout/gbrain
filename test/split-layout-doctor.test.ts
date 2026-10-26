@@ -125,6 +125,8 @@ for (const backend of testBackends()) {
         expect(remote.split_layout!.details).toMatchObject({ stray_parts_dirs: 2, stray_sample: [] });
         expect(remote.split_layout!.message).not.toContain('orphan-example');
         expect((remote.oversize_canonical_file!.details as any).sample).toEqual([]);
+        expect(remote.oversize_canonical_file!.fix?.argv).toEqual(['gbrain', 'doctor', '--only', 'oversize_canonical_file', '--json']);
+        expect(JSON.stringify(remote)).not.toContain('big-example');
 
         __setSplitWalkLimitForTests(1);
         try {
@@ -152,6 +154,11 @@ for (const backend of testBackends()) {
           ? ['gbrain', 'pages', 'split-storage', 'notes/edited-example', '--source', 'default', '--resolve-head', 'keep-edit', '--json']
           : ['gbrain', 'sources', 'status', 'default', '--json']);
         expect(layout.message).toContain('2 split page(s) held by sync');
+
+        const remote = (await run(brain, { remote: true })).split_layout!;
+        expect(remote.details).toMatchObject({ held_split_pages: 2, held_sample: [], sources_walked: [], source_count: 1 });
+        expect(remote.fix?.argv).toEqual(['gbrain', 'sources', 'status', '--json']);
+        expect(JSON.stringify(remote)).not.toMatch(/edited-example|short-example|'default'|"default"/);
       });
     });
   });

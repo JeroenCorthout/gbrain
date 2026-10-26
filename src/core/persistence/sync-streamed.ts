@@ -31,9 +31,10 @@ import { ownerImportTrust } from '../trust/channel.ts';
 import { pipelined } from '../page-state/transactions.ts';
 import { sealSegmentedPage } from './segmented-apply.ts';
 import { enterClaimStep, type ClaimPhaseClock } from './claim-phase.ts';
-import { syncFilePath, type SyncRename } from './sync-discovery.ts';
+import { readSyncFile, syncFilePath, type SyncRename } from './sync-discovery.ts';
+import { reopenSplitPage } from './sync-split.ts';
 import { SYNC_READ_BOUND, type TreeBlob } from './sync-blobs.ts';
-import { recordSyncImportProvenance, type SyncImportProvenanceBase } from './sync-holds.ts';
+import { recordSyncImportProvenance, syncDiskProvenance, type SyncImportProvenanceBase } from './sync-holds.ts';
 import type { WriteRequest } from './model.ts';
 import type { SyncIntent, SyncPreparedMutation } from './sync-prepare.ts';
 import { bindOrigin } from './origin-guard.ts';
@@ -41,7 +42,8 @@ import { segmentedOutcome } from './searchable.ts';
 import { isQuarantined } from '../quarantine.ts';
 
 /** A frozen Markdown file over the single-string ceiling: the bytes the owner streams and verifies. */
-export interface SyncBodyRef { kind: 'git_blob' | 'input_file'; sha256: string; bytes: number; blob_oid: string }
+/** `split_page` (Wave B PR 5): a split page's F', reopened from the intent's `split` mark (sync-split.ts); its `blob_oid` is empty. */
+export interface SyncBodyRef { kind: 'git_blob' | 'input_file' | 'split_page'; sha256: string; bytes: number; blob_oid: string }
 
 /**
  * The reference a Markdown import over the sync read bound is frozen by, or
@@ -96,15 +98,18 @@ export async function prepareManagedSyncStreamed(engine: BrainEngine, row: Write
   const policy = await readPageBodyPolicy(engine);
   if (!policy.segmented || ref.bytes > policy.maxBytes) throw ctx.contentRefusal({ code: 'file_too_large',
     message: `File too large (${ref.bytes} bytes): segmented page storage (pages.segmented_storage) is off or the file is over pages.max_bytes (${policy.maxBytes}).` });
-  const filePath = syncFilePath(ctx.root, p.path, policy.maxBytes);
-  const stat = filePath === null ? null : await lstat(filePath);
-  if (!filePath || !stat || stat.size !== ref.bytes) throw changed();
+  // Wave B PR 5: a split page streams its F', reopened from the commit it was frozen at (sync-split.ts); the head stays the import's path.
+  const split = p.split ? reopenSplitPage(ctx.root, p.path, p.split) : null;
+  if (p.split && !split) throw changed();
+  const filePath = syncFilePath(ctx.root, p.path, split ? undefined : policy.maxBytes);
+  const stat = filePath === null ? null : await lstat(split?.path ?? filePath);
+  if (!filePath || !stat || stat.size !== ref.bytes) { split?.dispose(); throw changed(); }
   let ready: StreamedPreparedImport | undefined;
   enterClaimStep(ctx.clock, 'import_content', undefined, 'fs');
-  const result = await importStreamedMarkdownFile(engine, filePath, p.sourcePath, { sourceId: row.source_id, noEmbed: true, ...(ctx.activePack ? { activePack: ctx.activePack } : {}),
+  const result = await importStreamedMarkdownFile(engine, filePath, p.sourcePath, { sourceId: row.source_id, noEmbed: true, ...(ctx.activePack ? { activePack: ctx.activePack } : {}), ...(split ? { splitBody: split.path } : {}),
     coordinated: { snapshot: base, sha256: ref.sha256, slug: row.slug, moved: !!renamed, prepare: async value => { ready = value; return value.result; },
       owner: { kind: 'sync', principalKind: row.principal_kind, principalId: row.principal_id, baseRevision: base?.revision ?? null } } }, stat, policy)
-    .catch(error => { throw error instanceof OperationError && error.code === 'source_changed' ? changed() : error; });
+    .catch(error => { throw error instanceof OperationError && error.code === 'source_changed' ? changed() : error; }).finally(() => split?.dispose());
   if (!ready) throw result.refusal ? ctx.contentRefusal(result.refusal) : refuse('invalid_params', result.error ?? 'The sync file could not be prepared.',
     `The file could not be prepared as page ${row.slug}.`);
   const prepared: StreamedPreparedImport = ready;
@@ -134,7 +139,7 @@ export async function prepareManagedSyncStreamed(engine: BrainEngine, row: Write
       await pipelined(tx, [
         () => ctx.releaseHold(tx),
         async () => { if (final) await recordSyncImportProvenance(tx, { ...ctx.importProvenance, page_id: Number(final.page.id), revision: final.revision,
-          disk_sha256: ref.sha256, disk_blob_oid: ref.blob_oid }); },
+          ...(p.split ? syncDiskProvenance(readSyncFile(ctx.root, p.path), p.target) : { disk_sha256: ref.sha256, disk_blob_oid: ref.blob_oid }) }); },
       ]);
       mutation.postimage = final;
       const live = final && final.page.deleted_at == null ? final.page : null;

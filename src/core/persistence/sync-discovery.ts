@@ -1,5 +1,5 @@
 import { execFile, execFileSync } from 'node:child_process';
-import { lstatSync, readFileSync, realpathSync, type Stats } from 'node:fs';
+import { existsSync, lstatSync, readFileSync, realpathSync, type Stats } from 'node:fs';
 import { join, relative, resolve, sep } from 'node:path';
 import { promisify } from 'node:util';
 import type { BrainEngine } from '../engine.ts';
@@ -34,6 +34,7 @@ import { holdBasisMoved, holdRescreenDue, readGitHoldRetryPaths, readGitSourceHo
 import { readBlobContents, readTreeBlobs, SYNC_READ_BOUND } from './sync-blobs.ts';
 import { gitChildEnv } from '../git-env.ts';
 import { readOriginEvidence } from './sync-origin-evidence.ts';
+import { splitPartOf } from '../split-layout/paths.ts';
 import { movedDriftHolds, prescreenSyncEntries, type SyncDriftSide } from './sync-prescreen.ts';
 import { sliceEntries, type SyncSliceCursor, type SyncSliceState } from './sync-slices.ts';
 
@@ -106,6 +107,30 @@ export async function syncExcludePatterns(engine: Pick<BrainEngine, 'getConfig'>
 export function syncGit(root: string, args: string[]): string {
   return execFileSync('git', ['-c', 'core.quotepath=false', '-C', root, ...args],
     { env: gitChildEnv(), encoding: 'utf8', timeout: 30_000, maxBuffer: 32 * 1024 ** 2, stdio: ['ignore', 'pipe', 'pipe'] });
+}
+/** Whether `path` (a Git path) names an object at `target`. */
+function gitPathAt(root: string, target: string, path: string): boolean {
+  try { syncGit(root, ['cat-file', '-e', `${target}:${path}`]); return true; } catch { return false; }
+}
+/**
+ * Wave B PR 5 (split git layout): `manifest` with its part-file changes folded into their split page heads. A part file
+ * is never an entry; a change to one re-imports its head (persistence/sync-split.ts reassembles it) when the head is still
+ * there (`headPresent`) and no other change names it. A rename with a part file on one side keeps its other side as a deletion or an addition.
+ */
+function foldPartChanges<M extends SyncManifest>(manifest: M, headPresent: (head: string) => boolean): M {
+  const heads = new Set<string>();
+  const ordinary = (path: string) => { const at = splitPartOf(path); if (at) heads.add(at.head); return !at; };
+  const added = manifest.added.filter(ordinary), modified = manifest.modified.filter(ordinary), deleted = manifest.deleted.filter(ordinary);
+  const renamed = manifest.renamed.filter(rename => {
+    const from = ordinary(rename.from), to = ordinary(rename.to);
+    if (from && to) return true;
+    if (from) deleted.push(rename.from);
+    if (to) added.push(rename.to);
+    return false;
+  });
+  const named = new Set([...added, ...modified, ...deleted, ...renamed.flatMap(rename => [rename.from, rename.to])]);
+  for (const head of heads) if (!named.has(head) && headPresent(head)) modified.push(head);
+  return { ...manifest, added, modified, deleted, renamed };
 }
 /** `syncGit` without blocking the event loop while Git runs (a level read: a synchronous spawn held timers for 200+ ms on a loaded host). */
 const execFileAsync = promisify(execFile);
@@ -383,7 +408,7 @@ export async function discoverManagedSync(engine: BrainEngine, opts: SyncOpts, c
   const originScope: SyncOriginScope = { sourceId, root, scope, slugMode };
   // #6729: inexact renames keep their page identity only when confirmed (an imported dirty tree reads its target side from the working tree).
   const confirm = { sourceId, sourcePathOf: sourcePath }, built: SyncManifest = company ? { added: [], modified: [], deleted: [], renamed: [] } : buildDetachedWorkingTreeManifest(gitRoot);
-  const dirty = working ? await confirmRenameIdentities(engine, gitRoot, 'HEAD', null, built, confirm) : built;
+  const dirty = working ? foldPartChanges(await confirmRenameIdentities(engine, gitRoot, 'HEAD', null, built, confirm), head => existsSync(join(nativeGitRoot, head))) : built;
   const delta = !opts.full && !walk && source.last_commit ? await confirmedSyncDelta(engine, gitRoot, source.last_commit, target, confirm) : null;
   const entries = new Map<string, SyncEntry>();
   const renamedFrom = new Map<string, { from: string; identityHead?: string }>();
@@ -428,9 +453,10 @@ export async function discoverManagedSync(engine: BrainEngine, opts: SyncOpts, c
     put(rename.from, 'delete', working); put(rename.to, 'import', working); renamedFrom.set(rename.to, { from: rename.from, ...(working && rename.identityHead ? { identityHead: rename.identityHead } : {}) });
   };
   if (delta?.status === 'ok') {
-    for (const path of [...delta.manifest.added, ...delta.manifest.modified]) put(path, 'import');
-    for (const path of delta.manifest.deleted) put(path, 'delete');
-    for (const rename of delta.manifest.renamed) putRename(rename);
+    const manifest = foldPartChanges(delta.manifest, head => gitPathAt(gitRoot, target, head));
+    for (const path of [...manifest.added, ...manifest.modified]) put(path, 'import');
+    for (const path of manifest.deleted) put(path, 'delete');
+    for (const rename of manifest.renamed) putRename(rename);
   } else {
     const listed = syncGit(gitRoot, ['ls-tree', '-r', '--name-only', '-z', target]).split('\0')
       .filter(path => path && (!scope || path.startsWith(`${scope}/`)));

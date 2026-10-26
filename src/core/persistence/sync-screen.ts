@@ -28,6 +28,7 @@ import { fenceFileLine } from '../fence-repair/hold-fix.ts';
 import { slugConflictHoldMessage } from '../import-file.ts';
 import { isImageFilePath, isMultimodalEnabled, resolveSlugForPath } from '../sync.ts';
 import { loadActivePackForEngine } from '../schema-pack/engine-resolution.ts';
+import type { SplitRefusal } from '../split-layout/read.ts';
 import { VERSION } from '../../version.ts';
 import { sha256 } from './digest.ts';
 import { readPageBodyPolicy, type PageBodyPolicy } from '../page-body/limits.ts';
@@ -150,6 +151,11 @@ function heldEntry(entry: Pick<SyncEntry, 'path' | 'sourcePath' | 'working' | 'r
       recovery_version: RECOVERY_VERSION, ...(refusal.fence ? { fence: refusal.fence, fence_version: FENCE_VERSION } : {}),
       ...(blob ? { blob_oid: blob.oid } : {}), ...(entry.working ? { working: true } : {}),
       ...(entry.renameFrom ?? entry.renameHeld ? { rename_from: entry.renameFrom ?? entry.renameHeld } : {}) } };
+}
+
+/** Wave B PR 5: the hold of a split page head whose part files do not verify (sync-split.ts); the stored page keeps its last good version. */
+export function splitHold(entry: SyncEntry, slug: string, pageId: number | null, refusal: SplitRefusal, content: string | null, blob: TreeBlob | null): HeldEntry {
+  return heldEntry(entry, slug, pageId, refusal, content, blob);
 }
 
 /**

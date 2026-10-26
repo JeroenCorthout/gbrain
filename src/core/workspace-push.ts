@@ -77,7 +77,7 @@ import {
 } from './secret-scan.ts';
 import { scanTextStream } from './secret-scan-stream.ts';
 import { scanSplitSeams, splitHeadParts } from './secret-scan-split.ts';
-import { headPathForPartsDir, isPartPath } from './split-layout/paths.ts';
+import { headPathForPartsDir, isPartPath, partsDirName } from './split-layout/paths.ts';
 import { shellQuote } from './mcp-registration.ts';
 import { gitChildEnv } from './git-env.ts';
 
@@ -475,8 +475,9 @@ async function scanStagedBlob(
 /**
  * Wave B PR 5: the seams of every split page this push changes (a staged head, or a staged part of a head in the index),
  * read from the index (secret-scan-split.ts). The parts themselves are scanned as staged files; a part over
- * PUSH_MAX_SCAN_BYTES is not read whole for its seams, so it is unscannable (fail closed). Appends to the gate's
- * `findings` and `unscannable`.
+ * PUSH_MAX_SCAN_BYTES is not read whole for its seams, so it is unscannable (fail closed), as is every staged part of a
+ * head whose manifest cannot be read (not in the index, over the cap, unreadable, or no valid `gbrain_parts`): its
+ * seams are unknown. Appends to the gate's `findings` and `unscannable`.
  */
 function scanStagedSplitSeams(root: string, staged: readonly string[], gate: {
   allowlist: string[]; allowlistPath: string; retryCommand: string; findings: PushSecretFinding[]; unscannable: string[];
@@ -489,9 +490,17 @@ function scanStagedSplitSeams(root: string, staged: readonly string[], gate: {
   }
   for (const head of heads) {
     const blob = stagedBlobSizes(root, [head]).get(head);
-    let rels: string[] | null = null;
-    try { rels = blob && blob.size <= PUSH_MAX_SCAN_BYTES ? splitHeadParts(gitBuffer(root, ['cat-file', 'blob', blob.oid]).toString('utf-8')) : null; } catch { rels = null; }
-    if (!rels) continue;
+    let rels: string[] | null = null, why = 'its head is not in the index';
+    if (blob && blob.size > PUSH_MAX_SCAN_BYTES) why = `its head exceeds the ${PUSH_MAX_SCAN_BYTES}B scan cap`;
+    else if (blob) {
+      try { rels = splitHeadParts(gitBuffer(root, ['cat-file', 'blob', blob.oid]).toString('utf-8'), posix.basename(head)); why = 'its head has no valid gbrain_parts manifest'; }
+      catch (e) { why = `its head is unreadable: ${(e as Error).message.slice(0, 80)}`; }
+    }
+    if (!rels) {
+      const dir = posix.join(posix.dirname(head), partsDirName(posix.basename(head))) + '/';
+      for (const rel of staged) if (rel.startsWith(dir) && !pathAllowlisted(rel, allowlist)) unscannable.push(`${rel} (split page seam: ${why})`);
+      continue;
+    }
     const parts = rels.map((rel) => posix.join(posix.dirname(head), rel));
     const blobs = stagedBlobSizes(root, parts);
     const seams = scanSplitSeams(parts, (index) => {

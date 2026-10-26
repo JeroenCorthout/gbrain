@@ -18,11 +18,12 @@ import { preflightIncrementalSync } from './preflight.ts';
 import { runRenamesPhase } from './renames.ts';
 import { readUpstreamDivergence, type UpstreamResultField } from '../../core/sync-upstream-rewrite.ts';
 import { createSyncRun, abortUnpersistedPin, registerCheckpointCleanup } from './sync-run.ts';
+import { withSplitRebuilds } from '../../core/persistence/sync-split.ts';
 
 export async function performSyncInner(engine: BrainEngine, opts: SyncOpts): Promise<SyncResult & UpstreamResultField> {
   // #5988: content refusals are held, not failed; every exit reports the holds.
   const holds = await openLegacyHolds(engine, opts.sourceId);
-  const result = await runSyncPhases(engine, opts, holds);
+  const result = await withSplitRebuilds(engine, opts, () => runSyncPhases(engine, opts, holds));
   const upstream = opts.sourceId ? await readUpstreamDivergence(engine, opts.sourceId) : null;
   return { ...result, ...(holds ? await legacyHoldFields(engine, holds) : {}), ...(upstream ? { upstream } : {}) };
 }

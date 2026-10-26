@@ -210,6 +210,7 @@ test/large-pages/stuck-recovery-large.slow.test.ts
 test/large-pages/timeline-top-insert-reembed.test.ts
 test/large-pages/upload-binding.test.ts
 test/large-pages/upload-over-ceiling.test.ts
+test/large-pages/upload-reserved-parts-key.test.ts
 test/large-pages/upload-review.test.ts
 test/large-pages/upload-streamed-git.test.ts
 test/large-pages/v252-master-reader-compat.test.ts
@@ -451,12 +452,14 @@ test/split-layout-git-effect-unit.test.ts
 test/split-layout-head-content.test.ts
 test/split-layout-lifecycle.test.ts
 test/split-layout-managed-readers.test.ts
+test/split-layout-managed-sync.test.ts
 test/split-layout-parts-unexpected.test.ts
 test/split-layout-publish-drift.test.ts
 test/split-layout-publish-mode.test.ts
 test/split-layout-publish-recovery.test.ts
 test/split-layout-publish.test.ts
 test/split-layout-raw-readers.test.ts
+test/split-layout-reserved-key.test.ts
 test/split-layout-sync.test.ts
 test/split-layout-withdrawal-mirror.test.ts
 test/split-layout-write-through.test.ts

@@ -30,6 +30,8 @@ import { isMirrorOnlyPage } from './mirror-read-only.ts';
 import { hardenedGitSync } from '../hardened-git.ts';
 import { pageFileSha256, type PageFileHold } from '../split-layout/page-file.ts';
 import { SPLIT_PAGE_UNSUPPORTED } from './file-repair.ts';
+import { parseHead } from '../split-layout/head.ts';
+import { PARTS_KEY } from '../split-layout/types.ts';
 
 export interface ReconcilePins {
   brain_id: string; source_id: string; source_incarnation: string; slug: string; page_id: number;
@@ -154,6 +156,7 @@ export async function readDeletedDriftTarget(engine: BrainEngine, sourceId: stri
     throw error;
   }
   const raw = readFileSync(path);
+  refuseSplitHead(raw.toString('utf8'), sourceId, input.path);
   const pin = { root, path, relative_path: input.path, source_path: input.sourcePath, raw, raw_file_hash: sha256(raw) };
   const claims = await engine.executeRaw<{ id: number; slug: string; deleted: boolean }>(
     `SELECT id, slug, deleted_at IS NOT NULL AS deleted FROM pages WHERE source_id=$1 AND source_path=$2 ORDER BY deleted_at DESC NULLS FIRST, id DESC`, [sourceId, input.sourcePath]);
@@ -170,6 +173,16 @@ export async function readDeletedDriftTarget(engine: BrainEngine, sourceId: stri
   const held = Array.isArray(marker.value.blob_oids) ? marker.value.blob_oids : [];
   if (held.includes(gitBlobOid(raw, 'sha1')) || held.includes(gitBlobOid(raw, 'sha256'))) return { changed: 'deleted_same' };
   return { state: 'purged_differs', ...pin, tombstone: null, marker_digest: digest(marker.value) };
+}
+/**
+ * Wave B PR 5: a held file (no live page) that is a split page head is not its page, so the deleted-page reconcile never
+ * reads it as the file side; sync imports it whole. A live page's head refuses in readReconcileState (`splitHeadRefusal`).
+ */
+function refuseSplitHead(text: string, sourceId: string, rel: string): void {
+  if (!text.includes(PARTS_KEY) || parseHead(text) === null) return;
+  throw opError('invalid_params', 'Reconcile does not read split page heads.',
+    `Nothing changed. ${rel} in '${sourceId}' is a split page head whose parts carry the body; run gbrain sync --source ${sourceId} --no-pull to import the whole page instead.`,
+    { fix: readFix('Lists the source\'s held files and sync state, read-only.', { argv: ['gbrain', 'sources', 'status', sourceId] }) });
 }
 /** Whether `root` or an ancestor holds a `.git` entry (a checkout Git should answer for). */
 function insideGitCheckout(root: string): boolean {
@@ -307,16 +320,17 @@ export async function readReconcileState(engine: BrainEngine, sourceId: string, 
 }
 /**
  * Wave B PR 5: the refusal of a canonical file that is a split page head. Reconciliation reads, compares and publishes one
- * canonical file, and a split page continues in part files, so its head is never reconciled as the page; the refusal
- * routes to `gbrain pages split-storage` (`--resolve-head` for an edited head), or names the head's hold.
+ * canonical file, and a split page continues in part files (its parts carry the body), so its head is never read as the
+ * file side: a merge would import the short head and a file write would collapse the split layout. Sync imports the
+ * whole page; the refusal routes to `gbrain pages split-storage` (`--resolve-head` for an edited head), or names the hold.
  */
 function splitHeadRefusal(sourceId: string, slug: string, rel: string, hold: PageFileHold | undefined): OperationError {
   const route = `gbrain pages split-storage ${slug} --source ${sourceId}`;
   const suggestion = hold?.code === 'split_head_modified'
     ? `Nothing changed. ${rel} is a split page head whose body was edited, so the page it names cannot be read. Preview the resolution with ${route} --resolve-head keep-edit|discard and ask the user which one to apply.`
     : hold ? `Nothing changed. ${hold.message}`
-    : `Nothing changed. ${rel} is a split page head (its page continues in part files), so it is not reconciled as the page; sync imports the page its parts reassemble to. Preview how it is stored with ${route}.`;
-  return opError('source_changed', 'The canonical file is a split page head; reconciliation compares one canonical file.', suggestion,
+    : `Nothing changed. ${rel} in '${sourceId}' is a split page head (its page continues in part files), so it is not reconciled as the page; gbrain sync --source ${sourceId} --no-pull imports the whole page its parts reassemble to. Preview how it is stored with ${route}.`;
+  return opError('source_changed', 'Reconcile does not read split page heads.', suggestion,
     { detail: hold?.code ?? SPLIT_PAGE_UNSUPPORTED,
       fix: readFix('Previews how the page is stored on disk (one file, or a head plus part files) and what --apply would write, read-only.',
         { argv: ['gbrain', 'pages', 'split-storage', slug, '--source', sourceId, '--json'] }) });

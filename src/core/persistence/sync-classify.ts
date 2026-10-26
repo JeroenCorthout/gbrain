@@ -72,6 +72,8 @@ export interface SyncPathState {
   fullObligation?: boolean;
   /** Under a `storage.keep_db` prefix, on a source that is not mirror-read-only. */
   keepDb: boolean;
+  /** Wave B PR 5: an older gbrain stored the live page from its split head (sync-split.ts `staleSplitImports`); Git's whole page replaces it. */
+  staleSplit?: true;
   /** Open work on the page or path (a queued/running/recovering request, a pending Git effect). */
   openWork: boolean;
   /**
@@ -179,6 +181,7 @@ function afterHold(s: SyncPathState): Matched {
     return { cls: 'dirty', settled, action: settled ? 'none' : 'hold' };
   }
   if (live) {
+    if (s.staleSplit && s.level !== null) return { cls: 'import', settled: false, action: 'import' };
     if (fileSame && dbSame && !obligation) return { cls: 'matched', settled: true, action: 'none' };
     const byHash = s.attested?.hash != null && s.levelSha256 !== null && s.levelSha256 === s.attested.hash;
     const byRevision = fileSame && s.record?.revision === null && s.attested?.arm1 === true;
@@ -241,7 +244,8 @@ export function classifySyncPath(s: SyncPathState, opts: { strict?: boolean } = 
 
 /** Why a pass is not idle (v3.2 §2.2); empty = idle. A hold-only round runs when `rescreen_due_hold` is the only reason. */
 export type SyncIdleBlocker = 'no_converged_state' | 'target_moved' | 'open_episode' | 'owed_tail' | 'retry_row' | 'not_converged_streak' | 'mismatch_streak'
-  | 'fingerprint_changed' | 'request_newer' | 'open_at_stamp_finished' | 'writeback_open' | 'working_change' | 'full_round_due' | 'rescreen_due_hold';
+  | 'fingerprint_changed' | 'request_newer' | 'open_at_stamp_finished' | 'writeback_open' | 'working_change' | 'full_round_due' | 'rescreen_due_hold'
+  | 'stale_split_import';
 
 export interface SyncPassKindInput {
   converged: { target: string; parserFp: string; pack: string | null; selectionFp: string; passesSinceFull: number; lastFullAt: number } | null;
@@ -256,6 +260,8 @@ export interface SyncPassKindInput {
   /** Working mode: the stat cache saw a change. */
   workingChange: boolean;
   rescreenDueHold: boolean;
+  /** Wave B PR 5: a live page an older gbrain stored from its split head, not held (sync-split.ts `staleSplitImports`). */
+  staleSplit?: boolean;
   /** `--full`. */
   full: boolean;
 }
@@ -284,6 +290,7 @@ export function syncPassKind(input: SyncPassKindInput): { kind: 'idle' | 'hold_o
   if (input.writebackOpen) blockers.push('writeback_open');
   if (input.workingChange) blockers.push('working_change');
   if (input.rescreenDueHold) blockers.push('rescreen_due_hold');
+  if (input.staleSplit) blockers.push('stale_split_import');
   const kind = !blockers.length ? 'idle' : blockers.every(b => b === 'rescreen_due_hold') ? 'hold_only' : 'full';
   return { kind, blockers };
 }

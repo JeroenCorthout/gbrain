@@ -29,6 +29,9 @@ import {
   type ParsedHead, type SplitManifest, type SplitPlan,
 } from '../src/core/split-layout/index.ts';
 import { withEnv } from './helpers/with-env.ts';
+import { atomicStagingPath } from '../src/core/atomic-write.ts';
+import { screenSplitHead } from '../src/core/split-layout/read.ts';
+import { gitHoldFix } from '../src/core/persistence/sync-holds.ts';
 
 const SMALL = { thresholdMin: 1, partTarget: 64, partMax: 128, leadMax: 32, partCountMax: 500 };
 const HEAD_REL = 'notes/big-page.md';
@@ -347,6 +350,22 @@ describe('verifyParts and reassemble read only the listed regular files', () => 
     expect(existsSync(dest)).toBe(false);
   });
 
+  test('an in-flight atomic write stage in the parts directory is not extra; every other unlisted entry is, and the refusal names it', async () => {
+    const a = await fresh();
+    writeFileSync(atomicStagingPath(join(a.partsDir, '0099-deadbeef.gbpart')), 'the next version of a part');
+    expect(verifyParts(a.headPath, a.parsed)).toMatchObject({ ok: true });
+    const stagedDir = atomicStagingPath(join(a.partsDir, '0098-deadbeef.gbpart'));
+    mkdirSync(stagedDir);
+    writeFileSync(join(a.partsDir, '.not-a-stage.tmp.1234'), 'x');
+    writeFileSync(join(a.partsDir, 'notes.txt'), 'x');
+    const extra = ['.big-page.gbparts/.not-a-stage.tmp.1234', `.big-page.gbparts/${stagedDir.slice(a.partsDir.length + 1)}`, '.big-page.gbparts/notes.txt'].sort();
+    expect(verifyParts(a.headPath, a.parsed)).toEqual(incomplete({ extra }));
+    const refusal = screenSplitHead(a.headPath, 'notes/big-page.md', readFileSync(a.headPath, 'utf8'));
+    expect(refusal?.message).toContain(`Move or delete the files the manifest does not list (${extra.join(', ')}), which git checkout leaves in place, and restore the listed parts from Git`);
+    expect(gitHoldFix({ source_id: 'source-a', path: 'notes/big-page.md', code: 'split_page_incomplete', meta: {} as never }).user_message)
+      .toContain('Move or delete any file in notes/.big-page.gbparts the manifest does not list');
+  });
+
   test('a symlinked part, a part that is a directory and a symlinked parts directory are refused', async () => {
     const a = await fresh();
     const listed = a.parsed.manifest.parts.map(part => part.path);
@@ -370,9 +389,10 @@ describe('verifyParts and reassemble read only the listed regular files', () => 
     const a = await fresh();
     const listed = a.parsed.manifest.parts.map(part => part.path);
     rmSync(a.partsDir, { recursive: true });
-    expect(verifyParts(a.headPath, a.parsed)).toEqual(incomplete({ missing: listed }));
+    expect(verifyParts(a.headPath, a.parsed)).toEqual({ ...incomplete({ missing: listed }), noDir: true });
     const b = await fresh();
-    expect(verifyParts(join(dirname(b.headPath), 'renamed.md'), b.parsed)).toEqual(incomplete({ missing: listed }));
+    // Parts are looked for in the renamed head's own parts directory, by file name (paths.ts partPathFor).
+    expect(verifyParts(join(dirname(b.headPath), 'renamed.md'), b.parsed)).toEqual({ ...incomplete({ missing: listed.map(path => path.replace('.big-page.gbparts/', '.renamed.gbparts/')) }), noDir: true });
   });
 });
 

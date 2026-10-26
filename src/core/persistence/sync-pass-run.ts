@@ -65,6 +65,7 @@ import { currentEmbeddingPricePerMTok } from '../embedding.ts';
 import { SIZE_STATE_SAMPLE, type SyncSizeStates } from '../page-embedding-budget.ts';
 import { massReconcileAllowed } from '../sync-reconcile.ts';
 import { keepDbHeadroom } from '../repair/keep-db-policy.ts';
+import { staleSplitImports } from './sync-split.ts';
 
 /** Rounds a pass runs before it stops `not_converged` (design §3.1). */
 export const PASS_MAX_ROUNDS = 4;
@@ -375,13 +376,13 @@ async function pinPass(engine: BrainEngine, input: SyncPassInput, lease: NonNull
     readSyncTail(engine, sourceId), readGitHoldRetryPaths(engine, sourceId, incarnation), readGitSourceHolds(engine, { sourceIds: [sourceId] }),
     passIdleProbe(engine, { sourceId, incarnation, worktreeId: context.binding.worktree_id, requestHwm: null, openAtStamp: null }),
     engine.executeRaw(`SELECT 1 FROM op_checkpoints WHERE op='managed-sync-failure' AND fingerprint=ANY($1::text[]) LIMIT 1`, [passFailureKeys(sourceId, incarnation)]),
-    readIdleFacts(engine, sourceId, incarnation)] as const);
+    readIdleFacts(engine, sourceId, incarnation), staleSplitImports(engine, sourceId)] as const);
   pin.catch(() => undefined);
   const handover = await retireLegacyCursors(engine, { sourceId, incarnation, remote, assertActive });
   const empty = (status: SyncResult['status'], reason?: SyncResult['reason']) => emptyPassResult(context, remote, status, reason);
   if (handover.wait) return { ended: { ...empty('partial', 'writer_pending'), ...(remote ? {} : { retryWait: handover.wait }) } };
   if (handover.hostRequired) return { ended: empty('blocked_by_failures', 'reconcile_host_required') };
-  const [prior, admission, configuredWorking, patterns, loadedPack, tail, retry, sourceHolds, rowProbe, failed, idleFacts] = await pin;
+  const [prior, admission, configuredWorking, patterns, loadedPack, tail, retry, sourceHolds, rowProbe, failed, idleFacts, staleSplit] = await pin;
   assertActive();
   const [headLine, refLine] = syncGit(context.gitRoot, ['rev-parse', 'HEAD', '--abbrev-ref', 'HEAD']).split('\n');
   const head = headLine!.trim();
@@ -437,7 +438,8 @@ async function pinPass(engine: BrainEngine, input: SyncPassInput, lease: NonNull
     head, parserFp, pack, selectionFp, now: started, openEpisode: !!episode, owedTail: tail !== null, retryRow: retry.length > 0,
     notConvergedStreak: obligations.not_converged_streak, mismatchStreak: Object.keys(obligations.mismatch).length,
     requestNewer: probe?.newer === true, openAtStampFinished: !!converged && (converged.open_at_stamp === null || (probe?.stillOpen ?? 0) < converged.open_at_stamp.length),
-    writebackOpen: probe?.writebackOpen === true, workingChange: working.changed, rescreenDueHold: holds.some(hold => holdRescreenDue(hold, retry.includes(hold.path))), full: opts.full === true });
+    writebackOpen: probe?.writebackOpen === true, workingChange: working.changed, rescreenDueHold: holds.some(hold => holdRescreenDue(hold, retry.includes(hold.path))), full: opts.full === true,
+    staleSplit: staleSplit.some(page => !holds.some(hold => hold.path === page.source_path)) });
   // Design §2.6: a withheld mass delete is applied by a full round once the owner host's env valve allows it.
   const valveOpen = !remote && !!obligations.deletes_withheld && massReconcileAllowed();
   // Design §4: keep_db writes the previous pass deferred (`keep_db_pending`: its cap, or write capacity) are owed to this pass, so it is

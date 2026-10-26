@@ -29,6 +29,8 @@ import { BRAIN_STAGED_KEY, RELEASE_STAGED_CTE, readUploadLimits, stagedCounterKe
 import type { Principal, SqlEngine, WriteRequest } from './model.ts';
 import { timelineSectionOf } from './timeline-omission.ts';
 import { PAGE_MAX_BYTES } from '../page-size-policy.ts';
+import { FRONTMATTER_HEAD_MAX_BYTES } from '../page-body/limits.ts';
+import { assertNoReservedPartsKey } from './split-head-admission.ts';
 
 export type UploadMode = 'create' | 'replace' | 'append';
 export type UploadState = 'open' | 'sealed' | 'prepared' | 'committed' | 'aborted' | 'expired';
@@ -338,13 +340,28 @@ export async function withStagedBodyIf<T extends Publishable>(engine: BrainEngin
  * Preparation of a put_page whose intent names a sealed upload session. A body within the single-string ceiling
  * (PAGE_MAX_BYTES) is read back and `prepare` gets the request with it as its content (and the timeline section put_page
  * admission records for content), so every put_page rule applies; a larger body streams from its parts through the
- * segmented import (upload-streamed.ts) and is never held as one string.
+ * segmented import (upload-streamed.ts) and is never held as one string. Either way content declaring a top-level
+ * `gbrain_parts` key is refused first, as put_page admission refuses it (split_head_content); a streamed body's
+ * frontmatter must close within its leading FRONTMATTER_HEAD_MAX_BYTES, so only those bytes are read for it.
  */
 export async function prepareStagedUpload<T extends Publishable>(engine: BrainEngine, row: WriteRequest, prepare: (row: WriteRequest) => Promise<T>): Promise<T> {
   return withStagedUpload(engine, row, async ref => {
-    if (ref.bytes > PAGE_MAX_BYTES) return (await import('./upload-streamed.ts')).prepareStreamedUpload(engine, row, ref) as unknown as Promise<T>;
+    if (ref.bytes > PAGE_MAX_BYTES) {
+      const leadBytes = FRONTMATTER_HEAD_MAX_BYTES + 3;
+      const lead: Uint8Array[] = [];
+      let held = 0;
+      for await (const part of stagedUploadParts(engine, ref)) {
+        if (!part) throw bodyStagingGoneError(row.slug, ref.staging_id, null);
+        lead.push(part.subarray(0, leadBytes - held));
+        held += lead.at(-1)!.byteLength;
+        if (held >= leadBytes) break;
+      }
+      assertNoReservedPartsKey(new TextDecoder('utf-8').decode(Buffer.concat(lead)), row.source_id);
+      return (await import('./upload-streamed.ts')).prepareStreamedUpload(engine, row, ref) as unknown as Promise<T>;
+    }
     const content = await stagedUploadText(engine, ref);
     if (content === null) throw bodyStagingGoneError(row.slug, ref.staging_id, null);
+    assertNoReservedPartsKey(content, row.source_id);
     const { body_ref: _ref, ...rest } = row.intent as Record<string, unknown>;
     return prepare({ ...row, intent: { ...rest, content,
       ...(rest.kind === undefined && rest.timeline_section === undefined ? { timeline_section: timelineSectionOf(content, row.slug) } : {}) } });

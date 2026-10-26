@@ -36,6 +36,7 @@ import { fileDriftSide, holdBasisMoved, holdRescreenDue, type DeletionCandidate,
   type GitHoldRecord, type SyncImportParser, type SyncImportProvenance } from './sync-holds.ts';
 import { movedDriftHolds, sameParser } from './sync-prescreen.ts';
 import { sameSyncOrigin, selectOriginClaimant, syncOriginPath, type SyncOriginScope } from './sync-origin.ts';
+import { splitHeadLevels, splitLevelsOf, staleSplitImports } from './sync-split.ts';
 import { hashWorkingLevel, probeDirtiness, readBlobs, readIndexDelta, readIndexLevel, readTreeLevel, workingChanged, type GitIndexEntry, type GitTreeEntry, type WorkingStatCache } from './sync-git-stream.ts';
 import { readOriginEvidence } from './sync-origin-evidence.ts';
 import { levelReuseVerify, readTreeLevelReusing, reportLevelReuseCheck, type TreeReuse } from './sync-tree-reuse.ts';
@@ -243,12 +244,14 @@ function confirmChangedPaths(pages: PageTable, changed: { rewritten: Array<{ slo
 }
 
 /** The path's level `L`: committed mode's tree blob, working mode's probe verdict (design v3.2 §2.1). */
-function levelReader(mode: 'committed' | 'working', tree: Map<string, GitTreeEntry>, root: string, scope: string) {
+function levelReader(mode: 'committed' | 'working', tree: Map<string, GitTreeEntry>, root: string, scope: string, split?: ReadonlyMap<string, string>) {
   return (path: string, probe: { dp: string; rawOid: string | null; rawSha256: string | null } | undefined): string | null => {
     const committed = tree.get(path) ?? null;
-    return mode === 'committed' ? committed?.oid ?? null
+    // Wave B PR 5: a split page head's level is its split identity (sync-split.ts splitHeadLevels).
+    const level = split?.get(path) ?? committed?.oid;
+    return mode === 'committed' ? level ?? null
       : !probe || probe.dp === 'deleted' ? null
-      : ['clean', 'clean_eol', 'clean_lfs'].includes(probe.dp) ? committed?.oid ?? probe.rawOid
+      : ['clean', 'clean_eol', 'clean_lfs'].includes(probe.dp) ? level ?? probe.rawOid
       // A path in neither T nor the index (untracked) or only staged has no `deleted` verdict: no bytes and no file is absent.
       : probe.rawOid ?? (probe.rawSha256 === null && !readPresent(root, path, scope) ? null : `unreadable:${path}`);
   };
@@ -732,7 +735,7 @@ export async function readShadowLevel(engine: BrainEngine, input: { sourceId: st
   const probes = hashed?.probes ?? new Map();
   timings.Dp = t();
 
-  const levelOf = levelReader(mode, tree, root, scope);
+  const levelOf = levelReader(mode, tree, root, scope, splitLevelsOf(eligibleT)), staleSplit = new Set((await staleSplitImports(engine, sourceId)).map(page => page.id));
   // `A` only matters where the file or the database moved (no row settles on `fileSame ∧ dbSame` with a proof): read it
   // for those pages alone, so a converged source reads none. The same walk finds whether any path needs the baseline tree.
   t = timer();
@@ -802,7 +805,7 @@ export async function readShadowLevel(engine: BrainEngine, input: { sourceId: st
         : input.full === true && live,
       fullObligation: input.pass ? !!input.pass.episodeFullId : input.full === true,
       keepDb: !mirror && keepDbPrefixes.length > 0 && row && isKeepDbSlug(pages.slug[at!]!, keepDbPrefixes),
-      openWork: row && open.pageIds.has(Number(pages.id[at!])) || open.origins.has(origin),
+      openWork: row && open.pageIds.has(Number(pages.id[at!])) || open.origins.has(origin), ...(live && staleSplit.has(Number(pages.id[at!])) ? { staleSplit: true as const } : {}),
     };
     return { state, ...(row ? { at } : {}), ...(legacyPageless ? { legacyPageless } : {}) };
   };
@@ -930,13 +933,15 @@ function scopedPageOrigin(recorded: string, slug: string, originScope: SyncOrigi
 async function eligibleListing(gitRoot: string, head: string, scope: string, opts: { key: string[]; canonical: string; allowed: boolean; step: LoopYield; eligible: (path: string) => boolean;
   prime: (listing: Map<string, GitTreeEntry>) => Map<string, GitTreeEntry> }): Promise<{ tree: Map<string, GitTreeEntry>; colon: string[]; reuse: TreeReuse }> {
   const listed = await readTreeLevelReusing(gitRoot, head, scope, { key: opts.key, canonical: opts.canonical, allowed: opts.allowed, shared: opts.step });
-  const tree = new Map<string, GitTreeEntry>(), colon: string[] = [];
+  const tree = new Map<string, GitTreeEntry>(), colon: string[] = [], partFiles: Array<[string, GitTreeEntry]> = [];
   for (const [path, entry] of opts.prime(listed.tree)) {
+    if (path.includes('.gbparts/')) partFiles.push([path, entry]);
     if (isWindowsColonTarget(path)) colon.push(path);
     else if (opts.eligible(path)) tree.set(path, entry);
     if (opts.step.due()) await opts.step.pause();
   }
   listed.keep();
+  await splitHeadLevels(gitRoot, tree, partFiles);
   return { tree, colon, reuse: listed.reuse };
 }
 

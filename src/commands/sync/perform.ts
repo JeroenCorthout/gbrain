@@ -64,7 +64,7 @@ export async function performSync(engine: BrainEngine, opts: SyncOpts): Promise<
     if (connector) return connector;
   }
   if (opts.signal?.aborted) return finish(await interruptedBeforeWork());
-  if (managed) return performManagedBranch(engine, opts);
+  if (managed) return (await import('../../core/persistence/sync-split.ts')).withSplitRebuilds(engine, opts, () => performManagedBranch(engine, opts));
   const filesystemRoot = opts.repoPath || await readSyncAnchor(engine, opts.sourceId, 'repo_path');
   if (filesystemRoot && !hasSourceFilesystemLock(filesystemRoot)) {
     let entered = false;
