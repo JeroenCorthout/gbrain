@@ -70,11 +70,12 @@ for (const backend of testBackends()) describe(`[${backend}] split git layout: o
     expect({ state: effect!.state, error_code: effect!.error_code, attempts: effect!.attempts }).toEqual({ state: 'failed', error_code: 'targets_parked', attempts: 1 });
     expect(data.target_failures).toBeUndefined();
     expect(data.parked).toEqual([{ slug: 'notes/big', error_code: 'split_page_unsupported', reason: 'non_strict_source',
-      fix: expect.objectContaining({ ask_user: true, verify: { argv: ['gbrain', 'sources', 'writer', 'status', '--json'] } }) }]);
+      fix: expect.objectContaining({ ask_user: true, verify: { argv: ['gbrain', 'sources', 'writer', 'status', '--source', 'default', '--json'] },
+        user_message: expect.stringContaining('page notes/big') }) }]);
     const [group, ...others] = await readParkedGroups(engine, ['default']);
     expect(others).toEqual([]);
     expect(group).toMatchObject({ code: 'split_page_unsupported', reason: 'non_strict_source', targets: 1, fix: data.parked[0].fix,
-      command: ['gbrain', 'sources', 'writer', 'status', '--json'] });
+      command: ['gbrain', 'sources', 'writer', 'status', '--source', 'default', '--json'] });
     expect(group!.command).not.toContain('retry-effects');
     expect(group!.next).toContain('no bulk retry');
     expect(group!.next).toContain('git-canonical');

@@ -359,7 +359,8 @@ async function publishGitPage(engine: BrainEngine, effect: PersistenceEffect, bi
   const strict = binding.canonical_git === true;
   if (!targetedWithdrawalEffect(effect) && !effect.data.source_scan) {
     const target = await singleFileGitTarget(engine, effect, { ...binding, local_path: root }, attempt);
-    if (target !== null) await completeEffect(engine, effect, await publishGitEffect(root, target, opts.signal, hardened, gitCommitNote(effect), undefined, owner, strict));
+    if (target !== null) await completeEffect(engine, effect, await publishGitEffect(root, target, opts.signal, hardened, gitCommitNote(effect), undefined, owner, strict,
+      { sourceId: effect.source_id, slug: effect.data.slug }));
     return;
   }
   // Only a page walk reads snapshots; a single-file effect completes by its recorded hash.
@@ -415,7 +416,8 @@ async function publishGitPage(engine: BrainEngine, effect: PersistenceEffect, bi
     await skipTarget(engine, effect, snapshot, 'withdrawal_not_mirrored');
     return;
   }
-  const result = await publishGitEffect(root, relative(root, path).split(sep).join('/'), opts.signal, hardened, gitCommitNote(effect), undefined, owner, strict);
+  const result = await publishGitEffect(root, relative(root, path).split(sep).join('/'), opts.signal, hardened, gitCommitNote(effect), undefined, owner, strict,
+    { sourceId: effect.source_id, slug: snapshot.page.slug });
   if (result.reason === 'durability_not_enabled') await completeEffect(engine, effect, result);
   else await finishPage(engine, effect, snapshot, result);
 }
@@ -979,7 +981,8 @@ async function runEffectPass(engine: BrainEngine, config: GBrainConfig, opts: Ef
       }
       const notes = new Map(targets.flatMap(({ effect, path }) => { const note = gitCommitNote(effect); return note ? [[path, note] as const] : []; }));
       const outcomes = targets.length ? await commitGitTargets(binding.local_path, targets.map(t => t.path), opts.signal, notes,
-        { writerLock: lock, onReclaim: () => { reclaimed = true; } }, binding.canonical_git === true) : new Map();
+        { writerLock: lock, onReclaim: () => { reclaimed = true; } }, binding.canonical_git === true,
+        new Map(targets.map(({ effect, path }) => [path, { sourceId: effect.source_id, slug: effect.data.slug }]))) : new Map();
       const pending = unpushed.get(binding.local_path) ?? { binding, items: [] };
       // #7089: an absent target whose removal an earlier attempt committed (its push failed) joins the push like an
       // unchanged one while the root is ahead of its upstream; on a root that is not ahead it completes without a push.
