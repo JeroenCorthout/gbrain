@@ -4,20 +4,21 @@
  * `partFilePath`), as verify.ts reads it.
  *
  * 1. Protects: (a) after a committed rename and a managed sync, the next ordinary put_page commits and lays the page out
- *    in the new parts directory; (b) the split Git effect at the moved head (head and directory moved, not committed)
- *    commits the head with every one of its parts; (c) the kept-edit resolution streams the moved head's parts; (d) the
+ *    in the new parts directory; (b) a Git effect at the moved head (head and directory moved, not committed) commits
+ *    nothing and refuses split_page_unsupported, since only the strict door commits a split unit (option B); (c) the kept-edit resolution streams the moved head's parts; (d) the
  *    committed page file at HEAD of a renamed split page reassembles from its committed parts; (e) a revision's part blobs
  *    keyed under the moved head's own parts directory (the git-gap census) read as the page file.
  * 2. Fails when: a writer, the Git effect or a reader joins a manifest part path to the head's directory (the old parts
  *    directory): the put refuses source_changed, the effect commits the head without its parts, or the readers miss them.
  * 3. PGLite always; PostgreSQL when DATABASE_URL is set. KB-sized split limits through __setSplitLimitsForTests.
  */
+import type { BrainEngine } from '../src/core/engine.ts';
 import { afterEach, describe, expect, test } from 'bun:test';
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { operations } from '../src/core/operations.ts';
-import { publishSplitGitEffect } from '../src/core/persistence/effect-git.ts';
+import { publishGitEffect } from '../src/core/persistence/effect-git.ts';
 import { performManagedSync } from '../src/core/persistence/sync-run.ts';
 import { committedPageFile } from '../src/core/repair/overwritten-edits.ts';
 import { __setSplitLimitsForTests, pageFileAtRevision, parseHead, reassemble, splitScratchPath, verifyParts, type ParsedHead } from '../src/core/split-layout/index.ts';
@@ -29,7 +30,11 @@ import { requirePostgresTestDatabase, testBackends } from './helpers/test-backen
 
 const LIMITS = { thresholdMin: 1024, partTarget: 512, partMax: 1024, leadMax: 128, partCountMax: 500 };
 const page = (n = 80) => `---\ntype: note\ntitle: Moved example\n---\n\n${Array.from({ length: n }, (_, i) => `Line ${i} of the acme-example notes, long enough to fill a part.`).join('\n')}\n`;
-const setup = ({ root }: { root: string }) => { writeFileSync(join(root, '.gitignore'), '\n'); durableGitRepo(root, ['.gitignore']); };
+/** Option B: only a git-canonical source lays a page out as a split unit, so every fixture source is strict (canonical = git). */
+const setup = async ({ engine, root }: { engine: BrainEngine; root: string }) => {
+  writeFileSync(join(root, '.gitignore'), '\n'); durableGitRepo(root, ['.gitignore']);
+  await engine.executeRaw(`UPDATE sources SET config = config || '{"canonical":"git"}'::jsonb WHERE id='default'`);
+};
 const sha = (bytes: string | Uint8Array) => createHash('sha256').update(bytes).digest('hex');
 const head = (path: string) => parseHead(readFileSync(path, 'utf8')) as ParsedHead;
 const sync = (engine: Parameters<typeof performManagedSync>[0]) => performManagedSync(engine, { sourceId: 'default', noPull: true, noEmbed: true, noExtract: true, full: true });
@@ -73,15 +78,15 @@ for (const backend of testBackends()) describe(`[${backend}] split git layout: a
     expect(git(root, 'status', '--porcelain')).toBe('');
   }, { databaseUrl, setup }), 120_000);
 
-  test('(b) the split Git effect at a moved head commits the head with every one of its parts', () => managedBrain(async ({ root }) => {
+  test('(b) a Git effect at a moved head commits neither the head nor any part: only the strict door commits a split unit', () => managedBrain(async ({ root }) => {
     __setSplitLimitsForTests(LIMITS);
-    const written = await movedSplitPage(root, false);
+    await movedSplitPage(root, false);
     expect(verifyParts(join(root, 'notes/moved.md'), head(join(root, 'notes/moved.md')))).toMatchObject({ ok: true });
-    await publishSplitGitEffect(root, 'notes/moved.md', undefined, true);
-    const tracked = git(root, 'ls-tree', '-r', '--name-only', 'HEAD').split('\n').filter(Boolean);
-    expect(tracked).toContain('notes/moved.md');
-    expect(tracked.filter(path => path.startsWith('notes/.moved.gbparts/')).sort()).toEqual(readdirSync(join(root, 'notes/.moved.gbparts')).map(name => `notes/.moved.gbparts/${name}`).sort());
-    expect(tracked.filter(path => path.startsWith('notes/.moved.gbparts/'))).toHaveLength(written.parts.length);
+    const before = git(root, 'rev-parse', 'HEAD');
+    const index = git(root, 'ls-files', '-s');
+    await expect(publishGitEffect(root, 'notes/moved.md', undefined, true)).rejects.toMatchObject({ code: 'split_page_unsupported', reason: 'non_strict_source' });
+    expect(git(root, 'rev-parse', 'HEAD')).toBe(before);
+    expect(git(root, 'ls-files', '-s')).toBe(index);
   }, { databaseUrl, setup }), 120_000);
 
   test('(c) the kept-edit resolution streams the moved head\'s parts', () => managedBrain(async ({ root }) => {

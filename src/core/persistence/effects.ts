@@ -40,14 +40,14 @@ import { atomicStagingPath } from '../atomic-write.ts';
 import { isSourceDbOnlySlug } from './source-storage.ts';
 import { advanceEffectCursor, claimCoalescedGitEffects, claimPersistenceEffect, completeEffect, effectClaimStamp, effectClaimKeeper, failEffect, hasRearmableTargets, mirrorGates, parkEffect, rearmWithheldTargets, renewPersistenceEffectClaim, requeueEffect, retryBusyEffect, retryEffect, singleFileGitEffect, type MirrorGate } from './effect-journal.ts';
 import { guardEffectSource, recoverEffectPublication, reserveEffectRecovery } from './effect-recovery.ts';
-import { commitGitTargets, DURABILITY_NOT_ENABLED, gitRootAhead, publishGitEffect, publishSplitGitEffect, pushGitRoot, type GitEffectOwner } from './effect-git.ts';
+import { commitGitTargets, DURABILITY_NOT_ENABLED, gitRootAhead, publishGitEffect, pushGitRoot, type GitEffectOwner } from './effect-git.ts';
 import { retryIndexLockParks } from './effect-retry.ts';
 import { assertSegmentedMirrorGate, resumeGatedMirrors } from './segmented-mirror-gate.ts';
 import { gitDurabilityPolicy } from './git-durability-policy.ts';
 import { EFFECT_FAULT_POINTS, faultPoint } from './fault-points.ts';
 import { dispatchFactsBackstopEffect } from './effect-facts.ts';
 import { runLinksEffect } from './effect-links.ts';
-import { PARK_AFTER_FAILURES, splitGitEffect, WITHHELD_BY_MIRROR, type EffectRecovery, type GitCommitNote, type PersistenceEffect, type SkippedTarget } from './effect-model.ts';
+import { PARK_AFTER_FAILURES, WITHHELD_BY_MIRROR, type EffectRecovery, type GitCommitNote, type ParkedTarget, type PersistenceEffect, type SkippedTarget } from './effect-model.ts';
 import { fileContentHash } from './large-file.ts';
 import { isSyncMetafile, metafileIsPage, readMetafilePagesMode } from '../sync.ts';
 import { diskMetafileHeads } from '../sync-metafile-pages.ts';
@@ -355,15 +355,11 @@ async function gitPage(engine: BrainEngine, effect: PersistenceEffect, binding: 
 async function publishGitPage(engine: BrainEngine, effect: PersistenceEffect, binding: WorktreeBinding & { local_path: string }, opts: EffectWorkerOptions,
   attempt: EffectAttempt, hardened: boolean | undefined, owner: GitEffectOwner | undefined): Promise<void> {
   const root = binding.local_path;
-  // Wave B PR 5: a split page's head commits with its part files (effect-git.ts publishSplitGitEffect).
-  if (splitGitEffect(effect)) {
-    const target = await singleFileGitTarget(engine, effect, { ...binding, local_path: root }, attempt);
-    if (target !== null) await completeEffect(engine, effect, await publishSplitGitEffect(root, target, opts.signal, hardened, gitCommitNote(effect), undefined, owner));
-    return;
-  }
+  // Wave B PR 5 (option B): a Git effect commits no path of a split unit (split-unit-guard.ts); only the strict door does.
+  const strict = binding.canonical_git === true;
   if (!targetedWithdrawalEffect(effect) && !effect.data.source_scan) {
     const target = await singleFileGitTarget(engine, effect, { ...binding, local_path: root }, attempt);
-    if (target !== null) await completeEffect(engine, effect, await publishGitEffect(root, target, opts.signal, hardened, gitCommitNote(effect), undefined, owner));
+    if (target !== null) await completeEffect(engine, effect, await publishGitEffect(root, target, opts.signal, hardened, gitCommitNote(effect), undefined, owner, strict));
     return;
   }
   // Only a page walk reads snapshots; a single-file effect completes by its recorded hash.
@@ -419,8 +415,7 @@ async function publishGitPage(engine: BrainEngine, effect: PersistenceEffect, bi
     await skipTarget(engine, effect, snapshot, 'withdrawal_not_mirrored');
     return;
   }
-  // Wave B PR 5: a split head commits with its part files.
-  const result = await (split ? publishSplitGitEffect : publishGitEffect)(root, relative(root, path).split(sep).join('/'), opts.signal, hardened, gitCommitNote(effect), undefined, owner);
+  const result = await publishGitEffect(root, relative(root, path).split(sep).join('/'), opts.signal, hardened, gitCommitNote(effect), undefined, owner, strict);
   if (result.reason === 'durability_not_enabled') await completeEffect(engine, effect, result);
   else await finishPage(engine, effect, snapshot, result);
 }
@@ -737,9 +732,12 @@ async function recordFailure(engine: BrainEngine, effect: PersistenceEffect, err
   const [current] = await engine.executeRaw<{ recovering: boolean }>('SELECT recovery IS NOT NULL AS recovering FROM persistence_effects WHERE id=$1', [effect.id]);
   if (current?.recovering) { await retryEffect(engine, effect, code, 30_000); return; }
   // GBRA-133: a target a .gitignore rule excludes fails the same way on every attempt; it parks at once, naming the rule.
-  if (code === 'git_target_ignored') { await parkEffectTarget(engine, effect, code, target, (error as OperationError).detail); return; }
+  if (code === 'git_target_ignored') { await parkEffectTarget(engine, effect, code, target, { rule: (error as OperationError).detail }); return; }
   // Wave B PR 5: a split page whose parts are missing or changed fails the same way until they are restored; it parks at once.
   if (code === 'split_page_incomplete') { await parkEffectTarget(engine, effect, code, target); return; }
+  // Wave B PR 5 (option B): a split unit this route may not change is refused on every attempt; it parks at once with the
+  // refusal's reason and fix (split-unit-guard.ts).
+  if (code === 'split_page_unsupported') { const { reason, fix } = error as OperationError; await parkEffectTarget(engine, effect, code, target, { reason, fix }); return; }
   // A retried parked target has exactly one authorized attempt; otherwise the
   // counter only accumulates while the same target keeps failing.
   const prior = target !== undefined && effect.data.retry_slugs?.includes(target) ? PARK_AFTER_FAILURES - 1
@@ -789,10 +787,12 @@ const DEPENDENCY_CODES = ['recovery_required', 'owner_unavailable', 'write_claim
  * or a failure outside any target, parks the whole effect. Parked work stays
  * retained until `gbrain sources writer retry-effects` authorizes another attempt.
  */
-async function parkEffectTarget(engine: BrainEngine, effect: PersistenceEffect, code: string, target: string | undefined, rule?: string): Promise<void> {
+async function parkEffectTarget(engine: BrainEngine, effect: PersistenceEffect, code: string, target: string | undefined,
+  cause: Pick<ParkedTarget, 'rule' | 'reason' | 'fix'> = {}): Promise<void> {
   const { target_failures: _failures, failing_target: _target, retry_slugs: retrying = [], ...data } = effect.data;
   const scanning = target !== undefined && (targetedWithdrawalEffect(effect) || effect.data.source_scan === true);
-  const parked = [...(effect.data.parked ?? []), { ...(target ?? effect.data.slug ? { slug: target ?? effect.data.slug } : {}), error_code: code, ...(rule ? { rule } : {}) }];
+  const parked = [...(effect.data.parked ?? []), { ...(target ?? effect.data.slug ? { slug: target ?? effect.data.slug } : {}), error_code: code,
+    ...Object.fromEntries(Object.entries(cause).filter(([, value]) => value !== undefined)) }];
   if (!scanning) { await parkEffect(engine, effect, { ...data, ...(retrying.length ? { retry_slugs: retrying } : {}), parked }); return; }
   const remaining = retrying.filter(slug => slug !== target);
   // An embedding scan's next page starts with a full attempt budget, as when the cursor advances.
@@ -979,7 +979,7 @@ async function runEffectPass(engine: BrainEngine, config: GBrainConfig, opts: Ef
       }
       const notes = new Map(targets.flatMap(({ effect, path }) => { const note = gitCommitNote(effect); return note ? [[path, note] as const] : []; }));
       const outcomes = targets.length ? await commitGitTargets(binding.local_path, targets.map(t => t.path), opts.signal, notes,
-        { writerLock: lock, onReclaim: () => { reclaimed = true; } }) : new Map();
+        { writerLock: lock, onReclaim: () => { reclaimed = true; } }, binding.canonical_git === true) : new Map();
       const pending = unpushed.get(binding.local_path) ?? { binding, items: [] };
       // #7089: an absent target whose removal an earlier attempt committed (its push failed) joins the push like an
       // unchanged one while the root is ahead of its upstream; on a root that is not ahead it completes without a push.

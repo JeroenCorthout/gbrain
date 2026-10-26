@@ -29,6 +29,7 @@ import { __setSplitLimitsForTests, planSplit, parseHead, partsDirFor, splitStagi
 import { parseSplitStorageArgs, previewSplitStorage, runPagesSplitStorage, type SplitStorageReport } from '../src/commands/pages-split-storage.ts';
 import { runPages } from '../src/commands/pages.ts';
 import { _resetCliExitVerdictForTests, currentExitCode } from '../src/core/cli-force-exit.ts';
+import { durableGitRepo, git } from './helpers/git-publication.ts';
 import { managedBrain, type ManagedBrain } from './helpers/managed-brain.ts';
 import { requirePostgresTestDatabase, testBackends } from './helpers/test-backends.ts';
 
@@ -83,8 +84,16 @@ async function writeSplit(brain: ManagedBrain, text: string): Promise<{ head: st
       writeFileSync(join(dirname(path), part.path), Buffer.concat(chunks));
     }
     writeFileSync(path, plan.head());
+    // Committed, as a door commit would leave it: the door refuses a unit HEAD, the index and the disk disagree on.
+    commitPage(brain.root, 'Synthetic split layout');
     return { head: plan.head(), parts: plan.parts.map(part => part.name) };
   } finally { plan.dispose(); }
+}
+
+/** Commits the page's head and parts directory as they are on disk (a hand edit the user committed). */
+function commitPage(root: string, message: string): void {
+  git(root, 'add', '-A', '--', SLUG + '.md', relative(root, partsDirFor(join(root, SLUG + '.md'))));
+  git(root, 'commit', '-qm', message);
 }
 
 async function captureJson(run: () => Promise<void>): Promise<SplitStorageReport> {
@@ -113,7 +122,11 @@ for (const backend of testBackends()) {
     await submitPageMutation(brain.ctx, { operation: 'put_page', params: { slug: SLUG, content: pageText(120), request_id: randomUUID() } });
     await brain.engine.setConfig(SPLIT_MAX_FILE_BYTES_KEY, String(THRESHOLD));
     await fn(brain);
-  }, { databaseUrl });
+  }, { databaseUrl, setup: async ({ engine, root }) => {
+    // Option B: only a git-canonical source lays a page out as a split unit, so the fixture source is strict.
+    writeFileSync(join(root, '.gitignore'), '\n'); durableGitRepo(root, ['.gitignore']);
+    await engine.executeRaw(`UPDATE sources SET config = config || '{"canonical":"git"}'::jsonb WHERE id='default'`);
+  } });
 
   describe(`${backend}: gbrain pages split-storage`, () => {
     beforeAll(() => { __setSplitLimitsForTests(LIMITS); });
@@ -296,11 +309,13 @@ for (const backend of testBackends()) {
         await writeSplit(brain, render);
         const headPath = join(brain.root, SLUG + '.md');
         writeFileSync(headPath, readFileSync(headPath, 'utf8').replace('Line 0000', 'Line ZERO'));
+        commitPage(brain.root, 'Synthetic head edit');
         const discard = await captureJson(() => runPagesSplitStorage(brain.engine, [SLUG, '--source', 'default', '--resolve-head', 'discard', '--apply', '--json']));
         expect(discard.applied?.laid_out).toBe(true);
         expect(await stored(brain)).toBe(render);
 
         writeFileSync(headPath, readFileSync(headPath, 'utf8').replace('Line 0000', 'Line ZERO'));
+        commitPage(brain.root, 'Synthetic head edit');
         const keep = await captureJson(() => runPagesSplitStorage(brain.engine, [SLUG, '--source', 'default', '--resolve-head', 'keep-edit', '--apply', '--json']));
         expect(keep.applied?.laid_out).toBe(true);
         expect(await stored(brain)).toBe(render.replace('Line 0000', 'Line ZERO'));

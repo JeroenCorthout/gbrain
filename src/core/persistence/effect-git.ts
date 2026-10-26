@@ -14,6 +14,7 @@ import type { Action } from '../agent-output.ts';
 import type { NativeLockHandle } from './native-lock.ts';
 import { proveIndexLockAbandoned, reclaimIndexLock, type IndexLockReclaim } from './index-lock-reclaim.ts';
 import { parseHead, partFilePath, partsDirFor, verifyParts } from '../split-layout/index.ts';
+import { splitUnitRefusals } from './split-unit-guard.ts';
 
 /** An index lock younger than this is contention; an older one is reported as stale. */
 const INDEX_LOCK_GRACE_MS = 10 * 60 * 1000;
@@ -262,7 +263,7 @@ export function commitMessage(commitPaths: string[], noted: ReadonlyMap<string, 
  * that is provably abandoned is reclaimed and the step retried (#6932).
  */
 export async function commitGitTargets(root: string, relativePaths: string[], signal?: AbortSignal,
-  notes?: ReadonlyMap<string, GitCommitNote>, owner?: GitEffectOwner, unit = false): Promise<Map<string, GitOutcome | OperationError>> {
+  notes?: ReadonlyMap<string, GitCommitNote>, owner?: GitEffectOwner, strict = false): Promise<Map<string, GitOutcome | OperationError>> {
   const results = new Map<string, GitOutcome | OperationError>();
   await withSession(root, signal, owner, true, async session => {
     // One ls-files, one status, one add and one diff for the group; targets
@@ -272,6 +273,12 @@ export async function commitGitTargets(root: string, relativePaths: string[], si
     for (const requested of new Set(relativePaths)) {
       try { normalized.set(requested, relative(root, nativeFileTarget(root, resolvePath(root, requested), 'git_target_unsafe')).split(sep).join('/')); }
       catch (error) { if (!(error instanceof OperationError)) throw error; results.set(requested, error); }
+    }
+    // Wave B PR 5 (option B): a Git effect never commits or removes a path of a split unit; only the strict door does.
+    const refused = await splitUnitRefusals({ root, paths: [...normalized.values()].map(rel => join(root, rel)), route: 'git_effect', strict });
+    for (const [requested, rel] of [...normalized]) {
+      const refusal = refused.get(join(root, rel));
+      if (refusal) { results.set(requested, refusal); normalized.delete(requested); }
     }
     const paths = [...new Set(normalized.values())];
     const list = async (args: string[]) => {
@@ -329,11 +336,6 @@ export async function commitGitTargets(root: string, relativePaths: string[], si
         else if (indexed.has(path)) changed.push({ requested, path });
         else results.set(requested, { git: 'unchanged' });
       }
-    }
-    // A unit (a split page's head and parts) commits whole or not at all: one refused target unstages the rest.
-    if (unit && [...results.values()].some(outcome => outcome instanceof OperationError)) {
-      if (changed.length) await git(session, ['reset', '-q', '--', ...new Set(changed.map(c => c.path))]);
-      return;
     }
     if (!changed.length) return;
     // --only keeps unrelated staged paths out of this commit. After a lost
@@ -453,9 +455,9 @@ export const DURABILITY_NOT_ENABLED = { git: 'skipped', reason: 'durability_not_
  * root that is not ahead it completes without a push, as before.
  */
 export async function publishGitEffect(root: string, relativePath: string, signal?: AbortSignal,
-  hardened?: boolean, note?: GitCommitNote, binding?: Pick<WorktreeBinding, 'git_durability'> | null, owner?: GitEffectOwner): Promise<Record<string, unknown>> {
+  hardened?: boolean, note?: GitCommitNote, binding?: Pick<WorktreeBinding, 'git_durability'> | null, owner?: GitEffectOwner, strict = false): Promise<Record<string, unknown>> {
   if (!(hardened ?? (await gitDurabilityPolicy(binding, root)).durable)) return { ...DURABILITY_NOT_ENABLED };
-  const outcome = (await commitGitTargets(root, [relativePath], signal, note ? new Map([[relativePath, note]]) : undefined, owner)).get(relativePath)!;
+  const outcome = (await commitGitTargets(root, [relativePath], signal, note ? new Map([[relativePath, note]]) : undefined, owner, strict)).get(relativePath)!;
   if (outcome instanceof OperationError) throw outcome;
   if (outcome.reason === 'target_absent' && !(await gitRootAhead(root, signal))) return outcome;
   const pushed = await pushGitRoot(root, signal);
@@ -467,8 +469,8 @@ export async function publishGitEffect(root: string, relativePath: string, signa
 export interface SplitUnit { head: string; parts: string[]; stale: string[]; partsDir: string }
 
 /**
- * Wave B PR 5: the one path set every commit of a split page uses: the strict door commit (coordinator.ts), landed-commit
- * recovery (split-files.ts `splitLandedCommit`) and the split Git effect (`publishSplitGitEffect`). `head`, then
+ * Wave B PR 5: the one path set every commit of a split page uses: the strict door commit (coordinator.ts) and its
+ * landed-commit recovery (split-files.ts `splitLandedCommit`). `head`, then
  * `parts`: every part the head on disk lists (resolved from the current head, verified, each on disk), whether or not
  * the write rewrote it; `stale`: every other path Git holds under the parts directory (in HEAD or the index) that is
  * gone from disk, which the commit removes; so the commit's tree holds the head with every manifest part and nothing else
@@ -509,27 +511,6 @@ const splitUnitIncomplete = (head: string, reason: string) => opError('split_pag
   `${reason}. The page write itself is committed in the database; its Git effect parks at once. Restore the part files the head lists (or rewrite the page so its head and parts are written again), then run gbrain sources writer retry-effects with --parked-code split_page_incomplete for the source (gbrain sources writer status names the effect).`,
   { fix: effectStatusFix });
 
-/**
- * Wave B PR 5: a split publication's Git effect (effect-model.ts `SPLIT_GIT_EFFECT_VERSION`): the head and every path of
- * its part files commit together in one `commit --only`, then the root is pushed. Every path is checked before the
- * commit; one Git refuses (an ignored part, `git_target_ignored`) or a part missing or changed (`split_page_incomplete`)
- * commits nothing for the page and parks the effect, so no commit holds a head without its parts.
- */
-export async function publishSplitGitEffect(root: string, head: string, signal?: AbortSignal, hardened?: boolean, note?: GitCommitNote,
-  binding?: Pick<WorktreeBinding, 'git_durability'> | null, owner?: GitEffectOwner): Promise<Record<string, unknown>> {
-  if (!(hardened ?? (await gitDurabilityPolicy(binding, root)).durable)) return { ...DURABILITY_NOT_ENABLED };
-  const unit = await withSession(root, signal, owner, false, async session => {
-    const found = await splitUnitPaths(session, root, head);
-    await assertSplitBytesVerbatim(session, root, found, reason => splitGitAttributesError(head, reason));
-    return found;
-  });
-  const outcomes = await commitGitTargets(root, [head, ...unit.parts, ...unit.stale], signal, note ? new Map([[head, note]]) : undefined, owner, true);
-  for (const outcome of outcomes.values()) if (outcome instanceof OperationError) throw outcome;
-  const settled = [...outcomes.values()] as GitOutcome[];
-  const outcome: GitOutcome = settled.some(entry => entry.git === 'committed') ? { git: 'committed' } : outcomes.get(head) as GitOutcome;
-  if (outcome.reason === 'target_absent' && !(await gitRootAhead(root, signal))) return outcome;
-  return { ...outcome, ...await pushGitRoot(root, signal) };
-}
 
 
 
@@ -541,106 +522,4 @@ export function rawBlobOid(path: string, format: 'sha1' | 'sha256'): string | nu
   const fd = openSync(path, 'r'), chunk = Buffer.allocUnsafe(1 << 20);
   try { for (let read; (read = readSync(fd, chunk, 0, chunk.length, null)) > 0;) hash.update(chunk.subarray(0, read)); } finally { closeSync(fd); }
   return hash.digest('hex');
-}
-
-/** A split page's unit in its three states: path (relative to the root, `/`-separated) to blob id, raw bytes on disk. */
-export interface SplitUnitLayers { head: string; partsDir: string; committed: Map<string, string>; staged: Map<string, string>; disk: Map<string, string>; unmerged: string[] }
-
-/**
- * Wave B PR 5 round 6: the head at `head` and everything under its parts directory as Git HEAD, the index and the disk
- * hold them. HEAD and the index name blob ids; the disk is hashed as raw bytes (rawBlobOid), so a clean filter never makes
- * a changed file look committed. An entry on disk that is not a regular file is `not_a_file`.
- */
-export async function readSplitUnitLayers(session: GitSession, root: string, head: string): Promise<SplitUnitLayers> {
-  const rel = (path: string) => relative(root, path).split(sep).join('/');
-  const headPath = resolvePath(root, head), headRel = rel(headPath), partsDir = rel(partsDirFor(headPath));
-  const [format, born] = await Promise.all([git(session, ['rev-parse', '--show-object-format']), git(session, ['rev-parse', '-q', '--verify', 'HEAD^{commit}'])]);
-  const [tree, index] = await Promise.all([born.code === 0 ? git(session, ['ls-tree', '-r', '-z', 'HEAD', '--', headRel, partsDir]) : Promise.resolve({ code: 0, stdout: '', stderr: '' }),
-    git(session, ['ls-files', '-s', '-z', '--', headRel, partsDir])]);
-  if (format.code !== 0 || tree.code !== 0 || index.code !== 0) throw gitFailure('Cannot inspect the canonical Git target.', `git ls-tree or git ls-files failed for the split unit of ${headRel}.`);
-  const layers: SplitUnitLayers = { head: headRel, partsDir, committed: new Map(), staged: new Map(), disk: new Map(), unmerged: [] };
-  for (const record of tree.stdout.split('\0').filter(Boolean)) {
-    const tab = record.indexOf('\t'), [, type, oid] = record.slice(0, tab).split(' ');
-    layers.committed.set(record.slice(tab + 1), type === 'blob' ? oid! : `${type}:${oid}`);
-  }
-  for (const record of index.stdout.split('\0').filter(Boolean)) {
-    const tab = record.indexOf('\t'), [, oid, stage] = record.slice(0, tab).split(' '), path = record.slice(tab + 1);
-    if (stage === '0') layers.staged.set(path, oid!); else layers.unmerged.push(path);
-  }
-  const algorithm = format.stdout.trim() === 'sha256' ? 'sha256' : 'sha1';
-  const headOid = rawBlobOid(headPath, algorithm);
-  if (headOid) layers.disk.set(headRel, headOid);
-  const dir = join(root, partsDir);
-  if (lstatSync(dir, { throwIfNoEntry: false })?.isDirectory()) {
-    for (const name of readdirSync(dir)) layers.disk.set(`${partsDir}/${name}`, rawBlobOid(join(dir, name), algorithm) ?? 'not_a_file');
-  }
-  return layers;
-}
-
-/**
- * Why HEAD, the index and the disk do not hold the same split unit, or null when they do. Every path under the parts
- * directory must be the same blob in all three (present in all or in none); the head must be too once any of the three
- * holds a part, so a head converted to one file (or edited) beside committed parts disagrees. A plain page (no part in
- * any state) is not compared: its head is the page file the drift checks already cover.
- */
-export function splitUnitDivergence(layers: SplitUnitLayers): string | null {
-  if (layers.unmerged.length) return `${layers.unmerged[0]} has unmerged entries in the index`;
-  const paths = [...new Set([...layers.committed.keys(), ...layers.staged.keys(), ...layers.disk.keys()])].sort();
-  if (!paths.some(path => path !== layers.head)) return null;
-  const state = (oid: string | null, committed: string | null) => oid === null ? 'does not hold it' : oid === committed ? 'holds the committed bytes' : 'holds other bytes';
-  for (const path of paths) {
-    const committed = layers.committed.get(path) ?? null, staged = layers.staged.get(path) ?? null, disk = layers.disk.get(path) ?? null;
-    if (committed === staged && staged === disk) continue;
-    return `${path}: Git HEAD ${committed === null ? 'does not hold it' : 'holds it'}, the index ${state(staged, committed)}, the disk ${disk === 'not_a_file' ? 'holds something that is not a file' : state(disk, committed)}`;
-  }
-  return null;
-}
-
-
-const CONVERSION_ATTRIBUTES = ['text', 'eol', 'filter', 'working-tree-encoding', 'diff'];
-
-/**
- * Wave B PR 5 round 6: why Git would store (or diff) a split page's files as other bytes than they hold, or null. A
- * text, eol, filter or working-tree-encoding attribute (any value but unset/unspecified), or a diff driver with a
- * textconv, on the head or a part (relative paths): their bytes are hashed in the head's manifest, so a converted commit
- * would not reassemble. The split layout refuses them as G7a refuses an unconfigured LFS rule, before anything is written.
- */
-export async function splitConvertingAttribute(session: GitSession, rels: string[]): Promise<string | null> {
-  if (!rels.length) return null;
-  const out = await git(session, ['check-attr', '-z', ...CONVERSION_ATTRIBUTES, '--', ...rels]);
-  if (out.code !== 0) throw gitFailure('Cannot inspect the canonical Git target.', `git check-attr failed for the split unit of ${rels[0]}.`);
-  const fields = out.stdout.split('\0');
-  for (let i = 0; i + 2 < fields.length; i += 3) {
-    const path = fields[i]!, attr = fields[i + 1]!, value = fields[i + 2]!;
-    if (value === 'unspecified' || value === 'unset') continue;
-    if (attr === 'diff' && (value === 'set' || (await git(session, ['config', '--get', `diff.${value}.textconv`])).code !== 0)) continue;
-    return `${path} has the Git attribute ${attr}${value === 'set' ? '' : `=${value}`}`;
-  }
-  return null;
-}
-
-/**
- * Refuses a split commit (the strict door commit, the split Git effect) whose head or parts Git would store as other
- * bytes than the disk holds: a converting attribute (splitConvertingAttribute), or what Git's clean path does without
- * one (core.autocrlf): `hash-object` (the bytes a commit would store) must be the raw blob id of every file.
- */
-export async function assertSplitBytesVerbatim(session: GitSession, root: string, unit: Pick<SplitUnit, 'head' | 'parts'>, refuse: (reason: string) => Error): Promise<void> {
-  const rels = [unit.head, ...unit.parts].filter(rel => existsSync(join(root, rel)));
-  const attribute = await splitConvertingAttribute(session, rels);
-  if (attribute) throw refuse(attribute);
-  if (!rels.length) return;
-  const [format, hashed] = await Promise.all([git(session, ['rev-parse', '--show-object-format']), git(session, ['hash-object', '--', ...rels])]);
-  const oids = hashed.stdout.split('\n').filter(Boolean);
-  if (format.code !== 0 || hashed.code !== 0 || oids.length !== rels.length) throw gitFailure('Cannot hash the canonical Git target.', `git hash-object failed for the split unit of ${unit.head}.`);
-  const algorithm = format.stdout.trim() === 'sha256' ? 'sha256' : 'sha1';
-  const converted = rels.find((rel, index) => rawBlobOid(join(root, rel), algorithm) !== oids[index]);
-  if (converted) throw refuse(`Git would store ${converted} as other bytes than the file holds (core.autocrlf or another conversion)`);
-}
-
-/** The refusal of a split unit Git would convert (split_git_attributes); remote callers get the page, never a path. */
-export function splitGitAttributesError(target: string, reason: string, sourceId?: string): OperationError {
-  return opError('split_git_attributes', `Git would convert the bytes of the split page files of ${target}, so nothing was written or committed.`,
-    `${reason}. A split page's head and parts are stored byte for byte (the head's manifest hashes them), so a text, eol, filter or working-tree-encoding attribute, a diff textconv or core.autocrlf on them would commit a page that no checkout reassembles. Ask the user to narrow the .gitattributes rule (or core.autocrlf) so the page's head file and its .gbparts directory get none of them, for example by adding -text -filter -diff for those paths, commit that, then submit the write again with a new request_id.`,
-    { fix: readFix('Shows each source\'s canonical owner with its pending, failed and parked writes, read-only.', { argv: ['gbrain', 'sources', 'writer', 'status', ...(sourceId ? ['--source', sourceId] : []), '--json'] }),
-      docs: 'docs/guides/write-refusals.md#split_git_attributes' });
 }
