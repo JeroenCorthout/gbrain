@@ -26,7 +26,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { BrainEngine } from '../src/core/engine.ts';
 import { findBacklinkGaps, fixBacklinkGaps } from '../src/commands/backlinks.ts';
+import { formatSaveOutcome, persistSavedIdea } from '../src/commands/brainstorm.ts';
 import { runFrontmatter } from '../src/commands/frontmatter.ts';
+import { publishClassicConcept } from '../src/core/cycle/concept-publication.ts';
 import { runLintCore } from '../src/commands/lint.ts';
 import { currentExitCode, _resetCliExitVerdictForTests } from '../src/core/cli-force-exit.ts';
 import { runTakes } from '../src/commands/takes.ts';
@@ -226,6 +228,38 @@ for (const backend of testBackends()) describe(`[${backend}] split git layout: r
         expect(await snapshot(engine, head)).toEqual(before);
         expect(readFileSync(join(root, 'alice.md'), 'utf8')).toBe(phantom);
       });
+    } finally { await close(); _resetWriteThroughCacheForTest(); }
+  }), 120_000);
+
+  test('a brainstorm save of a page that needs part files refuses (split_page_unsupported) before its database import: no row, no file, exit 1', () => withHome(async (_home, root) => {
+    _resetWriteThroughCacheForTest();
+    const { engine, close } = await isolatedSharedSkillsEngine(databaseUrl);
+    try {
+      await engine.executeRaw("UPDATE sources SET local_path = $1 WHERE id = 'default'", [root]);
+      await engine.setConfig('sync.repo_path', root);
+      const slug = 'ideas/large-example';
+      const outcome = await persistSavedIdea(engine, { slug, content: `---\ntype: note\ntitle: Saved idea example\n---\n\n${body}\n`, provenanceVia: 'brainstorm' });
+      expect(await engine.getPage(slug, { sourceId: 'default' })).toBeNull();
+      expect(existsSync(join(root, `${slug}.md`))).toBe(false);
+      const message = formatSaveOutcome(outcome, { profileLabel: 'brainstorm', slug });
+      expect(message.exitCode).toBe(1);
+      expect(message.stderr.join('\n')).toContain('split_page_unsupported');
+      expect(message.stdout ?? '').not.toContain('reconcile');
+    } finally { await close(); _resetWriteThroughCacheForTest(); }
+  }), 120_000);
+
+  test('a classic concept publication whose page file would need part files refuses (concept_write_through_failed) before its import', () => withHome(async (_home, root) => {
+    _resetWriteThroughCacheForTest();
+    const { engine, close } = await isolatedSharedSkillsEngine(databaseUrl);
+    try {
+      await engine.executeRaw("UPDATE sources SET local_path = $1 WHERE id = 'default'", [root]);
+      const slug = 'concepts/big-example';
+      let imported = false;
+      const publish = publishClassicConcept(engine, slug, 'default', { synthesized_by: 'synthesize_concepts' }, body, '',
+        { writeThrough: true, importPage: async () => { imported = true; } });
+      await expect(publish).rejects.toMatchObject({ code: 'concept_write_through_failed', message: expect.stringContaining('split_page_unsupported') });
+      expect(imported).toBe(false);
+      expect(existsSync(join(root, `${slug}.md`))).toBe(false);
     } finally { await close(); _resetWriteThroughCacheForTest(); }
   }), 120_000);
 

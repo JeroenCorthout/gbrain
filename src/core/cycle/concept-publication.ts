@@ -22,6 +22,7 @@ import { keepsCanonicalFile } from '../persistence/git-declared.ts';
 import { maintenanceAttribution } from '../persistence/attribution.ts';
 import { acquirePageLock } from '../page-lock.ts';
 import { derivedFileTarget, writeDerivedPageThrough } from './derived-write-through.ts';
+import { assertPageThroughWritable } from '../write-through.ts';
 import { fileDatabaseDriftToken, replaceableFile } from '../facts/file-body-guard.ts';
 import { declareDerivation, deriveTrust, lowerDerivedPage } from '../trust/taint.ts';
 
@@ -282,17 +283,19 @@ export async function publishClassicConcept(engine: BrainEngine, slug: string, s
     const markdown = page
       ? composeConceptRepublication(page, snapshot!.tags, synthesized, narrative)
       : serializeMarkdown(synthesized, narrative, '', { type: 'concept', title, tags: [] });
+    const writesFile = file !== null && (file.expectedFileBytes !== null || opts.writeThrough);
+    const notWritten = (why: string) => Object.assign(new Error(`The concept file was not written: ${why}`), { code: CONCEPT_WRITE_THROUGH_FAILED_CODE });
+    // A file the import's write-through would refuse (split_page_unsupported) holds the concept before the import.
+    if (writesFile) await assertPageThroughWritable(engine, slug, sourceId, markdown).catch(error => { throw (error as { code?: string }).code === 'split_page_unsupported' ? notWritten((error as Error).message) : error; });
     await opts.importPage(markdown);
     // The import stamps the page by its own channel; the derivation lowers it to the members' taint and records the edges.
     if (opts.members) await lowerDerivedPage(engine, await conceptDerivation(engine, sourceId, opts.members), sourceId, slug);
-    if (file && (file.expectedFileBytes !== null || opts.writeThrough)) {
+    if (writesFile) {
       const written = await writeDerivedPageThrough(engine, slug, sourceId, { expectedFileBytes: file.expectedFileBytes });
       if (written.skipped === 'file_changed') {
         throw Object.assign(new Error('The concept file changed while the page was published; the edit was kept.'), { code: 'revision_conflict' });
       }
-      if (written.error) {
-        throw Object.assign(new Error(`The concept file was not written: ${written.error}`), { code: CONCEPT_WRITE_THROUGH_FAILED_CODE });
-      }
+      if (written.error || written.skipped === 'split_page_unsupported') throw notWritten(written.error ?? 'split_page_unsupported');
     }
     return narrative;
   } finally {
