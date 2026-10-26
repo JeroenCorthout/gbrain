@@ -604,6 +604,7 @@ export async function writeFactsToFence(
       }).catch(err => {
         if (err instanceof FenceFileChanged || err instanceof PageFileChanged) return null;
         if (err instanceof OperationError && err.code === 'split_page_unsupported') { refusal = err; return null; }
+        rmSync(tmpPath, { force: true });
         throw err;
       });
       if (!result) {

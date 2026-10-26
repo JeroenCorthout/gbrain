@@ -349,7 +349,8 @@ export async function forgetFactInFence(
         }).catch(err => {
           if (err instanceof WithdrawalFileChanged || err instanceof PageFileChanged) return false;
           refused = splitHeld(err);
-          if (refused) { rmSync(tmpPath, { force: true }); return false; }
+          rmSync(tmpPath, { force: true });
+          if (refused) return false;
           throw err;
         });
         if (refused) return refused;
@@ -360,8 +361,9 @@ export async function forgetFactInFence(
         return { ok: true, path: 'fence', reason, ...(mirrorWarning ? { warning: mirrorWarning } : {}) };
       }
       try { await publishFenceTmp(engine, filePath, resolved.writeRoot, tmpBody, () => undefined); } catch (error) {
+        rmSync(tmpPath, { force: true });
         const held = splitHeld(error);
-        if (held) { rmSync(tmpPath, { force: true }); return held; }
+        if (held) return held;
         throw error;
       }
 

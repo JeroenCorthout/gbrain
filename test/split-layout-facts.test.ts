@@ -329,6 +329,54 @@ for (const backend of testBackends()) describe('[' + backend + '] split git layo
     }, { oneFile: true });
   }, 180_000);
 
+  test('on a private (0600) split page every facts writer that copies the page beside its head refuses before the copy: nothing is left beside the head and no file is wider than 0600', async () => {
+    __setSplitLimitsForTests(WRITE_LIMITS);
+    const content = fenceInParts(60, CLAIM, SECOND);
+    await withSplitBrain(databaseUrl, content, async ({ engine, root, file }) => {
+      const [old, replacement] = await indexFence(engine, content);
+      const [loose] = extractFactsFromFenceText(parseFactsFence(facts(STRAY)).facts, SLUG, 'default');
+      await engine.insertFact(unfenced(loose!), { source_id: 'default' });
+      const proposal = (await insertProposal(engine, { source_id: 'default', sweep_id: 'sweep-default', pair_index: 0, new_fact_id: replacement, old_fact_id: old,
+        direction: 'new_supersedes_old', p_supersede: 0.9, threshold: 0.8, proposal_floor: 0.5, model_resolved: null } as never))!;
+      const unit = [file, ...readdirSync(partsDirFor(file)).map(name => join(partsDirFor(file), name))];
+      for (const path of unit) chmodSync(path, 0o600);
+      const beside = () => readdirSync(dirname(file)).filter(name => name.startsWith(SLUG.split('/').pop()!)).sort();
+      const listed = beside();
+      const umask = process.umask(0o022);
+      try {
+        expect(await applyProposalAction(engine, proposal, 'accept')).toMatchObject({ action: 'accept', status: 'refused', reason: expect.stringContaining(SLUG + ' (split_page:') });
+        expect((await writeFactsToFence(engine, target(root), [fact('Alice Example plays the cello')])).fenceRefusal?.code).toBe('split_page_unsupported');
+        expect((await fenceUnfencedFacts(engine, await planUnfencedFacts(engine, { sourceId: 'default' }))).failed_pages.filter(p => p.startsWith(SLUG + ' ('))).toHaveLength(1);
+        expect(await forgetFactInFence(engine, old!)).toMatchObject({ ok: true, path: 'legacy_db', warning: expect.stringContaining('split_page_unsupported') });
+        expect(beside()).toEqual(listed);
+        expect(readdirSync(partsDirFor(file)).map(name => join(partsDirFor(file), name)).concat(file).sort()).toEqual([...unit].sort());
+        for (const path of unit) expect(statSync(path).mode & 0o777).toBe(0o600);
+      } finally { process.umask(umask); }
+    });
+  }, 180_000);
+
+  test('the unfenced-row fence step and a proposal accept on a private one-file page write it through a temporary copy with its 0600 mode; the page keeps the mode', async () => {
+    __setSplitLimitsForTests(LIMITS);
+    const content = page(facts(CLAIM, SECOND));
+    await withSplitBrain(databaseUrl, content, async ({ engine, file }) => {
+      const [old, replacement] = await indexFence(engine, content);
+      const [loose] = extractFactsFromFenceText(parseFactsFence(facts(STRAY)).facts, SLUG, 'default');
+      await engine.insertFact(unfenced(loose!), { source_id: 'default' });
+      chmodSync(file, 0o600);
+      const umask = process.umask(0o022);
+      try {
+        expect((await fenceUnfencedFacts(engine, await planUnfencedFacts(engine, { sourceId: 'default' }))).fenced).toBe(1);
+        expect(readFileSync(file, 'utf8')).toContain(STRAY);
+        expect(statSync(file).mode & 0o777).toBe(0o600);
+        const id = (await insertProposal(engine, { source_id: 'default', sweep_id: 'sweep-default', pair_index: 0, new_fact_id: replacement, old_fact_id: old,
+          direction: 'new_supersedes_old', p_supersede: 0.9, threshold: 0.8, proposal_floor: 0.5, model_resolved: null } as never))!;
+        expect(await applyProposalAction(engine, id, 'accept')).toMatchObject({ action: 'accept', status: 'accepted' });
+        expect(statSync(file).mode & 0o777).toBe(0o600);
+        expect(readdirSync(dirname(file)).filter(name => name.startsWith('alice-example') && name !== 'alice-example.md')).toEqual([]);
+      } finally { process.umask(umask); }
+    }, { oneFile: true });
+  }, 180_000);
+
   test('the unfenced-row fence step passes an unmanaged split page by with reason split_page', async () => {
     __setSplitLimitsForTests(LIMITS);
     const content = fenceInParts(60, CLAIM);

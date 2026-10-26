@@ -193,6 +193,42 @@ for (const backend of testBackends()) describe(`[${backend}] split git layout: r
     }
   }), 120_000);
 
+  test('on a private (0600) split page the timeline, derived and dream page writers refuse before any temporary copy (split_page_unsupported): nothing is left beside the head and no file is wider than 0600', () => withSplitPage(databaseUrl, async (engine, root, head) => {
+    const unit = [head, ...readdirSync(partsDirFor(head)).map(name => join(partsDirFor(head), name))];
+    for (const path of unit) chmodSync(path, 0o600);
+    const listed = readdirSync(join(root, 'notes')).sort();
+    const umask = process.umask(0o022);
+    try {
+      expect(await outcomeOf(() => writeTimelineEntryThrough(engine, SLUG, 'default', { date: '2026-01-02', summary: 'Acme-example shipped' }))).toContain('split_page_unsupported');
+      await engine.createVersion(SLUG);
+      await engine.putPage(SLUG, { type: 'note', title: 'Split example', compiled_truth: `${body}\n\nA derived edit.\n` });
+      expect(await outcomeOf(() => writeDerivedPageThrough(engine, SLUG, 'default'))).toContain('split_page_unsupported');
+      const dream = `${pageFile(head).text.trimEnd()}\n\nA dream edit.\n`;
+      expect(await outcomeOf(() => writeDreamPageFile(engine, root, SLUG, 'default', { nativeSourceId: 'default', markdown: dream }))).toContain('split_page_unsupported');
+    } finally { process.umask(umask); }
+    expect(readdirSync(join(root, 'notes')).sort()).toEqual(listed);
+    expect(readdirSync(partsDirFor(head)).map(name => join(partsDirFor(head), name)).concat(head).sort()).toEqual([...unit].sort());
+    for (const path of unit) expect(statSync(path).mode & 0o777).toBe(0o600);
+  }), 120_000);
+
+  test('on a private (0600) one-file page the timeline and dream page writers write through a temporary copy with its mode: the page keeps 0600 and no copy is left', () => withSplitPage(databaseUrl, async (engine, root, head) => {
+    rmSync(partsDirFor(head), { recursive: true });
+    await engine.putPage(SLUG, { type: 'note', title: 'Split example', compiled_truth: 'Short.' });
+    writeFileSync(head, '---\ntype: note\ntitle: Split example\n---\n\nShort.\n');
+    chmodSync(head, 0o600);
+    const umask = process.umask(0o022);
+    try {
+      await writeTimelineEntryThrough(engine, SLUG, 'default', { date: '2026-01-02', summary: 'Acme-example shipped' });
+      expect(pageFile(head)).toMatchObject({ split: false, text: expect.stringContaining('Acme-example shipped') });
+      expect(statSync(head).mode & 0o777).toBe(0o600);
+      const dream = `${pageFile(head).text.trimEnd()}\n\nA dream edit.\n`;
+      expect(await writeDreamPageFile(engine, root, SLUG, 'default', { nativeSourceId: 'default', markdown: dream })).toMatchObject({ written: true });
+      expect(pageFile(head).text).toBe(dream);
+      expect(statSync(head).mode & 0o777).toBe(0o600);
+    } finally { process.umask(umask); }
+    expect(readdirSync(join(root, 'notes')).filter(name => name !== 'big-example.md')).toEqual([]);
+  }), 120_000);
+
   test('a derived page and a dream page file whose part files would change are refused (split_page_unsupported); the files stay', () => withSplitPage(databaseUrl, async (engine, root, head) => {
     await engine.createVersion(SLUG);
     await engine.putPage(SLUG, { type: 'note', title: 'Split example', compiled_truth: `${body}\n\nA derived edit.\n` });
