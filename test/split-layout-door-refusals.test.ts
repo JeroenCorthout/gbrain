@@ -13,7 +13,7 @@
  */
 import { afterEach, describe, expect, test } from 'bun:test';
 import { createHash, randomUUID } from 'node:crypto';
-import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { operations, type OperationContext } from '../src/core/operations.ts';
 import type { BrainEngine } from '../src/core/engine.ts';
@@ -23,7 +23,8 @@ import { submissionAuthority } from '../src/core/persistence/authority.ts';
 import { admitWrite, claimNextWrite } from '../src/core/persistence/journal.ts';
 import { getWorktreeBinding } from '../src/core/persistence/ownership.ts';
 import { preparePageMutation } from '../src/core/persistence/page-prepare.ts';
-import { localHostId } from '../src/core/persistence/identity.ts';
+import { localHostId, persistenceHome } from '../src/core/persistence/identity.ts';
+import { assertSplitUnitMutable, splitUnitRefusals } from '../src/core/persistence/split-unit-guard.ts';
 import { disposePersistenceConsumer } from '../src/core/persistence/service.ts';
 import { durableGitRepo, git } from './helpers/git-publication.ts';
 import { managedBrain, settleManagedGitEffects } from './helpers/managed-brain.ts';
@@ -149,5 +150,31 @@ for (const backend of testBackends()) describe(`[${backend}] split git layout: t
       expect(result.state).toBe('committed');
       expect(git(root, 'show', `HEAD:${SLUG}.md`)).toContain('$Id$');
     }
+  }, { databaseUrl, setup }), 120_000);
+
+  for (const held of ['HEAD', 'index'] as const) test(`parts only Git's ${held} holds (gone from disk, head plain) refuse through the read-only Git step, with no Git session`, () => managedBrain(async ({ engine, ctx, root }) => {
+    await committedSplit(engine, ctx);
+    const head = join(root, `${SLUG}.md`), dir = 'notes/.probe.gbparts';
+    const staged = git(root, 'ls-files', '-s', '--', dir).trim().split('\n');
+    git(root, 'rm', '-r', '-q', '--cached', '--', dir);
+    if (held === 'index') {
+      git(root, 'commit', '-qm', 'Synthetic: the parts leave HEAD');
+      for (const line of staged) {
+        const [meta, path] = line.split('\t'), [mode, oid] = meta!.split(' ');
+        git(root, 'update-index', '--add', '--cacheinfo', `${mode},${oid},${path}`);
+      }
+    }
+    rmSync(join(root, dir), { recursive: true });
+    writeFileSync(head, page('Plain'));
+    expect(git(root, 'ls-tree', '-r', '--name-only', 'HEAD', '--', dir).trim().length > 0).toBe(held === 'HEAD');
+    expect(git(root, 'ls-files', '--', dir).trim().length > 0).toBe(held === 'index');
+    const hooks = join(persistenceHome(), 'empty-hooks');
+    rmSync(hooks, { recursive: true, force: true });
+    writeFileSync(hooks, 'A file here makes any Git session fail to start.\n');
+    try {
+      const refused = await assertSplitUnitMutable({ root, path: head, route: 'connector', strict: true, sourceId: 'default', slug: SLUG }).then(() => null, error => error);
+      expect([refused?.code, refused?.reason]).toEqual(['split_page_unsupported', 'outside_door']);
+      expect((await splitUnitRefusals({ root, paths: [head], route: 'git_effect', strict: false })).get(head)?.reason).toBe('non_strict_source');
+    } finally { rmSync(hooks, { force: true }); }
   }, { databaseUrl, setup }), 120_000);
 });
