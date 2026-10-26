@@ -290,30 +290,58 @@ export function removeEmptyPartsDir(headPath: string): void {
 }
 
 /**
- * The comparison reading of a split head: the reassembled page file F' (null for a head whose body was edited by hand,
- * `split_head_modified`, which then compares as itself: drift), the head's own hash, and the parsed edited head.
+ * The comparison reading of the file at a page path, one of three:
+ * - `plain`: an ordinary file (no top-level `gbrain_parts` key); it compares as itself.
+ * - `split`: a split head whose parts verify: F' reassembled into a private scratch file (`dispose` removes it), the
+ *   head's own hash and the parts it lists (by path); prepareFileTarget compares F', never the head.
+ * - `split_invalid`: a declared split head that does not verify: `split_page_incomplete` (a manifest that does not
+ *   parse, a missing, extra or edited part, a missing parts directory, a head larger than any head) or
+ *   `split_head_modified` (the head body edited by hand; `modified` is the parsed head its resolution checks). Nothing
+ *   may compare it as an ordinary file, rewrite it or remove its parts: preparation refuses it with its code.
  */
-export interface SplitHeadReading { reassembled: FileBytes | null; headHash: string; modified: ParsedHead | null; parts: Record<string, string>; dispose(): void }
+export type SplitHeadReading =
+  | { kind: 'plain' }
+  | { kind: 'split'; reassembled: FileBytes; headHash: string; parts: Record<string, string>; dispose(): void }
+  | { kind: 'split_invalid'; code: 'split_page_incomplete' | 'split_head_modified'; reason: string; headHash: string; parts: Record<string, string>; modified: ParsedHead | null };
 
-/**
- * When the file at `path` is a split head whose parts verify, the page file it stands for, reassembled into a private
- * scratch file (prepareFileTarget compares that with the stored page, never the head); for a head whose parts verify
- * but whose body was edited, the parsed head (`resolvesModifiedHead`). Null for an ordinary file or any other head.
- */
-export function readSplitHead(path: string, before: Buffer | FileBytes): SplitHeadReading | null {
-  const dir = partsDirOf(path);
-  if (!dir || !lstatSync(dir, { throwIfNoEntry: false })?.isDirectory() || before.length > HEAD_READ_MAX_BYTES) return null;
+/** The comparison reading of the file at `path` whose bytes are `before` (SplitHeadReading). */
+export function readSplitHead(path: string, before: Buffer | FileBytes): SplitHeadReading {
+  if (!partsDirOf(path)) return { kind: 'plain' };
+  const headHash = () => before instanceof FileBytes ? before.hash() : createHash('sha256').update(before).digest('hex');
+  const invalid = (reason: string, parsed?: ParsedHead): SplitHeadReading => ({ kind: 'split_invalid', code: 'split_page_incomplete', reason, headHash: headHash(),
+    parts: parsed ? Object.fromEntries(parsed.manifest.parts.map(part => [partFilePath(path, part.path), part.sha256])) : {}, modified: null });
+  const declared = () => declaresPartsKey(before.subarray(0, Math.min(before.length, FRONTMATTER_PREFIX_BYTES)));
+  if (before.length > HEAD_READ_MAX_BYTES) return declared() ? invalid(`the head is ${before.length} bytes, larger than any split page head`) : { kind: 'plain' };
   const bytes = before instanceof FileBytes ? before.subarray() : before;
   let parsed;
-  try { parsed = parseHead(utf8.decode(bytes)); } catch { return null; }
-  if (!parsed || 'error' in parsed) return null;
-  const headHash = before instanceof FileBytes ? before.hash() : createHash('sha256').update(bytes).digest('hex');
+  try { parsed = parseHead(utf8.decode(bytes)); } catch { return declared() ? invalid('the head is not valid UTF-8') : { kind: 'plain' }; }
+  if (!parsed) return { kind: 'plain' };
+  if ('error' in parsed) return invalid(parsed.error.reason);
   const scratch = splitScratchPath();
   const verdict = reassemble(path, parsed, scratch);
-  const parts = Object.fromEntries(parsed.manifest.parts.map(part => [partFilePath(path, part.path), part.sha256]));
-  if (!verdict.ok) return verdict.code === 'split_head_modified' ? { reassembled: null, headHash, modified: parsed, parts, dispose: () => {} } : null;
+  if (!verdict.ok) {
+    rmSync(scratch, { force: true });
+    if (verdict.code !== 'split_head_modified') return invalid(verdict.reason, parsed);
+    return { ...invalid(verdict.reason, parsed) as Extract<SplitHeadReading, { kind: 'split_invalid' }>, code: 'split_head_modified', modified: parsed };
+  }
   const reassembled = FileBytes.open(scratch);
-  return { reassembled, headHash, modified: null, parts, dispose: () => { try { reassembled.close(); } finally { rmSync(scratch, { force: true }); } } };
+  return { kind: 'split', reassembled, headHash: headHash(), parts: Object.fromEntries(parsed.manifest.parts.map(part => [partFilePath(path, part.path), part.sha256])),
+    dispose: () => { try { reassembled.close(); } finally { rmSync(scratch, { force: true }); } } };
+}
+
+/**
+ * The refusal of a write over a declared split head that does not verify (readSplitHead `split_invalid`): the drift
+ * refusal (`source_changed`, `file_database_drift`), raised before anything is compared, written or removed, with the
+ * split code as its `reason` (kept on the receipt as `error_detail.origin`). A head an older gbrain imported as the page
+ * heals through sync once its parts verify again.
+ */
+export function splitInvalidRefusal(row: Pick<WriteRequest, 'source_id' | 'slug'>, path: string, reading: Extract<SplitHeadReading, { kind: 'split_invalid' }>): OperationError {
+  const error = opError('source_changed', 'The canonical file contains an uncoordinated local edit.', reading.code === 'split_head_modified'
+    ? `The split page head ${basename(path)} was edited by hand (split_head_modified: ${reading.reason}), so the page it stands for cannot be compared or rewritten and nothing was written. Preview the resolution with gbrain pages split-storage ${row.slug} --source ${row.source_id} --resolve-head keep-edit (or discard), apply it, then submit the write again with a new request_id.`
+    : `The split page head ${basename(path)} does not match its part files (split_page_incomplete: ${reading.reason}). Writing over it would replace the page with its head and remove the surviving parts, so the head and every part were left as they are and nothing was written. Restore the part files the head lists (from Git or a backup) and run gbrain sync --source ${row.source_id} --no-pull on the brain host, which reads the whole page again; then submit the write again with a new request_id.`,
+    { detail: 'file_database_drift', fix: ownersFix(row.source_id) });
+  error.reason = reading.code;
+  return error;
 }
 
 /** SHA-256 of the last `bytes` bytes of a content, and the bytes before them (at most `keepPrefix` of them kept). */

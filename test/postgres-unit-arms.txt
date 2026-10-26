@@ -450,6 +450,7 @@ test/split-layout-file-repair.test.ts
 test/split-layout-git-blobs.test.ts
 test/split-layout-git-effect-unit.test.ts
 test/split-layout-head-content.test.ts
+test/split-layout-invalid-head.test.ts
 test/split-layout-lifecycle.test.ts
 test/split-layout-managed-readers.test.ts
 test/split-layout-managed-sync.test.ts

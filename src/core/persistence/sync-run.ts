@@ -420,9 +420,9 @@ async function freezeEntryOnce(engine: BrainEngine, cursor: Cursor, key: string,
     lineEndingOnly = !image && bytes !== null && content !== null && bytes.equals(Buffer.from(bytes.toString('utf8'))) &&
       bytes.toString('utf8').replace(/\r\n/g, '\n') === content.replace(/\r\n/g, '\n');
     // Wave B PR 5: a split page head imports as the page its parts (of the same commit) reassemble to, or is held (sync-split.ts).
-    const splitPage = entry.action === 'import' && !cursor.companyPlan && !image && content !== null ? freezeSplitEntry(cursor, entry, content, headOid) : null;
-    if (splitPage && 'refusal' in splitPage) { if (!screening) throw syncRunRefusal(splitPage.refusal.code, 'A split page head does not match its part files.', retry, splitPage.refusal.message); return { hold: splitHold(entry, entry.slug!, entry.pageId ?? null, splitPage.refusal, content, blob) }; }
-    if (splitPage) { ({ split, content } = splitPage); bodyRef = content === null ? splitBodyRef(splitPage.split) : bodyRef; if (split!.tree_oid) blob = { oid: split!.tree_oid, size: split!.bytes }; }
+    const splitPage = entry.action === 'import' && !cursor.companyPlan && !image && content !== null ? freezeSplitEntry(cursor, entry, content, headOid) : { kind: 'plain' as const };
+    if (splitPage.kind === 'split_invalid') { if (!screening) throw syncRunRefusal(splitPage.refusal.code, 'A split page head does not match its part files.', retry, splitPage.refusal.message); return { hold: splitHold(entry, entry.slug!, entry.pageId ?? null, splitPage.refusal, content, blob) }; }
+    if (splitPage.kind === 'split') { ({ split, content } = splitPage); bodyRef = content === null ? splitBodyRef(splitPage.split) : bodyRef; if (split!.tree_oid) blob = { oid: split!.tree_oid, size: split!.bytes }; }
     slug = entry.slug!; pageId = occupant?.page.id ?? entry.pageId ?? null; revision = occupant ? occupant.revision : entry.revision ?? null;
     frozenSnapshot = snapshot;
     // #6340: a page that moved under the manifest holds the page, not the run (sync-page-fault.ts); `sync.holds=fail`
