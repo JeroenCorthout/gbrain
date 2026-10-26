@@ -90,6 +90,31 @@ describe('check-test-isolation.sh', () => {
         rmSync(bin, { recursive: true, force: true });
       }
     });
+
+    it('lints every candidate file in one pass instead of starting processes per file', () => {
+      const bin = mkdtempSync(join(tmpdir(), 'lint-proc-count-'));
+      const log = join(bin, 'calls');
+      for (const tool of ['grep', 'awk']) {
+        writeFileSync(join(bin, tool), `#!/usr/bin/env bash\nprintf '${tool}\\n' >> "$CALL_LOG"\nexec "${Bun.which(tool)}" "$@"\n`, { mode: 0o755 });
+      }
+      try {
+        const files = Array.from({ length: 260 }, (_, i) => ({
+          path: `candidate ${i}.test.ts`,
+          contents: `import { configureGateway, resetGateway } from '../src/core/ai/gateway';\nconfigureGateway({});\nafterAll(() => resetGateway());\n`,
+        }));
+        const env = { PATH: `${bin}:${process.env.PATH}`, CALL_LOG: log };
+        const r = runLintIn(files, [], env);
+        expect(r.status).toBe(0);
+        expect(r.stdout).toContain('260 non-serial unit files scanned');
+        expect(readFileSync(log, 'utf8').trim().split('\n').length).toBeLessThan(10);
+        const bad = runLintIn([...files, { path: 'z bad.test.ts', contents: `configureGateway({});\n` }], [], env);
+        expect(bad.status).toBe(1);
+        expect(bad.stdout).toContain('z bad.test.ts');
+        expect(bad.stdout).toContain('rule R5');
+      } finally {
+        rmSync(bin, { recursive: true, force: true });
+      }
+    });
   });
 
   describe('R1 — env mutation', () => {
