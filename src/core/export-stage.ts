@@ -128,15 +128,14 @@ export class ExportStage {
    */
   planStream(path: string, expectedBytes: number, limit: number): string {
     exportPathKey(path);
-    if (expectedBytes > limit) throw stageCapacityError();
+    if (expectedBytes > limit || !fitsStageDisk(this.directory, expectedBytes)) throw stageCapacityError();
     const name = String(this.files++);
     this.plan(path, 'file', null, name);
     return name;
   }
 
   async writeStream(name: string, expectedBytes: number, limit: number, pieces: AsyncIterable<Uint8Array | string>): Promise<void> {
-    const free = statfsSync(this.directory);
-    if (expectedBytes + EXPORT_STAGE_FREE_RESERVE > Number(free.bavail) * Number(free.bsize)) throw stageCapacityError();
+    if (!fitsStageDisk(this.directory, expectedBytes)) throw stageCapacityError();
     mkdirSync(join(this.directory, 'files'), { recursive: true });
     const fd = openSync(join(this.directory, 'files', name), 'wx', 0o600);
     let size = 0;
@@ -179,6 +178,12 @@ export class ExportStage {
     this.db.close();
     rmSync(this.directory, { recursive: true, force: true });
   }
+}
+
+/** A stage file of `bytes` leaves EXPORT_STAGE_FREE_RESERVE free on the staging filesystem. */
+function fitsStageDisk(directory: string, bytes: number): boolean {
+  const free = statfsSync(directory);
+  return bytes + EXPORT_STAGE_FREE_RESERVE <= Number(free.bavail) * Number(free.bsize);
 }
 
 function stageCapacityError(): Error {
