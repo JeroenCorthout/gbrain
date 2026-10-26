@@ -14,13 +14,13 @@
  * - `recovery_unit_changed`: recovery of a record that is not the strict door's own would change a unit.
  */
 import { closeSync, existsSync, lstatSync, openSync, readdirSync, readSync } from 'node:fs';
-import { join, relative, sep } from 'node:path';
+import { dirname, join, relative, resolve, sep } from 'node:path';
 import type { Action } from '../agent-output.ts';
 import { opError, type OperationError } from '../ops/contract.ts';
 import { readFix } from '../ops/op-fix.ts';
 import { FRONTMATTER_HEAD_MAX_BYTES } from '../page-body/limits.ts';
 import { assertNoPartsKey, isSplitHeadPath, partsDirFor, splitPartOf, SplitLayoutError } from '../split-layout/index.ts';
-import { git, gitFailure, rawBlobOid, withSession, type GitSession } from './effect-git.ts';
+import { git, gitFailure, gitReadOnly, rawBlobOid, withSession, type GitSession } from './effect-git.ts';
 
 export const SPLIT_UNSUPPORTED_REASONS = ['non_strict_source', 'outside_door', 'index_flag', 'git_attribute', 'unit_diverged', 'recovery_unit_changed'] as const;
 export type SplitUnsupportedReason = typeof SPLIT_UNSUPPORTED_REASONS[number];
@@ -72,15 +72,34 @@ export function splitUnitOf(root: string, path: string): { head: string; partsDi
   return isSplitHeadPath(head) ? { head, partsDir: partsDirFor(head) } : null;
 }
 
-async function insideWorkTree(session: GitSession): Promise<boolean> {
-  const out = await git(session, ['rev-parse', '--is-inside-work-tree']);
-  return out.code === 0 && out.stdout.trim() === 'true';
+/** Roots seen at or under a directory holding `.git`; one whose `.git` later vanishes fails heldInGit's read, which answers it. */
+const gitRoots = new Set<string>();
+
+/** Whether a directory at or above `root` holds `.git` (a directory or a gitfile), found without spawning Git. */
+function underGitDir(root: string): boolean {
+  if (gitRoots.has(root)) return true;
+  for (let dir = resolve(root); ; dir = dirname(dir)) {
+    if (existsSync(join(dir, '.git'))) { gitRoots.add(root); return true; }
+    if (dirname(dir) === dir) return false;
+  }
+}
+
+/**
+ * What HEAD or the index hold under `dirs` (relative to `root`): one read-only `ls-files --with-tree=HEAD` (an unborn
+ * HEAD: the index alone); nothing when `root` is not inside a work tree.
+ */
+async function heldInGit(root: string, dirs: string[]): Promise<string[]> {
+  let listed = await gitReadOnly(root, ['ls-files', '-z', '--with-tree=HEAD', '--', ...dirs]);
+  if (listed.code !== 0 && listed.stderr.includes('tree-ish HEAD not found')) listed = await gitReadOnly(root, ['ls-files', '-z', '--', ...dirs]);
+  if (listed.code === 0) return listed.stdout.split('\0').filter(Boolean);
+  if ((await gitReadOnly(root, ['rev-parse', '--is-inside-work-tree'])).stdout.trim() !== 'true') return [];
+  throw gitFailure('Cannot inspect the canonical Git target.', `git ls-files failed for ${dirs[0]}.`);
 }
 
 /**
  * The subset of `paths` (absolute) in a split unit now: a path inside a parts directory, or a head whose parts directory
- * exists on disk or that declares gbrain_parts on disk, or (in a Git worktree, one ls-files and one ls-tree for all of
- * them) whose parts directory HEAD or the index hold anything under.
+ * exists on disk or that declares gbrain_parts on disk, or (inside a Git work tree, one read-only Git step for all of
+ * them, no session) whose parts directory HEAD or the index hold anything under.
  */
 export async function splitUnitMembers(root: string, paths: readonly string[]): Promise<Set<string>> {
   const present = new Set<string>(), byDir = new Map<string, string[]>();
@@ -91,18 +110,10 @@ export async function splitUnitMembers(root: string, paths: readonly string[]): 
     const dir = toRel(root, unit.partsDir);
     byDir.set(dir, [...byDir.get(dir) ?? [], path]);
   }
-  if (!byDir.size || !existsSync(root)) return present;
-  await withSession(root, undefined, undefined, false, async session => {
-    if (!await insideWorkTree(session)) return;
-    const dirs = [...byDir.keys()];
-    const born = (await git(session, ['rev-parse', '-q', '--verify', 'HEAD^{commit}'])).code === 0;
-    const [index, tree] = await Promise.all([git(session, ['ls-files', '-z', '--', ...dirs]),
-      born ? git(session, ['ls-tree', '-r', '-z', '--name-only', 'HEAD', '--', ...dirs]) : Promise.resolve({ code: 0, stdout: '', stderr: '' })]);
-    if (index.code !== 0 || tree.code !== 0) throw gitFailure('Cannot inspect the canonical Git target.', `git ls-files or git ls-tree failed for ${dirs[0]}.`);
-    for (const held of [...index.stdout.split('\0'), ...tree.stdout.split('\0')].filter(Boolean)) {
-      for (const [dir, heads] of byDir) if (held.startsWith(`${dir}/`)) for (const path of heads) present.add(path);
-    }
-  });
+  if (!byDir.size || !existsSync(root) || !underGitDir(root)) return present;
+  for (const held of await heldInGit(root, [...byDir.keys()])) {
+    for (const [dir, heads] of byDir) if (held.startsWith(`${dir}/`)) for (const path of heads) present.add(path);
+  }
   return present;
 }
 
