@@ -49,7 +49,9 @@
  * - Unmanaged: under the source filesystem lock and the page lock, the same
  *   `.tmp` + parse + rename write as `fence-write.ts`, then one maintenance
  *   transaction mirrors the file body into `pages` and stamps the rows; a
- *   durability-hardened checkout commits the file.
+ *   durability-hardened checkout commits the file. A file that is a split
+ *   head (split-layout/) is never fenced here: the page is named in
+ *   `failed_pages` with `split_page` or its hold code.
  * A page that fails is reported in `failed_pages`; the others still fence.
  */
 import { existsSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
@@ -75,7 +77,8 @@ import type { WriteAuthority } from '../persistence/model.ts';
 import { UNBOUND_WRITE_KEY } from '../persistence/unbound-source.ts';
 import { contentHash } from '../utils.ts';
 import { bodyUnread } from '../page-body/page-shape.ts';
-import { fileBodyMatchesStored, fileDatabaseDriftToken, mirrorFileBody, readStoredBody } from './file-body-guard.ts';
+import { fileBodyMatchesStored, fileDatabaseDriftToken, mirrorFileBody, readStoredBody, splitPageToken } from './file-body-guard.ts';
+import { readPageFile } from '../split-layout/page-file.ts';
 import { isWriteThroughDisabled, resolvePageWriteTarget } from '../write-through.ts';
 import { commitFactFenceFile, gitPathState } from './fence-write.ts';
 import { isOwnedClone } from '../url-clone.ts';
@@ -566,6 +569,8 @@ async function fenceFilePage(engine: BrainEngine, sourceId: string, entitySlug: 
   if (!target.ok) { outcome.skipped_no_page += group.length; return; }
   const { writeRoot } = target;
   const write = () => withPageLock(entitySlug, async () => {
+    const split = splitPageToken(filePath, entitySlug, 'its rows stay unfenced, active and searchable');
+    if (split) { outcome.failed_pages.push(split); return; }
     const bytes = readFileSync(filePath, 'utf-8');
     const page = await engine.getPage(entitySlug, { sourceId });
     const stored = page && await readStoredBody(engine, sourceId, entitySlug);
@@ -654,7 +659,9 @@ export async function auditUnadoptableFacts(engine: BrainEngine, plan: UnfencedF
     } else {
       const filePath = plan.filePaths.get(key);
       if (!filePath || !existsSync(filePath)) continue;
-      body = readFileSync(filePath, 'utf-8');
+      const file = readPageFile(filePath);
+      if (file.hold) continue;
+      body = file.bytes.toString('utf-8');
     }
     const fence = await planFence(engine, sourceId, entitySlug, body, group);
     if (!('warnings' in fence)) records.push(...fence.rejected);

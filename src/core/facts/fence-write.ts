@@ -63,7 +63,7 @@ import type { TaintInput, WriteTrust } from '../trust/tier.ts';
 import { gitChildEnv } from '../git-env.ts';
 import { urlCloneReadOnly } from '../url-clone.ts';
 import { bodyUnread } from '../page-body/page-shape.ts';
-import { bestEffortStoredBodyMirror, fileBodyMatchesStored, fileDatabaseDriftToken, mirrorFileBody, readStoredBody } from './file-body-guard.ts';
+import { bestEffortStoredBodyMirror, fileBodyMatchesStored, fileDatabaseDriftToken, mirrorFileBody, readStoredBody, splitPageToken } from './file-body-guard.ts';
 
 /** Resolved source binding for the entity page. */
 export interface FenceTarget {
@@ -118,8 +118,11 @@ export interface FenceWriteResult {
   ids: number[];
   /** True when the path fell through to DB-only: local_path unset, `sync.write_through` off, or a gbrain-owned clone (`databaseOnlyReason`). */
   legacyFallback?: true;
-  /** #6946: why a `legacyFallback` is expected — `url_clone`: the source is a clone gbrain owns and pulls (url-clone.ts), so its checkout is never written. */
-  databaseOnlyReason?: 'url_clone' | 'file_database_drift';
+  /**
+   * #6946: why a `legacyFallback` is expected — `url_clone`: the source is a clone gbrain owns and pulls (url-clone.ts), so its checkout is never written;
+   * `split_page`: the page's file is a split head (head plus part files, which only a managed brain's publication writes), named with any hold in `warning`.
+   */
+  databaseOnlyReason?: 'url_clone' | 'file_database_drift' | 'split_page';
   /** A held file mirror's typed diagnostic and repair instructions; facts take the DB-only fallback. */
   warning?: string;
   /** True when fence parse-validate failed; rows were NOT inserted, .tmp quarantined. */
@@ -306,7 +309,8 @@ export function stubEntityPage(
  *
  * Returns `legacyFallback: true` when `target.localPath` is null (also
  * under `sync.write_through` off and, with `databaseOnlyReason: 'url_clone'`,
- * for a clone gbrain owns, #6946) —
+ * for a clone gbrain owns, #6946, and, with `databaseOnlyReason: 'split_page'`,
+ * for a page whose file is a split head, which only a managed publication writes) —
  * the caller is responsible for falling through to the legacy
  * DB-only `engine.insertFact` path. We don't do the legacy fallback
  * here because the caller has the FactsBackstopCtx (visibility,
@@ -395,21 +399,19 @@ export async function writeFactsToFence(
       let body: string;
       const fromFile = existsSync(filePath);
       const stored = fromFile ? await readStoredBody(engine, target.sourceId, target.slug) : null;
-      const drift = (when: 'before' | 'during'): FenceWriteResult => {
-        const warning = fileDatabaseDriftToken(target.slug, target.sourceId, when);
+      const databaseOnly = (warning: string, reason?: FenceWriteResult['databaseOnlyReason']): FenceWriteResult => {
         console.warn(`[facts.fence] ${warning}`);
-        return { inserted: 0, ids: [], legacyFallback: true, databaseOnlyReason: 'file_database_drift', warning, ...withdrawnSkipped };
+        return { inserted: 0, ids: [], legacyFallback: true, ...(reason ? { databaseOnlyReason: reason } : {}), warning, ...withdrawnSkipped };
       };
+      const drift = (when: 'before' | 'during') => databaseOnly(fileDatabaseDriftToken(target.slug, target.sourceId, when), 'file_database_drift');
       if (fromFile) {
+        const split = splitPageToken(filePath, target.slug, 'facts are recorded database-only');
+        if (split) return databaseOnly(split, 'split_page');
         body = readFileSync(filePath, 'utf-8');
         const refusal = refuseUnparsedFence(body, target, filePath);
         if (refusal) return { inserted: 0, ids: [], fenceWriteFailed: true, fenceRefusal: refusal, ...withdrawnSkipped };
         const page = await engine.getPage(target.slug, { sourceId: target.sourceId });
-        if (page && bodyUnread(page)) {
-          const warning = `${target.slug} (page_body_segmented: its file is not compared or rewritten here; facts are recorded database-only)`;
-          console.warn(`[facts.fence] ${warning}`);
-          return { inserted: 0, ids: [], legacyFallback: true, warning, ...withdrawnSkipped };
-        }
+        if (page && bodyUnread(page)) return databaseOnly(`${target.slug} (page_body_segmented: its file is not compared or rewritten here; facts are recorded database-only)`);
         if (stored ? !fileBodyMatchesStored(body, target.slug, stored) : page !== null) return drift('before');
       } else {
         // Stub-creation guard, two arms:

@@ -5,7 +5,8 @@
  *
  * With a writable source file, strike the row, set valid_until and append the
  * reason atomically. Without a file, retain the same withdrawal and best-effort
- * DB-body strike. Imports overlay stale matching fence rows before chunking.
+ * DB-body strike, as for a split head (a head plus part files, which only a
+ * managed publication rewrites). Imports overlay stale matching fence rows before chunking.
  * These are retractions: original prose, files and backups may retain text.
  * A Markdown-only clone does not carry DB-only withdrawal records.
  */
@@ -27,7 +28,7 @@ import { maintenanceTransaction } from '../persistence/attribution.ts';
 import { markBeliefCommits } from '../belief/append.ts';
 import { classifyItemFailure } from '../item-failure.ts';
 import { withdrawnFact } from './withdrawal-overlay.ts';
-import { bestEffortStoredBodyMirror, fileBodyMatchesStored, fileDatabaseDriftToken, mirrorFileBody, readStoredBody } from './file-body-guard.ts';
+import { bestEffortStoredBodyMirror, fileBodyMatchesStored, fileDatabaseDriftToken, mirrorFileBody, readStoredBody, splitPageToken } from './file-body-guard.ts';
 
 export interface ForgetFactResult {
   /** True iff the row was found AND a forget was applied (fence or DB). */
@@ -281,6 +282,12 @@ export async function forgetFactInFence(
     }
 
     return withPageLock(slug, async () => {
+      const split = splitPageToken(filePath, slug, 'the withdrawal or supersession remains authoritative; only its page mirror is held');
+      if (split) {
+        mirrorWarning = split;
+        console.warn(`[facts.forget] ${split}`);
+        return legacyExpire(true);
+      }
       const body = readFileSync(filePath, 'utf-8');
       const page = await engine.getPage(slug, { sourceId: row.source_id });
       const segmented = page && isSegmentedPage(page);

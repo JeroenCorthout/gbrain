@@ -36,7 +36,7 @@ import type { PreparedMutation } from '../persistence/coordinator.ts';
 import type { WriteRequest } from '../persistence/model.ts';
 import { noteBelief } from '../belief/ledger.ts';
 import { beliefStreamSlugs, lockedBeliefBatch } from '../belief/writers.ts';
-import { fileBodyMatchesStored, fileDatabaseDriftToken, mirrorFileBody, readStoredBody, type StoredBody } from './file-body-guard.ts';
+import { fileBodyMatchesStored, fileDatabaseDriftToken, mirrorFileBody, readStoredBody, splitPageToken, type StoredBody } from './file-body-guard.ts';
 
 export const DECIDE_PROPOSAL_OPERATION = 'decide_proposal';
 
@@ -277,6 +277,8 @@ async function acceptUnmanaged(engine: BrainEngine, proposal: PairProposal, stor
       return { id: fresh.id, action: 'accept', status: 'stale', reason: stale };
     }
     const slug = oldF!.source_markdown_slug;
+    const split = filePath && slug ? splitPageToken(filePath, slug, 'the proposal and its facts are unchanged') : null;
+    if (split) return { id: fresh.id, action: 'accept', status: 'refused', reason: split };
     const fileBody = filePath && existsSync(filePath) ? readFileSync(filePath, 'utf-8') : null;
     const snapshot = slug ? await engine.readPageSnapshot(slug, { sourceId: fresh.source_id }) : null;
     if (snapshot && bodyUnread(snapshot.page)) return { id: fresh.id, action: 'accept', status: 'refused', reason: `${slug} (page_body_segmented: this proposal needs an inline page; nothing changed)` };
@@ -321,6 +323,8 @@ async function undoUnmanaged(engine: BrainEngine, proposal: PairProposal, store:
     let fileBody: string | null = null;
     let stored: StoredBody | null = null;
     if (before.fence && after.fence) {
+      const split = before.fence.file && filePath ? splitPageToken(filePath, before.fence.slug, 'the proposal and its facts are unchanged') : null;
+      if (split) return { id: fresh.id, action: 'undo', status: 'refused', reason: split };
       fileBody = before.fence.file && filePath && existsSync(filePath) ? readFileSync(filePath, 'utf-8') : null;
       if (before.fence.file && fileBody === null && !await isWriteThroughDisabled(engine)) return { id: fresh.id, action: 'undo', status: 'refused', reason: 'fence_file_missing' };
       const page = await engine.getPage(before.fence.slug, { sourceId: fresh.source_id });

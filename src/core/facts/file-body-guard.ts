@@ -9,6 +9,10 @@
  * ones, trimmed as the importer trims them. Frontmatter, title, type and tags are not compared because the mirror
  * never writes them. `mirrorFileBody` re-reads the stored body under a row lock inside the caller's transaction and
  * writes only when it still equals the body the caller compared, keeping the replaced body in page_versions first.
+ *
+ * `splitPageToken` runs before that comparison: a split page's canonical file is a head whose page continues in part
+ * files (split-layout/), which only a managed brain's publication lays out, so an unmanaged writer never plans on or
+ * rewrites one and takes its database-only route with the typed reason instead.
  */
 import { existsSync, readFileSync } from 'node:fs';
 import type { BrainEngine } from '../engine.ts';
@@ -17,6 +21,7 @@ import { parseMarkdown, parseMarkdownHead } from '../markdown.ts';
 import { contentHash, contentHashFrontmatterAndTags } from '../utils.ts';
 import { stableJson } from '../persistence/digest.ts';
 import { classifyItemFailure } from '../item-failure.ts';
+import { pageFileSha256 } from '../split-layout/page-file.ts';
 
 export interface StoredBody {
   compiled_truth: string | null;
@@ -30,6 +35,20 @@ export function fileDatabaseDriftToken(slug: string, sourceId: string, when: 'be
     + `so neither was replaced and ${disposition}. If the file holds the newer edit, `
     + `gbrain sync --source ${sourceId} imports it; if the database copy is newer, re-save it with write-through on `
     + `(gbrain get ${slug} --source ${sourceId}, then gbrain put ${slug} --source-id ${sourceId}); when both changed, ask the user which edit wins)`;
+}
+
+/**
+ * The diagnostic an unmanaged writer reports for the page file at `filePath` when it is a split head, or null: `split_page`
+ * for a head whose parts verify, else the hold that keeps its page file unreadable (`split_page_incomplete`,
+ * `split_head_modified`). `disposition` says what happened to the write instead.
+ */
+export function splitPageToken(filePath: string, slug: string, disposition: string): string | null {
+  if (!existsSync(filePath)) return null;
+  const file = pageFileSha256(filePath);
+  if (!file.split) return null;
+  if (file.hold) return `${slug} (${file.hold.code}: ${file.hold.message} Meanwhile ${disposition})`;
+  return `${slug} (split_page: its canonical file is a split head whose page continues in part files, which only a managed brain's `
+    + `publication rewrites, so the file was neither compared nor rewritten and ${disposition})`;
 }
 
 /** The file's body and timeline as the mirror would store them. */
