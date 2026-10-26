@@ -8,7 +8,7 @@ import { parseHead } from '../split-layout/head.ts';
 import { PARTS_KEY } from '../split-layout/types.ts';
 
 /**
- * A page write's admission (put_page, capture, edit_page): content whose own frontmatter declares a top-level
+ * A page write's admission (put_page, capture, edit_page, and the commit_page_upload preparation): content whose own frontmatter declares a top-level
  * `gbrain_parts` key is refused, since that key marks a split page head in Git and the page would be read back as one.
  * Sync reads heads through the split read path and never comes here.
  */

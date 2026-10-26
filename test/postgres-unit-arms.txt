@@ -210,6 +210,7 @@ test/large-pages/stuck-recovery-large.slow.test.ts
 test/large-pages/timeline-top-insert-reembed.test.ts
 test/large-pages/upload-binding.test.ts
 test/large-pages/upload-over-ceiling.test.ts
+test/large-pages/upload-reserved-parts-key.test.ts
 test/large-pages/upload-review.test.ts
 test/large-pages/upload-streamed-git.test.ts
 test/large-pages/v252-master-reader-compat.test.ts
