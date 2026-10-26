@@ -146,6 +146,31 @@ for (const backend of testBackends()) describe(`[${backend}] split git layout: f
     expect(record).toMatchObject({ raw_sha256: sha256(repaired), disk_sha256: sha256(newHead) });
   }), 180_000);
 
+  test('a managed file repair refuses a part edited after its preparation compared the page file; the edit and the stored page stay', () => brain(async ({ engine, ctx, root }) => {
+    const { file, before } = await splitBrain(engine, ctx, root);
+    const snapshot = await engine.readPageSnapshot('notes/big', { sourceId: 'default', includeDeleted: true });
+    const repaired = file.replace('title: Split example', 'title: Split example repaired');
+    const pub = await prepareRepairPublication(engine, { sourceId: 'default', slug: 'notes/big', sourcePath: 'notes/big.md', path: 'notes/big.md', root, content: repaired, snapshot, base: snapshot, ...await repairScreenConfig(engine, 'default') });
+    if (pub.status !== 'ready') throw new Error(`publication is ${pub.status}`);
+    const part = join(partsDirFor(join(root, 'notes/big.md')), partsOf(root, 'notes/big.md')[0]!);
+    const getConfig = engine.getConfig;
+    let edited = false;
+    // The door reads the split threshold when it plans the unit, after preparation compared the page file.
+    engine.getConfig = function (this: BrainEngine, key: string) {
+      if (key !== SPLIT_MAX_FILE_BYTES_KEY || edited) return getConfig.call(this, key);
+      return getConfig.call(this, key).then(value => { edited = true; writeFileSync(part, 'An uncommitted edit by alice-example\n'); return value; });
+    };
+    let outcome: unknown;
+    try {
+      outcome = await submitManagedFileRepair(ctx, { sourceId: 'default', requestId: randomUUID(), slug: 'notes/big', path: 'notes/big.md', sourcePath: 'notes/big.md', content: repaired,
+        beforeHash: sha256(file), resultDigest: pub.digest, expected_revision: snapshot!.revision, noEmbed: true });
+    } catch (error) { outcome = error; } finally { engine.getConfig = getConfig; }
+    expect(edited).toBe(true);
+    expect(outcome).not.toMatchObject({ file_repaired: true });
+    expect(readFileSync(part, 'utf8')).toBe('An uncommitted edit by alice-example\n');
+    expect(await stored(engine, 'notes/big')).toEqual(before);
+  }), 180_000);
+
   for (const breaking of breakings) {
     test(`a managed file repair of a head that does not reassemble (${breaking.code}) publishes nothing, whatever hash it binds`, () => brain(async ({ engine, ctx, root }) => {
       const { file, before } = await splitBrain(engine, ctx, root);

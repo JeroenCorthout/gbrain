@@ -89,6 +89,7 @@ import { contentRepairCommit, fenceRepairCommit } from './effect-model.ts';
 import { recordSlugLineAlias } from '../page-state/rename-alias.ts';
 import type { WriteRequest } from './model.ts';
 import { bindOrigin } from './origin-guard.ts';
+import { preparedParts } from './split-files.ts';
 import { pageFileSha256, partsDirFor } from '../split-layout/index.ts';
 
 export interface ManagedFileRepairIntent extends Record<string, unknown> {
@@ -361,6 +362,9 @@ export async function prepareManagedFileRepairMutation(engine: BrainEngine, row:
   const bytes = Buffer.from(p.content, 'utf8');
   const fileChanges = sha256(bytes) !== p.beforeHash;
   const target = confinedRepairTarget(root, p.path, row.source_id, kind);
+  // The parts directory is read before the page file is compared, so a part edited after the comparison differs from
+  // expectedParts and the door refuses it (source_changed) instead of taking it as the prior bytes it replaces.
+  const expectedParts = preparedParts(target, root);
   const rawHash = checkedFileHash(target, p.beforeHash, row.source_id, p.path, kind);
   // Once the door has staged a split page's new part files beside the head, the parts no longer reassemble as they are,
   // so validation compares the raw bytes this preparation bound; the door compares every file it replaces or removes.
@@ -401,7 +405,7 @@ export async function prepareManagedFileRepairMutation(engine: BrainEngine, row:
   return { observedRevision: snapshot?.revision ?? null, noop: ready.noop && !fileChanges && !moved, contentUnchanged: ready.noop && !fileChanges && !moved,
     trust: await ownerImportTrust(engine, row, ready.parsedPage.frontmatter, p.sourcePath), deferEmbedding: p.noEmbed, ...(moved ? { additionalPageKeys: [{ sourceId: row.source_id, slug: moved.slug }] } : {}),
     ...(ready.afterCommit || moved ? { afterCommit: async (target: BrainEngine) => { await published.afterCommit?.(target); } } : {}),
-    ...(fileChanges ? { file: { root, path: target, content: bytes, expectedBeforeHash: rawHash,
+    ...(fileChanges ? { file: { root, path: target, content: bytes, expectedBeforeHash: rawHash, expectedParts,
       ...(fenceRepair ? { commit: fenceRepairCommit(p.path, fenceRepair.classes, fenceRepair.tier) } : contentRepair ? { commit: contentRepairCommit(p.path, contentRepair) } : {}) } } : {}),
     validate: async tx => {
       const current = await getWorktreeBinding(tx, row.source_id);

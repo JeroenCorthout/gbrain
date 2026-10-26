@@ -59,7 +59,7 @@ import { nativeFileTarget } from './native-file-target.ts';
 import { withFilesystemPublication } from './filesystem-guard.ts';
 import type { MutationFile } from './bundle-files.ts';
 import { releaseSplitTargets, splitPublicationTargets, type SplitFileFields } from './split-files.ts';
-import { splitMirrorPlan, stageSplitMirror } from './split-mirror.ts';
+import { splitMirrorPlan, splitPartsDrifted, stageSplitMirror } from './split-mirror.ts';
 import { pageFileSha256, partsDirFor } from '../split-layout/index.ts';
 import { sourceMirrorReadOnly } from './mirror-read-only.ts';
 import { isLockOpenFailure, type NativeLockHandle } from './native-lock.ts';
@@ -272,9 +272,11 @@ async function mirrorPage(engine: BrainEngine, effect: PersistenceEffect, bindin
     mode: statSync(file.path).mode & 0o7777, ownerEpoch: String(binding!.owner_epoch), pageId: snapshot.page.id,
     sourceIncarnation: snapshot.sourceIncarnation, slug: snapshot.page.slug, revision: snapshot.revision };
   // Wave B PR 5: a split page, or a render over the threshold, is mirrored as one unit (head plus parts, split-mirror.ts).
-  const unit: MutationFile & SplitFileFields = { path: file.path, root: file.root, content, expectedBeforeHash: file.expectedBeforeHash };
+  const unit: MutationFile & SplitFileFields = { path: file.path, root: file.root, content, expectedBeforeHash: file.expectedBeforeHash, expectedParts: file.expectedParts };
   if (await splitPublicationTargets(engine, unit)) {
     try {
+      // A part that changed since the file was compared is a local edit, passed by like a changed head.
+      if (splitPartsDrifted(unit)) { await materializeAndAdvance(engine, effect, snapshot, opts.hostId, 'file_database_drift'); return; }
       const plan = await splitMirrorPlan(engine, target, unit);
       await reserveEffectRecovery(engine, effect, plan.record, plan.bytes, opts.hostId);
       await withFilesystemPublication([file.root], () => stageSplitMirror(engine, plan));
