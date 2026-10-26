@@ -204,17 +204,43 @@ test('the URL-clone fence repair never restores a split head as its page', () =>
   expect(proveFenceRowsOnly(head, appended(head))).toMatchObject({ ok: false, class: 'split_page_head' });
 });
 
-test('a head moved together with its parts directory (git mv) imports whole at its new path', () => brain(async b => {
+async function heldAt(engine: BrainEngine, path: string) {
+  const [source] = await engine.executeRaw<{ incarnation: string }>("SELECT incarnation::text AS incarnation FROM sources WHERE id='default'");
+  return readGitHold(engine, 'default', source!.incarnation, path);
+}
+const livePaths = async (engine: BrainEngine) => (await engine.executeRaw<{ slug: string; source_path: string | null }>(
+  "SELECT slug, source_path FROM pages WHERE source_id='default' AND deleted_at IS NULL ORDER BY slug")).map(row => `${row.slug}=${row.source_path}`);
+
+test('a split page renamed with its parts directory (git mv) is found whole at its new path and nothing is left at the old one', () => brain(async b => {
   const { engine, root } = b;
   const written = await syncedV1(b);
+  const before = await stored(engine);
   git(root, 'mv', HEAD, 'notes/moved.md');
   git(root, 'mv', written.partsDir, 'notes/.moved.gbparts');
   git(root, 'commit', '-qm', 'Synthetic move of a split page');
   await sync(engine);
-  const [source] = await engine.executeRaw<{ incarnation: string }>("SELECT incarnation::text AS incarnation FROM sources WHERE id='default'");
-  expect(await readGitHold(engine, 'default', source!.incarnation, 'notes/moved.md')).toBeNull();
+  expect(await heldAt(engine, 'notes/moved.md')).toBeNull();
   const moved = (await engine.readPageSnapshot('notes/moved', { sourceId: 'default' }))?.page;
+  expect(moved?.compiled_truth).toBe(before!.compiled_truth);
   expect(moved?.compiled_truth).toContain('Line 79 of v1');
   expect(moved?.frontmatter).not.toHaveProperty('gbrain_parts');
+  expect(await livePaths(engine)).toEqual(['notes/moved=notes/moved.md']);
   expect(await stored(engine)).toBeNull();
+  expect(git(root, 'ls-tree', '-r', '--name-only', 'HEAD', '--', 'notes').trim().split('\n').filter(path => path === HEAD || path.startsWith(written.partsDir + '/'))).toEqual([]);
+}), 120_000);
+
+test('a rename that moves only the head, without its parts directory, is held split_page_incomplete', () => brain(async b => {
+  const { engine, root } = b;
+  await syncedV1(b);
+  const before = await stored(engine);
+  git(root, 'mv', HEAD, 'notes/moved.md');
+  git(root, 'commit', '-qm', 'Synthetic move of a split head alone');
+  await sync(engine);
+  const held = await heldAt(engine, 'notes/moved.md');
+  expect(held).toMatchObject({ code: 'split_page_incomplete', page_id: null, meta: { rename_from: { slug: 'notes/big', sourcePath: HEAD } } });
+  expect(held!.message).toContain('parts directory notes/.moved.gbparts does not exist');
+  expect(held!.message).toContain('move its parts directory with it (git mv');
+  expect(await livePaths(engine)).toEqual(['notes/big=notes/big.md']);
+  expect((await stored(engine))?.compiled_truth).toBe(before!.compiled_truth);
+  expect(await engine.readPageSnapshot('notes/moved', { sourceId: 'default' })).toBeNull();
 }), 120_000);

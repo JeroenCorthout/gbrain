@@ -34,6 +34,11 @@ function refusalFor(relPath: string, verdict: Exclude<SplitVerdict, { ok: true }
     return { code: verdict.code, message: `${relPath} is a split page head whose body (the lead and the gbrain notice line) was edited, so the page it names `
       + 'cannot be reassembled from it; sync held it and kept the stored page. Preview the resolution with gbrain pages split-storage <slug> --resolve-head keep-edit|discard.' };
   }
+  if (verdict.noDir) {
+    return { code: verdict.code, message: `${relPath} is a split page head whose parts directory ${partsDirOf(relPath)} does not exist (missing: ${sample(verdict.missing)}); `
+      + 'sync held it and kept the stored page. If the head was moved or renamed, move its parts directory with it (git mv the old .<name>.gbparts directory beside it '
+      + `to ${partsDirOf(relPath)}) and commit; otherwise restore the head and its parts from Git (git checkout -- ${relPath} ${partsDirOf(relPath)}). Then sync again.` };
+  }
   const sets = [['missing', verdict.missing], ['changed', verdict.mismatched], ['unlisted', verdict.extra]] as const;
   const named = sets.filter(([, paths]) => paths.length).map(([label, paths]) => `${label}: ${sample(paths)}`).join('; ');
   const untracked = verdict.extra.length ? `Move or delete the files the manifest does not list (${sample(verdict.extra)}), which git checkout leaves in place, and restore ` : 'Restore ';

@@ -389,10 +389,10 @@ describe('verifyParts and reassemble read only the listed regular files', () => 
     const a = await fresh();
     const listed = a.parsed.manifest.parts.map(part => part.path);
     rmSync(a.partsDir, { recursive: true });
-    expect(verifyParts(a.headPath, a.parsed)).toEqual(incomplete({ missing: listed }));
+    expect(verifyParts(a.headPath, a.parsed)).toEqual({ ...incomplete({ missing: listed }), noDir: true });
     const b = await fresh();
     // Parts are looked for in the renamed head's own parts directory, by file name (paths.ts partPathFor).
-    expect(verifyParts(join(dirname(b.headPath), 'renamed.md'), b.parsed)).toEqual(incomplete({ missing: listed.map(path => path.replace('.big-page.gbparts/', '.renamed.gbparts/')) }));
+    expect(verifyParts(join(dirname(b.headPath), 'renamed.md'), b.parsed)).toEqual({ ...incomplete({ missing: listed.map(path => path.replace('.big-page.gbparts/', '.renamed.gbparts/')) }), noDir: true });
   });
 });
 

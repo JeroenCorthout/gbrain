@@ -19,7 +19,7 @@ import { partPathFor, partsDirName } from './paths.ts';
 
 export type SplitVerdict =
   | { ok: true; bytes: number; sha256: string }
-  | { ok: false; code: 'split_page_incomplete'; missing: string[]; extra: string[]; mismatched: string[]; reason: string }
+  | { ok: false; code: 'split_page_incomplete'; missing: string[]; extra: string[]; mismatched: string[]; reason: string; /** The head's parts directory is absent. */ noDir?: true }
   | { ok: false; code: 'split_head_modified'; reason: string };
 
 const READ_FLAGS = constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0);
@@ -104,14 +104,14 @@ export function feedPart(content: Buffer, bytes: number, sha256: string, sinks: 
 /** The shared check; `write` receives F' (the frontmatter without `gbrain_parts`, then the parts) while every part matches. */
 function check(source: PartsSource, parsed: ParsedHead, write: PartFeed | null): SplitVerdict {
   const { manifest } = parsed;
-  const fail = (reason: string, sets: { missing?: string[]; extra?: string[]; mismatched?: string[] }): SplitVerdict =>
-    ({ ok: false, code: 'split_page_incomplete', missing: sets.missing ?? [], extra: sets.extra ?? [], mismatched: sets.mismatched ?? [], reason });
+  const fail = (reason: string, sets: { missing?: string[]; extra?: string[]; mismatched?: string[]; noDir?: true }): SplitVerdict =>
+    ({ ok: false, code: 'split_page_incomplete', missing: sets.missing ?? [], extra: sets.extra ?? [], mismatched: sets.mismatched ?? [], reason, ...(sets.noDir ? { noDir: true as const } : {}) });
   let dirName: string;
   try { dirName = partsDirName(source.headName); } catch { return fail('the head is not a .md file', { missing: manifest.parts.map(part => part.path) }); }
   const listed = manifest.parts.map(part => partPathFor(source.headName, part.path));
   const entries = source.list(dirName);
   if (entries === 'not_a_directory') return fail(`${dirName} is not a directory`, { mismatched: listed });
-  if (entries === 'missing') return fail(`${dirName} does not exist`, { missing: listed });
+  if (entries === 'missing') return fail(`${dirName} does not exist`, { missing: listed, noDir: true });
   const names = new Set(listed.map(path => path.slice(dirName.length + 1)));
   const extra = entries.filter(name => !names.has(name)).sort().map(name => `${dirName}/${name}`);
   const missing: string[] = [];
