@@ -411,7 +411,7 @@ describe('github-source materialize', () => {
           makeCfg(dir),
           { sourceId: 'ghsrc', noExtract: true, noEmbed: true, githubItem: { repo: REPO, number: 3, kind: 'pr' } },
           fetchImpl,
-        )).rejects.toThrow('split_page_unsupported');
+        )).rejects.toThrow('File too large');
         expect(readFileSync(join(dir, 'gh', REPO, '3.md'), 'utf-8')).toBe(oldPage);
       });
     } finally {
