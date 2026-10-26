@@ -20,6 +20,7 @@ import type { BrainEngine } from '../engine.ts';
 import { sanitizeEcho, type ModelsPlanEntry, type SkillOptModels } from './models-plan.ts';
 import { runSkillOpt } from './orchestrator.ts';
 import type { RunReceipt, SkillOptOpts } from './types.ts';
+import { assertOneFileWritable } from '../split-write-through.ts';
 
 export interface BatchAllOpts {
   engine: BrainEngine;
@@ -236,6 +237,7 @@ export async function runFleet(opts: FleetOpts): Promise<FleetResult> {
     const stagingSkillPath = path.join(perModelSkillsDir, opts.skillName, 'SKILL.md');
     const baselinePath = path.join(opts.skillsDir, opts.skillName, 'SKILL.md');
     assertLegacySkillFilesystemWrite(stagingSkillPath);
+    assertOneFileWritable(stagingSkillPath, fs.readFileSync(baselinePath));
     fs.copyFileSync(baselinePath, stagingSkillPath);
 
     const skillOptOpts: SkillOptOpts = {

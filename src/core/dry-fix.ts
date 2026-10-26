@@ -23,6 +23,7 @@ import {
   type CrossCuttingPattern,
 } from './check-resolvable.ts';
 import { loadOrDeriveManifest } from './skill-manifest.ts';
+import { assertOneFileWritable } from './split-write-through.ts';
 import {
   getWorkingTreeStatus as _getWorkingTreeStatus,
   isInsideCodeFence as _isInsideCodeFence,
@@ -46,6 +47,7 @@ export interface AutoFixOptions {
 export type FixStatus = 'applied' | 'proposed' | 'skipped' | 'error';
 
 export type SkipReason =
+  | 'split_page_unsupported'
   | 'working_tree_dirty'
   | 'no_git_backup'
   | 'inside_code_fence'
@@ -243,6 +245,14 @@ export type WorkingTreeStatus = _WorkingTreeStatus;
  * @param skillsDir — path to the `skills/` directory
  * @param opts.dryRun — if true, do not write; return proposed edits
  */
+/** A SKILL.md that is a split page (or that `next` would grow into one) is never rewritten here: only its head would change. */
+function splitPageRefused(skillPath: string, next: string): boolean {
+  try { assertOneFileWritable(skillPath, next); return false; } catch (error) {
+    if ((error as { code?: string } | null)?.code === 'split_page_unsupported') return true;
+    throw error;
+  }
+}
+
 export function autoFixDryViolations(
   skillsDir: string,
   opts: AutoFixOptions = {}
@@ -446,6 +456,7 @@ function attemptInsertFix(
     next += '\n';
   }
 
+  if (splitPageRefused(skillPath, next)) return { ...base, status: 'skipped', reason: 'split_page_unsupported' };
   if (opts.dryRun) {
     return {
       ...base,
@@ -554,6 +565,7 @@ function attemptFix(
     next += '\n';
   }
 
+  if (splitPageRefused(skillPath, next)) return { ...base, status: 'skipped', reason: 'split_page_unsupported' };
   if (opts.dryRun) {
     return {
       ...base,

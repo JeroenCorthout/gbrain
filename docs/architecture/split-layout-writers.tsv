@@ -1,235 +1,323 @@
-# Split git layout file-writer census (Wave B PR 5 lane 5e, spec §9 option B). test/split-layout-writer-census.test.ts counts each src file's file write primitives.
+# Split git layout file-writer census (Wave B PR 5 lane 5e, spec §9 option B). test/split-layout-writer-census.test.ts counts each src file's file write primitives and its calls to the repo's write helpers (split-layout-write-helpers.tsv), comment lines excluded.
 # Classes: door (writes under the publication door or moves whole checkout trees), split_aware (plans or writes a split unit through the split helpers),
-# refuse_before_write (refuses a split write before its first database or file write), not_page_path (never writes a checkout page path; the rationale says how that is known).
-# A split_aware or refuse_before_write writer names assertSplitWritable (or splitWriteRefusal, oneFileWriteRefusal, assertPageThroughWritable); a rationale starting "no helper:" says why it cannot.
+# refuse_before_write (refuses a split write before its first database or file write), not_page_path (provably never writes a syncable page path: a fixed non-.md name, gbrain home, a temporary or private scratch file, a dot folder sync prunes).
+# A split_aware or refuse_before_write writer names the split preflight (assertSplitWritable, splitWriteRefusal, oneFileWriteRefusal, assertOneFileWritable, assertPageThroughWritable) on the bytes it writes; "via <path>[, <path>]:" names the classified helper modules that run it for every write; "no helper:" says why neither applies.
+# A not_page_path row of a file that names a .md file starts "md:" and says why that file is never a syncable page. Parts-directory checks outside the split modules are reviewed in split-layout-parts-dir-readers.tsv.
 # path	file-write ceiling	class	review rationale
-src/cli/page-render.ts	1	not_page_path	withSpooledPage opens only os.tmpdir()/gbrain-page-<pid>-<rand>.md with wx+ 0600 as a read spool and removes it; it is outside any brain checkout.
-src/commands/autopilot-daemon.ts	1	not_page_path	writeFileSync(lockPath, pid) writes only the autopilot daemon lock file from autopilot-paths, never a page path.
-src/commands/autopilot-pause.ts	1	not_page_path	Writes only the operator pause marker file (operator path under the autopilot state directory) with a reason line.
-src/commands/autopilot.ts	10	not_page_path	Writes only the gbrain env file, wrapper script, launchd plist, systemd unit, cron/crontab temp files and shell-profile snippets under home/service dirs; no page path is passed.
-src/commands/autopilot/jobs.ts	2	not_page_path	Rewrites a host jobs JSON file (candidate) plus a .bak.<stamp> copy next to it; it is host scheduler config, not a brain page.
-src/commands/backlinks.ts	1	refuse_before_write	no helper: fix mode skips any target whose path is a split head with a parts directory (isSplitHeadPath plus partsDirFor) as split_page_unsupported before the atomicWriteFileSync under withPageLock; it appends a line to an ordinary page only.
-src/commands/bench-publish.ts	1	not_page_path	writeFileSync(outputPath, serialized) writes the operator-chosen benchmark baseline JSON file, an eval artifact.
-src/commands/brainstorm.ts	0	refuse_before_write	persistSavedIdea runs splitSaveRefusal (assertPageThroughWritable with the rendered page) before importFromContent, so a save the page file could not take is refused split_page_unsupported with nothing stored; it writes files only through writePageThrough.
-src/commands/claw-test.ts	4	not_page_path	cpSync/writeFileSync target only ctx.runRoot (a mkdtemp sandbox) and its shim/launcher scripts; the fixture brain is copied into the temp run root, never a real checkout.
-src/commands/company-brain-inspect.ts	1	not_page_path	Writes only the --out inspection plan JSON with flag wx and mode 0600; it is a report, not a page.
-src/commands/creds.ts	1	not_page_path	Writes only the encrypted credential bundle JSON to the --out file with mode 0600.
-src/commands/db-repair.ts	2	not_page_path	Writes only undoPath() and lockPath() state files under the gbrain home (JSON, 0600 or wx).
-src/commands/decide/calibrate.ts	2	not_page_path	Writes only the operator --items-out / --out calibration JSON and report files, eval output.
-src/commands/decide/judge-agreement.ts	1	not_page_path	Writes only the optional --out agreement report JSON, eval output.
-src/commands/doctor/checks/rename-identity-downgrades.ts	1	not_page_path	Match is the word rename( in a doctor message string; the file has no file-system write calls.
-src/commands/dream.ts	1	not_page_path	The only match is a comment mentioning writeFileSync(join(brainDir, slug)); this file performs no write itself.
-src/commands/eval-brainbench.ts	2	not_page_path	Writes only the --update-baseline baseline file and the --out result JSON, eval output.
-src/commands/eval-code-retrieval.ts	1	not_page_path	Writes only the --save report JSON at savePath, eval output.
-src/commands/eval-cross-modal.ts	1	not_page_path	Writes only the cross-modal summary JSON to --output or gbrainPath('eval-receipts').
-src/commands/eval-suspected-contradictions.ts	1	not_page_path	Writes only the --output result JSON, eval output.
-src/commands/extract-attendance-repair.ts	3	not_page_path	Writes only the private --checkpoint JSON via an O_EXCL temp file plus renameSync; pages are changed by applyAttendanceRepair, not here.
-src/commands/features.ts	1	not_page_path	Writes only offersPath(), a JSON state file under the gbrain home.
-src/commands/files.ts	5	not_page_path	Writes only binary sidecars under <pageDir>/.raw/<page>/ (guarded by assertManagedFilesystemWrite), <file>.redirect.yaml pointers and a .supabase marker, never a <slug>.md page.
-src/commands/frontmatter-install-hook.ts	4	not_page_path	Writes only the git pre-commit hook script (hookPaths().hookPath under .git/hooks) and its .bak copy.
-src/commands/frontmatter.ts	2	split_aware	no helper: validate --fix runs splitHeadFixRefusal (a parseHead-verified head-only frontmatter edit, anything else refused split_page_unsupported) without an engine to plan with; generate --fix writes only files with no frontmatter, which a split head (gbrain_parts in its frontmatter) never is.
-src/commands/google.ts	1	not_page_path	Writes only pendingPath(), a 0600 OAuth pending-state JSON file.
-src/commands/hook.ts	6	not_page_path	Writes only hook state, push-failure announced sidecars, hook status JSON and session corpus files under the gbrain home / live buffer dir via tmp plus rename.
-src/commands/init.ts	1	not_page_path	copyFileSync in installDefaultTemplates copies fixed templates (SOUL.md, USER.md, ACCESS_POLICY.md, HEARTBEAT.md) into an agent workspace; it has no src callers and these are not page slugs.
-src/commands/integrations.ts	7	not_page_path	Writes only recipe heartbeat JSONL, recipe-bundle files copied into the host voice-agent target dir, and integration source record JSON; the target is a host repo, not a brain checkout.
-src/commands/integrity.ts	1	not_page_path	Only truncates getProgressFile() which is gbrainPath('integrity-progress.jsonl').
-src/commands/lint.ts	0	split_aware	lint --fix calls writeSplitPageFile before writeSourceFileSync: a fix whose parts all stay rewrites the head atomically, one that would change a part is pending as split_page_unsupported with nothing written.
-src/commands/migrate-engine.ts	6	not_page_path	Writes only the migrate manifest (getManifestPath()) and the autopilot pause marker claimed with flag wx / renameSync tombstone.
-src/commands/migrations/v0_11_0.ts	4	not_page_path	Writes the host AGENTS.md routing snippet (a root skip file) plus .bak.<stamp>, and the host cron jobs JSON; neither is a brain page.
-src/commands/migrations/v0_22_4.ts	1	not_page_path	Writes only auditReportPath() = migrationsDir()/v0.22.4-audit.json.
-src/commands/mounts.ts	2	not_page_path	Writes only the mounts config JSON via tmp file plus renameSync with mode 0600.
-src/commands/notability-eval.ts	1	not_page_path	writeJsonlCases writes only the eval JSONL output given by --out, called at lines 334 and 386.
-src/commands/publish.ts	1	not_page_path	Writes the generated HTML to --out or <basename>.html, an export artifact; the markdown input is only read.
-src/commands/reindex-multimodal.ts	2	not_page_path	Writes only the checkpoint JSON at checkpointPath.
-src/commands/report.ts	1	refuse_before_write	no helper: a pre-connect command with no engine to plan with; it writes a new minute-stamped report page and refuses split_page_unsupported when that path already has a parts directory (partsDirFor), the only way its whole-file write could land on a split head.
-src/commands/schema.ts	4	not_page_path	Writes only gbrainPath('schema-packs', name)/pack.yaml, pack.json and the config.json schema_pack field.
-src/commands/serve-health.ts	1	not_page_path	Writes only the serve exit-ledger JSON file (0600) under the gbrain home.
-src/commands/skillpack.ts	2	not_page_path	Writes only the config JSON (cfgPath) with skillpack.registry_url via tmp plus renameSync.
-src/commands/source-reconcile.ts	2	not_page_path	writeReconcilePreview writes only a new --out preview JSON (O_EXCL temp then linkSync, never replacing a file) and refuses managed canonical worktrees via assertManagedFilesystemWrite.
-src/commands/sources-demo.ts	1	refuse_before_write	no helper: the offline demo runs with no brain or engine to plan with (sources demo passes none); before it writes any page it refuses split_page_unsupported when a demo item page or repo card path already has a parts directory (partsDirFor), so a --dir holding a split head is left as it was.
-src/commands/sources.ts	1	not_page_path	runAttach writes only the .gbrain-source dotfile in process.cwd().
-src/commands/sync/full.ts	0	split_aware	no helper: the full reconcile re-exports a database-only page through writePageThrough, which runs assertSplitWritable and writeSplitPageFile itself before any file write; the database row already exists, so nothing is stored before the refusal.
-src/commands/sync/gitignore.ts	1	not_page_path	Appends db_only directory lines to the checkout's .gitignore, which is not a page.
-src/commands/sync/renames.ts	1	not_page_path	Matches are rename identifiers (database slug renames); the file has no file-system write calls.
-src/commands/takes.ts	1	refuse_before_write	no helper: cmdRevisit returns split_page_unsupported when existsSync(partsDirFor(filePath)) before it appends the revisit marker with writeFileSync to an ordinary page.
-src/commands/upgrade.ts	1	not_page_path	Writes only statePath, the upgrade-state JSON, with last_upgrade.
-src/core/advisor/history.ts	2	not_page_path	Writes only the advisor history JSONL (tmp plus renameSync) under the gbrain home.
-src/core/agent-contract-log.ts	1	not_page_path	Truncates only the agent contract log file at path (mode 0600).
-src/core/agent-install/setup.ts	2	not_page_path	cpSync/renameSync install the runtime bundle into <root>/runtime/<version>-<uuid>, a staged runtime dir, not a page path.
-src/core/agent-install/state.ts	3	not_page_path	Writes only the agent-install receipt/state file via O_EXCL temp (openSync wx) plus renameSync.
-src/core/ai/openai-latest.ts	2	not_page_path	Writes only the cached OpenAI model-list JSON via tmp plus renameSync.
-src/core/atomic-write.ts	4	door	Defines atomicWriteFileSync (open wx temp, fsync, rename) as a path-agnostic primitive; page callers (backlinks, takes-write, write-through, split-write-through, coordinator) apply their own split guards.
-src/core/audit-skill-brain-first.ts	4	not_page_path	Writes only the skill brain-first audit JSON via tmp plus renameSync to finalPath.
-src/core/autopilot-heartbeat.ts	2	not_page_path	Writes only the heartbeat JSON file via tmp plus renameSync.
-src/core/autopilot-paths.ts	4	not_page_path	Writes only autopilot lock/record files (tmp plus rename, wx claim) under the autopilot state directory.
+src/cli/main.ts	2	not_page_path	admitAcrossCliCalls writes the notice ledger JSON under gbrain home; uninstallDaemon removes autopilot service files; no page path.
+src/cli/op-notices.ts	2	not_page_path	admitAcrossCliCalls writes the notice ledger JSON under gbrain home; no page path.
+src/cli/page-render.ts	1	not_page_path	md: withSpooledPage opens only join(tmpdir(), `gbrain-page-<pid>-<rand>.md`) with wx+ 0600 (page-render.ts:120-121), a read spool under os.tmpdir() that is removed after use, so never a syncable path.
+src/commands/advisor.ts	1	not_page_path	appendAdvisorRun writes gbrainPath('advisor-history.jsonl'); no page path.
+src/commands/agent-register.ts	1	not_page_path	addSource registers the source row and, for a git URL, clones into a temporary directory renamed whole into the clone path; no page bytes are written.
+src/commands/autopilot-daemon.ts	3	not_page_path	writeFileSync(lockPath) at :382 where lockPath = autopilotLockPath() = gbrainPath("autopilot.lock"); writeAutopilotHeartbeat writes gbrainPath("autopilot.heartbeat.json") (autopilot-heartbeat.ts); both under gbrain home, fixed non-.md names.
+src/commands/autopilot-dispatch.ts	1	not_page_path	recordGlobalMaintenanceStallStatus writes the autopilot verdict file under gbrain home.
+src/commands/autopilot-pause.ts	1	not_page_path	writeFileSync at :28 targets autopilotOperatorPauseMarkerPath() (autopilot-paths.ts, under gbrainPath(), fixed marker name), never a .md.
+src/commands/autopilot.ts	15	not_page_path	All writes are gbrain env file/wrapper script/launchd plist/systemd unit/crontab temp/shell-profile paths (:809,:895,:1049,:1156,:1178,:1224,:1270-1272,:1313,:1431), the autopilot.log under logDir, saveConfig (home config.json), and unlink of home markers; helpers writeWrapperScript/migrateSystemdUnitToRestartAlways/uninstallDaemon/stripBootstrapLines only touch those and ensure-services.sh; no page path.
+src/commands/autopilot/jobs.ts	3	not_page_path	stripBootstrapLines (:125-146) rewrites only the fixed-name OpenClaw bootstrap candidates built by detectOpenClaw (.../hooks/bootstrap/ensure-services.sh) plus a .bak.<stamp> copy; remaining sites are unlinkSync of start scripts; no .md.
+src/commands/backlinks.ts	2	refuse_before_write	fix mode runs assertOneFileWritable on the bytes it would write (the page plus its backlink line) before atomicWriteFileSync under withPageLock, so a split head or a page that would cross the threshold is skipped split_page_unsupported.
+src/commands/backup.ts	1	not_page_path	restorePgliteBackup restores a PGLite archive into a new data directory; no page path.
+src/commands/bench-publish.ts	1	refuse_before_write	The baseline JSON goes to the operator-chosen --to path, which may name a .md in a checkout, so assertOneFileWritable runs on the serialized bytes before writeFileSync; a .json path passes the preflight unchanged.
+src/commands/bootstrap.ts	12	refuse_before_write	via src/core/bootstrap/render.ts, src/core/bootstrap/repo.ts: workspace .md templates go through renderWorkspace and updateGithubMd, which preflight each file; the rest are saveConfig, receipts and locks under gbrain home and Claude hook settings JSON.
+src/commands/brainstorm.ts	1	refuse_before_write	persistSavedIdea runs splitSaveRefusal (assertPageThroughWritable with the rendered page) before importFromContent, so a save the page file could not take is refused split_page_unsupported with nothing stored; it writes files only through writePageThrough.
+src/commands/claw-test.ts	5	not_page_path	md: Writes only inside runRoot = mkdtempSync(tmpdir(), claw-test-*) (:117) (shim :491, cpSync fixtures to runRoot/brain :589, AGENTS.md stub :598), a mkdtemp launcher dir (:973-975), and friction jsonl files (:786, frictionFile(runId)); transcript sink path is ctx.transcriptPath inside runRoot.
+src/commands/company-brain-inspect.ts	1	refuse_before_write	The plan JSON goes to the operator-chosen --out path ('wx', a new file only); assertOneFileWritable runs first, so a path beside an orphaned parts directory is refused before the write.
+src/commands/compile-context.ts	2	refuse_before_write	via src/core/bootstrap/atomic-write.ts: the compiled block is spliced into CLAUDE.md/AGENTS.md (outPath) through atomicWriteTextFile, which runs the split preflight on the target and text.
+src/commands/config.ts	23	not_page_path	md: every write is saveConfig, the home config.json; the .md names are help text.
+src/commands/config/model-pin-shadow.ts	1	not_page_path	saveConfig writes the home config.json only.
+src/commands/connect.ts	1	not_page_path	acquireBootstrapLock writes lock metadata JSON in the bootstrap lock directory; no page path.
+src/commands/connectors/auth.ts	2	not_page_path	saveCredential writes connector credentials under gbrainPath('connectors'); no page path.
+src/commands/creds.ts	1	refuse_before_write	creds export writes the encrypted bundle JSON to the operator-chosen --out path; assertOneFileWritable runs on the bytes first, so a split head named by --out is refused, never overwritten.
+src/commands/db-repair.ts	10	not_page_path	Writes undoPath() (:142) and lockPath() (:171) which are gbrainPath() files, writeReceipt (db-repair-receipts.jsonl under gbrainPath) and saveConfig (home config.json); no page path.
+src/commands/decide/calibrate.ts	2	refuse_before_write	Both operator-chosen outputs (--items-out JSON, dataset --out JSONL) run assertOneFileWritable on the path before writeFileSync, so neither can overwrite a split head named on the command line.
+src/commands/decide/judge-agreement.ts	1	refuse_before_write	The --out report JSON runs assertOneFileWritable on its bytes before writeFileSync; the operator-chosen path is the only way it could name a page.
+src/commands/doctor/checks/rename-identity-downgrades.ts	1	not_page_path	No write primitive or write helper call: grep hits are only the word rename in comments/message strings and check names (:2-64); the check is read-only.
+src/commands/doctor/checks/timeline-history.ts	2	not_page_path	saveState(engine, key, ...) here is the check's database state store; the census counts it because skillpack/state.ts exports a file writer of the same name.
+src/commands/doctor/default-budget.ts	1	not_page_path	saveConfig writes the home config.json only.
+src/commands/doctor/skill-checks.ts	1	not_page_path	md: writeSnapshotAtomically writes the brain-first audit snapshot JSON under the audit directory; SKILL.md files are read, never written.
+src/commands/embeddings.ts	1	not_page_path	saveConfig writes the home config.json only.
+src/commands/eval-brainbench.ts	2	refuse_before_write	--update-baseline and --out write JSON to operator-chosen paths; each runs assertOneFileWritable on its bytes before writeFileSync.
+src/commands/eval-code-retrieval.ts	1	refuse_before_write	--save writes the report JSON to an operator-chosen path after assertOneFileWritable on the bytes; the preflight is a no-op for a .json path.
+src/commands/eval-cross-modal.ts	1	refuse_before_write	The batch summary goes to --output (operator-chosen) or a .json under gbrain home; assertOneFileWritable runs on the summary bytes before writeFileSync.
+src/commands/eval-longmemeval.ts	5	refuse_before_write	via src/eval/longmemeval/emit.ts: JSONL output and its compaction and summary go through the emit helpers, which run the split preflight on the operator-chosen path.
+src/commands/eval-suspected-contradictions.ts	1	refuse_before_write	--output writes the run JSON to an operator-chosen path after assertOneFileWritable on the bytes.
+src/commands/eval-takes-quality.ts	2	not_page_path	writeReceipt(engine, ...) is the takes-quality receipt writer (a database row plus a JSON artifact under gbrain home); no page path.
+src/commands/extract-attendance-repair.ts	3	refuse_before_write	The --checkpoint state file is an operator-chosen path; assertOneFileWritable runs on the state bytes before the private temporary is created and renamed over it.
+src/commands/extract-conversation-facts.ts	1	not_page_path	md: writeReceipt(engine, ...) is the extraction receipt in the database (extract/receipt-writer.ts); the census counts it because file writers share the name; facts reach pages through the fact pipeline, not here.
+src/commands/features.ts	1	not_page_path	writeFileSync(offersPath(), JSON) at :79 where offersPath() = gbrainPath("feature-offers.json").
+src/commands/files.ts	5	refuse_before_write	restore writes downloaded bytes back to the path a .redirect.yaml pointer names, which can be a .md page; assertOneFileWritable runs on those bytes first. The other writes are .raw/ sidecars (a dot folder), .redirect.yaml pointers and .supabase.
+src/commands/frontmatter-install-hook.ts	6	not_page_path	md: installHook/uninstallHook write only `<root>/.githooks/pre-commit` (hookPaths(), :342-345: fixed literal tail) and its `.bak` copy.
+src/commands/frontmatter.ts	4	split_aware	validate --fix runs splitHeadFixRefusal (a parseHead-verified head-only frontmatter edit, else assertOneFileWritable on the fixed bytes); generate --fix runs the same check on the page with its new frontmatter and skips a refused file.
+src/commands/git.ts	5	not_page_path	commitAndPush writes git-internal files; appendPushLog writes the push log under gbrain home; installGuard writes a git hook; no page bytes.
+src/commands/google-setup-tail.ts	1	not_page_path	addSource registers the Google source row and, for a git URL, renames a fresh clone into place; no page bytes are written.
+src/commands/google.ts	1	not_page_path	md: Writes gbrainPath("google-connect-pending.json") (pendingPath(), :183-191) and gbrainPath("integrations","google")/heartbeat.jsonl (:104-112); under gbrain home, fixed non-.md names.
+src/commands/hook.ts	16	not_page_path	md: All writes are hook telemetry/state under gbrain home (resolveGbrainHome()/bootstrap push state :957; heartbeat.jsonl/status.json under home/integrations/hooks), `<file>.announced` sidecars (:1013), and corpus files named `<session>[.src-stamp].txt` (sessionCorpusFileName, :1807) or `.seg-*.txt`/`.wb-*.txt`/`.seat.json` via corpus-segments helpers: every name has a fixed non-.md suffix even when session_corpus_dir is operator-configured.
+src/commands/import.ts	2	not_page_path	md: saveCheckpoint writes gbrainPath('import-checkpoint.json'); pages are imported into the database, not written.
+src/commands/init.ts	4	refuse_before_write	installDefaultTemplates copies SOUL/USER/ACCESS_POLICY/HEARTBEAT .md templates into an operator workspace that may be a checkout; assertOneFileWritable runs on each template's bytes before copyFileSync. The rest is saveConfig under gbrain home.
+src/commands/integrations.ts	8	refuse_before_write	Recipe installs and refreshes copy bundle files (skills/<x>/SKILL.md among them) into the host repo and append resolver rows; every copyFileSync and the append run assertOneFileWritable on the resulting bytes first. Heartbeats and .gbrain-source.json are fixed non-.md names.
+src/commands/integrity.ts	1	not_page_path	md: appendFileSync/writeFileSync only to getReviewFile()=gbrainPath("integrity-review.md"), getLogFile()=gbrainPath("integrity.log.jsonl"), getProgressFile()=gbrainPath("integrity-progress.jsonl") (:53-55,:251,:255,:813,:827), all under gbrain home.
+src/commands/lint.ts	2	split_aware	lint --fix calls writeSplitPageFile before writeSourceFileSync: a fix whose parts all stay rewrites the head atomically, one that would change a part is pending as split_page_unsupported with nothing written.
+src/commands/mcp-expose.ts	3	not_page_path	writeExposeReceipt writes the expose receipt JSON under gbrain home.
+src/commands/migrate-embeddings.ts	1	not_page_path	saveConfig writes the home config.json only.
+src/commands/migrate-engine.ts	7	not_page_path	Writes getManifestPath()=gbrainPath("migrate-manifest.json") (:110), the autopilot paused marker autopilotPausedMarkerPath() and its tomb (quiesceAutopilot :746-781), and saveConfig (home); no page path.
+src/commands/migrations/shared-content.ts	1	refuse_before_write	via src/core/agent-install/state.ts: exportDatabaseContent (shared-skills/migration-export.ts) stages exported files through privateWrite, which runs the split preflight, in a new root renamed whole into place.
+src/commands/migrations/v0_11_0.ts	5	refuse_before_write	The v0.11.0 migration appends a subagent-routing snippet to a host AGENTS.md; assertOneFileWritable runs on the new bytes before the .bak copy and the write (a refusal is recorded as a skip). The other writes are pending-host-work.jsonl under gbrain home and cron JSON manifests.
+src/commands/migrations/v0_22_4.ts	1	not_page_path	md: writeFileSync(auditReportPath()) at :97 = gbrainPath("migrations")/v0.22.4-audit.json and appendFileSync(pendingHostWorkPath()) at :158 = migrations/pending-host-work.jsonl; under gbrain home.
+src/commands/mounts.ts	3	not_page_path	writeMountsFile writes getMountsPath() mounts.json via tmp+rename (:72-75) and writeMountsCache (:337) writes gbrainPath("mounts-cache")/RESOLVER.md + manifest.json (mounts-cache.ts:421-446); all under gbrain home (RESOLVER.md is a metafile anyway).
+src/commands/notability-eval.ts	3	refuse_before_write	writeJsonlCases writes JSONL to --out (operator-chosen) or the default mining path; assertOneFileWritable runs on the lines first.
+src/commands/pages-split-storage.ts	1	not_page_path	writeKeptEdit stages the page file that keeps a head edit at a private splitScratchPath(); the page is then written through the door, never by this command.
+src/commands/pglite-repair-legacy-lock.ts	1	not_page_path	applyLegacyLockRemoval moves the PGLite legacy lock and writes its receipt under the data directory.
+src/commands/pglite-repair.ts	2	not_page_path	acquireLock and repairPgliteWal write PGLite lock metadata and WAL repair files in the data directory.
+src/commands/publish.ts	1	refuse_before_write	The HTML goes to --out (operator-chosen) or <input>.html; assertOneFileWritable runs on the HTML bytes before writeFileSync.
+src/commands/reindex-multimodal.ts	3	not_page_path	Writes only checkpointPath = gbrainPath(CHECKPOINT_FILE) (:225, writes :340,:369), a fixed home checkpoint file.
+src/commands/reinit-pglite.ts	1	not_page_path	backupUnmanagedPglite renames a PGLite data directory aside.
+src/commands/report.ts	1	refuse_before_write	A pre-connect command with no engine: it writes a new minute-stamped report page after assertOneFileWritable on the page bytes, so a path holding a split head or parts directory, or a report over the threshold, is refused.
+src/commands/schema.ts	5	not_page_path	Writes configPath() home config.json (:395,:924), gbrainPath("schema-packs",name)/pack.yaml and pack.json (:605-677), and scaffoldExtractable which writes `<pack-root>/prompts/extract/<type>.md` + fixtures where pack-root = dirname(locateMutablePackFile) = gbrainPath("schema-packs",name) (mutate.ts:171): all under gbrain home.
+src/commands/self-upgrade.ts	1	not_page_path	saveConfig writes the home config.json only.
+src/commands/serve-health.ts	1	not_page_path	installRestartRequiredExit writes the ledger deps.ledgerPath ?? serveSelfExitLedgerPath() = gbrainPath("serve-self-exit.json") (:124,:163,:186).
+src/commands/serve-http-status.ts	1	not_page_path	writeStatusMarker writes the serve status marker JSON under gbrain home.
+src/commands/serve.ts	1	not_page_path	installRestartRequiredExit writes the serve self-exit ledger under gbrain home.
+src/commands/skillify.ts	1	refuse_before_write	via src/core/skillify/generator.ts: applyScaffold writes the new skill files and resolver row after the split preflight on each.
+src/commands/skillpack.ts	3	refuse_before_write	via src/core/skillpack/copy.ts, src/core/skillpack/init-scaffold.ts: the scaffold, init and harvest subcommands write workspace skill files (SKILL.md) through copyArtifacts and applyWritePlan, which run the split preflight per file; migrate-fence and scrub-legacy preflight their resolver rewrite in their own modules; the manifest is JSON.
+src/commands/source-reconcile.ts	3	refuse_before_write	The reconcile preview JSON goes to an operator --output path (dot temporary, then a no-clobber link); assertOneFileWritable runs on the preview bytes before the temporary is written.
+src/commands/sources-demo.ts	1	refuse_before_write	The offline demo has no brain: each demo item page and repo card runs assertOneFileWritable on its bytes before writing, so a --dir holding a split head is left as it was.
+src/commands/sources.ts	3	not_page_path	md: Writes only `<cwd>/.gbrain-source` (dotfile, :1136), saveNagState (home), and recloneIfMissing clones into gbrainPath("clones")/.tmp then renames the whole checkout directory (sources-ops.ts); no page bytes written.
+src/commands/sync/full.ts	1	split_aware	via src/core/write-through.ts: the full reconcile re-exports a database-only page through writePageThrough, which runs assertSplitWritable and writeSplitPageFile before any file write.
+src/commands/sync/gitignore.ts	2	not_page_path	manageGitignore writes only `<repo>/.gitignore` (fixed non-.md name, :182).
+src/commands/sync/perform.ts	1	not_page_path	noteIdentityDowngrades records identity downgrades in the database; the census lists it as a write helper only because its message text names rename(s).
+src/commands/sync/preflight.ts	1	not_page_path	md: recloneIfMissing clones a missing source into a temporary directory and renames the whole checkout into place; it writes no page bytes of its own.
+src/commands/takes.ts	1	refuse_before_write	cmdRevisit runs assertOneFileWritable on the page with the revisit marker appended before writeFileSync, so a split head or a page that would cross the threshold is refused split_page_unsupported.
+src/commands/upgrade.ts	4	not_page_path	md: Writes gbrainPath("upgrade-state.json") (:788) and an errors jsonl under frictionDir (:768), saveConfig, ensureGitignore (home .gitignore) and migrateSystemdUnitToRestartAlways (systemd unit); all fixed non-.md names under home or service dirs.
+src/core/advisor/collect-mcp-client-fit.ts	1	not_page_path	saveNagState writes the usage nag state JSON under gbrain home.
+src/core/advisor/history.ts	2	not_page_path	appendAdvisorRun rewrites/appends advisorHistoryPath() = gbrainPath("advisor-history.jsonl") (:31,:74-77).
+src/core/agent-contract-log.ts	2	not_page_path	appendBoundedJsonl writes agentContractLogPath() = gbrainPath("agent-contract","events.jsonl") (:39-50).
+src/core/agent-install/init-state.ts	1	not_page_path	privateWrite copies the config file to a backup next to it under gbrain home; no page path.
+src/core/agent-install/setup.ts	4	refuse_before_write	via src/core/agent-install/state.ts: generated files (instructions/*.md among them) go under the operator-chosen install root through privateWrite, which runs the split preflight on every file it writes; the runtime bundle copy lands in a new runtime/<version>-<uuid> directory of node_modules, which sync prunes.
+src/core/agent-install/state.ts	4	refuse_before_write	privateWrite is the generic private writer of agent install, harness and shared-skill adapters (SKILL.md and instructions included); it runs assertOneFileWritable on the bytes before its O_EXCL temporary and rename.
+src/core/ai/openai-latest.ts	2	not_page_path	writeCacheFile (:279-280) writes cachePath() = join(configDir(), "model-cache.json").
+src/core/atomic-write.ts	3	door	Defines atomicWriteFileSync (open wx temp, fsync, rename) as a path-agnostic primitive; page callers (backlinks, takes-write, write-through, split-write-through, coordinator) apply their own split guards.
+src/core/audit-skill-brain-first.ts	2	not_page_path	writeSnapshotAtomically (:173-187) writes SNAPSHOT_FILENAME and appendFileSync event jsonl (:220) under resolveAuditDir() (audit dir under gbrain home / GBRAIN_AUDIT_DIR), fixed json/jsonl names.
+src/core/autopilot-heartbeat.ts	2	not_page_path	writeAutopilotHeartbeat writes autopilotHeartbeatPath() = gbrainPath("autopilot.heartbeat.json") via tmp+rename (:29-34).
+src/core/autopilot-paths.ts	4	not_page_path	Writes only autopilot marker/lock records (autopilotLockPath, disabled/paused marker paths, all gbrainPath() fixed names; :141-162).
 src/core/backup/archive.ts	3	split_aware	no helper: extraction opens every archive entry with 'wx' (0600) under a confined, empty staging destination and copies its bytes verbatim, so a split head and its parts directory are restored together as the archive holds them; it never edits a live page.
-src/core/backup/snapshot.ts	3	split_aware	no helper: restore renames the staged checkout tree into a reserved empty restore root and refuses a name that already exists, so a split head and its parts move together in one tree; it never rewrites a page file.
-src/core/backup/status-file.ts	2	not_page_path	atomicWriteJson writes only backupStatusPath() and backupNagStatePath() JSON via tmp plus renameSync.
-src/core/behavior-change-notice.ts	4	not_page_path	Writes only the per-brain baseline file (baselinePath(brainKey)) and a notice marker, 0600.
-src/core/belief/identity.ts	2	not_page_path	Matches are rename words (renameLifetime, page.renamed) in database event code; the file has no file-system writes.
-src/core/belief/purge-mirror.ts	1	not_page_path	Appends only to purgeMirrorPath() = <configDir>/purge-events.jsonl with openSync 'a' 0600.
-src/core/binary-self-update.ts	4	not_page_path	Writes only the downloaded gbrain binary (destPath staged file) and renames it over the installed binary path.
-src/core/bootstrap/atomic-write.ts	3	not_page_path	atomicWriteTextFile writes a given workspace/config path via tmp plus renameSync; callers pass only bootstrap scaffolding, hook and agent config files.
-src/core/bootstrap/codex-hooks.ts	2	not_page_path	Writes only the Codex hooks.json and config.toml (plus .bak copies) via atomicWriteTextFile.
-src/core/bootstrap/codex-toml.ts	2	not_page_path	Writes only the Codex config.toml and its backup via atomicWriteTextFile.
-src/core/bootstrap/contract.ts	3	not_page_path	Writes only the workspace AGENTS.md (a root skip file) and its .gbrain-bootstrap-backups copy.
-src/core/bootstrap/format.ts	8	not_page_path	Writes only bootstrap manifest and receipt JSON files via tmp plus renameSync and their backups.
-src/core/bootstrap/hooks.ts	5	not_page_path	Writes only agent harness settings.json files (atomicWriteJson) and .bak copies.
-src/core/bootstrap/interview.ts	2	not_page_path	Writes only the interview state JSON via tmp plus renameSync.
-src/core/bootstrap/lock.ts	2	not_page_path	Writes only the bootstrap lock meta JSON via tmp plus renameSync.
-src/core/bootstrap/opencode-json.ts	1	not_page_path	Writes only opencode.json and its backup via atomicWriteTextFile.
-src/core/bootstrap/render.ts	3	not_page_path	Writes only fixed BOOTSTRAP_TEMPLATES destinations (isBootstrapRenderDest guard) in the agent workspace plus .gbrain-bootstrap-backups copies.
-src/core/bootstrap/repo.ts	1	not_page_path	updateGithubMd rewrites only the workspace GITHUB.md placeholder line; REPO_CREATE_FAILED matches are error codes.
-src/core/bootstrap/template-repo.ts	1	not_page_path	Writes only the template repo README.md into outDir, a generated template output directory, not a brain.
-src/core/bootstrap/verify.ts	3	not_page_path	Writes only a verify payload JSON (dest) via tmp plus renameSync, 0600.
-src/core/brain-repo-durability.ts	13	not_page_path	Writes only the resolver file RESOLVER.md/AGENTS.md (sync-skipped structural files), .git/info/exclude, git hook scripts, the brain-commit-push helper script, push log and launchd/cron wrappers; never a <slug>.md page.
-src/core/brain-writer.ts	1	not_page_path	copyFileSync copies a page file into gbrainPath('backups','frontmatter',runId)/<hash>/<rel>.bak, a backup outside the checkout.
-src/core/brainstorm/checkpoint.ts	2	not_page_path	Writes only the brainstorm checkpoint JSON via tmp plus renameSync in checkpointDir().
-src/core/claw-test/transcript-capture.ts	2	not_page_path	Appends to ctx.transcriptPath, the claw-test transcript log passed by commands/claw-test.ts, never a page path.
-src/core/cli-force-exit.ts	3	not_page_path	The Bun.write matches are comments about stdout; the file performs no page or checkout file write.
-src/core/cli-socket/refusals.ts	2	not_page_path	Writes the refusal counter JSON (REFUSALS_FILE under the cli-socket state dir) via tmp plus rename, never a page.
-src/core/config.ts	3	not_page_path	saveConfig writes only getConfigPath() (config.json) and ensureGitignore writes <configDir>/.gitignore; no page path.
-src/core/connectors/credentials.ts	2	not_page_path	Writes only credentialPath(provider) under gbrainPath('connectors') at mode 0600.
-src/core/connectors/item-holds-store.ts	1	not_page_path	atomicWriteFileSync of carry.state_file, the connector JSON state file (.github-source.json or the Google state file), under withFilesystemPublication, never a page .md.
-src/core/connectors/spool.ts	2	not_page_path	Writes <stamp>.json spool files in the per-provider spool dir (ensureSpoolDir) under the gbrain home.
-src/core/consent.ts	1	not_page_path	Writes only approvalPath(token) = gbrainPath('consent','approvals',<token>.json).
-src/core/context/capture-consent.ts	3	not_page_path	Writes capture-off record files and .ingested sidecars beside corpus transcript files (captureOffRecordPath, full + '.ingested'), never page .md files.
-src/core/context/checkpoint-harvest.ts	5	not_page_path	Writes only .ingested sidecars and harvest receipts (full + suffix) next to corpus transcript segments in job.corpusDir.
-src/core/context/corpus-segments.ts	6	not_page_path	Writes <session>.seg-<hash>.txt segments and <session>.ledger.json in the transcript corpus dir via tmp plus rename; never <slug>.md.
-src/core/context/corpus-source.ts	3	not_page_path	Writes session-source records and O_EXCL lock files in the corpus spool dir (corpusSpoolDir), never page files.
-src/core/context/corpus-windows.ts	6	not_page_path	Writes progress, failure and .ingested sidecars plus lock files beside corpus transcript files (full + suffix).
-src/core/context/hook-heartbeat.ts	5	not_page_path	Writes heartbeat.jsonl, session receipts and memorable-consent.json under the hooks telemetry dir (<home>/integrations/hooks).
-src/core/context/pressure.ts	2	not_page_path	Writes the pressure state JSON via tmp plus rename in a private 0700 state dir, best-effort.
-src/core/context/resolve-ipc.ts	1	not_page_path	Writes only the IPC secret file (ipcSecretPath) at mode 0600.
-src/core/context/seat.ts	2	not_page_path	Writes <sessionId>.seat.json sidecars beside the corpus files via tmp plus rename.
-src/core/core-memory-schema.ts	1	not_page_path	The only match is a comment mentioning a page rename; the file has no write primitive call.
-src/core/creds/vault.ts	3	not_page_path	Writes only the credential vault file this.path and its O_EXCL lock file (lockPath) via atomicWriteFileSync.
-src/core/cross-modal-eval/receipt-write.ts	1	not_page_path	writeReceipt writes <skill-slug>-<sha8>.json eval receipts into receiptDir (default gbrainPath('eval-receipts')) from runner.ts, never a page .md.
-src/core/cycle.ts	2	not_page_path	The two writeFileSync calls write only the cycle lock file gbrainPath('cycle.lock') (acquireFileLock).
+src/core/backup/snapshot.ts	16	split_aware	no helper: restore renames the staged checkout tree into a reserved empty restore root and refuses a name that already exists, so a split head and its parts move together in one tree; it never rewrites a page file.
+src/core/backup/status-file.ts	2	not_page_path	writeFileSync/renameSync (:294-295) of backupStatusPath()/backupNagStatePath() = gbrainPath("backup-status.json"/"backup-nag-state.json").
+src/core/behavior-change-notice.ts	4	not_page_path	md: Writes exclusive baseline/notice files under gbrainPath("notices","behavior-changes") (baselinePath(brainKey) :141, :1393); other grep hits are inside BEHAVIOR_CHANGES text strings (:488,:834,:872,:1012).
+src/core/belief/purge-mirror.ts	1	not_page_path	appendPurgeIntent/appendPurgeCommitted open purgeMirrorPath(home = configDir()) = join(configDir(), PURGE_MIRROR_FILE) with flag "a" (:50-57).
+src/core/binary-self-update.ts	3	not_page_path	defaultDownload writes the staged binary destPath (openSync :195) and renameSync(staged, targetPath) at :403 replaces the running gbrain executable; unlinkSync at :414; an executable, never a .md.
+src/core/bootstrap/adopted-connections.ts	1	not_page_path	atomicWriteTextFile writes adoptedConnectionsPath(gbrainHomeDir), a JSON file under gbrain home.
+src/core/bootstrap/atomic-write.ts	2	refuse_before_write	atomicWriteTextFile is the generic writer of harness configuration and of AGENTS.md/CLAUDE.md blocks (compile-context, instructions-block); it runs assertOneFileWritable on the resolved target and text before the temporary and rename, a no-op for .json and .toml.
+src/core/bootstrap/attach.ts	2	not_page_path	guardReceiptOverwrite and writeReceipt write the install receipt JSON under gbrainHomeDir; no page path.
+src/core/bootstrap/codex-hooks.ts	7	not_page_path	atomicWriteTextFile only to codexHooksPath()/config.toml (`hooks.json`, config.toml) plus `.bak`/`.hooks.bak` copies (:264-277,:332-345,:473).
+src/core/bootstrap/codex-toml.ts	5	not_page_path	atomicWriteTextFile/copyFileSync only on the Codex config.toml path and its `.bak` backup (:247,:323,:367,:444,:477).
+src/core/bootstrap/contract.ts	3	refuse_before_write	repairWritebackContract appends the write-back block to <workspace>/AGENTS.md; assertOneFileWritable runs on the new bytes before the wx backup (under .gbrain-bootstrap-backups/, a dot folder) and the temporary plus rename.
+src/core/bootstrap/format.ts	8	not_page_path	Writes manifestPath(ws) agent.json (:108-112) and receipts at join(gbrainHomeDir,"bootstrap","receipt.json"/"harness.json") (:143,:309) plus their backups; fixed JSON names.
+src/core/bootstrap/harness-hooks.ts	1	not_page_path	removeClaudeHooksAt rewrites a Claude settings JSON file (settingsPath); never a .md.
+src/core/bootstrap/harness-skills.ts	1	not_page_path	writeHarnessReceipt writes the harness receipt JSON under gbrainHome; no page path.
+src/core/bootstrap/harness.ts	31	refuse_before_write	via src/core/bootstrap/atomic-write.ts: rollbacks rewrite harness configuration through atomicWriteTextFile (preflighted); hooks, permissions and codex blocks are JSON/TOML settings; receipts and locks are under gbrain home.
+src/core/bootstrap/hooks.ts	10	not_page_path	Writes Claude settings JSON only: claudeSettingsPath/claudeCommittedSettingsPath under `<ws>/.claude/` and user settings, with `.bak`/`.bak-<ts>` backups (atomicWriteJson :536, copyFileSync :731-1103).
+src/core/bootstrap/instructions-block.ts	2	refuse_before_write	via src/core/bootstrap/atomic-write.ts: the ambient write-back block is spliced into AGENTS.md/CLAUDE.md through atomicWriteTextFile, which runs the split preflight on the target and text.
+src/core/bootstrap/interview.ts	3	not_page_path	writeInterviewState writes `<workspace>/state/interview.json` via tmp+rename (:113,:182-183); saveConfig (home) at :554.
+src/core/bootstrap/lock.ts	2	not_page_path	acquireBootstrapLock writes the lock meta JSON (META_FILE) inside bootstrapLockDir(workspaceDir) (BOOTSTRAP_LOCK_DIRNAME, :137,:220-223); fixed non-.md name.
+src/core/bootstrap/opencode-json.ts	3	not_page_path	atomicWriteTextFile/copyFileSync only on the OpenCode config json path and `.bak-<hex>` backups (:308,:409,:479).
+src/core/bootstrap/render.ts	5	refuse_before_write	renderWorkspace writes the bootstrap .md templates (AGENTS.md, SOUL.md, USER.md, ...) at the workspace root; each runs assertOneFileWritable on its rendered bytes before the temporary and rename. Backups go to .gbrain-bootstrap-backups/ (a dot folder).
+src/core/bootstrap/repo.ts	4	refuse_before_write	updateGithubMd rewrites <workspace>/GITHUB.md after assertOneFileWritable on the new bytes; the other writes are receipts under gbrain home.
+src/core/bootstrap/template-repo.ts	3	refuse_before_write	The template README.md runs assertOneFileWritable on its bytes before writeFileSync; the .md template set goes through renderWorkspace (render.ts, preflighted per file) and the manifest is JSON.
+src/core/bootstrap/verify.ts	3	not_page_path	md: Direct writes are persistVerifyRun `verify-<ts>.json` under join(gbrainHomeDir,"bootstrap") (:1147-1156) and writeManifest agent.json (:767); the probe pages go through the putPage op handler (publication path), not a primitive here.
+src/core/brain-repo-durability.ts	18	not_page_path	md: Writes: push log + rotation under home (:160-161,:673-674), cron wrapper/plist/credential store under gbrainHome (:804,:916,:961), hook files `<hooksDir>/post-commit` + `.bak` and `.git/info/exclude` (ensureExcluded :489,:508-529), and patchResolverFile :437 which writes only findResolverFile(repoPath) ?? join(repoPath,"AGENTS.md") i.e. RESOLVER.md/AGENTS.md at the repo root (metafiles); commitAndPush call writes only .git state.
+src/core/brain-writer.ts	1	not_page_path	createFrontmatterBackup (:146-155) copyFileSync to join(root, sourceKey, safeRel + ".bak") with root = gbrainPath("backups","frontmatter",runId) by default; destination always ends in .bak, never .md.
+src/core/brainstorm/checkpoint.ts	2	not_page_path	saveCheckpoint writes JSON under checkpointDir() = gbrainPath("brainstorm") via tmp+rename (:77,:132-133).
+src/core/brainstorm/orchestrator.ts	2	not_page_path	saveCheckpoint writes brainstorm checkpoint JSON under gbrainPath('brainstorm'); brainstorm pages are written database-first elsewhere (preflight only per the lane brief).
+src/core/claw-test/transcript-capture.ts	1	not_page_path	createTranscriptSink (:41) opens createWriteStream(path,{flags:"a"}) on ctx.transcriptPath, which claw-test.ts places under its mkdtemp runRoot.
+src/core/cli-socket/refusals.ts	2	not_page_path	refusalCounter flush writes join(dir, REFUSALS_FILE) (+ .tmp) via tmp+rename (:19-30), a fixed REFUSALS_FILE name in the CLI socket run dir.
+src/core/cli-socket/server.ts	1	not_page_path	refusalCounter flushes a fixed refusals JSON in the CLI socket run directory.
+src/core/config.ts	4	not_page_path	saveConfig writes getConfigPath() config.json via tmp+rename (:1877-1885); ensureGitignore writes home `.gitignore` containing "*" (:1922-1938).
+src/core/connectors/credentials.ts	2	not_page_path	saveCredential writes credentialPath(provider) under gbrainPath("connectors") via tmp+rename (:55-60).
+src/core/connectors/item-holds-store.ts	1	not_page_path	carryHoldsToClassicState atomicWriteFileSync(file) where file = classicConnectorStateFile = join(dir, ".google-source.json" | ".github-source.json") (:41-45,:155), dot-named JSON state.
+src/core/connectors/spool.ts	2	not_page_path	writeSpool writes join(gbrainPath("connectors","spool",provider), `${stamp}.json`) via tmp+rename (:41-50), fixed .json under home.
+src/core/connectors/sync.ts	1	not_page_path	writeSpool writes connector spool JSON under gbrainPath('connectors','spool').
+src/core/consent-preapproval.ts	2	not_page_path	saveConfig writes the home config.json only.
+src/core/consent.ts	2	not_page_path	persistApproval writes gbrainPath("consent","approvals",`${token}.json`) (:447-455).
+src/core/context-engine.ts	3	not_page_path	md: writeHeartbeat writes hook telemetry under gbrain home and writeSeatSidecar writes <id>.seat.json beside a corpus file; no page path.
+src/core/context/capture-consent.ts	6	not_page_path	recordCaptureIfOff writes captureOffRecordPath(file, brain) under configDir() via tmp+rename (:105-118); applyCaptureGate writes `<corpus file>.ingested` sidecar (:152) and calls retireCorpusFile (`.ingested`); fixed non-.md names.
+src/core/context/checkpoint-harvest.ts	9	not_page_path	All writeFile calls are `.ingested`/harvest-receipt sidecars next to a corpus file (`full + CORPUS_INGESTED_SUFFIX`/`HARVEST_RECEIPT_SUFFIX`, :359-364,:419,:472,:517,:564,:636) and writeHeartbeat jsonl under home; corpus files are `.txt`.
+src/core/context/compiled-core.ts	1	not_page_path	atomicWriteTextFile writes recordFile(), the compiled-core record JSON under gbrain home.
+src/core/context/corpus-segments.ts	8	not_page_path	writeSegment writes `<id>.seg-<hash>[.src-stamp].txt`, bankWritebackTurn writes `<id>.wb-<hash>.txt`, appendSegmentLedger/seat via tmp+rename (:274,:294,:520; names from segmentFileName/wbFileName/SEAT_SIDECAR_SUFFIX ".seat.json"): all fixed non-.md suffixes in the corpus dir.
+src/core/context/corpus-source.ts	3	not_page_path	Writes `<id>.source.json` (SESSION_SOURCE_SUFFIX) and its lock (SESSION_SOURCE_LOCK_SUFFIX) in the corpus spool dir via tmp+rename (:116-133).
+src/core/context/corpus-windows.ts	9	not_page_path	Writes sidecars of a corpus file: full + CORPUS_PROGRESS_SUFFIX ".progress" and ".progress.lock" (:263,:293-294), full + CORPUS_FAILURE_SUFFIX ".failures.json" (:538-539), full + ".ingested" (:368); fixed non-.md suffixes.
+src/core/context/hook-heartbeat.ts	5	not_page_path	Writes heartbeat.jsonl, status.json, memorable-consent.json etc. under hooksTelemetryDir() = join(resolveHome(),"integrations","hooks") (:116-128,:184-197,:416-417,:476,:618).
+src/core/context/pressure.ts	2	not_page_path	writeState writes stateFile(dir, sessionKey) = `<sanitized key>.json` via tmp+rename (:148-164).
+src/core/context/reflex.ts	1	not_page_path	writeHeartbeat writes hook telemetry under gbrain home.
+src/core/context/resolve-ipc.ts	1	not_page_path	ensureIpcSecretAtPath writes the IPC secret at ipcSecretPath(dataDir)/ipcRunDir() = join(configDir(),"run") (:459-484); fixed secret file name.
+src/core/context/seat.ts	2	not_page_path	writeSeatSidecar writes join(dir, seatFileName(sessionId)) = `<id>.seat.json` via tmp+rename (:151-174).
+src/core/creds/vault.ts	3	not_page_path	Vault lock via openSync(lockPath,"wx") (:184) and atomicWriteFileSync(this.path) (:243) where path = credentialsPath() = gbrainPath("credentials.json").
+src/core/cross-modal-eval/receipt-write.ts	1	not_page_path	writeReceipt(path) (:13-16) has one caller, cross-modal-eval/runner.ts:181, passing join(opts.receiptDir, receiptName(slug,output)) where the name is `<slug>-<sha8>.json`/`.cycle<N>.json` (runner.ts:154-159); receiptDir defaults to gbrainPath("eval-receipts") or batchTempDir. Caveat: generic helper if a new caller appears.
+src/core/cross-modal-eval/runner.ts	1	not_page_path	writeReceipt writes <slug>-<sha8>.json receipts in the receipt directory; fixed .json names.
+src/core/cycle.ts	2	not_page_path	md: acquireFileLock writes lockPath (:817,:822), default getLockFilePathDefault() = gbrainPath("cycle.lock"); no page bytes are written here.
 src/core/cycle/concept-publication.ts	0	refuse_before_write	publishClassicConcept runs assertPageThroughWritable before opts.importPage and throws concept_write_through_failed on split_page_unsupported, so the database never holds a concept its file cannot take.
-src/core/cycle/derived-write-through.ts	1	split_aware	writeDreamPageFile tries writeSplitPageFile first and only stages and renames a plain sibling when the page is not split, after replaceableFile drift checks.
-src/core/cycle/nightly-quality-probe.ts	1	not_page_path	copyFileSync copies summary.json and lme-output.jsonl into <resolveAuditDir()>/nightly-probe/<ts>/ receipts.
-src/core/cycle/phantom-redirect.ts	2	split_aware	materializeCanonicalToDisk runs oneFileWriteRefusal before it writes a database-only canonical page; the merge runs assertSplitWritable before its temporary copy (writePageTemp) and writes a split unit whose parts stay through writeSplitPageFile.
-src/core/db-repair-receipts.ts	1	not_page_path	Rewrites only receiptsPath(), the db-repair receipts JSONL under the gbrain home, capped to a tail.
+src/core/cycle/derived-write-through.ts	5	split_aware	writeDreamPageFile tries writeSplitPageFile first and only stages and renames a plain sibling when the page is not split, after replaceableFile drift checks.
+src/core/cycle/extract-atoms.ts	1	not_page_path	md: writeReceipt(engine, ...) is the extraction receipt in the database (extract/receipt-writer.ts); counted by name only; atoms reach pages through their own writers.
+src/core/cycle/extract-facts.ts	1	not_page_path	md: writeReceipt(engine, ...) is the extraction receipt in the database (extract/receipt-writer.ts); counted by name only; fence writes go through the fact pipeline's own writers.
+src/core/cycle/nightly-quality-probe.ts	1	not_page_path	keepReceipts (:554) copyFileSync of fixed names summary.json and lme-output.jsonl from an mkdtemp workDir (:370) into resolveAuditDir()/nightly-probe/<ts>/ (:545-554); other hits are stderr writes.
+src/core/cycle/phantom-redirect.ts	4	split_aware	materializeCanonicalToDisk runs oneFileWriteRefusal before it writes a database-only canonical page; the merge runs assertSplitWritable before its temporary copy (writePageTemp) and writes a split unit whose parts stay through writeSplitPageFile.
+src/core/cycle/propose-takes.ts	1	not_page_path	writeReceipt(engine, ...) is the extraction receipt in the database (extract/receipt-writer.ts); counted by name only.
+src/core/cycle/synthesize-concepts.ts	1	not_page_path	writeReceipt(engine, ...) is the extraction receipt in the database (extract/receipt-writer.ts); counted by name only; concept pages publish through concept-publication.ts.
+src/core/cycle/synthesize.ts	1	split_aware	via src/core/cycle/derived-write-through.ts: dream pages go through writeDreamPageFile, which plans the page with writeSplitPageFile (a split unit as a head plus kept parts, else split_page_unsupported) before any write.
+src/core/db-repair-receipts.ts	1	not_page_path	writeReceipt writes receiptsPath() = gbrainPath("db-repair-receipts.jsonl") (:30-74).
+src/core/db.ts	1	not_page_path	warnPoolerPrepareOffOnce writes a marker under resolveGbrainHome()/notices/pooler-prepare-off.
 src/core/dry-fix.ts	2	not_page_path	Writes skill files (skillPath = join(skillsDir, skill.path), SKILL.md) after assertLegacySkillFilesystemWrite; skills dir is not a brain page tree.
-src/core/facts/fence-write.ts	1	split_aware	publishFenceTmp calls writeSplitPageFile (head only when parts stay, else split_page_unsupported) and only renames the tmp for non-split files; splitWriteRefusal runs before the tmp is written.
-src/core/facts/forget.ts	0	refuse_before_write	forgetFactInFence runs splitWriteRefusal before it writes its temporary copy (writePageTemp, the page's mode) and removes the copy on every refusal and error path.
-src/core/facts/proposal-supersede.ts	2	refuse_before_write	no helper: splitPageToken refuses any page whose file reads as a split head (readPageFile) before the database transaction and before publishFile writes its temporary copy (writePageTemp, the page's mode) of an ordinary one-file page.
-src/core/facts/unfenced-facts.ts	1	refuse_before_write	Fence write at lines 597 and 621 is preceded by splitPageToken at line 572 which puts a split head in failed_pages and returns before any write.
-src/core/fence-repair/repair-io.ts	2	refuse_before_write	no helper: the legacy writeFileSync of a fence repair is reached only after the candidate scan passes split heads by as split_page_unsupported (readPageFile split); managed sources go through submitManagedFileRepair.
-src/core/git/commit-guard.ts	1	not_page_path	Writes only the commit-guard hook script (hookFile path, .git/hooks or core.hooksPath), never a page file.
-src/core/git/commit-push.ts	7	not_page_path	Every write targets absGitPath(root, ...) git-internal ledger, settle, conflict-state and publish-request files inside the git dir.
-src/core/github-source.ts	2	split_aware	materializePage calls assertSplitWritable before the tmp write and publishes through writeSplitPageFile, renaming only when not split; writeState writes <dir>/.github-source.json.
-src/core/google/google-source.ts	2	not_page_path	Only atomicWriteFileSync of googleStateFile(dir) (JSON state) and a rename of a corrupt state file to a quarantine name; pages are written in sweep-shared.ts.
-src/core/google/sweep-shared.ts	2	split_aware	Page write calls assertSplitWritable first, then writeSplitPageFile with the tmp from writePrivateTemp, renaming the tmp only when the page is not split.
-src/core/import-checkpoint.ts	2	not_page_path	saveCheckpoint writes tmp plus rename of the path commands/import.ts passes, gbrainPath('import-checkpoint.json').
-src/core/ingestion/sources/inbox-folder.ts	1	not_page_path	Only renames a captured inbox file into <inboxDir>/.archived/YYYY-MM-DD (typically ~/.gbrain/inbox), after assertManagedFilesystemWrite; not a brain page.
-src/core/migration-orchestration-lock.ts	1	not_page_path	Writes only the lock metadata file metadataPath(lockPath) inside the PGLite migration lock dir next to the data dir.
-src/core/minions/detached-stderr.ts	2	not_page_path	Opens supervisor-stderr.log under resolveAuditDir() for append, or the null device.
-src/core/minions/global-maintenance-stall.ts	2	not_page_path	Writes only autopilotGlobalMaintenanceVerdictPath() (verdict JSON) via tmp plus rename.
+src/core/facts/capture-dedup.ts	1	not_page_path	writeHeartbeat writes hook telemetry under gbrain home.
+src/core/facts/fence-write.ts	4	split_aware	publishFenceTmp calls writeSplitPageFile (head only when parts stay, else split_page_unsupported) and only renames the tmp for non-split files; splitWriteRefusal runs before the tmp is written.
+src/core/facts/forget.ts	3	refuse_before_write	forgetFactInFence runs splitWriteRefusal before it writes its temporary copy (writePageTemp, the page's mode) and removes the copy on every refusal and error path.
+src/core/facts/proposal-supersede.ts	3	refuse_before_write	splitPageToken refuses a split head before the transaction, and the edited fence body runs assertOneFileWritable at the brain's threshold (grownPastSplit) before publishFile writes its temporary copy of a one-file page.
+src/core/facts/unfenced-facts.ts	2	refuse_before_write	Fence write at lines 597 and 621 is preceded by splitPageToken at line 572 which puts a split head in failed_pages and returns before any write.
+src/core/fence-repair/repair-io.ts	3	refuse_before_write	The legacy fence repair write runs assertOneFileWritable at the brain's threshold on the repaired bytes before the backup and writeFileSync; the scan passes split heads by as split_page_unsupported; managed sources go through submitManagedFileRepair.
+src/core/git/commit-guard.ts	2	not_page_path	installGuard writes only the guard hook `<hooksDir>/<GUARD_HOOK>` from hookFile(root) (:52-55,:81-83) and ensureExcluded (.git/info/exclude).
+src/core/git/commit-push.ts	6	not_page_path	Primitive writes target only git-internal files resolved by absGitPath(root, ...) = `git rev-parse --git-path` (pending ledger :503,:526-532, conflict state :1029, publish request :1133,:1158, quarantine ledger :863); page bytes are committed by git, not written here.
+src/core/github-source.ts	4	split_aware	materializePage calls assertSplitWritable before the tmp write and publishes through writeSplitPageFile, renaming only when not split; writeState writes <dir>/.github-source.json.
+src/core/google/google-source.ts	4	not_page_path	Only atomicWriteFileSync of googleStateFile(dir) (JSON state) and a rename of a corrupt state file to a quarantine name; pages are written in sweep-shared.ts.
+src/core/google/people-calendar-sweep.ts	2	split_aware	via src/core/google/sweep-shared.ts: rendered pages go through importRendered, which runs assertSplitWritable and writeSplitPageFile before it writes the page file.
+src/core/google/sweep-shared.ts	3	split_aware	Page write calls assertSplitWritable first, then writeSplitPageFile with the tmp from writePrivateTemp, renaming the tmp only when the page is not split.
+src/core/harness/credentials.ts	1	not_page_path	atomicWrite writes only the harness credential JSON (0600) at a fixed .json target; never a .md.
+src/core/harness/install.ts	10	refuse_before_write	via src/core/agent-install/state.ts, src/core/bootstrap/atomic-write.ts: thin-client files and receipts go through privateWrite and harness configuration through atomicWriteTextFile, both preflighted; codex-toml writes config.toml.
+src/core/harness/native-router.ts	3	refuse_before_write	via src/core/agent-install/state.ts: the native router SKILL.md and its receipt go through privateWrite, which runs the split preflight.
+src/core/harness/oauth-setup.ts	1	not_page_path	atomicWriteTextFile writes only the OAuth setup JSON (0600) at its fixed .json target.
+src/core/import-checkpoint.ts	2	not_page_path	saveCheckpoint(path) (:130-144) is only called from commands/import.ts with checkpointPath = gbrainPath("import-checkpoint.json") (import.ts:622,:840,:946).
+src/core/ingestion/sources/inbox-folder.ts	1	not_page_path	md: the only write is rename(absPath, dest), which archives an inbox drop (a file an outside tool placed there, never published by the door, so never a split head) into the archive subfolder (.archived by default, a dot folder sync prunes); it writes no bytes.
+src/core/mcp-client.ts	1	not_page_path	writeCachedToken writes the remote token cache JSON under gbrain home.
+src/core/migration-orchestration-lock.ts	1	not_page_path	acquirePglite writes metadataPath(lockPath) = lockPath with .lock replaced by .json (:94-117), next to the PGLite migration lock under the data dir.
+src/core/minions/detached-stderr.ts	3	not_page_path	openDetachedStderrSink opens join(resolveAuditDir(), logName="supervisor-stderr.log") with flag "a" (:40-50) or the null device.
+src/core/minions/global-maintenance-stall.ts	2	not_page_path	recordGlobalMaintenanceStallStatus writes autopilotGlobalMaintenanceVerdictPath() (+ .tmp) via rename (:102-107), a fixed autopilot verdict file under home.
 src/core/minions/job-isolation.ts	2	not_page_path	writeChildOutcomeFile writes the child job outcome JSON at the resultPath supplied by run-child, never a page.
 src/core/minions/processing-state.ts	2	not_page_path	Writes owner JSON under join(gbrainPath(),'runtime') and the worker status.json via tmp plus rename.
+src/core/minions/run-child.ts	3	not_page_path	writeChildOutcomeFile writes the child job's outcome JSON at the result path its parent chose under the job directory.
 src/core/minions/source-filesystem.ts	2	split_aware	no helper: writeSourceFileSync is a generic guarded writer (assertManagedFilesystemWrite); its only page caller, lint --fix, runs writeSplitPageFile first and refuses split_page_unsupported before it is reached.
 src/core/minions/supervisor.ts	2	not_page_path	openSync with 'wx' creates only this.opts.pidFile, the supervisor pid file.
 src/core/minions/worker-registry.ts	1	not_page_path	Writes only entryPath(pid) under gbrainPath('workers').
-src/core/mounts-cache.ts	4	not_page_path	Writes only RESOLVER.md and manifest.json in gbrainPath('mounts-cache') via tmp plus rename; a skills cache, not brain pages.
+src/core/mounts-cache.ts	4	not_page_path	md: the only .md it writes is RESOLVER.md in getMountsCacheDir() under gbrain home (temporary plus rename), a mounts cache no source covers; the other file is manifest.json.
 src/core/notice-ledger.ts	4	not_page_path	Writes only gbrainPath('notices','coverage.json') and gbrainPath('notices','muted.json').
 src/core/notifier/resident.ts	1	not_page_path	appendTrace trims and appends gbrainPath('notifier', <sourceId>.jsonl).
 src/core/onboard/mcp-onboarding.ts	2	not_page_path	Writes only gbrainPath('onboard-counts-<brain>.json') via tmp plus rename.
-src/core/page-lock.ts	2	not_page_path	Writes only lock files lockPathFor(slug) under gbrainPath('page-locks') (or an opts.lockRoot); the lock holds a pid, not page content.
+src/core/ops/sources.ts	1	not_page_path	addSource registers a source and, for a git URL, renames a fresh clone into place; no page bytes are written.
+src/core/page-lock.ts	2	not_page_path	md: the lock file is <sha256(slug)>.lock under gbrainPath('page-locks') (or opts.lockRoot); the .md names in this file are page paths it locks, never written.
 src/core/persistence/bundle-files.ts	2	door	Door primitive: stages bytes with openSync 'wx' and renames onto record.path, used only under the coordinator recovery record.
-src/core/persistence/coordinator.ts	2	door	The publication door itself: atomicWriteFileSync of file.content to staging then renameSync(stagingPath, path) under the recovery record.
-src/core/persistence/effect-recovery.ts	0	door	Recovery re-reads the split mirror state inside withFilesystemPublication and throws unexpectedMirrorBytes before it republishes; every file write is the door's recovery record replay.
-src/core/persistence/engine-graduation.ts	2	not_page_path	Writes the graduation manifest and the mounts.json record via writeFileDurably and renames the PGLite data dir aside; never a page file.
+src/core/persistence/connector-sync.ts	1	not_page_path	md: the only hit is a method named saveState that writes connector state in the database; the census counts it because skillpack/state.ts exports a file writer of the same name.
+src/core/persistence/coordinator.ts	9	door	The publication door itself: atomicWriteFileSync of file.content to staging then renameSync(stagingPath, path) under the recovery record.
+src/core/persistence/deactivation.ts	1	not_page_path	carryHoldsToClassicState writes the dot-named connector state JSON (.google-source.json, .github-source.json).
+src/core/persistence/effect-git.ts	1	not_page_path	reclaimIndexLock moves an abandoned .git/index.lock aside and records a receipt under persistence home; git-internal files only.
+src/core/persistence/effect-recovery.ts	2	door	Recovery re-reads the split mirror state inside withFilesystemPublication and throws unexpectedMirrorBytes before it republishes; every file write is the door's recovery record replay.
+src/core/persistence/engine-graduation.ts	8	not_page_path	Writes the graduation manifest and the mounts.json record via writeFileDurably and renames the PGLite data dir aside; never a page file.
 src/core/persistence/file-repair.ts	0	door	submitManagedFileRepair publishes a repaired page through the coordinator; checkFile refuses changed_since_preview when a prepared part differs from the one prepared at preview, before anything is written.
 src/core/persistence/git-door.ts	1	door	Git door: writeFileSync only writes tree object bytes into its scratch dir before hash-object; pages reach git as objects, not checkout files.
-src/core/persistence/git-durability-administration.ts	1	not_page_path	Writes only join(resolveGbrainHome(),'git-credentials') at mode 0600.
-src/core/persistence/graduation-custody.ts	3	not_page_path	writeFileDurably and O_EXCL opens create the graduation intent marker and tombstone files under the data dir, not pages.
+src/core/persistence/git-durability-administration.ts	2	not_page_path	Writes only join(resolveGbrainHome(),'git-credentials') at mode 0600.
+src/core/persistence/graduation-custody.ts	5	not_page_path	writeFileDurably and O_EXCL opens create the graduation intent marker and tombstone files under the data dir, not pages.
 src/core/persistence/identity.ts	5	not_page_path	Writes writer identity and credential JSON under persistenceHome() = <configDir>/persistence via O_EXCL temp and rename.
 src/core/persistence/index-lock-reclaim.ts	3	not_page_path	Renames a stale git index.lock aside and appends index-lock-reclaims.jsonl under persistenceHome(); no page file.
 src/core/persistence/large-file.ts	4	door	Door primitive: streams or copies bytes into the staging path with openSync 'wx', copyFileSync and renameSync, for the coordinator's large-file publication.
-src/core/persistence/maintenance.ts	2	not_page_path	renameSync moves a PGLite data directory aside (backupUnmanagedPglite, moveHeldPglite) under a kernel lock, not a checkout page.
+src/core/persistence/maintenance.ts	3	not_page_path	md: renameSync moves a PGLite data directory aside under a kernel lock; the .md mentions are message text, not written files.
+src/core/persistence/ownership.ts	1	not_page_path	noteWaiting writes a worktree lease JSON at the coordination path.
 src/core/persistence/physical-root-record.ts	4	not_page_path	Writes physical-root reservation and record JSON documents (O_EXCL then fsync and rename) in the persistence home, not pages.
+src/core/persistence/physical-root-recovery.ts	1	not_page_path	adoptTransferredRootStamp writes the physical root stamp record; no page path.
+src/core/persistence/physical-root.ts	1	not_page_path	adoptTransferredRootStamp writes the physical root stamp record; no page path.
 src/core/persistence/reconcile-backup.ts	2	not_page_path	Writes retained reconciliation backup files in the private reconciliation-previews dir under the gbrain config directory.
-src/core/persistence/recovery-resolve.ts	5	not_page_path	writePrivateFile and copyPrivateFile write stuck-recovery backups into privateBackupDir, which refuses any dir inside a source checkout.
+src/core/persistence/reconcile.ts	1	not_page_path	retainReconcileBackup writes the reconcile preview backup under configDir()/reconciliation-previews, inside gbrain home.
+src/core/persistence/recovery-resolve.ts	6	not_page_path	writePrivateFile and copyPrivateFile write stuck-recovery backups into privateBackupDir, which refuses any dir inside a source checkout.
 src/core/persistence/root-registry.ts	3	not_page_path	Writes the root registry JSON entries (O_EXCL temp then rename) in the persistence registry dir, not pages.
-src/core/persistence/split-mirror.ts	0	door	The withdrawal mirror of a split page writes its head and parts inside withFilesystemPublication under the effect's recovery record, revalidating the whole unit (splitMirrorState) before it publishes.
+src/core/persistence/split-files.ts	1	door	The publication door's own split planning: reassemble verifies a head by writing F' to a private splitScratchPath() file; heads and parts reach the checkout only through the coordinator's publication.
+src/core/persistence/split-mirror.ts	2	door	The withdrawal mirror of a split page writes its head and parts inside withFilesystemPublication under the effect's recovery record, revalidating the whole unit (splitMirrorState) before it publishes.
 src/core/persistence/staging.ts	2	door	Door primitive: renames a verified stage file onto record.path (lines 124, 148) under the coordinator's recovery record.
 src/core/persistence/sync-git-stream.ts	3	not_page_path	Writes only the clean-probe cache cleanProbeFile(key) in <configDir>/persistence/clean-probes and a temp clock file in the git dir.
-src/core/persistence/sync-pass-apply.ts	1	not_page_path	No write primitive call; the matches are rename-identity identifiers in sync logic that submits through the coordinator.
-src/core/persistence/sync-pass-run.ts	1	not_page_path	No write primitive call; the matches are rename counters and sets, and page writes go through the persistence coordinator.
-src/core/persistence/sync-pass.ts	1	not_page_path	No write primitive call; the matches are held-rename and colon-target planning identifiers.
-src/core/persistence/topology-recovery.ts	5	door	Clone-recovery renames of whole checkout roots (target, stage, aside) inside topologyTransaction with a recovery record and hash checks, moving head and parts together.
-src/core/persistence/upload-streamed.ts	1	not_page_path	The only write opens a private spool page.md inside a fresh mkdtemp(tmpdir(), 'gbrain-upload-') directory; the spooled bytes reach the checkout only through the publication door.
+src/core/persistence/sync-run.ts	1	not_page_path	noteIdentityDowngrades records identity downgrades in the database (listed as a write helper only because its message text names rename(s)); pages are written by sync's door.
+src/core/persistence/topology-clone.ts	2	not_page_path	finishTopologyClone renames a whole staged clone tree onto the source root (old tree moved aside first), so a split head and its parts move together; it writes no page file.
+src/core/persistence/topology-recovery.ts	6	door	Clone-recovery renames of whole checkout roots (target, stage, aside) inside topologyTransaction with a recovery record and hash checks, moving head and parts together.
+src/core/persistence/upload-streamed.ts	1	not_page_path	md: the only write opens a private spool page.md inside a fresh mkdtemp(tmpdir(), 'gbrain-upload-') directory; the spooled bytes reach the checkout only through the publication door.
 src/core/persistence/worktree-lease.ts	2	not_page_path	Writes this process's waiter record (<waiterDir(path)>/<pid>, tmp plus rename) in the worktree lease waiter directory; a lease bookkeeping file, never a page.
 src/core/pg-type-cache.ts	2	not_page_path	Writes the Postgres type-cache JSON (this.file, tmp plus rename, mode 0600) under gbrain's cache directory; no page path.
 src/core/pglite-embedded-assets.ts	1	not_page_path	The match is the PGLite module's FS.writeFile type in a declaration; this file writes no checkout file.
+src/core/pglite-engine.ts	1	not_page_path	acquireLock writes PGLite lock metadata in the data directory.
 src/core/pglite-legacy-lock.ts	5	not_page_path	Writes and moves PGLite lock directories, the reap marker and the receipt next to the PGLite data directory; no page path.
 src/core/pglite-lock.ts	3	not_page_path	Writes the PGLite lock metadata and protocol marker files (mode 0600) beside the PGLite data directory; no page path.
-src/core/pglite-repair.ts	8	not_page_path	Writes repair markers and sidecars and moves pg_wal/postmaster.pid inside the PGLite data directory and its backups; no page path.
-src/core/pglite-resetwal.ts	2	not_page_path	Writes a WAL segment through a 'wx' temp and rename inside the PGLite pg_wal directory; no page path.
+src/core/pglite-repair.ts	15	not_page_path	Writes repair markers and sidecars and moves pg_wal/postmaster.pid inside the PGLite data directory and its backups; no page path.
+src/core/pglite-resetwal.ts	4	not_page_path	Writes a WAL segment through a 'wx' temp and rename inside the PGLite pg_wal directory; no page path.
 src/core/pooler-notice.ts	1	not_page_path	Writes the one-time pooler notice marker (mode 0600) under gbrain's state directory; no page path.
 src/core/post-upgrade-notice.ts	2	not_page_path	Writes the post-upgrade notice state JSON (tmp plus rename, 0600) under gbrain's state directory; no page path.
 src/core/preferences.ts	3	not_page_path	Writes preferences JSON at prefsPath() and copies the legacy preferences file to a temp beside it; both live under gbrain's home, not a checkout.
-src/core/recall-cursor-state.ts	4	not_page_path	Writes the recall cursor JSON with a unique tmp plus rename under gbrain's state directory; the other matches are comments.
+src/core/recall-cursor-state.ts	2	not_page_path	Writes the recall cursor JSON with a unique tmp plus rename under gbrain's state directory; the other matches are comments.
 src/core/remediation-checkpoint.ts	2	not_page_path	Writes the doctor remediation checkpoint JSON (tmp plus rename) under gbrain's state directory; no page path.
+src/core/remediation/run.ts	3	not_page_path	saveRemediationCheckpoint and saveCheckpoint write remediation checkpoint JSON under gbrain home.
 src/core/remote-token-cache.ts	2	not_page_path	Writes the cached remote OAuth token JSON ('wx', 0600, then rename) under gbrain's home; no page path.
+src/core/repair/fences.ts	1	refuse_before_write	via src/core/fence-repair/repair-io.ts: fence repairs are written by writeFenceRepair, whose legacy write runs assertOneFileWritable at the brain's threshold and whose managed lane goes through the door.
 src/core/repair/file-drift.ts	3	not_page_path	writeArtifact writes the preview artifact <hash>.json through an O_EXCL 0600 temp in the private file-drift preview directory (artifactDirectory()); page content goes through submitManagedFileRepair.
-src/core/repair/frontmatter.ts	1	refuse_before_write	The legacy apply runs oneFileWriteRefusal before its backup and writeFileSync, so a split unit (or a page the repair grows into the layout) is refused split_page_unsupported with nothing written; managed sources go through submitManagedFileRepair.
-src/core/repair/slug-conflicts.ts	2	refuse_before_write	The legacy apply runs oneFileWriteRefusal before its backup and writeFileSync (the restore rewrites the same one-file bytes it read), holding a split unit as split_page_unsupported; managed sources go through submitManagedFileRepair.
-src/core/repair/url-clone-fences.ts	1	refuse_before_write	no helper: the restore writes one file's Git HEAD bytes back over the work tree file, and proveFenceRowsOnly plus the preview's split_page_head class refuse a split head (parseHead with gbrain_parts) before any write; the bytes restored are a one-file page that HEAD already held.
+src/core/repair/frontmatter.ts	2	refuse_before_write	The legacy apply runs oneFileWriteRefusal before its backup and writeFileSync, so a split unit (or a page the repair grows into the layout) is refused split_page_unsupported with nothing written; managed sources go through submitManagedFileRepair.
+src/core/repair/slug-conflicts.ts	3	refuse_before_write	The legacy apply runs oneFileWriteRefusal before its backup and writeFileSync (the restore rewrites the same one-file bytes it read), holding a split unit as split_page_unsupported; managed sources go through submitManagedFileRepair.
+src/core/repair/url-clone-fences.ts	2	refuse_before_write	The restore of a file's Git HEAD bytes runs splitRestoreRefusal (assertOneFileWritable at the brain's threshold) on those bytes before any write, and the preview classes a split head split_page_head.
 src/core/repo-visibility.ts	2	not_page_path	Writes the repo-visibility map JSON (tmp plus rename, 0600) under gbrain's state directory; no page path.
 src/core/schema-pack/mutate.ts	2	not_page_path	Rewrites a schema pack YAML file (tmp plus rename) in the schema pack directory; packs are configuration, not brain pages.
-src/core/schema-pack/pack-lock.ts	6	not_page_path	Creates and rewrites the schema pack lock file ('wx') beside the pack; no page path. The other matches are comments.
+src/core/schema-pack/pack-lock.ts	4	not_page_path	Creates and rewrites the schema pack lock file ('wx') beside the pack; no page path. The other matches are comments.
 src/core/schema-pack/review.ts	1	not_page_path	Writes the schema review delta JSON at deltaPath in the pack review directory; no page path.
-src/core/schema-pack/scaffold-extractable.ts	2	not_page_path	Writes a new type's prompt template and fixture corpus files into the schema pack scaffold directory; no page path.
-src/core/self-upgrade.ts	3	not_page_path	atomicWrite writes the update-check marker cache through a 0600 temp (path.tmp.pid.n) and rename under gbrain's home; no page path.
+src/core/schema-pack/scaffold-extractable.ts	2	refuse_before_write	The extract prompt template prompts/extract/<type>.md runs assertOneFileWritable on its bytes before writeFileSync; the fixture corpus is a fixed .jsonl name.
+src/core/schema-pack/unify-types-handler.ts	1	not_page_path	saveConfig writes the home config.json only.
+src/core/self-upgrade-swap.ts	4	not_page_path	saveConfig writes the home config.json only.
+src/core/self-upgrade.ts	7	not_page_path	atomicWrite writes the update-check marker cache through a 0600 temp (path.tmp.pid.n) and rename under gbrain's home; no page path.
 src/core/serve-behavior-notice.ts	1	not_page_path	Writes a behavior notice marker ('wx', 0600) in the serve notice directory; no page path.
 src/core/serve-http-status-marker.ts	2	not_page_path	Writes the serve HTTP status marker JSON (tmp plus rename, 0600) under gbrain's state directory; no page path.
 src/core/serve-log.ts	2	not_page_path	Rotates and copies the serve log files (path, path.1 ...) in the serve log directory; no page path.
-src/core/serve-service.ts	4	not_page_path	Writes the service unit file, its private 0600 env/receipt files and the install receipt for the OS service manager; no page path.
-src/core/shared-skills/migration-export.ts	1	not_page_path	Renames the completed shared-skills export staging root to the export root it reserved; the export is a skills bundle directory, not a checkout page.
-src/core/shared-skills/optimizer.ts	1	not_page_path	Writes skill optimizer proposal files ('wx', 0600) under configDir()/skillopt-proposals/<uuid> after assertLegacySkillFilesystemWrite; no page path.
-src/core/skill-manifest.ts	1	not_page_path	Writes the skills manifest JSON (atomicWriteFileSync) in the harness skills directory; JSON, never a markdown page.
-src/core/skillify/generator.ts	2	not_page_path	Writes the generated SKILL.md, scripts and the resolver append for a new skill in the harness skills directory; skill files are kilobyte scaffolds no gbrain writer splits (judgment call: a skills directory inside a brain checkout syncs them as ordinary pages).
-src/core/skillopt/apply-edits.ts	3	not_page_path	Rewrites an optimized skill file (temp plus rename) inside the skillopt run's skill directory; a skill file, not a brain page (judgment call as for skillify).
-src/core/skillopt/batch.ts	1	not_page_path	Copies the baseline skill into the skillopt staging path for a candidate run; no page path.
+src/core/serve-service.ts	3	not_page_path	Writes the service unit file, its private 0600 env/receipt files and the install receipt for the OS service manager; no page path.
+src/core/setup/claude-code.ts	7	not_page_path	atomicWriteTextFile writes the setup receipt and Claude MCP config JSON; writeClaudeHooksAt/removeClaudeHooksAt rewrite settings JSON; the lock is under the config directory.
+src/core/setup/codex.ts	5	not_page_path	atomicWriteTextFile writes the codex setup receipt JSON; the codex config is TOML; the bootstrap lock is lock metadata.
+src/core/shared-skills/adapter.ts	2	refuse_before_write	via src/core/agent-install/state.ts: shared skill artifacts (SKILL.md among them) and the receipt go through privateWrite, which runs the split preflight on every file.
+src/core/shared-skills/migration-export.ts	2	refuse_before_write	via src/core/agent-install/state.ts: exported skill files are staged with privateWrite (the split preflight per file) in a new staging root, which is then renamed whole onto the export root it reserved; nothing is written into an existing checkout.
+src/core/shared-skills/optimizer.ts	1	not_page_path	md: proposal files (the candidate SKILL.md among them) are written 'wx' only under configDir()/skillopt-proposals/<uuid>, inside gbrain home, which no source covers; the canonical skill is never written here.
+src/core/skill-manifest.ts	1	not_page_path	md: writes the skills manifest JSON (atomicWriteFileSync) in the harness skills directory; the SKILL.md names are entries it lists, never files it writes.
+src/core/skillify/generator.ts	2	refuse_before_write	applyScaffold writes new skill files (SKILL.md) and appends a resolver row; every file and the resolver's resulting bytes run assertOneFileWritable before the first write.
+src/core/skillopt/apply-edits.ts	3	refuse_before_write	atomicWrite is the skillopt writer of SKILL.md, best.md, proposed.md and version files; it runs assertOneFileWritable on the content before its temporary and rename.
+src/core/skillopt/batch.ts	1	refuse_before_write	The fleet run copies the baseline SKILL.md into a staging skill directory under the skill's folder; assertOneFileWritable runs on the baseline bytes before copyFileSync.
+src/core/skillopt/bootstrap-benchmark.ts	2	not_page_path	md: atomicWrite writes only skills/<skill>/skillopt-benchmark.jsonl; SKILL.md is read, never written, here.
+src/core/skillopt/checkpoint.ts	1	not_page_path	atomicWrite writes only the skillopt checkpoint JSON under the skill's skillopt directory, a fixed non-.md name.
+src/core/skillopt/orchestrator.ts	7	not_page_path	md: its own calls write checkpoint JSON (saveCheckpoint) and hand shared skills to optimizeSharedSkill (configDir() proposals); SKILL.md versions are written by version-store.ts, which preflights them.
 src/core/skillopt/rejected-buffer.ts	1	not_page_path	The match is the doc comment about tmp plus rename; the buffer write itself is in another helper and targets the skillopt state directory.
+src/core/skillopt/version-store.ts	7	refuse_before_write	acceptCandidate and writeProposed preflight every SKILL.md, best.md, proposed.md and version file with assertOneFileWritable before the first atomicWrite (which preflights again); history.json is JSON.
 src/core/skillpack/bridge-state.ts	2	not_page_path	Writes the skillpack harness-bridge state JSON (tmp plus rename) under gbrain's state directory; no page path.
-src/core/skillpack/copy.ts	1	not_page_path	Copies bundled skill files into the target harness skills directory after assertLegacySkillFilesystemWrite; skill files, never split by any gbrain writer (judgment call: a skills directory inside a brain checkout syncs them as ordinary pages).
-src/core/skillpack/doctor.ts	1	not_page_path	Writes skillpack doctor fixes to skill files the bundle ships in the harness skills directory after assertLegacySkillFilesystemWrite; no brain page path (same skills-directory judgment call).
+src/core/skillpack/copy.ts	1	refuse_before_write	copyArtifacts copies skill files (SKILL.md included) into a workspace skills directory, new targets only; each runs assertOneFileWritable on its bytes before writeFileSync and reports a refusal as write_failed with the code in its message.
+src/core/skillpack/doctor.ts	1	refuse_before_write	doctor --fix creates missing skill files; every planned file runs assertOneFileWritable on its content before the first write.
 src/core/skillpack/endorse.ts	2	not_page_path	Writes the endorsement JSON (tmp plus rename) beside the skillpack state; no page path.
-src/core/skillpack/harness-bridge.ts	1	not_page_path	Writes the harness bridge's rendered skill shim files into the harness directory after assertLegacySkillFilesystemWrite; no brain page path.
-src/core/skillpack/harvest.ts	1	not_page_path	Writes the harvested skillpack manifest JSON after assertLegacySkillFilesystemWrite; no page path.
-src/core/skillpack/init-scaffold.ts	1	not_page_path	Writes the skillpack scaffold files of a new pack directory after assertLegacySkillFilesystemWrite; no page path.
-src/core/skillpack/installer.ts	5	not_page_path	Installs bundled skill files, the install lock and receipts into the harness skills directory after assertLegacySkillFilesystemWrite; skill files, never split (same skills-directory judgment call).
-src/core/skillpack/migrate-fence.ts	1	not_page_path	Rewrites the resolver file's managed fence; RESOLVER.md is a sync metafile (SYNC_SKIP_FILES), never a page.
+src/core/skillpack/harness-bridge.ts	5	refuse_before_write	The reference diff apply rewrites a workspace skill file after assertOneFileWritable on the patched text; copyArtifacts (copy.ts) preflights its own copies and bridge state is JSON under gbrain home.
+src/core/skillpack/harvest.ts	6	refuse_before_write	via src/core/skillpack/copy.ts: harvested skill files go through copyArtifacts, which runs the split preflight per file; the bundle manifest it updates is JSON.
+src/core/skillpack/init-brain-pack.ts	1	refuse_before_write	via src/core/skillpack/init-scaffold.ts: the brain pack files are written by applyWritePlan, which runs the split preflight on every entry first.
+src/core/skillpack/init-scaffold.ts	2	refuse_before_write	applyWritePlan creates a new pack's files (SKILL.md included) and runs assertOneFileWritable on every entry before the first write.
+src/core/skillpack/installer.ts	7	refuse_before_write	Skill installs copy SKILL.md and its files into the target workspace and rewrite the resolver through writeAtomic; every write runs assertOneFileWritable on its bytes first. The install lock is a pid file.
+src/core/skillpack/migrate-fence.ts	2	refuse_before_write	The fence-stripped resolver file (RESOLVER.md or AGENTS.md) runs assertOneFileWritable on its rewritten bytes before writeFileSync; copied skills go through copyArtifacts (copy.ts).
 src/core/skillpack/nag-state.ts	2	not_page_path	Writes the skillpack nag state JSON (tmp plus rename) under gbrain's state directory; no page path.
-src/core/skillpack/reference.ts	1	not_page_path	Writes a skill's reference file in the harness skills directory after assertLegacySkillFilesystemWrite; no brain page path (same skills-directory judgment call).
+src/core/skillpack/pack-publish.ts	1	refuse_before_write	via src/core/skillpack/tarball.ts: packTarball writes the .tgz after the split preflight on its bytes.
+src/core/skillpack/reference.ts	1	refuse_before_write	The hunk apply rewrites a workspace skill file after assertOneFileWritable on the patched text.
 src/core/skillpack/registry-client.ts	2	not_page_path	Writes the registry response cache JSON (tmp plus rename) in gbrain's cache directory; no page path.
 src/core/skillpack/remote-source.ts	2	not_page_path	Renames a downloaded remote skillpack staging directory to its cache directory; no page path.
-src/core/skillpack/scrub-legacy.ts	1	not_page_path	Rewrites the resolver file without legacy rows; RESOLVER.md is a sync metafile (SYNC_SKIP_FILES), never a page.
-src/core/skillpack/state.ts	3	not_page_path	Writes the skillpack state JSON (tmp plus rename) under gbrain's state directory; the other match is a comment.
-src/core/skillpack/tarball.ts	1	not_page_path	Writes a packed skillpack tarball to opts.outPath; a .tgz, never a page.
-src/core/sources-ops.ts	5	door	Moves whole source checkout directories (a fresh clone's temp dir onto its final path, and the aside swap of a re-clone) with renameSync; a head and its parts directory move together inside one directory rename and no page file is rewritten.
+src/core/skillpack/scaffold-third-party.ts	2	refuse_before_write	via src/core/skillpack/copy.ts: third-party skill files go through copyArtifacts (the split preflight per file); saveState writes skillpack-state.json under gbrain home.
+src/core/skillpack/scaffold.ts	1	refuse_before_write	via src/core/skillpack/copy.ts: bundled skill files go through copyArtifacts, which runs the split preflight per file.
+src/core/skillpack/scrub-legacy.ts	1	refuse_before_write	The scrubbed resolver file runs assertOneFileWritable on its rewritten bytes before writeFileSync.
+src/core/skillpack/shared-brain-bridge.ts	6	refuse_before_write	via src/core/agent-install/state.ts: the launcher and bridge receipts go through privateWrite, which runs the split preflight; the bootstrap lock is lock metadata JSON.
+src/core/skillpack/state.ts	2	not_page_path	Writes the skillpack state JSON (tmp plus rename) under gbrain's state directory; the other match is a comment.
+src/core/skillpack/tarball.ts	1	refuse_before_write	The packed tarball goes to an operator-chosen outPath; assertOneFileWritable runs on its bytes first (a no-op for a .tgz).
+src/core/sources-ops.ts	4	door	Moves whole source checkout directories (a fresh clone's temp dir onto its final path, and the aside swap of a re-clone) with renameSync; a head and its parts directory move together inside one directory rename and no page file is rewritten.
+src/core/split-layout/page-file.ts	2	not_page_path	md: reassemble writes F' only to a private splitScratchPath() file under the split staging directory (persistence home), which the reader removes; the page file itself is never written.
 src/core/split-layout/plan.ts	1	split_aware	The split planner itself: stage() streams F into a private O_EXCL 0600 staging file that planSplit owns and disposes; the head and parts it plans are written only by the door or writeSplitPageFile.
+src/core/split-layout/read.ts	1	not_page_path	reassemble writes the reassembled page only to a private splitScratchPath() file under the split staging directory; sync imports it from there and never writes the head.
 src/core/split-layout/resolve-head.ts	1	not_page_path	writeKeptEdit writes the reassembled F into a new O_EXCL 0600 scratch file at destPath, a splitScratchPath its callers name for the head-edit resolver; it never writes a checkout path.
 src/core/split-layout/verify.ts	1	not_page_path	reassemble writes F' into a new O_EXCL 0600 scratch file at destPath (a splitScratchPath the staging sweep covers) while it verifies each part and removes it on any verdict but ok; it never writes a checkout path.
 src/core/split-write-through.ts	2	split_aware	Defines assertSplitWritable, splitWriteRefusal, oneFileWriteRefusal, writePageTemp and writeSplitPageFile: the one preflight and the head-only atomic write every raw writer outside the door uses.
-src/core/storage/local.ts	1	not_page_path	LocalStorage.upload writes attachment blobs under the configured storage base path (contained()), the file storage of uploads, not a checkout page path.
-src/core/sweep.ts	4	not_page_path	Writes the .ingested completion sidecar JSON beside a transcript corpus file and the sweep claim file ('wx', 0600); corpus files and sidecars are inputs, never pages.
+src/core/storage/local.ts	1	refuse_before_write	LocalStorage.upload writes attachment blobs under the configured storage base path, which an operator may point inside a checkout; assertOneFileWritable runs on the blob before writeFileSync.
+src/core/sweep.ts	7	not_page_path	Writes the .ingested completion sidecar JSON beside a transcript corpus file and the sweep claim file ('wx', 0600); corpus files and sidecars are inputs, never pages.
 src/core/sync-identity-downgrades.ts	1	not_page_path	The only match is the word rename in its doc comment about Git renames; this file writes no file.
-src/core/sync-rename-identity.ts	2	not_page_path	Both matches are comments about git renames; this file writes no file.
-src/core/takes-quality-eval/receipt-write.ts	1	not_page_path	Writes the takes-quality eval receipt JSON at a <slug>-<sha8>.json path in the receipt directory; no page path.
-src/core/takes-write.ts	1	split_aware	The unmanaged takes fence writers call writeSplitPageFile first (head only when every part stays, else split_page_unsupported before any write) and atomicWriteFileSync only an ordinary one-file page.
-src/core/thin-client-upgrade-prompt.ts	3	not_page_path	Writes the thin-client upgrade prompt state JSON and its 'wx+' lock under gbrain's state directory; no page path.
-src/core/timeline-write-through.ts	2	split_aware	The timeline write-through calls writeSplitPageFile first and writes a temporary copy (writePageTemp, the page's mode) and renames it only for an ordinary one-file page.
+src/core/takes-quality-eval/receipt-write.ts	2	not_page_path	Writes the takes-quality eval receipt JSON at a <slug>-<sha8>.json path in the receipt directory; no page path.
+src/core/takes-write.ts	2	split_aware	The unmanaged takes fence writers call writeSplitPageFile first (head only when every part stays, else split_page_unsupported before any write) and atomicWriteFileSync only an ordinary one-file page.
+src/core/thin-client-upgrade-prompt.ts	5	not_page_path	Writes the thin-client upgrade prompt state JSON and its 'wx+' lock under gbrain's state directory; no page path.
+src/core/timeline-write-through.ts	4	split_aware	The timeline write-through calls writeSplitPageFile first and writes a temporary copy (writePageTemp, the page's mode) and renames it only for an ordinary one-file page.
 src/core/transcripts/hermes.ts	2	not_page_path	Copies the Hermes session SQLite database and its WAL/SHM into a private mkdtemp directory to read it; no page path.
 src/core/verbs/usage-log.ts	1	not_page_path	Rotates usage.jsonl to usage.jsonl.1 in the verbs usage log directory; no page path.
-src/core/workspace-push.ts	4	not_page_path	Writes the workspace push lock owner JSON and push status JSON (0600) under the workspace push state directory; the other matches are comments.
-src/core/write-through.ts	1	split_aware	writePageThrough runs assertSplitWritable and writeSplitPageFile before atomicWriteFileSync of an ordinary one-file page; assertPageThroughWritable is the database-first callers' preflight.
+src/core/workspace-push.ts	5	not_page_path	md: writes the push lock owner JSON and push status JSON (0600) under the workspace push state directory; the .md names are paths it stages through git, never bytes it writes.
+src/core/write-through.ts	3	split_aware	writePageThrough runs assertSplitWritable and writeSplitPageFile before atomicWriteFileSync of an ordinary one-file page; assertPageThroughWritable is the database-first callers' preflight.
 src/eval/brainbench/adapters/claude-code.ts	1	not_page_path	Writes the synthetic Claude Code session transcript JSONL the BrainBench adapter feeds the harness, in the eval run directory; never a user brain.
 src/eval/brainbench/adapters/codex.ts	1	not_page_path	Writes the BrainBench Codex adapter's scratch config file in the eval run directory; eval scaffolding, never a user brain.
-src/eval/brainbench/trust-scenario.ts	2	not_page_path	Writes fixture files into the trust scenario's own temporary eval repository (repoDir); never a user brain.
-src/eval/longmemeval/call-plan.ts	2	not_page_path	Writes the LongMemEval call plan JSON (tmp plus rename) in the eval output directory; no page path.
-src/eval/longmemeval/emit.ts	5	not_page_path	Writes LongMemEval result JSONL output files (opts.outputPath, tmp plus rename); no page path.
+src/eval/brainbench/trust-scenario.ts	2	refuse_before_write	write_file steps write fixture <slug>.md pages into the scenario's own source repository; each runs assertOneFileWritable on its content first. .gitignore is a fixed non-.md name.
+src/eval/longmemeval/call-plan.ts	2	refuse_before_write	The call plan goes to the operator-chosen --call-plan path (temporary plus rename) after assertOneFileWritable on the text.
+src/eval/longmemeval/emit.ts	5	refuse_before_write	LongMemEval JSONL output goes to an operator-chosen path: the emitter, the compaction and the summary rewrite each run assertOneFileWritable on the path before they open or replace it.
+src/mcp/dispatch.ts	2	not_page_path	logVerbUsage appends usage.jsonl and takePostUpgradeMcpNotice writes the notice marker, both under gbrain home.

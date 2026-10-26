@@ -19,6 +19,7 @@ import { maybeDelegateLocalAdministration, persistenceConfigForBrain } from '../
 import { isWriteRequestId } from '../core/persistence/types.ts';
 import { readLocalWriter, withVerifiedLocalRegistration } from '../core/persistence/identity.ts';
 import { reportPersistenceCliError } from './persistence-delegate.ts';
+import { assertOneFileWritable } from '../core/split-write-through.ts';
 
 export const RECONCILE_HELP = `Usage:
   gbrain sources reconcile <source> <slug> --brain <id> [--preview] [--adopt-slug-path] [--out <new-file>] [--json]
@@ -231,6 +232,7 @@ export function writeReconcilePreview(path: string, preview: unknown): void {
     const target = join(directory, basename(requested));
     assertManagedFilesystemWrite(target);
     const content = JSON.stringify(preview, null, 2) + '\n';
+    assertOneFileWritable(target, content);
     if (Buffer.byteLength(content) > PERSISTENCE_IPC_MAX_BYTES - 65536) throw opError('invalid_params', 'The preview exceeds the artifact size limit.',
       `Nothing changed. This page's preview is over the ${PERSISTENCE_IPC_MAX_BYTES - 65536}-byte artifact limit, so it cannot be resolved through reconcile; tell the user the page needs a manual edit of its canonical file.`);
     temporary = join(directory, `.${basename(target)}.${randomUUID()}.tmp`);

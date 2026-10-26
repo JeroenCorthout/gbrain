@@ -31,6 +31,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 
 import { join, resolve } from 'node:path';
 import { TEMPLATE_PLACEHOLDER_MANIFEST, writeManifest } from './format.ts';
 import { renderWorkspace } from './render.ts';
+import { assertOneFileWritable } from '../split-write-through.ts';
 
 /** Stamp line contract shared with scripts/check-bootstrap-templates.sh and
  * the release workflow. `{{VERSION}}` is replaced at generation time from the
@@ -168,7 +169,9 @@ export async function generateTemplateTree(
   writeManifest(outDir, TEMPLATE_PLACEHOLDER_MANIFEST);
 
   // 3. Template README with the VERSION stamp.
-  writeFileSync(join(outDir, 'README.md'), renderTemplateReadme(version), 'utf8');
+  const readme = renderTemplateReadme(version);
+  assertOneFileWritable(join(outDir, 'README.md'), readme);
+  writeFileSync(join(outDir, 'README.md'), readme, 'utf8');
 
   return { outDir, version, files: listTreeFiles(outDir) };
 }

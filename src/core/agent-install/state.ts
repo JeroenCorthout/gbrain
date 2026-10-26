@@ -7,6 +7,7 @@ import { flushDirectory } from '../fs-durable.ts';
 import { shouldDropAgentEnv } from './environment.ts';
 import { shellQuote } from '../mcp-registration.ts';
 import type { LocalSharedSkillsResult } from './shared-skills.ts';
+import { assertOneFileWritable } from '../split-write-through.ts';
 
 export class AgentInstallError extends Error {
   constructor(public code: string, message: string) { super(message); this.name = 'AgentInstallError'; }
@@ -108,6 +109,7 @@ export { flushDirectory as syncDirectory } from '../fs-durable.ts';
 
 export function privateWrite(path: string, contents: string | Uint8Array, mode = 0o600): void {
   assertNoSymlinks(path);
+  assertOneFileWritable(path, contents);
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   const tmp = `${path}.tmp-${randomUUID()}`;
   let fd: number | undefined;

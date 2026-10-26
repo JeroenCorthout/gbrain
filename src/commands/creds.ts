@@ -27,6 +27,7 @@ import {
 } from '../core/creds/vault.ts';
 import { readLineSafe } from './init.ts';
 import { setCliExitVerdict } from '../core/cli-force-exit.ts';
+import { assertOneFileWritable } from '../core/split-write-through.ts';
 
 async function passphraseFrom(args: string[]): Promise<string> {
   const envIdx = args.indexOf('--passphrase-env');
@@ -133,7 +134,9 @@ async function runExport(args: string[]): Promise<void> {
 
   const passphrase = await passphraseFrom(args);
   const bundle = exportBundle({ credentials: entries, clients }, passphrase);
-  writeFileSync(out, JSON.stringify(bundle, null, 2) + '\n', { mode: 0o600 });
+  const text = JSON.stringify(bundle, null, 2) + '\n';
+  assertOneFileWritable(out, text);
+  writeFileSync(out, text, { mode: 0o600 });
   if (json) {
     process.stdout.write(
       JSON.stringify({

@@ -865,17 +865,16 @@ async function cmdRevisit(_engine: BrainEngine, rest: string[]): Promise<void> {
     process.stderr.write(`Page not found: ${filePath}\n`);
     process.exit(1);
   }
-  const { partsDirFor } = await import('../core/split-layout/paths.ts');
-  if (existsSync(partsDirFor(filePath))) {
-    process.stderr.write(`split_page_unsupported: ${filePath} is a split page head (its page continues in part files in ${partsDirFor(filePath)}), so it was not opened or changed: an edit to the head would hold the page at the next sync. Read the whole page with gbrain get ${slug}; gbrain pages split-storage ${slug} shows how it is stored.\n`);
+  // Append a cursor marker if not already present, through the split preflight on the bytes written.
+  const existing = readFileSync(filePath, 'utf8');
+  const marked = existing.includes('<!-- gbrain:revisit -->') ? existing : existing + '\n<!-- gbrain:revisit -->\n';
+  const { assertOneFileWritable } = await import('../core/split-write-through.ts');
+  try { assertOneFileWritable(filePath, marked); } catch (error) {
+    if ((error as { code?: string } | null)?.code !== 'split_page_unsupported') throw error;
+    process.stderr.write(`${(error as Error).message} ${filePath} was not opened or changed: an edit to a split head would hold the page at the next sync. Read the whole page with gbrain get ${slug}; gbrain pages split-storage ${slug} shows how it is stored.\n`);
     process.exit(1);
   }
-  // Append a cursor marker if not already present.
-  const existing = readFileSync(filePath, 'utf8');
-  const marker = '\n<!-- gbrain:revisit -->\n';
-  if (!existing.includes('<!-- gbrain:revisit -->')) {
-    writeFileSync(filePath, existing + marker);
-  }
+  if (marked !== existing) writeFileSync(filePath, marked);
   const editor = process.env.EDITOR || process.env.VISUAL || 'vi';
   process.stderr.write(`Opening ${filePath} in ${editor}...\n`);
   // Use spawnSync with stdio:'inherit' so the editor takes the terminal.

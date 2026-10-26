@@ -18,6 +18,7 @@ import { assertLegacySkillFilesystemWrite } from './writer-guard.ts';
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, writeFileSync } from 'fs';
 import { createHash } from 'crypto';
 import { dirname, join, relative, sep } from 'path';
+import { assertOneFileWritable } from '../split-write-through.ts';
 
 export interface CopyItem {
   /** Absolute source path. */
@@ -201,6 +202,7 @@ export function copyArtifacts(items: CopyItem[], opts: CopyArtifactsOpts = {}): 
       try {
         const content = item.content != null ? item.content : readFileSync(item.source);
         assertLegacySkillFilesystemWrite(item.target);
+        assertOneFileWritable(item.target, content);
         mkdirSync(dirname(item.target), { recursive: true });
         writeFileSync(item.target, content);
         if (opts.computeSha256) {

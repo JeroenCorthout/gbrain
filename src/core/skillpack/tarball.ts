@@ -33,6 +33,7 @@ import {
 } from 'fs';
 import { join, normalize, relative, resolve, sep } from 'path';
 import { tmpdir } from 'os';
+import { assertOneFileWritable } from '../split-write-through.ts';
 
 export interface TarballPackOptions {
   /** Absolute path to the directory whose contents become the tarball root. */
@@ -213,6 +214,7 @@ export function packTarball(opts: TarballPackOptions): TarballPackResult {
   // Use rename via fs operations rather than mv (cross-FS safe via readFile/write fallback).
   try {
     const data = readFileSync(stage);
+    assertOneFileWritable(opts.outPath, data);
     writeFileSync(opts.outPath, data);
     rmSync(stage, { force: true });
   } catch (err) {

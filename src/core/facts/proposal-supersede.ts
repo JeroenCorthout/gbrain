@@ -17,7 +17,8 @@
  */
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
-import { writePageTemp } from '../split-write-through.ts';
+import { assertOneFileWritable, writePageTemp } from '../split-write-through.ts';
+import { splitThresholdBytes } from '../split-layout/limits.ts';
 import type { BrainEngine } from '../engine.ts';
 import type { GBrainConfig } from '../config.ts';
 import { formatFenceDate, parseFactsFence, type ParsedFact } from '../facts-fence.ts';
@@ -216,6 +217,17 @@ class ProposalFileDrift extends ProposalConflictError {}
 const proposalDrift = (slug: string, sourceId: string, when: 'before' | 'during') =>
   fileDatabaseDriftToken(slug, sourceId, when, 'the proposal and its facts are unchanged');
 
+/** The split preflight of the fence edit: a token when the edited file would no longer be one page file, else null. */
+async function grownPastSplit(engine: BrainEngine, filePath: string, body: string, slug: string): Promise<string | null> {
+  try {
+    assertOneFileWritable(filePath, body, await splitThresholdBytes(engine));
+    return null;
+  } catch (error) {
+    if ((error as { code?: string }).code !== 'split_page_unsupported') throw error;
+    return `${slug} (split_page_unsupported: the edited page would no longer be one page file, which only the publication door writes; the proposal and its facts are unchanged)`;
+  }
+}
+
 function publishFile(filePath: string, body: string, expected: string, slug: string, sourceId: string): void {
   if (!existsSync(filePath) || readFileSync(filePath, 'utf-8') !== expected) throw new ProposalFileDrift(proposalDrift(slug, sourceId, 'during'));
   const tmp = `${filePath}.tmp`;
@@ -288,6 +300,8 @@ async function acceptUnmanaged(engine: BrainEngine, proposal: PairProposal, stor
     }
     const body = fileBody ?? stored?.compiled_truth ?? null;
     const plan = slug && body !== null ? planAcceptFence(body, oldF!, newF!, formatFenceDate(new Date())) : null;
+    const grown = plan && fileBody !== null ? await grownPastSplit(engine, filePath!, plan.body, slug!) : null;
+    if (grown) return { id: fresh.id, action: 'accept', status: 'refused', reason: grown };
     const fence = (row: ParsedFact, revision: string | null): FenceState => ({ slug: slug!, row_num: oldF!.row_num!, row, page_revision: revision, file: fileBody !== null });
     const before: SupersedeState = { old: factFields(oldF!), new: factFields(newF!), fence: plan ? fence(plan.before, snapshot?.revision ?? null) : null };
     let published = false;
@@ -336,6 +350,8 @@ async function undoUnmanaged(engine: BrainEngine, proposal: PairProposal, store:
       if (fileBody !== null && (!stored || !fileBodyMatchesStored(fileBody, before.fence.slug, stored))) {
         return { id: fresh.id, action: 'undo', status: 'refused', reason: proposalDrift(before.fence.slug, fresh.source_id, 'before') };
       }
+      const grown = fileBody !== null ? await grownPastSplit(engine, filePath!, planned.body, before.fence.slug) : null;
+      if (grown) return { id: fresh.id, action: 'undo', status: 'refused', reason: grown };
       plan = planned;
     }
     let published = false;

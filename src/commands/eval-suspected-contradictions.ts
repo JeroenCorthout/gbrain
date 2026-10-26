@@ -46,6 +46,7 @@ import type {
   ProbeReport,
   Severity,
 } from '../core/eval-contradictions/types.ts';
+import { assertOneFileWritable } from '../core/split-write-through.ts';
 
 interface ParsedFlags {
   sub: 'run' | 'trend' | 'review';
@@ -386,7 +387,9 @@ async function runRun(engine: BrainEngine, f: ParsedFlags): Promise<void> {
 
     if (f.output) {
       const { writeFileSync } = await import('node:fs');
-      writeFileSync(f.output, JSON.stringify(r, null, 2));
+      const text = JSON.stringify(r, null, 2);
+      assertOneFileWritable(f.output, text);
+      writeFileSync(f.output, text);
       console.error(`Details: ${f.output}`);
     }
 

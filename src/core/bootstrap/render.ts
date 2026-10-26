@@ -51,6 +51,7 @@ import {
 } from './format.ts';
 import { readInterviewState, type InterviewState } from './interview.ts';
 import { OPENCLAW_RENDER_NOTE, resolveRenderHost } from './render-host.ts';
+import { assertOneFileWritable } from '../split-write-through.ts';
 
 // ---------------------------------------------------------------------------
 // Errors
@@ -354,6 +355,7 @@ export function renderWorkspace(workspaceDir: string, opts: RenderOptions = {}):
       result.backups.push(join('.gbrain-bootstrap-backups', stamp, dest));
     }
     mkdirSync(dirname(abs), { recursive: true });
+    assertOneFileWritable(abs, content);
     const tmp = `${abs}.tmp-${process.pid}`;
     writeFileSync(tmp, content, 'utf8');
     renameSync(tmp, abs);

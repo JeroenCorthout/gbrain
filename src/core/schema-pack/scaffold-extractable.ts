@@ -40,6 +40,7 @@ import {
   SchemaPackMutationError,
 } from './mutate.ts';
 import type { ExtractableSpec } from './manifest-v1.ts';
+import { assertOneFileWritable } from '../split-write-through.ts';
 
 export interface ScaffoldExtractableOpts {
   /** Pack name (must be a writable pack — bundled packs are guarded). */
@@ -273,7 +274,9 @@ export async function scaffoldExtractable(
 
   mkdirSync(dirname(promptPath), { recursive: true });
   if (!existsSync(promptPath) || opts.force) {
-    writeFileSync(promptPath, buildPromptTemplate(opts.typeName));
+    const prompt = buildPromptTemplate(opts.typeName);
+    assertOneFileWritable(promptPath, prompt);
+    writeFileSync(promptPath, prompt);
     filesWritten.push(promptPath);
   } else {
     filesSkipped.push(promptPath);

@@ -31,6 +31,7 @@ import {
 import { BaselineStrategy, WithCodeIntelStrategy } from '../eval/code-retrieval/strategies.ts';
 import { createProgress } from '../core/progress.ts';
 import { getCliOptions, cliOptsToProgressOptions } from '../core/cli-options.ts';
+import { assertOneFileWritable } from '../core/split-write-through.ts';
 
 interface ParsedArgs {
   help: boolean;
@@ -166,7 +167,9 @@ export async function runEvalCodeRetrieval(engine: BrainEngine, args: string[]):
   if (opts.save) {
     const savePath = resolve(opts.save);
     mkdirSync(dirname(savePath), { recursive: true });
-    writeFileSync(savePath, JSON.stringify(report, null, 2));
+    const text = JSON.stringify(report, null, 2);
+    assertOneFileWritable(savePath, text);
+    writeFileSync(savePath, text);
     process.stderr.write(`[eval] saved report to ${savePath}\n`);
   }
 

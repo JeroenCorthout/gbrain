@@ -17,6 +17,7 @@
 import { closeSync, existsSync, openSync, readFileSync, renameSync, writeFileSync, writeSync } from 'node:fs';
 import { buildMetricGlossaryMeta } from '../../core/eval/metric-glossary.ts';
 import type { ByTypeSummaryV2 } from './metrics.ts';
+import { assertOneFileWritable } from '../../core/split-write-through.ts';
 
 export interface JsonlEmitter {
   emit(obj: object): void;
@@ -42,6 +43,7 @@ export function makeEmitter(outputPath?: string, append: boolean = false): Jsonl
       close() { /* stdout stays open */ },
     };
   }
+  assertOneFileWritable(outputPath, '');
   const fd = openSync(outputPath, append ? 'a' : 'w');
   let closed = false;
   return {
@@ -92,7 +94,9 @@ export function compactJsonlByQuestionId(outputPath: string): { rows: number; su
   }
   const out = [...passthrough, ...order.map((id) => latest.get(id)!)];
   const tmp = `${outputPath}.compact.tmp`;
-  writeFileSync(tmp, out.length > 0 ? out.join('\n') + '\n' : '', 'utf8');
+  const text = out.length > 0 ? out.join('\n') + '\n' : '';
+  assertOneFileWritable(outputPath, text);
+  writeFileSync(tmp, text, 'utf8');
   renameSync(tmp, outputPath);
   return { rows: order.length, superseded, summaries_dropped: summaries };
 }
@@ -127,6 +131,8 @@ export function emitByTypeSummary(outputPath: string | undefined, summary: ByTyp
   }
   kept.push(json);
   const tmp = `${outputPath}.summary.tmp`;
-  writeFileSync(tmp, kept.join('\n') + '\n', 'utf8');
+  const text = kept.join('\n') + '\n';
+  assertOneFileWritable(outputPath, text);
+  writeFileSync(tmp, text, 'utf8');
   renameSync(tmp, outputPath);
 }

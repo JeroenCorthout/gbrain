@@ -63,6 +63,7 @@ import { INJECTION_PATTERNS } from '../../core/think/sanitize.ts';
 import { formatTrajectoryBlock } from '../../core/trajectory-format.ts';
 import type { ThinkLLMClient } from '../../core/think/index.ts';
 import type { ChunkInput } from '../../core/types.ts';
+import { assertOneFileWritable } from '../../core/split-write-through.ts';
 
 /** The ONE token rule: no provider tokenizer exists in the repo, so every lane counts `ceil(chars / 3)`. */
 export const CALL_PLAN_CHARS_PER_TOKEN = 3;
@@ -392,6 +393,7 @@ export async function runLmeCallPlan(input: LmeCallPlanInput, fail: (code: numbe
   try {
     plan = await buildLmeCallPlan(input);
     text = formatEvalCalls(plan);
+    assertOneFileWritable(path, text);
     writeFileSync(`${path}.tmp`, text);
     renameSync(`${path}.tmp`, path);
   } catch (err: any) {

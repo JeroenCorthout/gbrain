@@ -17,6 +17,7 @@ import { randomBytes, createCipheriv, pbkdf2Sync } from 'crypto';
 import { dirname, basename, join } from 'path';
 import { createRequire } from 'module';
 import { readPageFile } from '../core/split-layout/page-file.ts';
+import { assertOneFileWritable } from '../core/split-write-through.ts';
 
 // Inline marked.js so published HTML is truly self-contained (no CDN dependency)
 const require = createRequire(import.meta.url);
@@ -372,6 +373,7 @@ export async function runPublish(args: string[]) {
 
   // Determine output path
   const outPath = outIdx >= 0 ? args[outIdx + 1] : basename(inputPath, '.md') + '.html';
+  assertOneFileWritable(outPath, html);
   mkdirSync(dirname(outPath), { recursive: true });
   writeFileSync(outPath, html);
 

@@ -29,6 +29,7 @@ import { execFileSync } from '../spawn.ts';
 import { dirname } from 'node:path';
 import type { EditOp, EditResult, EditRejectionReason } from './types.ts';
 import { gitChildEnv } from '../git-env.ts';
+import { assertOneFileWritable } from '../split-write-through.ts';
 
 // ─── Public API ───────────────────────────────────────────────────────────
 
@@ -313,6 +314,7 @@ export function getWorkingTreeStatusForFile(filePath: string): 'clean' | 'dirty'
  */
 export function atomicWrite(filePath: string, content: string): void {
   assertLegacySkillFilesystemWrite(filePath);
+  assertOneFileWritable(filePath, content);
   const tmp = filePath + '.tmp';
   assertLegacySkillFilesystemWrite(tmp);
   const fd = fs.openSync(tmp, 'w');

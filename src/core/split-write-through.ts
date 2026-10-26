@@ -9,7 +9,7 @@
  * removed, including a page that would grow into the layout or shrink out of it. A refused write leaves every file as
  * it was. Callers hold the source filesystem lock.
  */
-import { existsSync, lstatSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, readFileSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { atomicWriteFileSync } from './atomic-write.ts';
 import type { BrainEngine } from './engine.ts';
@@ -18,6 +18,8 @@ import { opError, type OperationError } from './ops/contract.ts';
 import type { MutationFile } from './persistence/bundle-files.ts';
 import { hashFile } from './persistence/large-file.ts';
 import { partFilesOnly, releaseSplitTargets, removeEmptyPartsDir, splitKeptPartsChanged, splitPublicationTargets, type SplitFileFields } from './persistence/split-files.ts';
+import { parseHead } from './split-layout/head.ts';
+import { parseSplitThreshold } from './split-layout/limits.ts';
 import { readPageFile, type PageFileHold } from './split-layout/page-file.ts';
 import { isSplitHeadPath, partsDirFor } from './split-layout/paths.ts';
 
@@ -77,6 +79,23 @@ export async function oneFileWriteRefusal(engine: BrainEngine, filePath: string,
     if ((error as { code?: string } | null)?.code === 'split_page_unsupported') return error as OperationError;
     throw error;
   }
+}
+
+/**
+ * The split preflight of a writer with no brain engine to plan with (skill tooling, the report and demo commands, lint
+ * and backlinks run without a brain) that writes `content` as one whole file at `filePath`: throws
+ * `split_page_unsupported`, writing nothing, when the file there is a split head (its text carries a `gbrain_parts`
+ * manifest, whether or not its parts directory exists), its path has a parts directory, or `content` is over the split
+ * threshold (`threshold`, the built-in default unless the caller read the brain's), so a page never grows into the
+ * layout here. A path that can never be a split head (not a .md file) passes, so a generic write helper can call it on
+ * every file it writes.
+ */
+export function assertOneFileWritable(filePath: string, content: string | Uint8Array, threshold = parseSplitThreshold(null)): void {
+  if (!isSplitHeadPath(filePath)) return;
+  const size = statSync(filePath, { throwIfNoEntry: false })?.size ?? 0;
+  const bytes = typeof content === 'string' ? Buffer.byteLength(content) : content.byteLength;
+  if (bytes > threshold || lstatSync(partsDirFor(filePath), { throwIfNoEntry: false })
+    || (size > 0 && size <= threshold && parseHead(readFileSync(filePath, 'utf8')) !== null)) throw splitPageUnsupported(filePath);
 }
 
 /**

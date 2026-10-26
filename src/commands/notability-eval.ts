@@ -34,6 +34,7 @@ import { isInteractive, readLine } from '../core/interaction.ts';
 import { setCliExitVerdict } from '../core/cli-force-exit.ts';
 import { join, resolve } from 'path';
 import type { BrainEngine } from '../core/engine.ts';
+import { assertOneFileWritable } from '../core/split-write-through.ts';
 
 const DEFAULT_TARGETS = { high: 20, medium: 20, low: 10 } as const;
 const DEFAULT_CORPUS_DIRS = ['meetings/', 'personal/', 'daily/'] as const;
@@ -304,6 +305,7 @@ export function writeJsonlCases<T>(path: string, cases: T[]): void {
   const dir = path.split('/').slice(0, -1).join('/');
   if (dir) mkdirSync(dir, { recursive: true });
   const lines = cases.map(c => JSON.stringify(c)).join('\n') + '\n';
+  assertOneFileWritable(path, lines);
   writeFileSync(path, lines);
 }
 

@@ -18,6 +18,7 @@ import { existsSync, mkdirSync, writeFileSync } from 'fs';
 import { join } from 'path';
 
 import { SKILLPACK_API_VERSION, type SkillpackManifest } from './manifest-v1.ts';
+import { assertOneFileWritable } from '../split-write-through.ts';
 
 export interface InitScaffoldOptions {
   /** Target directory (created if missing). Becomes the pack root. */
@@ -71,7 +72,7 @@ export function applyWritePlan(
   plan: WritePlanEntry[],
   opts: { dryRun?: boolean } = {},
 ): { written: string[]; skipped: string[] } {
-  if (!opts.dryRun) for (const p of plan) assertLegacySkillFilesystemWrite(p.path);
+  if (!opts.dryRun) for (const p of plan) { assertLegacySkillFilesystemWrite(p.path); assertOneFileWritable(p.path, p.content); }
   const written: string[] = [];
   const skipped: string[] = [];
   for (const p of plan) {

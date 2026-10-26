@@ -22,6 +22,7 @@ import {
   type ScaffoldVars,
 } from './templates.ts';
 import { findResolverFile, RESOLVER_FILENAMES_LABEL } from '../resolver-filenames.ts';
+import { assertOneFileWritable } from '../split-write-through.ts';
 
 export interface ScaffoldPlan {
   files: Array<{ path: string; kind: 'new' | 'overwrite' | 'append'; content: string }>;
@@ -178,8 +179,10 @@ function buildResolverAppend(resolverFile: string, vars: ScaffoldVars): string {
  * and just render the plan.
  */
 export function applyScaffold(plan: ScaffoldPlan): void {
-  for (const f of plan.files) assertLegacySkillFilesystemWrite(f.path);
-  if (plan.resolverFile && plan.resolverAppend !== null) assertLegacySkillFilesystemWrite(plan.resolverFile);
+  for (const f of plan.files) { assertLegacySkillFilesystemWrite(f.path); assertOneFileWritable(f.path, f.content); }
+  const resolver = plan.resolverFile && plan.resolverAppend !== null
+    ? (existsSync(plan.resolverFile) ? readFileSync(plan.resolverFile, 'utf-8') : '') + plan.resolverAppend : null;
+  if (resolver !== null) { assertLegacySkillFilesystemWrite(plan.resolverFile!); assertOneFileWritable(plan.resolverFile!, resolver); }
   for (const f of plan.files) {
     assertLegacySkillFilesystemWrite(f.path);
     mkdirSync(dirname(f.path), { recursive: true });
