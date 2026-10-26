@@ -10,3 +10,4 @@ export * from './head.ts';
 export * from './plan.ts';
 export * from './verify.ts';
 export * from './page-file.ts';
+export * from './git-page-file.ts';

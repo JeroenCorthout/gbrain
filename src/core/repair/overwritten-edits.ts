@@ -13,7 +13,7 @@
  * page, the file is held `file_drift` (sync never publishes it over the restored edit; `gbrain repair file-drift` is how a
  * person picks the winner).
  */
-import { join, relative, sep } from 'node:path';
+import { join, posix, relative, sep } from 'node:path';
 import type { BrainEngine } from '../engine.ts';
 import { resolveSourceLocalFilePath, serializePageToMarkdown } from '../markdown.ts';
 import { OperationError, opError, type OperationContext } from '../ops/contract.ts';
@@ -26,7 +26,9 @@ import { fileMatchesSnapshot } from '../persistence/page-prepare.ts';
 import { submitPageMutation } from '../persistence/page-mutations.ts';
 import { clearApprovedSet, loadApprovedSet, previewChangedError, previewHash, saveApprovedSet } from '../persistence/preview-approval.ts';
 import { overwriteContent, overwriteDigest, scanOverwrittenEdits, type OverwrittenEdit } from '../persistence/overwritten-edits.ts';
-import { readTreeBlobs, readBlobContents } from '../persistence/sync-blobs.ts';
+import { readTreeBlobs, readBlobBytes, readBlobContents } from '../persistence/sync-blobs.ts';
+import { SPLIT_PAGE_UNSUPPORTED } from '../persistence/file-repair.ts';
+import { pageFileAtRevision, revisionHead, type PageFileRead } from '../split-layout/index.ts';
 import { syncGit, syncGitPath } from '../persistence/sync-discovery.ts';
 import { readSyncImportProvenances, writeGitHold } from '../persistence/sync-holds.ts';
 import { fileDriftHold } from '../persistence/sync-page-fault.ts';
@@ -168,6 +170,20 @@ async function restoreEdit(ctx: OperationContext, entry: RepairItem, edit: Appro
       ...(unheld ? { next: `the committed file was not compared or held; on the host that owns the checkout, preview ${ownerHostCommand(edit)} and apply it to write the restored edit to the file (no command writes only the hold)` } : {}) } };
 }
 
+/** The page file committed at HEAD for the blob at `gitPath`: F' from its committed parts when the blob is a split head. */
+export function committedPageFile(gitRoot: string, gitPath: string, head: Buffer): PageFileRead {
+  const parsed = revisionHead(head);
+  if (!parsed || 'error' in parsed) return pageFileAtRevision(gitPath, 'HEAD', head, new Map());
+  const partPath = (manifestPath: string) => posix.join(posix.dirname(gitPath), manifestPath);
+  const listed = readTreeBlobs(gitRoot, 'HEAD', parsed.manifest.parts.map(part => partPath(part.path)));
+  const blobs = readBlobBytes(gitRoot, [...listed.values()]);
+  return pageFileAtRevision(gitPath, 'HEAD', head, new Map(parsed.manifest.parts.flatMap(part => {
+    const blob = listed.get(partPath(part.path));
+    const bytes = blob ? blobs.get(blob.oid) : undefined;
+    return bytes ? [[part.path, bytes] as const] : [];
+  })));
+}
+
 /**
  * After a restore: when this host owns the source's checkout and the committed file at HEAD differs from the restored
  * page, hold it `file_drift` so no sync publishes it over the edit again. Identifiers and revisions only.
@@ -188,7 +204,12 @@ async function holdDivergentFile(engine: BrainEngine, edit: ApprovedEdit, reques
   if (!blob) return { held: false, file: relativePath, why: 'file_not_committed' };
   const bytes = readBlobContents(gitRoot, [blob]).get(blob.oid);
   if (bytes === undefined) return { held: false, file: relativePath, why: 'file_over_read_bound' };
-  if (await fileMatchesSnapshot(engine, edit.slug, bytes, snapshot, scannerSourcePath(root, target, mode))) return { held: false, file: relativePath, why: 'file_matches' };
+  // Wave B PR 5: a split head is compared as the page file its committed parts reassemble to. A split page that differs
+  // gets no hold: `repair file-drift` passes split heads by, so nothing could release it.
+  const page = committedPageFile(gitRoot, gitPath, Buffer.from(bytes, 'utf8'));
+  if (page.hold) return { held: false, file: relativePath, why: page.hold.code };
+  if (await fileMatchesSnapshot(engine, edit.slug, page.split ? page.bytes.toString('utf8') : bytes, snapshot, scannerSourcePath(root, target, mode))) return { held: false, file: relativePath, why: 'file_matches' };
+  if (page.split) return { held: false, file: relativePath, why: SPLIT_PAGE_UNSUPPORTED };
   const [source] = await engine.executeRaw<{ incarnation: string }>('SELECT incarnation::text AS incarnation FROM sources WHERE id=$1', [edit.source_id]);
   const record = (await readSyncImportProvenances(engine, edit.source_id, source!.incarnation, [edit.page_id])).get(edit.page_id);
   const sides = record?.disk_blob_oid === blob.oid ? 'database' as const : 'both' as const;

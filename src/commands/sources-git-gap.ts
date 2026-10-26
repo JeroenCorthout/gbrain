@@ -26,7 +26,8 @@ import { isSourceDbOnlySlug } from '../core/persistence/source-storage.ts';
 import { GIT_HOLD_OP, readSyncImportProvenances } from '../core/persistence/sync-holds.ts';
 import { DERIVED_LINK_SOURCES } from '../core/persistence/twin-merge.ts';
 import { scannerSlugRootMode, scannerSourcePath } from '../core/write-through.ts';
-import { compareInlineExportFile, compareSegmentedExportBlob, DECLARED_CLASSES, declaredDatabaseOnly, ignoredPaths, readBlobs, readHeadTree, worktreeBlobOid,
+import { pageFileAtRevision, partsDirFor } from '../core/split-layout/index.ts';
+import { compareInlineExportFile, compareSegmentedExportBlob, compareSegmentedExportBytes, DECLARED_CLASSES, declaredDatabaseOnly, ignoredPaths, readBlobs, readHeadTree, worktreeBlobOid,
   type DeclaredClass, type ExportFileComparison, type HeadTree, type TreeBlob } from '../core/persistence/git-gap.ts';
 
 const USAGE = 'Usage: gbrain sources git-gap <source-id> [--sample <n>] [--json]';
@@ -220,19 +221,49 @@ async function censusBatch(tx: BrainEngine, batch: Key[], census: GitGapCensus, 
   await countRowsWithoutFile(tx, batch[0]!.source_id, noFile, census);
 }
 
+/** The committed blobs of each page's parts directory at HEAD, keyed by the page's path, then by the part's path relative to the head's directory. */
+function splitPartBlobs(checkout: Checkout, rels: readonly string[]): Map<string, Map<string, TreeBlob>> {
+  const out = new Map<string, Map<string, TreeBlob>>();
+  const prefix = checkout.scope ? checkout.scope + '/' : '';
+  const wanted = new Map(rels.map(rel => [prefix + partsDirFor(rel).split(sep).join('/') + '/', rel]));
+  for (const [path, blob] of checkout.head.blobs) {
+    const slash = path.lastIndexOf('/');
+    const rel = slash < 0 ? undefined : wanted.get(path.slice(0, slash + 1));
+    if (rel === undefined) continue;
+    const dir = path.slice(0, slash);
+    const parts = out.get(rel) ?? new Map<string, TreeBlob>();
+    parts.set(dir.slice(dir.lastIndexOf('/') + 1) + '/' + path.slice(slash + 1), blob);
+    out.set(rel, parts);
+  }
+  return out;
+}
+
 async function compareBatch(tx: BrainEngine, compare: Array<{ key: Key; path: string; rel: string; blob: TreeBlob; worktree: WorktreeState }>, census: GitGapCensus,
   ctx: BatchContext): Promise<void> {
   const checkout = ctx.checkout!;
   const sourceId = compare[0]!.key.source_id;
-  const blobs = await readBlobs(checkout.root, compare.filter(item => !item.key.segmented).map(item => item.blob));
+  const split = splitPartBlobs(checkout, compare.map(item => item.rel));
+  const blobs = await readBlobs(checkout.root, [...compare.filter(item => !item.key.segmented || split.has(item.rel)).map(item => item.blob),
+    ...[...split.values()].flatMap(parts => [...parts.values()])]);
   if (!blobs) throw refuse(`Git could not read committed files of the checkout at ${checkout.root}.`,
     `Nothing changed. Check the checkout with git -C ${checkout.root} fsck, then rerun gbrain sources git-gap ${sourceId}.`);
   const withdrawals: ExportWithdrawal[] = await readExportWithdrawals(tx, sourceId);
   const differs: Array<{ key: Key; rel: string; blob: TreeBlob; worktree: WorktreeState; fields: string[] }> = [];
   for (const item of compare) {
     const snapshot = await readExportPage(tx, item.key, withdrawals);
-    const compared: ExportFileComparison = item.key.segmented ? await compareSegmentedExportBlob(tx, snapshot, withdrawals, item.blob, checkout.head.format)
-      : compareInlineExportFile(blobs.get(item.blob.oid)!, scannerSourcePath(checkout.root, item.path, checkout.mode), snapshot);
+    const parts = split.get(item.rel);
+    // Wave B PR 5: a split head compares as the page file its committed parts reassemble to.
+    const page = parts ? pageFileAtRevision(item.rel, 'HEAD', blobs.get(item.blob.oid)!, new Map([...parts].map(([name, blob]) => [name, blobs.get(blob.oid)!])),
+      item.key.segmented ? { maxBytes: Number.MAX_SAFE_INTEGER } : {}) : null;
+    if (page?.hold) {
+      census.states.unparseable++;
+      note(census, ctx.sample, { slug: item.key.slug, path: item.rel, state: 'unparseable', worktree: item.worktree });
+      continue;
+    }
+    const compared: ExportFileComparison = page?.split ? item.key.segmented ? await compareSegmentedExportBytes(tx, snapshot, withdrawals, page.bytes)
+      : compareInlineExportFile(page.bytes, scannerSourcePath(checkout.root, item.path, checkout.mode), snapshot)
+      : item.key.segmented ? await compareSegmentedExportBlob(tx, snapshot, withdrawals, item.blob, checkout.head.format)
+        : compareInlineExportFile(blobs.get(item.blob.oid)!, scannerSourcePath(checkout.root, item.path, checkout.mode), snapshot);
     if (compared.state === 'equal') { census.states.equal++; continue; }
     if (compared.state === 'unparseable') {
       census.states.unparseable++;

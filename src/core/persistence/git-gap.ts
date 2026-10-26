@@ -115,6 +115,17 @@ export async function compareSegmentedExportBlob(tx: BrainEngine, snapshot: Expo
   return bytes === blob.size && hash.digest('hex') === blob.oid ? { state: 'equal' } : { state: 'differs', paths: ['/body'] };
 }
 
+/** A segmented page's streamed export compared byte for byte with a page file held in memory (a split page's F' at HEAD). */
+export async function compareSegmentedExportBytes(tx: BrainEngine, snapshot: ExportSnapshot, withdrawals: ExportWithdrawal[], file: Buffer): Promise<ExportFileComparison> {
+  let at = 0;
+  for await (const piece of segmentedExportMarkdown(tx, snapshot.page, exportBodyLedger(snapshot.page.slug, withdrawals), segmentedExportHead(snapshot))) {
+    const bytes = typeof piece === 'string' ? Buffer.from(piece, 'utf8') : Buffer.from(piece);
+    if (at + bytes.length > file.length || !file.subarray(at, at + bytes.length).equals(bytes)) return { state: 'differs', paths: ['/body'] };
+    at += bytes.length;
+  }
+  return at === file.length ? { state: 'equal' } : { state: 'differs', paths: ['/body'] };
+}
+
 export interface HeadTree {
   /** The checkout's top level (real path); tree paths are relative to it. */
   gitRoot: string;
