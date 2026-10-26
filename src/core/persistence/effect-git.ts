@@ -12,7 +12,7 @@ import { gitChildEnv } from '../git-env.ts';
 import type { Action } from '../agent-output.ts';
 import type { NativeLockHandle } from './native-lock.ts';
 import { proveIndexLockAbandoned, reclaimIndexLock, type IndexLockReclaim } from './index-lock-reclaim.ts';
-import { parseHead, partsDirFor, verifyParts } from '../split-layout/index.ts';
+import { parseHead, partFilePath, partsDirFor, verifyParts } from '../split-layout/index.ts';
 
 /** An index lock younger than this is contention; an older one is reported as stale. */
 const INDEX_LOCK_GRACE_MS = 10 * 60 * 1000;
@@ -478,7 +478,10 @@ async function splitUnitPaths(session: GitSession, root: string, head: string): 
     if (parsed) {
       const verdict = verifyParts(headPath, parsed);
       if (!verdict.ok) throw splitUnitIncomplete(head, verdict.reason);
-      listed.push(...parsed.manifest.parts.map(part => relative(root, join(dirname(headPath), part.path)).split(sep).join('/')));
+      const parts = parsed.manifest.parts.map(part => partFilePath(headPath, part.path));
+      const absent = parts.find(path => !existsSync(path));
+      if (absent) throw splitUnitIncomplete(head, `part ${relative(root, absent).split(sep).join('/')} the head lists is not on disk`);
+      listed.push(...parts.map(path => relative(root, path).split(sep).join('/')));
     }
   }
   const tracked = await git(session, ['ls-files', '-z', '--', relative(root, partsDir).split(sep).join('/')]);

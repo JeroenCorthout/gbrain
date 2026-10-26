@@ -28,7 +28,7 @@ import { clearApprovedSet, loadApprovedSet, previewChangedError, previewHash, sa
 import { overwriteContent, overwriteDigest, scanOverwrittenEdits, type OverwrittenEdit } from '../persistence/overwritten-edits.ts';
 import { readTreeBlobs, readBlobBytes, readBlobContents } from '../persistence/sync-blobs.ts';
 import { SPLIT_PAGE_UNSUPPORTED } from '../persistence/file-repair.ts';
-import { pageFileAtRevision, revisionHead, type PageFileRead } from '../split-layout/index.ts';
+import { pageFileAtRevision, partPathFor, revisionHead, type PageFileRead } from '../split-layout/index.ts';
 import { syncGit, syncGitPath } from '../persistence/sync-discovery.ts';
 import { readSyncImportProvenances, writeGitHold } from '../persistence/sync-holds.ts';
 import { fileDriftHold } from '../persistence/sync-page-fault.ts';
@@ -174,7 +174,7 @@ async function restoreEdit(ctx: OperationContext, entry: RepairItem, edit: Appro
 export function committedPageFile(gitRoot: string, gitPath: string, head: Buffer): PageFileRead {
   const parsed = revisionHead(head);
   if (!parsed || 'error' in parsed) return pageFileAtRevision(gitPath, 'HEAD', head, new Map());
-  const partPath = (manifestPath: string) => posix.join(posix.dirname(gitPath), manifestPath);
+  const partPath = (manifestPath: string) => posix.join(posix.dirname(gitPath), partPathFor(posix.basename(gitPath), manifestPath));
   const listed = readTreeBlobs(gitRoot, 'HEAD', parsed.manifest.parts.map(part => partPath(part.path)));
   const blobs = readBlobBytes(gitRoot, [...listed.values()]);
   return pageFileAtRevision(gitPath, 'HEAD', head, new Map(parsed.manifest.parts.flatMap(part => {

@@ -8,9 +8,9 @@
  */
 import { createHash } from 'node:crypto';
 import { closeSync, constants, fstatSync, openSync, readSync, unlinkSync, writeSync } from 'node:fs';
-import { dirname, join } from 'node:path';
 import { SEGMENT_MAX_BYTES } from '../page-body/limits.ts';
 import type { ParsedHead } from './head.ts';
+import { partFilePath } from './paths.ts';
 
 /** The notice line `splitNotice` writes, matched by its shape (any part count and size). */
 const NOTICE_LINE = /^> \[gbrain\] This page continues in \d+ part files? \([^)\n]*\)\. Current gbrain versions read them; older versions see only this lead\.(?:\n|$)/gm;
@@ -39,7 +39,7 @@ function streamParts(headPath: string, parsed: ParsedHead, visit: (piece: Buffer
   const buffer = Buffer.allocUnsafe(SEGMENT_MAX_BYTES);
   for (const part of parsed.manifest.parts) {
     let fd: number;
-    try { fd = openSync(join(dirname(headPath), part.path), READ_FLAGS); } catch { return false; }
+    try { fd = openSync(partFilePath(headPath, part.path), READ_FLAGS); } catch { return false; }
     try {
       if (!fstatSync(fd).isFile() || fstatSync(fd).size !== part.bytes) return false;
       for (let read = 0, n: number; read < part.bytes; read += n) {
