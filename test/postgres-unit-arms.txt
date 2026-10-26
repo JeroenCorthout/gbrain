@@ -126,6 +126,7 @@ test/large-pages/export-pinned-stream.test.ts
 test/large-pages/forget-reason-segmented.test.ts
 test/large-pages/forget-scope.test.ts
 test/large-pages/gbra117-segmented-classes-window.test.ts
+test/large-pages/get-chunks-keyset-walk.test.ts
 test/large-pages/held-budget-count-list.test.ts
 test/large-pages/held-budget-shrink.test.ts
 test/large-pages/managed-import-outside-root.test.ts
@@ -208,6 +209,7 @@ test/large-pages/segmented-switch.test.ts
 test/large-pages/segmented-think-compile-leads.serial.test.ts
 test/large-pages/segmented-timeline-heap.test.ts
 test/large-pages/segmented-timeline-retract-versions.test.ts
+test/large-pages/segmented-versions-prune.test.ts
 test/large-pages/segmented-versions.test.ts
 test/large-pages/segmented-withdrawal-mirror.test.ts
 test/large-pages/segmented-withdrawn-fence-delete.test.ts
