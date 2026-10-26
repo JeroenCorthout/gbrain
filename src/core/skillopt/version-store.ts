@@ -34,6 +34,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { atomicWrite } from './apply-edits.ts';
 import { assertLegacySkillFilesystemWrite } from '../skillpack/writer-guard.ts';
+import { assertOneFileWritable } from '../split-write-through.ts';
 import type { EditOp, HistoryRow } from './types.ts';
 
 // ─── Path helpers ────────────────────────────────────────────────────────
@@ -145,6 +146,7 @@ export function acceptCandidate(input: AcceptInput): AcceptResult {
     .reduce((m, r) => Math.max(m, r.version_n), 0);
   const versionN = maxCommitted + 1;
   const verPath = versionPath(skillsDir, skillName, versionN, epoch, step);
+  for (const file of [verPath, bestPath(skillsDir, skillName), skillPath(skillsDir, skillName)]) assertOneFileWritable(file, candidateText);
   for (const file of [skillPath(skillsDir, skillName), historyPath(skillsDir, skillName), verPath, bestPath(skillsDir, skillName)]) {
     assertLegacySkillFilesystemWrite(file);
     assertLegacySkillFilesystemWrite(`${file}.tmp`);
@@ -196,6 +198,7 @@ export function writeProposed(skillsDir: string, skillName: string, candidateTex
   assertLegacySkillFilesystemWrite(proposed);
   assertLegacySkillFilesystemWrite(`${best}.tmp`);
   assertLegacySkillFilesystemWrite(`${proposed}.tmp`);
+  for (const file of [best, proposed]) assertOneFileWritable(file, candidateText);
   fs.mkdirSync(path.dirname(best), { recursive: true });
   atomicWrite(best, candidateText);
   atomicWrite(proposed, candidateText);
