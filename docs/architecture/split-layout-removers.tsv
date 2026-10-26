@@ -23,8 +23,8 @@ src/core/facts/forget.ts	3	not_page_path	removes only its temporary copy (tmpPat
 src/core/facts/proposal-supersede.ts	1	not_page_path	removes only its temporary copy (tmp) in a finally; the page file is replaced by rename after the split preflight.
 src/core/facts/purge-verify.ts	2	not_page_path	removes leftover <file>.tmp siblings of page files (stale temporary copies of a purge), never the page file itself.
 src/core/facts/unfenced-facts.ts	2	not_page_path	removes only its temporary copy (tmpPath) on error and refusal; the page file is replaced by rename after the split preflight.
-src/core/github-source.ts	3	refuse_before_write	removes its temporary item copy (tmpPath) and item page files it owns, each after outsideDoorRefusal (route remover) and before its row is deleted.
-src/core/google/google-source.ts	1	refuse_before_write	removes the page files of Gmail threads that vanished, each after outsideDoorRefusal (route remover) and before its row is deleted.
+src/core/github-source.ts	3	refuse_before_write	removes its temporary item copy (tmpPath) and item page files it owns, each after splitUnitRefusals (route remover, one batch per sweep) or assertSplitUnitMutable and before its row is deleted.
+src/core/google/google-source.ts	1	refuse_before_write	removes the page files of Gmail threads that vanished, each after splitUnitRefusals (route remover, one batch per sweep) and before its row is deleted.
 src/core/google/sweep-shared.ts	3	refuse_before_write	removes its temporary copies (tmpPath) and a deleted page file only after assertSplitUnitMutable (route remover), before the connector deletes its row.
 src/core/harness/install.ts	2	not_page_path	removes its install receipt and the skill files it owns, only when their bytes match the hash it recorded writing them as one file (assertOneFileWritable), so never a split head.
 src/core/harness/native-router.ts	1	not_page_path	removes a native router SKILL.md it owns, only when its bytes match the recorded hash of the one file it wrote, so never a split head.

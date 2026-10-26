@@ -7,8 +7,8 @@
  *    (writeFile/writeFileSync, rename/renameSync, createWriteStream, copyFile/copyFileSync/cpSync, open with a write flag
  *    or O_CREAT, Bun/fs write, the atomic-write helpers) or a call to one of the repo's exported write helpers
  *    (docs/architecture/split-layout-write-helpers.tsv: every exported function whose body calls a primitive). A
- *    refuse_before_write writer calls the one split-unit predicate (split-unit-guard.ts assertSplitUnitMutable or its
- *    sync form) or a split-write-through.ts wrapper of it unless its row says why it cannot ("no helper: ...") or names
+ *    refuse_before_write writer calls the one split-unit predicate (split-unit-guard.ts assertSplitUnitMutable, its
+ *    sync form or its batch form splitUnitRefusals) or a split-write-through.ts wrapper of it unless its row says why it cannot ("no helper: ...") or names
  *    the classified helper modules that run it for every write it makes ("via <path>[, <path>]: ..."). Only the split
  *    layout modules and the helper module test for a parts directory; any other file that does
  *    (docs/architecture/split-layout-parts-dir-readers.tsv) is a reviewed reader. A not_page_path writer that names a
@@ -33,7 +33,7 @@ import { join, relative } from 'node:path';
 const root = join(import.meta.dir, '..');
 const CLASSES = ['door', 'refuse_before_write', 'not_page_path'];
 const pattern = /(?<![\w.])(?:(?:fs\.|fsp\.|promises\.)?(?:writeFileSync|writeFile|renameSync|rename|createWriteStream|copyFileSync|copyFile|cpSync|atomicWriteFileSync|atomicWriteFile)|(?:fs|fsp|promises|Bun)\.write)\s*\(|\bopen(?:Sync)?\s*\([^)\n]*(?:'[wa]x?\+?'|"[wa]x?\+?"|O_CREAT)/g;
-const PREDICATE = /\b(?:assertSplitUnitMutable(?:Sync)?|assertOutsideDoorWritable|outsideDoorRefusal|assertOneFileWritable)\b/;
+const PREDICATE = /\b(?:assertSplitUnitMutable(?:Sync)?|splitUnitRefusals|assertOutsideDoorWritable|outsideDoorRefusal|assertOneFileWritable)\b/;
 const SHORTCUT = /\bpartsDir(?:For|Name)\s*\(|\.gbparts\//g;
 const MD_NAME = /\.mdx?\b["'`]|["'`]SKILL\.md\b/;
 const SPLIT_MODULES = (path: string) => path.startsWith('src/core/split-layout/') || path === 'src/core/split-write-through.ts';

@@ -46,8 +46,8 @@ import { dirname, join, relative } from 'node:path';
 import type { BrainEngine } from './engine.ts';
 import type { SyncOpts } from '../commands/sync.ts';
 import { isWriteTargetContained } from './path-confine.ts';
-import { assertOutsideDoorWritable, outsideDoorRefusal, writePageTemp } from './split-write-through.ts';
-import { assertSplitUnitMutable } from './persistence/split-unit-guard.ts';
+import { assertOutsideDoorWritable, writePageTemp } from './split-write-through.ts';
+import { assertSplitUnitMutable, splitUnitRefusals } from './persistence/split-unit-guard.ts';
 import { createProgress, startHeartbeat } from './progress.ts';
 import { getCliOptions, cliOptsToProgressOptions } from './cli-options.ts';
 import { replaceableFile } from './facts/file-body-guard.ts';
@@ -1067,10 +1067,12 @@ async function deleteStalePages(
     return;
   }
   // A page in a split unit is refused before any row goes: its row and files stay, and the sweep reports it.
+  const targets = new Map(plan.staleSlugs.flatMap(slug => { const rel = bySlug.get(slug); return rel ? [[join(deps.cfg.dir, rel), { sourceId: deps.sourceId, slug }] as const] : []; }));
+  const refusals = await splitUnitRefusals({ root: deps.cfg.dir, paths: [...targets.keys()], route: 'remover', strict: false, pages: targets });
   const stale: string[] = [];
   for (const slug of plan.staleSlugs) {
     const rel = bySlug.get(slug);
-    const refusal = rel ? await outsideDoorRefusal({ root: deps.cfg.dir, path: join(deps.cfg.dir, rel), route: 'remover', sourceId: deps.sourceId, slug }) : null;
+    const refusal = rel ? refusals.get(join(deps.cfg.dir, rel)) : undefined;
     if (!refusal) { stale.push(slug); continue; }
     deps.client.log?.(`[github] ${refusal.message}`);
     summary.failedFiles++; summary.status = 'partial';

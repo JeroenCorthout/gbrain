@@ -71,7 +71,7 @@ export type { GoogleSourceConfig } from './types.ts';
 export { runGoogleAttachmentBackfill } from './attachment-backfill.ts';
 export { parseGoogleSourceConfig } from './source-config.ts';
 import { parseGoogleSourceConfig } from './source-config.ts';
-import { outsideDoorRefusal } from '../split-write-through.ts';
+import { splitUnitRefusals } from '../persistence/split-unit-guard.ts';
 
 // ── Config ───────────────────────────────────────────────────────────────────
 
@@ -619,9 +619,11 @@ async function reconcileGmailDeletes(
   // Containment guard mirrors the write path (defense-in-depth on DB rows). A
   // page in a split unit is refused before any row goes: its row and files stay.
   const contained = (s: { source_path: string | null }) => s.source_path !== null && isWriteTargetContained(join(deps.cfg.dir, s.source_path), deps.cfg.dir);
+  const targets = new Map(stale.filter(contained).map(s => [join(deps.cfg.dir, s.source_path!), { sourceId: deps.sourceId, slug: s.slug }]));
+  const refusals = await splitUnitRefusals({ root: deps.cfg.dir, paths: [...targets.keys()], route: 'remover', strict: false, pages: targets });
   const removable: typeof stale = [];
   for (const s of stale) {
-    const refusal = contained(s) ? await outsideDoorRefusal({ root: deps.cfg.dir, path: join(deps.cfg.dir, s.source_path!), route: 'remover', sourceId: deps.sourceId, slug: s.slug }) : null;
+    const refusal = contained(s) ? refusals.get(join(deps.cfg.dir, s.source_path!)) : undefined;
     if (!refusal) { removable.push(s); continue; }
     deps.log(`[google] ${refusal.message}`);
     summary.failedFiles++;
