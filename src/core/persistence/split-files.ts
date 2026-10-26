@@ -56,7 +56,7 @@ export interface SplitFileFields {
    */
   expectedParts?: Record<string, string>;
   /** Part files written (content) or removed (null) beside the head: the new manifest's changed parts, then removals. */
-  /** Part files written (content) or removed (null) beside the head; each takes the head's exact publish mode, if any. */
+  /** Part files written (content) or removed (null) beside the head; each takes the head's exact publish mode, else the head file's prior mode. */
   parts?: PartTarget[];
   split?: SplitLayout;
 }
@@ -196,7 +196,8 @@ export async function splitPublicationTargets(engine: BrainEngine, file: SplitTa
   if (bytes <= threshold && !existing.size) return false;
   const original = file.content;
   const parts: PartTarget[] = [];
-  const publishMode = file.publishMode === undefined ? {} : { publishMode: file.publishMode };
+  const headMode = file.publishMode ?? (lstatSync(file.path, { throwIfNoEntry: false })?.isFile() ? lstatSync(file.path).mode & 0o7777 : undefined);
+  const publishMode = headMode === undefined ? {} : { publishMode: headMode };
   const manifest: string[] = [];
   const kept: Record<string, string> = {};
   let plan: SplitPlan | null = null;
