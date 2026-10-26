@@ -17,7 +17,7 @@ import { createProgress, startHeartbeat } from '../core/progress.ts';
 import { getCliOptions, cliOptsToProgressOptions } from '../core/cli-options.ts';
 import { parseMarkdown, frontmatterBodyOffset, findTimelineSplitIndex } from '../core/markdown.ts';
 import { atomicWriteFileSync } from '../core/atomic-write.ts';
-import { partsDirFor, readPageFile } from '../core/split-layout/index.ts';
+import { isSplitHeadPath, partsDirFor, readPageFile } from '../core/split-layout/index.ts';
 import { withPageLock } from '../core/page-lock.ts';
 
 export interface BacklinkGap {
@@ -355,7 +355,7 @@ export async function fixBacklinkGaps(
     const lockKey = targetPage.replace(/\.md$/, '');
     try {
       await withPageLock(lockKey, async () => {
-        if (existsSync(partsDirFor(targetPath))) {
+        if (isSplitHeadPath(targetPath) && existsSync(partsDirFor(targetPath))) {
           outcome.skipped.push({ page: targetPage, reason: 'split_page_unsupported: the page is a split page head (it continues in part files), which only a brain with a canonical owner writes back as a head plus parts — file left untouched' });
           return;
         }

@@ -49,7 +49,7 @@ import { readFix } from '../core/ops/op-fix.ts';
 import { ERROR_CATALOGUE } from '../core/error-catalogue.ts';
 import { cliRenderContext, docsUrl, renderAction, toAgentError, type RenderedAction } from '../core/agent-output.ts';
 import type { ParseOpts } from '../core/markdown.ts';
-import { partsDirFor, readPageFile, type PageFileHoldCode } from '../core/split-layout/index.ts';
+import { isSplitHeadPath, partsDirFor, readPageFile, type PageFileHoldCode } from '../core/split-layout/index.ts';
 import { writeSplitPageFile } from '../core/split-write-through.ts';
 
 export interface LintIssue {
@@ -674,7 +674,7 @@ function removedDuringScanIssue(file: string, target: string): LintIssue {
  */
 function readLintPage(page: string, relPath: string): { content: string; split: boolean } | LintIssue {
   const content = readSourceFileSync(page, 'utf-8');
-  if (!existsSync(partsDirFor(page))) return { content, split: false };
+  if (!isSplitHeadPath(page) || !existsSync(partsDirFor(page))) return { content, split: false };
   const file = readPageFile(page);
   if (file.hold) return { file: relPath, line: 1, rule: 'split-page-held', fixable: false, code: file.hold.code, message: file.hold.message };
   return { content: file.bytes.toString('utf8'), split: true };

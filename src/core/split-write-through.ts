@@ -19,7 +19,7 @@ import type { MutationFile } from './persistence/bundle-files.ts';
 import { hashFile } from './persistence/large-file.ts';
 import { partFilesOnly, releaseSplitTargets, removeEmptyPartsDir, splitKeptPartsChanged, splitPublicationTargets, type SplitFileFields } from './persistence/split-files.ts';
 import { readPageFile, type PageFileHold } from './split-layout/page-file.ts';
-import { partsDirFor } from './split-layout/paths.ts';
+import { isSplitHeadPath, partsDirFor } from './split-layout/paths.ts';
 
 /** A file of the unit changed after it was planned (a part, or the head under `verify`); nothing more was written. */
 export class PageFileChanged extends Error {
@@ -84,7 +84,7 @@ export async function writeSplitPageFile(engine: BrainEngine, filePath: string, 
  * directory. Refuses `split_parts_unexpected` for anything in the parts directory that is not a part file.
  */
 export function removeSplitPageFile(filePath: string, root: string): string[] | null {
-  if (!lstatSync(partsDirFor(filePath), { throwIfNoEntry: false })) return null;
+  if (!isSplitHeadPath(filePath) || !lstatSync(partsDirFor(filePath), { throwIfNoEntry: false })) return null;
   const parts = partFilesOnly(filePath, root);
   unlinkSync(filePath);
   flushDirectory(dirname(filePath));

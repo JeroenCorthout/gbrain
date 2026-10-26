@@ -19,6 +19,15 @@ export function partsDirName(headName: string): string {
   return '.' + headName.slice(0, -HEAD_EXTENSION.length) + '.gbparts';
 }
 
+/**
+ * Whether `path` (relative or absolute) can be a split page head: a .md file. Any other path (an .mdx page, a README.txt)
+ * has no parts directory, so a caller checks this before `partsDirFor`, which throws `not_a_markdown_head` for it.
+ */
+export function isSplitHeadPath(path: string): boolean {
+  const name = basename(path);
+  return name.endsWith(HEAD_EXTENSION) && name.length > HEAD_EXTENSION.length && !/[/\\\0]/.test(name);
+}
+
 /** The parts directory beside a head path (relative or absolute). */
 export function partsDirFor(headPath: string): string {
   return join(dirname(headPath), partsDirName(basename(headPath)));

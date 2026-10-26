@@ -267,6 +267,24 @@ for (const { backend, databaseUrl } of pathologicalArms()) {
       });
     }, 240_000);
 
+    test('C-2 preview: a changed file that cannot be a split page head (a README.txt, an .mdx page) is named, never aborts the source', async () => {
+      await withClone(databaseUrl, async c => {
+        writeFileSync(join(c.root, 'README.txt'), 'A synthetic readme.\n');
+        writeFileSync(join(c.root, 'notes/diagram-example.mdx'), '---\ntype: note\ntitle: Diagram Example\n---\n\nA synthetic MDX page.\n');
+        git(c.root, ['add', 'README.txt', 'notes/diagram-example.mdx']);
+        git(c.root, ['-c', 'user.email=t@t.co', '-c', 'user.name=t', 'commit', '-q', '-m', 'local files']);
+        writeFileSync(join(c.root, 'README.txt'), 'A synthetic readme, edited.\n');
+        writeFileSync(join(c.root, 'notes/diagram-example.mdx'), '---\ntype: note\ntitle: Diagram Example\n---\n\nA synthetic MDX page, edited.\n');
+        await c.legacyFence(ALICE, ALICE_FACT);
+        const preview = await expectUnitNotAborted(() => repair(c.engine, { apply: false }));
+        expect(preview.listing!.map(l => [l.item, l.class])).toEqual([
+          [`${SOURCE}:README.txt`, 'non_fence_edit'],
+          [`${SOURCE}:notes/diagram-example.mdx`, 'non_fence_edit'],
+          [`${SOURCE}:${ALICE}.md`, 'fence_rows_only'],
+        ]);
+      });
+    }, 180_000);
+
     test('C-2 binding: an approval for clone A applied after the source moved to clone B (sources set-path) refuses preview_changed and changes nothing', async () => {
       await withClone(databaseUrl, async c => {
         await c.legacyFence(ALICE, ALICE_FACT);
