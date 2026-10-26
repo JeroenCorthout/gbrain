@@ -19,7 +19,7 @@ import { PREPARATION_BUDGET_KEYS, preparationKind } from './preparation-budget.t
 import { chargeTransientInterruption, chargedInterruptionDetail, transientInterruption, type TransientInterruption } from './transient-retry.ts';
 import { readWriteSwitchSnapshot } from './switches.ts';
 import { isSharedReadFailure } from './bounded-reads.ts';
-import { isTerminal, principalKey, requestPrincipal, recoveryFiles, type FileRecoveryRecord, type RecoveryRecord, type WriteRequest } from './model.ts';
+import { isPublished, isTerminal, principalKey, requestPrincipal, recoveryFiles, type FileRecoveryRecord, type RecoveryRecord, type WriteRequest } from './model.ts';
 import { isLockOpenFailure, noteLockOpenFailure, type NativeLockHandle } from './native-lock.ts';
 import { withCoordinatedWrite } from './context.ts';
 import { lockCoreSources } from './core-guard.ts';
@@ -54,7 +54,9 @@ import { publicationBeliefOptions, withBeliefBatch } from '../belief/ledger.ts';
 import { markBeliefCommits } from '../belief/append.ts';
 import { classifyPgAccessError } from '../pg-access-classify.ts';
 import { commitThroughDoor, doorCommitLanded, doorMarker, replayAfterDoorCommit, sourceCanonicalGit, strictChanged } from './git-door.ts';
-import { assertNoPrivateCommit, declareStrictPublication } from './git-declared.ts';
+import { assertNoPrivateCommit, assertStrictFileTarget, declareStrictPublication } from './git-declared.ts';
+import { gitFirstStrictActive } from './git-first-gate.ts';
+import { clearPendingHeads, indexPendingError, queueIndexFromGit, readPendingHead, type IndexFromGit } from './git-first.ts';
 
 interface PreparedMutationBase {
   sourceExclusive?: boolean;
@@ -66,6 +68,8 @@ interface PreparedMutationBase {
   /** #5470 screening only: the content is unchanged, but publication still runs (and queues effects). */
   contentUnchanged?: boolean;
   deferEmbedding?: boolean;
+  /** Wave C (git-first.ts): a strict segmented write whose rows the index step derives from the committed blob; apply never runs. */
+  indexFromGit?: IndexFromGit;
   /** Why a page write bound to a worktree publishes no file (receipt `write_through.skipped`). */
   databaseOnlyReason?: 'db_only' | 'unbound_source' | 'mirror_read_only' | 'sync_excluded' | 'shared_origin' | 'origin_twin' | 'detached';
   /** #6517: the receipt's `write_through.warning` for a database-only publication, set by `validate` under the publication guards. */
@@ -121,6 +125,10 @@ export interface PublicationHooks {
    */
   projectionPending?(done: WriteRequest, afterCommit: () => Promise<void>): void;
 }
+let doorProbe: ((tx: BrainEngine, request: WriteRequest) => Promise<void>) | null = null;
+/** Test seam: runs inside the publication transaction just before a strict source's door commit (what the transaction wrote so far). */
+export function _setDoorProbeForTests(probe: typeof doorProbe): void { doorProbe = probe; }
+export async function runDoorProbe(tx: BrainEngine, request: WriteRequest): Promise<void> { await doorProbe?.(tx, request); }
 /** SHA-256 of the file at `path` read in pieces (large-file.ts), null when absent. */
 const fileHash = hashFile;
 const ownerStatusFix = (sourceId?: string): Action => readFix(sourceId
@@ -611,6 +619,39 @@ export async function publishMutation(engine: BrainEngine, row: WriteRequest, pr
         });
         await hooks.boundary?.('after_publication', row);
       }
+      // Wave C (eng-r3-outside-1): with the git-first path on, a strict file publication commits through the door before any
+      // content row is written; its target is judged on the incoming head first (git-first-gate.ts).
+      const gitFirst = !skill && !!door?.door && !!prepared.file && prepared.file.content !== null
+        && await gitFirstStrictActive(tx, row.source_id, { strict: true });
+      let gitCommit: string | null | undefined;
+      if (prepared.indexFromGit && !gitFirst) throw strictChanged(row.source_id);
+      // Wave C (ceo-r3-outside-1): while another write's committed head waits for its index, the page's rows describe the
+      // generation before it, so a write prepared from them would drop the committed write from Git. It refuses (retryable)
+      // until the flip; preparation refuses the same way when it sees the file ahead of the rows (page-prepare.ts).
+      if (door?.door) {
+        const pending = await readPendingHead(tx, row.source_id, row.slug);
+        if (pending && pending.request_id !== row.id) throw indexPendingError(row.slug, pending.request_id);
+      }
+      if (gitFirst) {
+        await assertStrictFileTarget(tx, row, prepared, snapshot, binding);
+        await doorProbe?.(tx, row);
+        gitCommit = await commitThroughDoor(door!.door!.root, [{ path: door!.path, note: prepared.file?.commit }], lock ?? undefined);
+      }
+      // A door publication that is not itself indexed (an inline write, a delete, a private transition, a rename) replaces
+      // or removes the page's pending head, so an older index job finds its token gone and ends superseded (git-first.ts).
+      if (door?.door && !prepared.indexFromGit) await clearPendingHeads(tx, row.source_id, [row.slug, ...(prepared.additionalPageKeys ?? []).filter(key => key.sourceId === row.source_id).map(key => key.slug)]);
+      if (prepared.indexFromGit && gitCommit) {
+        // Wave C (spec §3.1 step 7): no page metadata changes before the index flip; the request is indexing.
+        const outcome: Record<string, unknown> = { status: 'created_or_updated', slug: row.slug, source_id: row.source_id, searchable: 'pending' };
+        decoratePublicationOutcome(row, prepared, outcome, null, files.length, false);
+        Object.assign(outcome.persistence as object, { git_state: 'committed', git_commit: gitCommit });
+        outcome.index = await queueIndexFromGit(tx, row, prepared.indexFromGit, String(prepared.file!.content), snapshot, gitCommit, door!.door!.root, door!.path);
+        await queuePublicationEffects(tx, row, null, outcome, prepared, { pushOnly: true });
+        await hooks.boundary?.('before_commit', row);
+        const indexing = await completeWrite(tx, current, 'indexing', outcome, undefined, current);
+        transactionBodyCompleted = true;
+        return indexing;
+      }
       prepared.postimage = undefined;
       // W1 finalization contract (docs/designs/BELIEF_LEDGER.md 5.1): the ledger append is the last canonical write before the receipt.
       const apply = () => timePublicationStep('apply', row.slug, () => prepared.apply(tx, snapshot));
@@ -624,7 +665,9 @@ export async function publishMutation(engine: BrainEngine, row: WriteRequest, pr
       decoratePublicationOutcome(row, prepared, outcome, final, files.length, skill);
       await recordPublicationFenceTrend(tx, row, outcome);
       // G2: a strict source's file is committed before its row; its Git effect only pushes.
-      if (door?.door) Object.assign(outcome.persistence as object, { git_state: 'committed', git_commit: await commitThroughDoor(door.door.root, [{ path: door.path, note: prepared.file?.commit }], lock ?? undefined) });
+      if (door?.door && !gitFirst) await doorProbe?.(tx, row);
+      if (door?.door) Object.assign(outcome.persistence as object, { git_state: 'committed', git_commit: gitFirst ? gitCommit
+        : await commitThroughDoor(door.door.root, [{ path: door.path, note: prepared.file?.commit }], lock ?? undefined) });
       await timePublicationStep('effects', row.slug, () => queuePublicationEffects(tx, row, final, outcome, prepared, { pushOnly: !!door?.door }));
       if (prepared.afterEffects) await withCoordinatedWrite(tx, [row.source_id], () => prepared.afterEffects!(tx, outcome), publicationAttribution(row, prepared.trust));
       await hooks.boundary?.('before_commit', row);
@@ -640,7 +683,7 @@ export async function publishMutation(engine: BrainEngine, row: WriteRequest, pr
       if (staged.version === 1 && staged.staging?.before) await withFilesystemPublication([staged.root], async () => cleanupRecoveryStaging(staged));
       await clearResolvedRecovery(engine, row.id, done);
     }
-    if (done.state === 'committed') afterCommitDue = done;
+    if (done.state === 'committed' || done.state === 'indexing') afterCommitDue = done;
     return done;
   } catch (error) {
     if (recovery) {
@@ -700,7 +743,7 @@ export async function recoverPublication(engine: BrainEngine, id: string, hostId
         WHERE id=$1::uuid AND recovery IS NOT NULL AND state IN ('running','recovering') AND ${PERSISTENCE_PROTOCOL_PREDICATE} RETURNING *`, [id]);
       return blocked ?? row;
     }
-    if (!isTerminal(row)) await upgradeRecoveryStaging(engine, 'persistence_requests', id, row.worktree_id!, 'restore');
+    if (!isPublished(row)) await upgradeRecoveryStaging(engine, 'persistence_requests', id, row.worktree_id!, 'restore');
     row = await engine.transaction(async tx => {
       await declareDurablePersistence(tx);
       await tx.executeRaw('SELECT id FROM persistence_worktrees WHERE id=$1::uuid FOR SHARE', [row!.worktree_id]);
@@ -719,17 +762,17 @@ export async function recoverPublication(engine: BrainEngine, id: string, hostId
         `A recovery file of request ${current.request_id} now resolves outside source ${current.source_id}'s canonical worktree (a moved checkout or a symlink), so recovery stopped without touching it and the request stays recovering. Inspect the owner and tell the user; the checkout must be repaired before recovery can finish.`,
         { fix: ownerStatusFix(current.source_id) });
       try {
-        if (!isTerminal(current)) for (const record of records) {
+        if (!isPublished(current)) for (const record of records) {
           const actual = current.recovery.version === 2 ? bundleFileHash(record) : fileHash(record.path);
           if (actual !== record.beforeHash && actual !== record.afterHash) throw unexpectedRecoveryBytes('Canonical recovery bytes changed outside publication.', current, 'was edited outside gbrain and');
         }
         // A terminal outcome's prior-file copy is dropped unread when its canonical file still holds the prior bytes.
         await withFilesystemPublication([...new Set(records.map(record => record.root))], async () => {
-          for (const record of records) cleanupRecoveryStaging(record, { keepBefore: !isTerminal(current),
-            priorIntact: isTerminal(current) && !!record.staging?.before && fileHash(record.path) === record.beforeHash });
+          for (const record of records) cleanupRecoveryStaging(record, { keepBefore: !isPublished(current),
+            priorIntact: isPublished(current) && !!record.staging?.before && fileHash(record.path) === record.beforeHash });
         });
         // A live request's restoration runs inside this guard too, so a refusal there is recorded as its blocked reason.
-        if (!isTerminal(current)) for (let index = 0; index < records.length; index++) {
+        if (!isPublished(current)) for (let index = 0; index < records.length; index++) {
           const record = records[index];
           hooks.fileBoundary?.('before_restore', current, index);
           const actual = current.recovery.version === 2 ? bundleFileHash(record) : fileHash(record.path);
@@ -770,7 +813,7 @@ export async function recoverPublication(engine: BrainEngine, id: string, hostId
       }
       // A delivered or durable terminal outcome is immutable. Only its known
       // temporary files are cleaned; its canonical file is never restored.
-      if (isTerminal(current)) return { ...current, blocked_reason: null };
+      if (isPublished(current)) return { ...current, blocked_reason: null };
       // Withdrawal is authoritative DB state and is never rolled back here.
       const failure: PublicationFailure | undefined = terminalError ?? (current.error_code ? {code:current.error_code,message:current.error_message ?? 'Publication failed before database completion.',
         ...(current.error_detail ? { detail: current.error_detail as unknown as PublicationFailureDetail } : {})} : undefined);
@@ -781,7 +824,7 @@ export async function recoverPublication(engine: BrainEngine, id: string, hostId
         WHERE id=$1::uuid RETURNING *`, [id]);
       return queued;
     });
-    if (isTerminal(row) && row.blocked_reason !== 'unexpected_staging_bytes') {
+    if (isPublished(row) && row.blocked_reason !== 'unexpected_staging_bytes') {
       await faultPoint('publication_recovery:before_clear', { requestId: row.request_id, sourceId: row.source_id, operation: row.operation });
       await clearResolvedRecovery(engine, id);
       row = (await getWriteRequestById(engine, id))!;

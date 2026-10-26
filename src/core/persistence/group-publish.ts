@@ -57,6 +57,7 @@ import { boundPublication, declarePublication, publicationLeaseMs, publicationTr
 import { classifyMirrorPage, sourceMirrorReadOnly } from './mirror-read-only.ts';
 import { commitThroughDoor, doorMarker, sourceCanonicalGit, strictChanged } from './git-door.ts';
 import { assertNoPrivateCommit, declareStrictPublication } from './git-declared.ts';
+import { gitFirstStrictActive } from './git-first-gate.ts';
 import { authorizePageVisibility } from './page-visibility.ts';
 import { withFilesystemPublication } from './filesystem-guard.ts';
 import { isWriteTargetContained } from '../path-confine.ts';
@@ -64,7 +65,7 @@ import { assertKnowledgePublicationAllowed } from '../shared-skills/knowledge-gu
 import { isStreamedContent } from './large-file.ts';
 import { sharedReadFailure } from './bounded-reads.ts';
 import { chargedInterruption, decoratePublicationOutcome, finishPreparationStalled, finishUnpublishedFailure, pageRecoveryRecord, persistenceFileHash, preparationAbortReason,
-  publicationPostimage, publishMutation, publishPersistenceFile, recoverPublication, releaseChargedInterruption, type PreparedMutation, type PublicationHooks } from './coordinator.ts';
+  publicationPostimage, publishMutation, publishPersistenceFile, recoverPublication, releaseChargedInterruption, runDoorProbe, type PreparedMutation, type PublicationHooks } from './coordinator.ts';
 import { withAttempt } from './publication-failure.ts';
 import { chargedInterruptionDetail, transientInterruption, type TransientInterruption } from './transient-retry.ts';
 import { pipelined } from '../page-state/transactions.ts';
@@ -305,6 +306,9 @@ export async function publishGroup(engine: BrainEngine, rows: WriteRequest[], pr
     }
     // G2 (git-door.ts): a strict source's members are committed together before the transaction commits.
     strict = files.size > 0 && binding.canonical_git === true;
+    // Wave C (eng-r3-outside-1): with the git-first path on, a strict file member commits through the door before its rows,
+    // which only the single path does (publishMutation); the group hands its members there.
+    if (strict && await gitFirstStrictActive(engine, head.source_id, { strict: true })) return none;
     if (strict) { const door = await doorMarker(binding.local_path); for (const member of files.values()) member.record.door = door; }
     if (files.size) {
       await prepareRecoveries(engine, [...files.values()], transaction, limits);
@@ -414,6 +418,7 @@ export async function publishGroup(engine: BrainEngine, rows: WriteRequest[], pr
       if (lane) { timed.apply?.turn(); await faultPoint('lane:applied', { requestId: head.request_id, sourceId: head.source_id, operation: head.operation }); await awaitLaneTurn(tx, lane, rows); timed.apply?.turned(); }
       // G2: one path-only commit for every member's file, in commit order, before the rows commit; a shared lease never reclaims an index lock.
       if (strict && recorded.size) {
+        for (const member of recorded.values()) await runDoorProbe(tx, member.row);
         const commit = await commitThroughDoor(binding.local_path!, [...recorded].map(([i, member]) => ({ path: member.record.path, note: prepared[i]!.file?.commit })), lane || joined ? undefined : lock);
         for (const i of recorded.keys()) Object.assign(outcomes[i]!.persistence as object, { git_state: 'committed', git_commit: commit });
       }

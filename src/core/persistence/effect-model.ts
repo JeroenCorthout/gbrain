@@ -3,7 +3,9 @@ import type { WithdrawalTarget } from '../facts/withdrawal-discovery.ts';
 import { fenceRepairCommitSubject, type FenceRepairReceipt } from '../fence-repair/receipt.ts';
 import { contentRepairCommitSubject, contentRepairTrailer, type ContentRepairReceipt } from '../content-repair/receipt.ts';
 
-export type EffectKind = 'git' | 'embedding' | 'withdrawal-mirror' | 'facts-backstop' | 'links';
+export type EffectKind = 'git' | 'embedding' | 'withdrawal-mirror' | 'facts-backstop' | 'links' | 'index-split-page';
+/** The kinds every current worker runs; `index-split-page` is claimed only once its consumer is registered (git-first-gate.ts). */
+export const BUILT_IN_EFFECT_KINDS: readonly EffectKind[] = ['git', 'embedding', 'withdrawal-mirror', 'facts-backstop', 'links'];
 /** Brain config key gating the remote mention-links effect; unset is on, false/0/no/off turns it off. */
 export const REMOTE_AUTO_LINKS_KEY = 'mcp.remote_auto_links';
 /** link_source owned by the `links` effect; reconciliation of this producer never touches other producers' edges. */
@@ -103,7 +105,12 @@ export interface PersistenceEffect {
     /** GBRA-130 A-12: pages whose file this withdrawal mirror rewrote, recorded by its recovery with the cursor step. */
     published?: string[];
     /** The SHA-256 of the bytes this mirror wrote to each published page's file, at the page revision it rendered. */
-    published_files?: Record<string, { hash: string; revision: string }> };
+    published_files?: Record<string, { hash: string; revision: string }>;
+    /** Wave C (index-split-page): the door commit, the committed blob and the path it indexes, and the pending head's revision. */
+    commit?: string;
+    head_oid?: string;
+    path?: string;
+    pending_revision?: string };
   state: 'queued' | 'running' | 'committed' | 'failed';
   execution_token: string | null;
   claim_expires_at: string | Date | null;

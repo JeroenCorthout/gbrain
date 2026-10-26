@@ -127,6 +127,7 @@ export const EFFECT_FAULT_POINTS: Record<EffectKind, FaultPoint> = {
   'withdrawal-mirror': 'effect:withdrawal-mirror:mid',
   'facts-backstop': 'effect:facts-backstop:mid',
   links: 'effect:links:mid',
+  'index-split-page': 'effect:index-split-page:mid',
 };
 
 let installed: FaultHook | undefined;

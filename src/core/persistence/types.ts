@@ -1,7 +1,7 @@
+import { isTerminalReceiptState, REQUEST_STATES } from './request-states.ts';
+
 /** Public mutation receipts contain outcomes, never queued content or execution credentials. */
-export const WRITE_REQUEST_STATES = [
-  'queued', 'running', 'recovering', 'committed', 'conflict', 'failed', 'cancelled',
-] as const;
+export const WRITE_REQUEST_STATES = REQUEST_STATES;
 
 export type WriteRequestState = typeof WRITE_REQUEST_STATES[number];
 
@@ -80,7 +80,7 @@ export function isWriteErrorCode(value: unknown): value is WriteErrorCode {
 }
 
 export function isTerminalWriteState(state: WriteRequestState): boolean {
-  return state === 'committed' || state === 'conflict' || state === 'failed' || state === 'cancelled';
+  return isTerminalReceiptState(state);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

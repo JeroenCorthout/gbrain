@@ -48,6 +48,7 @@ import { FACT_PURGE_LOOKUP_INDEX_SQL, MEMORY_PURGE_SCHEMA_SQL } from '../src/cor
 import { WRITE_GATE_SCHEMA_SQL } from '../src/core/write-gate-schema.ts';
 import { BELIEF_LEDGER_SCHEMA_SQL } from '../src/core/belief/schema.ts';
 import { GIT_CANONICAL_SCHEMA_SQL } from '../src/core/persistence/git-canonical-schema.ts';
+import { GIT_FIRST_SCHEMA_SQL } from '../src/core/persistence/git-first-schema.ts';
 
 const REPO = resolve(import.meta.dir, '..');
 export const SCHEMA_SQL_PATH = 'src/schema.sql';
@@ -104,6 +105,7 @@ export const FRAGMENTS: readonly Fragment[] = [
     pglite: persistenceSql(PERSISTENCE_SCHEMA_STATEMENTS),
   },
   { source: 'src/core/persistence/git-canonical-schema.ts', expr: 'GIT_CANONICAL_SCHEMA_SQL', postgres: GIT_CANONICAL_SCHEMA_SQL, pglite: GIT_CANONICAL_SCHEMA_SQL },
+  { source: 'src/core/persistence/git-first-schema.ts', expr: 'GIT_FIRST_SCHEMA_SQL', postgres: GIT_FIRST_SCHEMA_SQL, pglite: GIT_FIRST_SCHEMA_SQL },
   { source: 'src/core/page-state/projection-schema.ts', expr: 'PAGE_PROJECTION_SCHEMA_SQL', postgres: PAGE_PROJECTION_SCHEMA_SQL, pglite: PAGE_PROJECTION_SCHEMA_SQL },
   { source: 'src/core/persistence/topology-schema.ts', expr: 'PERSISTENCE_TOPOLOGY_SCHEMA_SQL', postgres: PERSISTENCE_TOPOLOGY_SCHEMA_SQL, pglite: PERSISTENCE_TOPOLOGY_SCHEMA_SQL },
   { source: 'src/core/persistence/worktree-refresh-schema.ts', expr: 'WORKTREE_REFRESH_SCHEMA_SQL', postgres: WORKTREE_REFRESH_SCHEMA_SQL, pglite: WORKTREE_REFRESH_SCHEMA_SQL },
