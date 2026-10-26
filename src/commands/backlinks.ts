@@ -17,6 +17,7 @@ import { createProgress, startHeartbeat } from '../core/progress.ts';
 import { getCliOptions, cliOptsToProgressOptions } from '../core/cli-options.ts';
 import { parseMarkdown, frontmatterBodyOffset, findTimelineSplitIndex } from '../core/markdown.ts';
 import { atomicWriteFileSync } from '../core/atomic-write.ts';
+import { partsDirFor, readPageFile } from '../core/split-layout/index.ts';
 import { withPageLock } from '../core/page-lock.ts';
 
 export interface BacklinkGap {
@@ -104,6 +105,18 @@ function* walkMarkdownFiles(brainDir: string, dir = brainDir): Generator<{ full:
   }
 }
 
+/**
+ * A page's text for the gap scan: the file, or for a split page head (Wave B PR 5) the page its head and part files
+ * reassemble to, so a mention or backlink in the parts counts. Null for an unreadable file or a head whose parts do
+ * not verify (sync reports that hold).
+ */
+function readScannedPage(path: string): string | null {
+  try {
+    const file = readPageFile(path);
+    return file.hold ? null : file.bytes.toString('utf8');
+  } catch { return null; }
+}
+
 /** Files between event-loop yields in the async walker (#6438). */
 export const BACKLINKS_YIELD_EVERY = 64;
 
@@ -151,10 +164,8 @@ class BacklinkGapScan {
 
   *pass1(): Generator<void> {
     for (const { full, relPath } of walkMarkdownFiles(this.brainDir)) {
-      let content: string;
-      try {
-        content = readFileSync(full, 'utf-8');
-      } catch { continue; /* skip unreadable */ }
+      const content = readScannedPage(full);
+      if (content === null) continue;
       this.existingSlugs.add(relPath.replace('.md', ''));
       const refs = projectPeopleCompaniesRefs(canonicalExtractEntityRefs(content));
       if (refs.length > 0) {
@@ -187,10 +198,8 @@ class BacklinkGapScan {
   *pass2(): Generator<void> {
     for (const [targetSlug, indexes] of this.referrers) {
       if (!this.existingSlugs.has(targetSlug)) continue;
-      let content: string;
-      try {
-        content = readFileSync(join(this.brainDir, `${targetSlug}.md`), 'utf-8');
-      } catch { continue; /* vanished since pass 1: not a target */ }
+      const content = readScannedPage(join(this.brainDir, `${targetSlug}.md`));
+      if (content === null) continue; /* vanished since pass 1: not a target */
       const outgoing = new Set(canonicalExtractEntityRefs(content).map(r => r.slug));
       const credits = new Set<number>();
       for (const i of indexes) {
@@ -316,7 +325,9 @@ export const insertTimelineEntry = insertBacklinkEntry;
  *
  * Safety pipeline per target file (each failure isolates to that file and is
  * reported in `skipped` — one bad page can't kill the batch or corrupt itself):
- *   lock (withPageLock) → read → pre-validate (skip if the fence/YAML is
+ *   lock (withPageLock) → skip a split page head (`split_page_unsupported`:
+ *   the page continues in part files this writer cannot lay out) → read →
+ *   pre-validate (skip if the fence/YAML is
  *   already broken) → insert after the frontmatter-safe body offset →
  *   post-validate the candidate → atomic write (tmp+fsync+rename) that
  *   re-validates the on-disk bytes before the rename.
@@ -344,6 +355,10 @@ export async function fixBacklinkGaps(
     const lockKey = targetPage.replace(/\.md$/, '');
     try {
       await withPageLock(lockKey, async () => {
+        if (existsSync(partsDirFor(targetPath))) {
+          outcome.skipped.push({ page: targetPage, reason: 'split_page_unsupported: the page is a split page head (it continues in part files), which only a brain with a canonical owner writes back as a head plus parts — file left untouched' });
+          return;
+        }
         let content = readFileSync(targetPath, 'utf-8');
 
         const preError = firstEditBlockingError(content, targetPath);
