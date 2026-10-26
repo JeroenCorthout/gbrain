@@ -52,7 +52,8 @@
 
 import { withUnmanagedBeliefs } from '../belief/projection-point.ts';
 import { isQuarantined } from '../quarantine.ts';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync } from 'node:fs';
+import { readPageFile, withPageFileOnDisk, type PageFileHold } from '../split-layout/page-file.ts';
 
 import type { BrainEngine } from '../engine.ts';
 import type { Page } from '../types.ts';
@@ -240,13 +241,17 @@ function sameBody(current: Page, planned: Page): boolean {
  * canonical file that exists but cannot be read is fail-closed: destructive
  * cleanup waits for a healthy sync/read instead of guessing that the cache is
  * authoritative.
+ *
+ * A split head is compared as the page file F' its parts reassemble to (inline
+ * pages in memory, segmented ones streamed from a scratch copy); a head whose
+ * parts do not verify returns its hold, which fails closed the same way.
  */
 async function canonicalCacheState(
   engine: BrainEngine,
   slug: string,
   sourceId: string,
   cached: CachedBody,
-): Promise<'fresh' | 'stale' | 'unavailable'> {
+): Promise<'fresh' | 'stale' | 'unavailable' | PageFileHold> {
   // sync.write_through=off: the fence writers already treat the file as
   // non-canonical (fence-write.ts legacy fallback), so a stale mirror file must
   // not block reconcile here either.
@@ -254,8 +259,13 @@ async function canonicalCacheState(
   const target = await resolvePageWriteTarget(engine, slug, sourceId);
   if (!target.ok || !existsSync(target.filePath)) return 'unavailable';
   try {
-    if (isSegmentedPage(cached)) return await segmentedBodyMatchesFile(engine, cached, target.filePath);
-    const canonical = parseMarkdown(readFileSync(target.filePath, 'utf-8'), target.filePath);
+    if (isSegmentedPage(cached)) {
+      const read = await withPageFileOnDisk(target.filePath, path => segmentedBodyMatchesFile(engine, cached, path));
+      return read.hold ?? read.value;
+    }
+    const file = readPageFile(target.filePath);
+    if (file.hold) return file.hold;
+    const canonical = parseMarkdown(file.bytes.toString('utf-8'), target.filePath);
     return canonical.compiled_truth === (cached.compiled_truth ?? '').trim()
       && canonical.timeline === (cached.timeline ?? '').trim()
       ? 'fresh'
@@ -273,6 +283,10 @@ async function refuseDestructiveReconcileOnStaleCache(
   warnings: string[],
 ): Promise<boolean> {
   const state = await canonicalCacheState(engine, slug, sourceId, cached);
+  if (typeof state === 'object') {
+    warnings.push(`${slug}: FACTS_PAGE_FILE_HELD: ${state.code}: ${state.message} Refusing destructive fact reconciliation until the page file reads whole.`);
+    return true;
+  }
   if (state !== 'stale') return false;
   warnings.push(
     `${slug}: FACTS_PAGE_CACHE_STALE: canonical Markdown differs from the pages cache; ` +

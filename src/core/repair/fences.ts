@@ -30,7 +30,9 @@
  * clone_in_progress, incarnation_changed, local_path_missing,
  * coordination_path_missing, or owner_unavailable; sync_in_progress,
  * changed_since_read, changed_since_preview, claimed_elsewhere,
- * already_clean). A source whose sync is running is not skipped as a whole:
+ * already_clean; or a split page head's reason: split_page_incomplete,
+ * split_head_modified, split_page_too_large when it does not reassemble,
+ * split_page_unsupported on a legacy source). A source whose sync is running is not skipped as a whole:
  * only the candidates a write in flight or the sync's frozen manifest still
  * names are `sync_in_progress`, and the busy set is read again at apply and
  * at the write's admission (#6278). When the daily
@@ -281,7 +283,7 @@ export const fencesRepair: RepairHandler = {
       }
       const read = await readFenceTarget(engine, src, { key: cand.key, path: cand.path });
       if (!read.ok) {
-        if (read.reason !== 'gone') await keep({ item: name, reason: read.reason, tier: 'manual', resolution: read.reason === 'origin_conflict' ? read.message : read.reason === 'unsafe_path'
+        if (read.reason !== 'gone') await keep({ item: name, reason: read.reason, tier: 'manual', resolution: 'message' in read ? read.message : read.reason === 'unsafe_path'
           ? `${cand.path} is a symlink, sits under one, or resolves outside the source root; gbrain never writes through one. Replace it with the real file.`
           : `${cand.path} is not valid UTF-8; re-save it as UTF-8 and preview again.` });
         continue;
@@ -433,7 +435,7 @@ async function applyFence(ctx: OperationContext, entry: ApprovedFence, opts: App
     return skipped('sync_in_progress', repairBusyMessage(src.busy, src.id, entry.path ?? entry.slug));
   }
   const read = await readFenceTarget(engine, src, { key: entry.key, path: entry.path });
-  if (!read.ok) return skipped(moved, `The candidate is ${read.reason === 'gone' ? 'gone' : read.reason}.`);
+  if (!read.ok) return 'split' in read ? skipped(read.reason, read.message) : skipped(moved, `The candidate is ${read.reason === 'gone' ? 'gone' : read.reason}.`);
   const target = read.target;
   if (target.before !== entry.before || (target.snapshot?.revision ?? null) !== entry.revision && target.mode !== 'managed' && target.mode !== 'legacy') {
     return skipped(moved, `${entry.path ?? entry.slug} changed since it was ${opts.expect ? 'previewed' : 'read'}; preview again with gbrain repair fences --source ${src.id}.`);

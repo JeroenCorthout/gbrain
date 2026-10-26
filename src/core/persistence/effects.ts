@@ -56,6 +56,11 @@ import { scannerSlugRootMode } from '../write-through.ts';
 import { recoveryStagingFile } from './staging.ts';
 import { selectEffectRecoveries } from './effect-recovery-scan.ts';
 import { nativeFileTarget } from './native-file-target.ts';
+import { withFilesystemPublication } from './filesystem-guard.ts';
+import type { MutationFile } from './bundle-files.ts';
+import { releaseSplitTargets, splitPublicationTargets, type SplitFileFields } from './split-files.ts';
+import { splitMirrorPlan, stageSplitMirror } from './split-mirror.ts';
+import { pageFileSha256, partsDirFor } from '../split-layout/index.ts';
 import { sourceMirrorReadOnly } from './mirror-read-only.ts';
 import { isLockOpenFailure, type NativeLockHandle } from './native-lock.ts';
 import { planPageEmbedding } from '../page-embedding-budget.ts';
@@ -266,6 +271,18 @@ async function mirrorPage(engine: BrainEngine, effect: PersistenceEffect, bindin
   const target = { kind: 'withdrawal-mirror' as const, path: file.path, root: file.root, beforeHash: file.expectedBeforeHash ?? null,
     mode: statSync(file.path).mode & 0o7777, ownerEpoch: String(binding!.owner_epoch), pageId: snapshot.page.id,
     sourceIncarnation: snapshot.sourceIncarnation, slug: snapshot.page.slug, revision: snapshot.revision };
+  // Wave B PR 5: a split page, or a render over the threshold, is mirrored as one unit (head plus parts, split-mirror.ts).
+  const unit: MutationFile & SplitFileFields = { path: file.path, root: file.root, content, expectedBeforeHash: file.expectedBeforeHash };
+  if (await splitPublicationTargets(engine, unit)) {
+    try {
+      const plan = await splitMirrorPlan(engine, target, unit);
+      await reserveEffectRecovery(engine, effect, plan.record, plan.bytes, opts.hostId);
+      await withFilesystemPublication([file.root], () => stageSplitMirror(engine, plan));
+      await faultPoint('effect_recovery:split_staged', { effectId: effect.id, requestId: effect.request_id, sourceId: effect.source_id, slug: target.slug });
+      await recoverEffectPublication(engine, effect, opts.hostId, { boundary: opts.boundary, between: keep });
+    } finally { releaseSplitTargets(unit); }
+    return;
+  }
   if (isStreamedContent(content)) {
     // Version 2: the file is staged by path and digest, never embedded; the reservation counts its one staged copy.
     const record: EffectRecovery = { ...target, version: 2, afterHash: content.hash, after: null,
@@ -392,15 +409,25 @@ async function publishGitPage(engine: BrainEngine, effect: PersistenceEffect, bi
   // A page the mirror passed is committed only when its raw bytes are the mirror's rendering of the page as it is now: the
   // hash the mirror recorded writing at this revision, else the rendering measured now (a segmented page's from its
   // segments, unreadPageFile, never held as one string).
+  // A split head is compared through the page file its parts reassemble to (a recorded head hash would not cover its parts).
   const mirrored = attempt.gate?.files.get(snapshot.page.slug);
-  if (verdict === 'evidence' && (snapshot.page.deleted_at || persistenceFileHash(path) !== (mirrored?.revision === snapshot.revision ? mirrored.hash
+  const split = mirrored?.split === true || existsSync(partsDirFor(path));
+  if (verdict === 'evidence' && (snapshot.page.deleted_at || walkedFileHash(path, split) !== (mirrored?.revision === snapshot.revision && !mirrored.split ? mirrored.hash
     : content === null ? (await unreadPageFile(engine, snapshot, keep)).hash : fileContentHash(content)))) {
     await skipTarget(engine, effect, snapshot, 'withdrawal_not_mirrored');
     return;
   }
-  const result = await publishGitEffect(root, relative(root, path).split(sep).join('/'), opts.signal, hardened, gitCommitNote(effect), undefined, owner);
+  // Wave B PR 5: a split head commits with its part files.
+  const result = await (split ? publishSplitGitEffect : publishGitEffect)(root, relative(root, path).split(sep).join('/'), opts.signal, hardened, gitCommitNote(effect), undefined, owner);
   if (result.reason === 'durability_not_enabled') await completeEffect(engine, effect, result);
   else await finishPage(engine, effect, snapshot, result);
+}
+
+/** The hash a Git walk compares with the page's render: the page file a split head's parts reassemble to, else the file's own. */
+function walkedFileHash(path: string, split: boolean): string | null {
+  if (!split) return persistenceFileHash(path);
+  const page = pageFileSha256(path);
+  return page.hold ? null : page.sha256;
 }
 
 /**

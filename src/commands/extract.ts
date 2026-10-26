@@ -48,6 +48,7 @@ import { isMissingSchemaObject } from '../core/utils.ts';
 import type { PageType } from '../core/types.ts';
 import { parseMarkdown } from '../core/markdown.ts';
 import { resolveCandidateSources, resolveLinkFallbackDefault, loadLinkPageMetadata, capturedLinkEndpoints, fileLinkOwnership, replaceFileLinks, replacePageFileLinks, type LinkPageMetadata } from '../core/link-reconciliation.ts';
+import { readPageText } from '../core/split-layout/page-file.ts';
 import { collectWantedLinks, isWantedPagesEnabled } from '../core/wanted-links.ts';
 import { readLineGrammarSettings, statedRelationTypes } from '../core/line-grammar.ts';
 import { effectiveLinkExtractorWatermark, linkExtractorWatermarkFor } from '../core/link-extraction-watermark.ts';
@@ -1454,7 +1455,7 @@ async function extractForSlugs(
       try {
         const snapshot = ownership && (ownership.metadata.get(`${sourceId ?? 'default'}\0${slug}`)?.type === 'meeting' || ownership.origins.has(slug))
           ? await engine.readPageSnapshot(slug, { sourceId: sourceId ?? 'default' }) : null;
-        const content = readFileSync(fullPath, 'utf-8');
+        const content = readPageText(fullPath);
 
         if (doLinks) {
           const links = await extractLinksFromFile(content, relPath, allSlugs, { globalBasename, includeFrontmatter, pack, pageTypes, aliases });
@@ -1569,7 +1570,7 @@ async function extractLinksFromDir(
         const slug = pathToSlug(file.relPath);
         const snapshot = ownership && (ownership.metadata.get(`${sourceId ?? 'default'}\0${slug}`)?.type === 'meeting' || ownership.origins.has(slug))
           ? await engine.readPageSnapshot(slug, { sourceId: sourceId ?? 'default' }) : null;
-        const content = readFileSync(file.path, 'utf-8');
+        const content = readPageText(file.path);
         const links = await extractLinksFromFile(content, file.relPath, allSlugs, { globalBasename, pack, pageTypes });
         if (ownership) {
           const written = await extractionWrite('links', links.length, [{ slug, source_id: sourceId ?? 'default' }], async () => {
@@ -1658,7 +1659,7 @@ async function extractTimelineFromDir(
       if (isAborted(signal)) return;
       if (quarantined.has(pathToSlug(file.relPath))) return;
       try {
-        const content = readFileSync(file.path, 'utf-8');
+        const content = readPageText(file.path);
         const slug = pathToSlug(file.relPath);
         if (!dryRunSeen) await retractRemovedTimelineEntries(engine, slug, sourceId ?? 'default', content);
         for (const entry of extractTimelineFromContent(content, slug)) {
@@ -1761,7 +1762,7 @@ export async function extractLinksForSlugs(
     const relPath = quarantined.has(slug) ? undefined : resolveSlugRelPath(slugToPath, repoPath, slug);
     if (relPath === undefined) continue;
     // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal -- relPath comes from the slug→path index built by walkMarkdownFiles(repoPath) (repo-relative entries of that walk) or the validated-slug legacy fallback, never from a caller
-    try { files.push({ slug, relPath, content: readFileSync(join(repoPath, relPath), 'utf-8') }); }
+    try { files.push({ slug, relPath, content: readPageText(join(repoPath, relPath)) }); }
     catch (e) { files.push({ slug, error: e instanceof Error ? e.message : String(e) }); }
   }
   const extracted = await withEndpointPageTypes(repoPath, tree, pack, async (pageTypes) => {
@@ -1824,7 +1825,7 @@ export async function extractTimelineForSlugs(
     // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal -- relPath comes from the walkMarkdownFiles(repoPath) index or the validated-slug legacy fallback, never from a caller
     const filePath = join(repoPath, relPath);
     try {
-      const content = readFileSync(filePath, 'utf-8');
+      const content = readPageText(filePath);
       const entries = extractTimelineFromContent(content, slug);
       await retractRemovedTimelineEntries(engine, slug, opts?.sourceId ?? 'default', content);
       for (const entry of entries) {

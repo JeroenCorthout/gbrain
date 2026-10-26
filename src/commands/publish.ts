@@ -16,6 +16,7 @@ import { readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { randomBytes, createCipheriv, pbkdf2Sync } from 'crypto';
 import { dirname, basename, join } from 'path';
 import { createRequire } from 'module';
+import { readPageFile } from '../core/split-layout/page-file.ts';
 
 // Inline marked.js so published HTML is truly self-contained (no CDN dependency)
 const require = createRequire(import.meta.url);
@@ -347,7 +348,12 @@ export async function runPublish(args: string[]) {
     process.exit(1);
   }
 
-  const raw = readFileSync(inputPath, 'utf-8');
+  const page = readPageFile(inputPath);
+  if (page.hold) {
+    console.error(page.hold.message);
+    process.exit(1);
+  }
+  const raw = page.bytes.toString('utf8');
   const cleaned = makeShareable(raw);
   const title = (titleIdx >= 0 ? args[titleIdx + 1] : null) || extractTitle(raw);
 

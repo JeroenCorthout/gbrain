@@ -840,7 +840,9 @@ export function parseTakesBeforeCursor(rest: readonly string[]): { updatedAt: st
  * route handler that dispatches into this CLI command).
  *
  * Inserts a `<!-- gbrain:revisit -->` cursor marker at the bottom of the
- * page body so the editor opens with intent visible.
+ * page body so the editor opens with intent visible. A split page head (the
+ * page continues in part files) is refused with `split_page_unsupported`:
+ * the editor would see only its lead, and an edit there holds the page.
  */
 async function cmdRevisit(_engine: BrainEngine, rest: string[]): Promise<void> {
   const slug = rest[0];
@@ -861,6 +863,11 @@ async function cmdRevisit(_engine: BrainEngine, rest: string[]): Promise<void> {
   const filePath = join(repoPath, `${slug}.md`);
   if (!existsSync(filePath)) {
     process.stderr.write(`Page not found: ${filePath}\n`);
+    process.exit(1);
+  }
+  const { partsDirFor } = await import('../core/split-layout/paths.ts');
+  if (existsSync(partsDirFor(filePath))) {
+    process.stderr.write(`split_page_unsupported: ${filePath} is a split page head (its page continues in part files in ${partsDirFor(filePath)}), so it was not opened or changed: an edit to the head would hold the page at the next sync. Read the whole page with gbrain get ${slug}; gbrain pages split-storage ${slug} shows how it is stored.\n`);
     process.exit(1);
   }
   // Append a cursor marker if not already present.

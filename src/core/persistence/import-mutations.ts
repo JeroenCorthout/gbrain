@@ -27,6 +27,7 @@ import { pageSnapshotKey } from '../page-snapshot-batch.ts';
 import type { WorktreeBinding } from './ownership.ts';
 import type { PageSnapshot } from '../page-state/types.ts';
 import { readFix, trustedCliRequired } from '../ops/op-fix.ts';
+import { pageFileSha256, PARTS_KEY } from '../split-layout/index.ts';
 
 /** One file of a managed import batch: its path and the source-relative path its slug is derived from. */
 export interface ManagedImportFile { filePath: string; sourcePath: string }
@@ -130,6 +131,13 @@ export async function importManagedFiles(engine: BrainEngine, files: readonly Ma
       const streamed = await managedStreamedIdentity(sourcePath, inputPath, target, bodyPolicy, sourceId);
       const bytes = streamed ? null : readImportBytes(inputPath);
       const { slug, content } = streamed ? { slug: streamed.slug, content: undefined } : managedImportContent(sourcePath, bytes!, opts.activePack);
+      const split = bytes?.includes(PARTS_KEY) ? pageFileSha256(inputPath) : null;
+      if (split?.split) {
+        if (split.hold) throw opError(split.hold.code === 'split_head_modified' ? 'split_head_modified' : 'split_page_incomplete',
+          `${sourcePath} is a split page head that cannot be read as its page file, so it was not imported.`, split.hold.message);
+        settled[i] = { status: 'fulfilled', value: { slug, status: 'skipped', chunks: 0 } };
+        continue;
+      }
       if (slugs.has(slug)) { rest = i; break; }
       slugs.add(slug);
       planned.push({ i, slug, content, ...(streamed ? { bodyRef: streamed.bodyRef } : {}), sourcePath, path, inputPath,

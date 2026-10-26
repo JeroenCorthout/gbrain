@@ -3,7 +3,7 @@
  * primitives every Google sweep (contacts, calendar, Gmail) shares. Peeled
  * from google-source.ts so the sweeps can live in their own modules.
  */
-import { closeSync, existsSync, fchmodSync, lstatSync, openSync, readFileSync, renameSync, rmSync, unlinkSync, writeSync } from 'node:fs';
+import { chmodSync, closeSync, existsSync, fchmodSync, lstatSync, openSync, renameSync, rmSync, unlinkSync, writeSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
 import type { BrainEngine } from '../engine.ts';
@@ -14,6 +14,8 @@ import { connectorRender } from '../connectors/connector-text.ts';
 import { isWriteTargetContained } from '../path-confine.ts';
 import { mkdirPrivate } from '../atomic-write.ts';
 import { replaceableFile } from '../facts/file-body-guard.ts';
+import { PageFileChanged, readPageFileText, removeSplitPageFile, writeSplitPageFile } from '../split-write-through.ts';
+import { partsDirFor } from '../split-layout/paths.ts';
 import { FACTS_FENCE_BEGIN, FACTS_FENCE_END, replaceOrInsertFactsFence } from '../facts-fence.ts';
 import { TAKES_FENCE_BEGIN } from '../takes-fence.ts';
 import { conceptPreservationHold, preserveCanonicalFences } from '../cycle/concept-publication.ts';
@@ -215,9 +217,11 @@ export async function importRendered(
       throw new Error(result.error ?? `Import failed for ${relPath}`);
     }
     if (guard?.ok) {
-      const current = existsSync(filePath) ? readFileSync(filePath, 'utf8') : null;
-      if (current !== guard.expectedFileBytes) throw drift();
-      renameSync(tmpPath, filePath);
+      const unchanged = () => { const file = readPageFileText(filePath); if (file.hold || file.text !== guard.expectedFileBytes) throw drift(); };
+      unchanged();
+      const split = await writeSplitPageFile(deps.engine, filePath, deps.cfg.dir, markdown, unchanged).catch(error => { throw error instanceof PageFileChanged ? drift() : error; });
+      if (!split) renameSync(tmpPath, filePath);
+      else keepSplitPagePrivate(filePath, split);
     }
     if (result.status === 'imported') {
       summary.pagesAffected.push(result.slug);
@@ -232,6 +236,12 @@ export async function importRendered(
   } finally {
     if (!databaseOnly) rmSync(tmpPath, { force: true });
   }
+}
+
+/** A split page's head and parts stay as private as a one-file page (0600, the parts directory 0700). */
+function keepSplitPagePrivate(filePath: string, paths: readonly string[]): void {
+  if (existsSync(partsDirFor(filePath))) chmodSync(partsDirFor(filePath), 0o700);
+  for (const path of paths) if (existsSync(path)) chmodSync(path, 0o600);
 }
 
 export async function deletePageByRelPath(
@@ -254,5 +264,6 @@ export async function deletePageByRelPath(
   // Same containment guard as the write path: a hostile/corrupt DB path
   // carrying `../` must never unlink outside the managed dir.
   const target = join(deps.cfg.dir, relPath);
-  if (isWriteTargetContained(target, deps.cfg.dir)) rmSync(target, { force: true });
+  if (!isWriteTargetContained(target, deps.cfg.dir)) return;
+  if (!existsSync(target) || !removeSplitPageFile(target, deps.cfg.dir)) rmSync(target, { force: true });
 }

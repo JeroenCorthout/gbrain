@@ -46,7 +46,7 @@ import { assertInlineBody } from './page-body/page-shape.ts';
  * eventual-consistency contract as the facts fence lane.
  */
 
-import { existsSync, readFileSync, writeFileSync, renameSync, unlinkSync, readdirSync } from 'node:fs';
+import { existsSync, writeFileSync, renameSync, unlinkSync, readdirSync } from 'node:fs';
 import { basename, dirname } from 'node:path';
 import type { BrainEngine } from './engine.ts';
 import { sanitizeForJsonb } from './batch-rows.ts';
@@ -68,6 +68,8 @@ import {
 } from './brain-repo-durability.ts';
 import { extractTimelineFromContent } from './timeline-extract.ts';
 import { urlCloneReadOnly } from './url-clone.ts';
+import type { PageFileHoldCode } from './split-layout/page-file.ts';
+import { readPageFileText, writeSplitPageFile } from './split-write-through.ts';
 
 /** Raw op params for one manual timeline entry (date pre-validated by caller). */
 export interface TimelineEntryWriteInput {
@@ -91,7 +93,10 @@ export interface TimelineWriteThroughOutcome {
    * canonical `timeline_entries` row inserted, and the disk write attempted
    * (its own outcome in `file` — best-effort, like put_page's write-through).
    * False → nothing was written here; the caller MUST run the legacy DB-only
-   * insert so the entry is recorded (unchanged pre-#1856 path).
+   * insert so the entry is recorded (unchanged pre-#1856 path), except for a
+   * split page head's hold (`split_page_incomplete`, `split_head_modified`,
+   * `split_page_too_large`), which is a refusal: the page file cannot be read,
+   * so the caller records nothing (the entry would exist only in the database).
    */
   handled: boolean;
   /** Disk write outcome (present when handled). */
@@ -116,7 +121,8 @@ export interface TimelineWriteThroughOutcome {
     | 'render_not_roundtrippable'
     | 'file_missing'
     | 'case_insensitive_collision'
-    | 'splice_not_roundtrippable';
+    | 'splice_not_roundtrippable'
+    | PageFileHoldCode;
   /** Set when the helper threw mid-way; caller still falls back to DB-only. */
   error?: string;
 }
@@ -294,7 +300,10 @@ export function spliceTimelineIntoFileText(fileText: string, date: string, block
  * into the on-disk file + row splice + insert". Never throws: failures return
  * `handled: false` so the caller's legacy DB-only insert still records the
  * entry (with `entry` carrying the canonical tuple when the bullet already
- * reached the disk file — see TimelineWriteThroughOutcome.entry).
+ * reached the disk file — see TimelineWriteThroughOutcome.entry). A split
+ * page head is read as its page file F' and written back as its split unit
+ * (head plus parts); one whose parts do not reassemble is refused before any
+ * database write with its hold code, and the caller records nothing.
  */
 export async function writeTimelineEntryThrough(
   engine: BrainEngine,
@@ -361,8 +370,9 @@ export async function writeTimelineEntryThrough(
           );
           return { handled: false, skipped: 'case_insensitive_collision' };
         }
-
-        const beforeText = readFileSync(filePath, 'utf8');
+        const pageFile = readPageFileText(filePath);
+        if (pageFile.hold) return { handled: false, skipped: pageFile.hold.code };
+        const beforeText = pageFile.text ?? '';
         const afterText = spliceTimelineIntoFileText(beforeText, entry.date, rendered.block);
 
         // fence-write's parse-before-rename analog: the spliced text must
@@ -380,10 +390,14 @@ export async function writeTimelineEntryThrough(
         // Atomic write: unique temp sibling + rename (writePageThrough's
         // convention). Clean the temp up on failure — never leak a stray.
         const tmpPath = atomicStagingPath(filePath);
+        let splitPaths: string[] | null = null;
         try {
           assertSourceFilesystemActive();
-          writeFileSync(tmpPath, afterText, 'utf8');
-          renameSync(tmpPath, filePath);
+          splitPaths = await writeSplitPageFile(engine, filePath, writeRoot, afterText, assertSourceFilesystemActive);
+          if (!splitPaths) {
+            writeFileSync(tmpPath, afterText, 'utf8');
+            renameSync(tmpPath, filePath);
+          }
         } catch (writeErr) {
           try {
             if (existsSync(tmpPath)) unlinkSync(tmpPath);
@@ -424,7 +438,7 @@ export async function writeTimelineEntryThrough(
         let lastPushStatus: PushLogOutcome | undefined;
         try {
           if (isDurabilityHardened(writeRoot)) {
-            committed = commitWriteThroughFile(writeRoot, filePath, slug);
+            committed = commitWriteThroughFile(writeRoot, filePath, slug, 'write-through', splitPaths ?? []);
             if (committed) {
               pushed = 'pending';
               lastPushStatus = getLastPushOutcome(currentBranch(writeRoot), writeRoot);

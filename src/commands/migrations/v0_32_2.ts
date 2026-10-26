@@ -36,7 +36,7 @@
  * forever; they live in the legacy keyspace permanently.
  */
 
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { execFileSync } from '../../core/spawn.ts';
 
 import type {
@@ -49,6 +49,7 @@ import { parseFactsFence } from '../../core/facts-fence.ts';
 import { duplicateActiveFenceRows } from '../../core/facts/extract-from-fence.ts';
 import { isWriteThroughDisabled, resolvePageWriteTarget } from '../../core/write-through.ts';
 import { serializePageToMarkdown } from '../../core/markdown.ts';
+import { readPageFile } from '../../core/split-layout/page-file.ts';
 import { managedPersistenceEnabled } from '../../core/persistence/ownership.ts';
 import { isSourceDbOnlySlug } from '../../core/persistence/source-storage.ts';
 import { OperationError } from '../../core/ops/contract.ts';
@@ -259,6 +260,7 @@ async function phaseCVerify(
     // nothing to compare; like the backfill's skipped_no_page, it is not drift.
     // A missing page that still has a live row is drift.
     let skippedExpiredNoPage = 0;
+    const splitHeld: string[] = [];
     // Managed brains publish the fence through the coordinator, which writes
     // the canonical file in the same publication; the database copy is the
     // one every managed page has, database-only pages included.
@@ -294,7 +296,12 @@ async function phaseCVerify(
           else mismatches.push(`${g.source_markdown_slug} (file missing)`);
           continue;
         }
-        body = readFileSync(target.filePath, 'utf-8');
+        const file = readPageFile(target.filePath);
+        if (file.hold) {
+          splitHeld.push(`${g.source_markdown_slug}: ${file.hold.code}`);
+          continue;
+        }
+        body = file.bytes.toString('utf8');
       }
       const parsed = parseFactsFence(body);
       const indexed = new Set(g.row_nums.map(Number));
@@ -323,7 +330,8 @@ async function phaseCVerify(
       };
     }
     const skipped = skippedExpiredNoPage > 0 ? ` skipped_expired_no_page=${skippedExpiredNoPage}` : '';
-    return { name: 'verify', status: 'complete', detail: `pages_checked=${pagesChecked}${skipped}` };
+    const held = splitHeld.length > 0 ? ` split_page_unsupported=${splitHeld.length} (${splitHeld.slice(0, 3).join(', ')}${splitHeld.length > 3 ? ', ...' : ''})` : '';
+    return { name: 'verify', status: 'complete', detail: `pages_checked=${pagesChecked}${skipped}${held}` };
   } catch (e) {
     return { name: 'verify', status: 'failed', detail: e instanceof Error ? e.message : String(e) };
   }

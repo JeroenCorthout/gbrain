@@ -13,7 +13,7 @@ import { currentVerifiedLocalWriter, existingLocalHostId, readLocalWriter, verif
 import { getWorktreeBinding } from './ownership.ts';
 import { prepareFileTarget } from './page-prepare.ts';
 import { readFix, trustedCliRequired } from '../ops/op-fix.ts';
-import { readReconcileState } from './reconcile-state.ts';
+import { isSplitHeadRefusal, readReconcileState } from './reconcile-state.ts';
 import { reconcileCanonical } from './reconcile-merge.ts';
 import { classifyDrift } from './reconcile-additive.ts';
 import { isDatabaseOnlyPage, slugDerivedOrigin } from './unbound-pages.ts';
@@ -133,6 +133,10 @@ async function classifyFinding(engine: BrainEngine, sourceId: string, slug: stri
     return { classification: verdict, suggestion, drift_paths: classification.paths.map(({ path, class: kind, reason }) => ({ path, class: kind, reason })),
       ...(Number.isFinite(updated) ? { file_modified_after_database: statSync(state.path).mtimeMs > updated } : {}) };
   } catch (error) {
+    if (isSplitHeadRefusal(error)) {
+      counts.split_page_unsupported = (counts.split_page_unsupported ?? 0) + 1;
+      return { classification: 'split_page_unsupported', suggestion: error.suggestion };
+    }
     // #5966 (W14 P1.7): a legacy render of a slug the path cannot derive, with no slug stamp; the frontmatter repair is the fix.
     const slugRule = error instanceof OperationError && (error.detail === 'slug_rule_mismatch' || (error.code === 'invalid_params' && slugifyPath(slug + '.md') !== slug));
     if (slugRule) {

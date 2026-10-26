@@ -160,7 +160,7 @@ test('reconcile never reads a split head as the file side', () => brain(async b 
   const registration = await registerLocalWriter(engine, 'cli');
   await withVerifiedLocalRegistration(engine, registration, async () => {
     const preview = runReconcilePreview(engine, { source_id: 'default', slug: 'notes/big' });
-    await expect(preview).rejects.toMatchObject({ code: 'invalid_params', message: 'Reconcile does not read split page heads.' });
+    await expect(preview).rejects.toMatchObject({ code: 'source_changed', detail: 'split_page_unsupported', message: 'Reconcile does not read split page heads.' });
   });
   expect((await stored(engine))?.compiled_truth).toContain('Line 79 of v1');
 }), 120_000);

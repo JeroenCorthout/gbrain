@@ -614,17 +614,20 @@ export async function isDurabilityHardenedAsync(repoPath: string): Promise<boole
  * `git add -- <path>` stages a removal as readily as an edit, so
  * `deletePageThrough` reuses this helper with `action: 'delete write-through'`
  * — same hardening gate, same explicit-path discipline, distinct subject line.
+ * `splitPaths`: a split page's head and the part files written or removed with
+ * it (split-write-through.ts), committed together in the same commit.
  */
 export function commitWriteThroughFile(
   repoPath: string,
   absPath: string,
   slug: string,
   action: 'write-through' | 'delete write-through' = 'write-through',
+  splitPaths: readonly string[] = [],
 ): boolean {
   try {
     const rel = relative(repoPath, absPath);
     if (!rel || rel.startsWith('..') || isAbsolute(rel)) return false;
-    return commitPathsLocked(repoPath, [absPath], `gbrain: ${action} ${slug}`, { lockWaitMs: WRITE_THROUGH_LOCK_WAIT_MS }) !== null;
+    return commitPathsLocked(repoPath, [...new Set([absPath, ...splitPaths])], `gbrain: ${action} ${slug}`, { lockWaitMs: WRITE_THROUGH_LOCK_WAIT_MS }) !== null;
   } catch {
     return false;
   }

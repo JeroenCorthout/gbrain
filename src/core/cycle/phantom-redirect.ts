@@ -61,6 +61,7 @@ import { isAborted } from '../abort-check.ts';
 import { logPhantomEvent, type PhantomOutcome } from '../facts/phantom-audit.ts';
 import { MOVE_WITHDRAWAL_SUBJECT_SQL } from '../facts/withdrawal-schema.ts';
 import { isWriteThroughDisabled, resolvePageWriteTarget } from '../write-through.ts';
+import { readPageFileText, removeSplitPageFile, writeSplitPageFile } from '../split-write-through.ts';
 import { fileBodyMatchesStored, fileDatabaseDriftToken, mirrorFileBody, readStoredBody, replaceStoredBody, replaceableFile } from '../facts/file-body-guard.ts';
 import { recordRenameAlias } from '../page-state/rename-alias.ts';
 import { maintenanceTransaction } from '../persistence/attribution.ts';
@@ -247,6 +248,9 @@ async function acquireLockWithRetry(
  * computes for the new file, and the file is re-read immediately before the
  * `.tmp` is renamed last: a file that moved rolls the transaction back and
  * holds the phantom the same way.
+ * A split page head is read as its page file F' (a head whose parts do not reassemble holds the phantom with its hold
+ * code) and written back as its split unit (head plus parts) in place of the rename; a page the rows take over the
+ * split threshold is laid out the same way.
  * A parse-validation failure throws before any DB state has moved.
  */
 async function mergeIntoCanonicalFile(
@@ -255,12 +259,15 @@ async function mergeIntoCanonicalFile(
   canonical: string,
   sourceId: string,
   canonicalPath: string,
+  canonicalRoot: string,
   phantomFacts: ParsedFact[],
   dbMaxRowNum: number,
 ): Promise<{ renumber: Map<number, number> } | { held: string }> {
   if (phantomFacts.length === 0) return { renumber: new Map<number, number>() };
   await materializeCanonicalToDisk(engine, canonical, sourceId, canonicalPath);
-  const bytes = fs.readFileSync(canonicalPath, 'utf-8');
+  const pageFile = readPageFileText(canonicalPath);
+  if (pageFile.hold) return { held: `${canonical} (${pageFile.hold.code}: ${pageFile.hold.message} The phantom ${phantomSlug} was not redirected.)` };
+  const bytes = pageFile.text ?? '';
   const { body: newBody, renumber } = mergePhantomFenceRows(bytes, phantomFacts, dbMaxRowNum);
   const stored = await readStoredBody(engine, sourceId, canonical);
   if (stored && !fileBodyMatchesStored(bytes, canonical, stored)) return { held: canonicalDriftToken(canonical, phantomSlug, sourceId, 'before') };
@@ -276,7 +283,8 @@ async function mergeIntoCanonicalFile(
     );
   }
   if (!stored) {
-    fs.renameSync(tmpPath, canonicalPath);
+    if (await writeSplitPageFile(engine, canonicalPath, canonicalRoot, newBody)) fs.rmSync(tmpPath, { force: true });
+    else fs.renameSync(tmpPath, canonicalPath);
     return { renumber };
   }
   const parsed = parseMarkdown(newBody, `${canonical}.md`);
@@ -285,8 +293,9 @@ async function mergeIntoCanonicalFile(
   const fileMoved = new Error('canonical file changed during the phantom redirect');
   const written = await maintenanceTransaction(engine, async tx => {
     if (!await mirrorFileBody(tx, sourceId, canonical, newBody, stored, hash)) return false;
-    if (fs.readFileSync(canonicalPath, 'utf-8') !== bytes) throw fileMoved;
-    fs.renameSync(tmpPath, canonicalPath);
+    if (pageFileText(canonicalPath) !== bytes) throw fileMoved;
+    if (await writeSplitPageFile(tx, canonicalPath, canonicalRoot, newBody)) fs.rmSync(tmpPath, { force: true });
+    else fs.renameSync(tmpPath, canonicalPath);
     return true;
   }).catch(err => { if (err === fileMoved) return false; throw err; });
   if (written) return { renumber };
@@ -314,6 +323,12 @@ async function mergeIntoCanonicalBody(
   const written = await maintenanceTransaction(engine, tx =>
     replaceStoredBody(tx, sourceId, canonical.slug, { compiled_truth: body, timeline: expected.timeline ?? '' }, expected));
   return written ? { renumber } : { held: fileDatabaseDriftToken(canonical.slug, sourceId, 'during', 'the phantom was not redirected; the next cycle retries', 'the phantom redirect') };
+}
+
+/** The page file at `path` as text (F' for a split head; null when absent), or undefined for a head whose parts do not reassemble. */
+function pageFileText(path: string): string | null | undefined {
+  const file = readPageFileText(path);
+  return file.hold ? undefined : file.text;
 }
 
 /** #6982: the hold entry for a phantom whose canonical file and database body differ (or moved during the redirect). */
@@ -681,7 +696,8 @@ export async function tryRedirectPhantom(
       return { outcome: 'drift', canonical };
     }
     const canonicalPath = writeTarget.ok ? writeTarget.filePath : path.join(brainDir, `${canonical}.md`);
-    merged = await mergeIntoCanonicalFile(engine, page.slug, canonical, sourceId, canonicalPath, phantomFence.facts, Number(dbMax?.n ?? 0));
+    merged = await mergeIntoCanonicalFile(engine, page.slug, canonical, sourceId, canonicalPath, writeTarget.ok ? writeTarget.writeRoot : brainDir,
+      phantomFence.facts, Number(dbMax?.n ?? 0));
   }
   if ('held' in merged) return driftHold(page.slug, sourceId, canonical, merged.held);
   const rowMap = merged.renumber;
@@ -703,12 +719,12 @@ export async function tryRedirectPhantom(
   await maintenanceTransaction(engine, tx => tx.softDeletePage(page.slug, { sourceId }));
   let held: string | undefined;
   if (phantomFile && fs.existsSync(phantomPath)) {
-    let current: string | null = null;
-    try { current = fs.readFileSync(phantomPath, 'utf-8'); } catch { /* vanished: nothing to remove */ }
+    let current: string | null | undefined = null;
+    try { current = pageFileText(phantomPath); } catch { /* vanished: nothing to remove */ }
     if (current !== null && current !== phantomFile.expectedFileBytes) held = phantomFileDriftToken(page.slug, sourceId, 'during');
     else if (current !== null) {
       try {
-        fs.unlinkSync(phantomPath);
+        if (!removeSplitPageFile(phantomPath, brainDir)) fs.unlinkSync(phantomPath);
       } catch (err) {
         // ENOENT is fine (someone else got there first). Anything else
         // is logged but doesn't unwind the redirect — the next sync will

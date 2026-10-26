@@ -5,13 +5,16 @@
  *
  * With a writable source file, strike the row, set valid_until and append the
  * reason atomically. Without a file, retain the same withdrawal and best-effort
- * DB-body strike. Imports overlay stale matching fence rows before chunking.
+ * DB-body strike. A split page (a head plus part files) is struck in its page
+ * file F' and written back as its split unit (split-write-through.ts); a head
+ * whose page file cannot be read is held, its DB body untouched. Imports overlay
+ * stale matching fence rows before chunking.
  * These are retractions: original prose, files and backups may retain text.
  * A Markdown-only clone does not carry DB-only withdrawal records.
  */
 
 import { randomUUID } from 'node:crypto';
-import { existsSync, readFileSync, writeFileSync, renameSync, rmSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 
 import type { BrainEngine } from '../engine.ts';
 import { withPageLock } from '../page-lock.ts';
@@ -28,6 +31,8 @@ import { markBeliefCommits } from '../belief/append.ts';
 import { classifyItemFailure } from '../item-failure.ts';
 import { withdrawnFact } from './withdrawal-overlay.ts';
 import { bestEffortStoredBodyMirror, fileBodyMatchesStored, fileDatabaseDriftToken, mirrorFileBody, readStoredBody } from './file-body-guard.ts';
+import { PageFileChanged, readPageFileText } from '../split-write-through.ts';
+import { publishFenceTmp } from './fence-write.ts';
 
 export interface ForgetFactResult {
   /** True iff the row was found AND a forget was applied (fence or DB). */
@@ -281,7 +286,14 @@ export async function forgetFactInFence(
     }
 
     return withPageLock(slug, async () => {
-      const body = readFileSync(filePath, 'utf-8');
+      const file = readPageFileText(filePath);
+      if (file.hold) {
+        const warning = `${slug} (${file.hold.code}: ${file.hold.message} Meanwhile the withdrawal or supersession remains authoritative; only its page mirror is held)`;
+        console.warn(`[facts.forget] ${warning}`);
+        return { ok: true, path: 'legacy_db', reason, warning };
+      }
+      const body = file.text!;
+      const fileMoved = () => { const now = readPageFileText(filePath); return now.hold !== undefined || now.text !== body; };
       const page = await engine.getPage(slug, { sourceId: row.source_id });
       const segmented = page && isSegmentedPage(page);
       const stored = segmented ? null : await readStoredBody(engine, row.source_id, slug);
@@ -309,18 +321,18 @@ export async function forgetFactInFence(
       }
       if (!segmented) {
         const written = await maintenanceTransaction(engine, async tx => {
-          if (!existsSync(filePath) || readFileSync(filePath, 'utf-8') !== body) return false;
+          if (fileMoved()) return false;
           if (stored ? !await bestEffortStoredBodyMirror(tx, row.source_id, slug, stored,
             savepoint => mirrorFileBody(savepoint, row.source_id, slug, tmpBody, stored), err => {
               mirrorWarning = `FACTS_PAGE_MIRROR_FAILED: ${slug} (source ${row.source_id}): ${err instanceof Error ? err.message : String(err)}; page cache stale until gbrain sync --source ${row.source_id}`;
               console.warn(`[facts.forget] ${mirrorWarning}`);
             }) : await readStoredBody(tx, row.source_id, slug, true)) return false;
-          if (!existsSync(filePath) || readFileSync(filePath, 'utf-8') !== body) throw new WithdrawalFileChanged();
+          if (fileMoved()) throw new WithdrawalFileChanged();
           assertSourceFilesystemActive();
-          renameSync(tmpPath, filePath);
+          await publishFenceTmp(tx, filePath, resolved.writeRoot, tmpBody, () => { if (fileMoved()) throw new WithdrawalFileChanged(); });
           return true;
         }).catch(err => {
-          if (err instanceof WithdrawalFileChanged) return false;
+          if (err instanceof WithdrawalFileChanged || err instanceof PageFileChanged) return false;
           throw err;
         });
         if (!written) {
@@ -329,7 +341,7 @@ export async function forgetFactInFence(
         }
         return { ok: true, path: 'fence', reason, ...(mirrorWarning ? { warning: mirrorWarning } : {}) };
       }
-      renameSync(tmpPath, filePath);
+      await publishFenceTmp(engine, filePath, resolved.writeRoot, tmpBody, () => undefined);
 
       // Stamp the DB to match: valid_until = today, expired_at = now().
       // This keeps DB query patterns (active facts WHERE expired_at IS NULL)

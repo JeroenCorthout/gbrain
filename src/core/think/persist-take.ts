@@ -40,7 +40,8 @@ import { deriveTrust, derivedMaintenanceTransaction } from '../trust/taint.ts';
 import { derivedFileTarget } from '../cycle/derived-write-through.ts';
 import { fileDatabaseDriftToken, mirroredBody, readStoredBody } from '../facts/file-body-guard.ts';
 import { stripTakesFence, TAKES_FENCE_BEGIN } from '../takes-fence.ts';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync } from 'node:fs';
+import { readPageFileText } from '../split-write-through.ts';
 
 /** Max claim length for a fence cell — one readable line, not an essay. */
 export const TAKE_CLAIM_MAX_CHARS = 300;
@@ -184,7 +185,9 @@ async function assertTakeFileCanonical(engine: BrainEngine, slug: string, source
       `${slug} has no checkout file, so the take was not written: a takes-only file would be imported over the database page.`,
       `Restore the page's file first (gbrain get ${slug} --source ${sourceId}, then gbrain put ${slug} --source-id ${sourceId} with write-through on), then rerun the take.`);
   }
-  const file = mirroredBody(readFileSync(path, 'utf-8'), slug);
+  const pageFile = readPageFileText(path);
+  if (pageFile.hold) throw new TakesWriteError(pageFile.hold.code, pageFile.hold.message);
+  const file = mirroredBody(pageFile.text ?? '', slug);
   if (bodyOutsideTakes(file.compiled_truth, file.timeline) !== bodyOutsideTakes(stored.compiled_truth, stored.timeline)) {
     throw new TakesWriteError('mirror_unavailable', fileDatabaseDriftToken(slug, sourceId, 'before', 'the take was not written'));
   }

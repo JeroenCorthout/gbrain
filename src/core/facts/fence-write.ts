@@ -50,7 +50,9 @@ import { isWriteThroughDisabled, resolvePageWriteTarget } from '../write-through
 import { isDurabilityHardened, commitWriteThroughFile } from '../brain-repo-durability.ts';
 import { upsertFactRow, parseFactsFence, formatFenceDate } from '../facts-fence.ts';
 import { unparsedFenceRefusal } from '../fence-repair/refusal.ts';
-import type { OperationError } from '../ops/contract.ts';
+import { OperationError } from '../ops/contract.ts';
+import { PageFileChanged, readPageFileText, writeSplitPageFile } from '../split-write-through.ts';
+import type { PageFileHold } from '../split-layout/page-file.ts';
 import { extractFactsFromFenceText } from './extract-from-fence.ts';
 import { logStubGuardEvent } from './stub-guard-audit.ts';
 import { isFactWithdrawn } from './withdrawal.ts';
@@ -234,6 +236,8 @@ export async function commitFactFenceFile(
   slug: string,
   sourceId: string,
   prewriteState: FactFenceGitPathState,
+  /** A split page's head and the part files written or removed with it, committed together. */
+  splitPaths: readonly string[] = [],
 ): Promise<void> {
   // Self-dirt does NOT block the commit: a prior fence-commit failure
   // (index.lock contention, kill mid-commit) leaves the fence file itself
@@ -258,7 +262,7 @@ export async function commitFactFenceFile(
     if (delayMs > 0) {
       await new Promise(resolve => setTimeout(resolve, delayMs));
     }
-    if (commitWriteThroughFile(repoPath, filePath, slug) && gitPathState(repoPath, filePath) === 'clean') {
+    if (commitWriteThroughFile(repoPath, filePath, slug, 'write-through', splitPaths) && gitPathState(repoPath, filePath) === 'clean') {
       return;
     }
   }
@@ -319,7 +323,12 @@ export function stubEntityPage(
  * and the DB is NOT touched. The caller treats this as a hard
  * failure on the page (no rows inserted, no duplicate count, no
  * fact_ids). The same flag, with `fenceRefusal` and no .tmp, means the
- * page's existing fence does not parse cleanly (#6385 R12).
+ * page's existing fence does not parse cleanly (#6385 R12), or that the page's
+ * file is a split head whose page file cannot be read (its hold code).
+ *
+ * Wave B PR 5: a split page (split-layout/) is edited as its page file F' and
+ * written back as its split unit (split-write-through.ts), the head and parts
+ * as one file write, so the facts reach the files before the database.
  */
 export async function writeFactsToFence(
   engine: BrainEngine,
@@ -395,21 +404,19 @@ export async function writeFactsToFence(
       let body: string;
       const fromFile = existsSync(filePath);
       const stored = fromFile ? await readStoredBody(engine, target.sourceId, target.slug) : null;
-      const drift = (when: 'before' | 'during'): FenceWriteResult => {
-        const warning = fileDatabaseDriftToken(target.slug, target.sourceId, when);
+      const databaseOnly = (warning: string, reason?: FenceWriteResult['databaseOnlyReason']): FenceWriteResult => {
         console.warn(`[facts.fence] ${warning}`);
-        return { inserted: 0, ids: [], legacyFallback: true, databaseOnlyReason: 'file_database_drift', warning, ...withdrawnSkipped };
+        return { inserted: 0, ids: [], legacyFallback: true, ...(reason ? { databaseOnlyReason: reason } : {}), warning, ...withdrawnSkipped };
       };
+      const drift = (when: 'before' | 'during') => databaseOnly(fileDatabaseDriftToken(target.slug, target.sourceId, when), 'file_database_drift');
       if (fromFile) {
-        body = readFileSync(filePath, 'utf-8');
+        const file = readPageFileText(filePath);
+        if (file.hold) return { inserted: 0, ids: [], fenceWriteFailed: true, fenceRefusal: splitHoldRefusal(target, filePath, file.hold), ...withdrawnSkipped };
+        body = file.text!;
         const refusal = refuseUnparsedFence(body, target, filePath);
         if (refusal) return { inserted: 0, ids: [], fenceWriteFailed: true, fenceRefusal: refusal, ...withdrawnSkipped };
         const page = await engine.getPage(target.slug, { sourceId: target.sourceId });
-        if (page && bodyUnread(page)) {
-          const warning = `${target.slug} (page_body_segmented: its file is not compared or rewritten here; facts are recorded database-only)`;
-          console.warn(`[facts.fence] ${warning}`);
-          return { inserted: 0, ids: [], legacyFallback: true, warning, ...withdrawnSkipped };
-        }
+        if (page && bodyUnread(page)) return databaseOnly(`${target.slug} (page_body_segmented: its file is not compared or rewritten here; facts are recorded database-only)`);
         if (stored ? !fileBodyMatchesStored(body, target.slug, stored) : page !== null) return drift('before');
       } else {
         // Stub-creation guard, two arms:
@@ -578,21 +585,21 @@ export async function writeFactsToFence(
         source_session: facts[i].sessionId,
       }));
 
+      const fileMoved = () => { const now = readPageFileText(filePath); return now.hold !== undefined || now.text !== fileBefore; };
+      let splitPaths: string[] = [];
       const result = await maintenanceTransaction(engine, async tx => {
-        if (fileBefore === null ? existsSync(filePath) : !existsSync(filePath) || readFileSync(filePath, 'utf-8') !== fileBefore) return null;
+        if (fileMoved()) return null;
         if (stored && !await bestEffortStoredBodyMirror(tx, target.sourceId, target.slug, stored,
           savepoint => withPageTierKept(savepoint, target, () => mirrorFileBody(savepoint, target.sourceId, target.slug, tmpBody, stored)),
           err => console.warn(`[facts.fence] FACTS_PAGE_MIRROR_FAILED: ${target.slug} (source ${target.sourceId}): ${err instanceof Error ? err.message : String(err)}; page cache stale until gbrain sync --source ${target.sourceId}`))) return null;
         if (!stored && await readStoredBody(tx, target.sourceId, target.slug, true)) return null;
         const inserted = await insertFenceRows(tx, target.sourceId, enriched, facts, derivation);
-        if (fileBefore === null ? existsSync(filePath) : !existsSync(filePath) || readFileSync(filePath, 'utf-8') !== fileBefore) {
-          throw new FenceFileChanged();
-        }
+        if (fileMoved()) throw new FenceFileChanged();
         assertSourceFilesystemActive();
-        renameSync(tmpPath, filePath);
+        splitPaths = await publishFenceTmp(tx, filePath, writeRoot, tmpBody, () => { if (fileMoved()) throw new FenceFileChanged(); });
         return inserted;
       }).catch(err => {
-        if (err instanceof FenceFileChanged) return null;
+        if (err instanceof FenceFileChanged || err instanceof PageFileChanged) return null;
         throw err;
       });
       if (!result) {
@@ -614,6 +621,7 @@ export async function writeFactsToFence(
           target.slug,
           target.sourceId,
           durabilityPrewriteState,
+          splitPaths,
         );
       }
       return { inserted: result.inserted, ids: result.ids, ...withdrawnSkipped };
@@ -623,6 +631,25 @@ export async function writeFactsToFence(
 }
 
 class FenceFileChanged extends Error {}
+
+/** A split head whose page file cannot be read: the fact write refuses with the hold code and records nothing. */
+function splitHoldRefusal(target: FenceTarget, filePath: string, hold: PageFileHold): OperationError {
+  recordWriteFailure(target.slug, target.sourceId, [`${hold.code}: ${hold.message}`], filePath);
+  return new OperationError(hold.code, hold.message, 'Restore the head and its parts (or resolve the edited head) as the message says, then run the fact write again; no fact was recorded.');
+}
+
+/**
+ * Puts a validated `.tmp` page file in place: renamed over an ordinary file, or written as its split unit
+ * (split-write-through.ts; `precondition` runs before any file is touched) and the `.tmp` removed. Returns the split
+ * unit's paths, for the durability commit.
+ */
+export async function publishFenceTmp(engine: BrainEngine, filePath: string, root: string, tmpBody: string, precondition: () => void): Promise<string[]> {
+  const tmpPath = `${filePath}.tmp`;
+  const split = await writeSplitPageFile(engine, filePath, root, tmpBody, precondition);
+  if (!split) { renameSync(tmpPath, filePath); return []; }
+  rmSync(tmpPath, { force: true });
+  return split;
+}
 
 /**
  * The DB stamp of new fence rows in one attributed transaction: at the

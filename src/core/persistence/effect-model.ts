@@ -56,9 +56,11 @@ export function splitGitEffect(effect: Pick<PersistenceEffect, 'kind' | 'data'>)
  * A withdrawal mirror's recovery record. Version 1 embeds the mirrored file (`after`, base64). Version 2 is a segmented
  * page's file, never held whole: `after` is null and `staging.publication` names the file streamed from the page's
  * segments by path, SHA-256 (`afterHash`) and length, written once the record is durable (effect-recovery.ts).
+ * Version 3 is a split page's mirror (split-mirror.ts): `files` lists the head (the record's own path and hashes) first,
+ * then every part file written or removed, each with its own publication stage; `after` is null.
  */
 export interface EffectRecovery {
-  version: 1 | 2;
+  version: 1 | 2 | 3;
   kind: 'withdrawal-mirror';
   path: string;
   root: string;
@@ -71,6 +73,16 @@ export interface EffectRecovery {
   sourceIncarnation: string;
   slug: string;
   revision: string;
+  staging?: import('./staging.ts').RecoveryStaging;
+  files?: SplitMirrorFile[];
+}
+/** One file of a version 3 mirror record: its prior and new SHA-256 (null: absent), and the stage its new bytes are renamed from. */
+export interface SplitMirrorFile {
+  path: string;
+  root: string;
+  beforeHash: string | null;
+  afterHash: string | null;
+  mode: number | null;
   staging?: import('./staging.ts').RecoveryStaging;
 }
 export interface PersistenceEffect {
@@ -113,7 +125,7 @@ export interface PersistenceEffect {
     /** GBRA-130 A-12: pages whose file this withdrawal mirror rewrote, recorded by its recovery with the cursor step. */
     published?: string[];
     /** The SHA-256 of the bytes this mirror wrote to each published page's file, at the page revision it rendered. */
-    published_files?: Record<string, { hash: string; revision: string }> };
+    published_files?: Record<string, { hash: string; revision: string; split?: boolean }> };
   state: 'queued' | 'running' | 'committed' | 'failed';
   execution_token: string | null;
   claim_expires_at: string | Date | null;

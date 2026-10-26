@@ -24,7 +24,7 @@
  * less is `partial`, and a partial census never reads as healthy.
  */
 import { execFileSync } from '../spawn.ts';
-import { existsSync, lstatSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, lstatSync, statSync } from 'node:fs';
 import { join, relative, resolve } from 'node:path';
 import type { BrainEngine } from '../engine.ts';
 import { parseMarkdown } from '../markdown.ts';
@@ -44,6 +44,7 @@ import {
 } from './census-store.ts';
 import type { FenceCtx, FencePage, FenceReason, FenceTier } from './types.ts';
 import { gitChildEnv } from '../git-env.ts';
+import { readPageFile } from '../split-layout/index.ts';
 
 type Exec = Pick<BrainEngine, 'executeRaw' | 'getConfig'>;
 
@@ -218,7 +219,11 @@ function changedFiles(root: string, walked: NonNullable<ScanRecord['files']>['wa
   return [...new Set([...paths, ...stored])].filter(frontmatterScannableUnder(root, mode)).sort();
 }
 
-/** Judges one working-tree file: its page slug and finding, or null when it is clean or unreadable (gone). */
+/**
+ * Judges one working-tree file: its page slug and finding, or null when it is clean or unreadable (gone). A split page
+ * head is judged as the page file F' its parts reassemble to, so a fence in a part is found; one that does not
+ * reassemble is unreadable here (sync holds it).
+ */
 function judgeFile(root: string, rel: string, at: string): { key: string | null; finding: FileFinding | null } {
   const path = join(root, rel);
   let content: string;
@@ -226,7 +231,9 @@ function judgeFile(root: string, rel: string, at: string): { key: string | null;
   try {
     stat = lstatSync(path);
     if (!stat.isFile()) return { key: null, finding: null };
-    content = readFileSync(path, 'utf8');
+    const file = readPageFile(path);
+    if (file.hold) return { key: null, finding: null };
+    content = file.bytes.toString('utf8');
   } catch {
     return { key: null, finding: null };
   }

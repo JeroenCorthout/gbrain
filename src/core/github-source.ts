@@ -46,6 +46,7 @@ import { dirname, join, relative } from 'node:path';
 import type { BrainEngine } from './engine.ts';
 import type { SyncOpts } from '../commands/sync.ts';
 import { isWriteTargetContained } from './path-confine.ts';
+import { PageFileChanged, readPageFileText, removeSplitPageFile, writeSplitPageFile } from './split-write-through.ts';
 import { createProgress, startHeartbeat } from './progress.ts';
 import { getCliOptions, cliOptsToProgressOptions } from './cli-options.ts';
 import { replaceableFile } from './facts/file-body-guard.ts';
@@ -986,11 +987,17 @@ async function materializePage(deps: GitHubSyncDeps, filePath: string, content: 
   writeFileSync(tmpPath, content, 'utf-8');
   try {
     const result = await importPage(deps, tmpPath, activePack, rel);
-    const current = existsSync(filePath) ? readFileSync(filePath, 'utf8') : null;
-    if (current !== guard.expectedFileBytes) throw drift();
-    renameSync(tmpPath, filePath);
+    const unchanged = () => { const file = readPageFileText(filePath); if (file.hold || file.text !== guard.expectedFileBytes) throw drift(); };
+    unchanged();
+    const split = await writeSplitPageFile(deps.engine, filePath, deps.cfg.dir, content, unchanged).catch(error => { throw error instanceof PageFileChanged ? drift() : error; });
+    if (!split) renameSync(tmpPath, filePath);
     return { ...result, created };
   } finally { rmSync(tmpPath, { force: true }); }
+}
+
+/** Removes an item file the connector owns; a split page head goes together with its part files, never alone. */
+function removeItemFile(root: string, filePath: string): void {
+  if (!existsSync(filePath) || !removeSplitPageFile(filePath, root)) rmSync(filePath, { force: true });
 }
 
 async function storedPage(deps: GitHubSyncDeps, filePath: string, apiUpdatedAt: string) {
@@ -1073,8 +1080,7 @@ async function deleteStalePages(
       const rel = bySlug.get(slug);
       if (!rel) continue;
       try {
-        const { rmSync } = await import('node:fs');
-        rmSync(join(deps.cfg.dir, rel), { force: true });
+        removeItemFile(deps.cfg.dir, join(deps.cfg.dir, rel));
       } catch { /* best-effort */ }
     }
   }
@@ -1412,7 +1418,7 @@ async function refreshSingleItem(
       await deps.engine.deletePages([slug], { sourceId: deps.sourceId });
       summary.deleted += rows.length;
     }
-    rmSync(filePath, { force: true });
+    removeItemFile(deps.cfg.dir, filePath);
     return;
   }
   const data = await fetchItemData(repo, item.number, item.kind, deps.client, { signal: deps.opts.signal });

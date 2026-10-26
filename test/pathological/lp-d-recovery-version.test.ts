@@ -2,12 +2,12 @@
  * LPH (d) part 1: a recovery record of a version this gbrain does not know is refused, never misread.
  *
  * 1. Protects: a withdrawal-mirror effect recovery record (persistence_effects.recovery) or a write request recovery
- *    record (persistence_requests.recovery) whose `version` this binary does not know (a synthetic version 3, as a
- *    future release could write) is refused `recovery_version_unsupported` with fix.next `tell_user_to_run`
+ *    record (persistence_requests.recovery) whose `version` this binary does not know (a synthetic version 4 effect
+ *    record and a synthetic version 4 request record, version 3 being a split page's head and parts in both, as a future release could write) is refused `recovery_version_unsupported` with fix.next `tell_user_to_run`
  *    `gbrain upgrade`, before anything reads it: the record stays byte for byte, its streamed stage stays on disk with
  *    its bytes, the canonical file keeps its bytes, nothing is cleared and the effect keeps retrying (never parks). The
  *    head blocker names it as needing intervention with the same upgrade fix.
- * 2. Fails when: recovery reads a version 3 record as version 1 (it embeds `after`, so the old reading removes the
+ * 2. Fails when: recovery reads an unknown-version record as version 1 (it embeds `after`, so the old reading removes the
  *    stage, publishes the embedded bytes and clears the record) or as anything else, `rebaseStaleEffectRecovery` (the
  *    `--keep withdrawn` rebase) reads it, `upgradeRecoveryStaging` rewrites an unknown request record's staging, the
  *    stuck-recovery preview mislabels it (`recovery_effect_unsupported`, `recovery_bundle_unsupported`), or the refusal
@@ -65,11 +65,11 @@ for (const kind of testBackends()) {
 
     afterAll(() => { installFaultHook(undefined); return brain.close(); }, 120_000);
 
-    test('a version 3 withdrawal-mirror record keeps its bytes, its stage and the file; the effect retries with recovery_version_unsupported', async () => {
+    test('a version 4 withdrawal-mirror record keeps its bytes, its stage and the file; the effect retries with recovery_version_unsupported', async () => {
       const file = fileOf(brain, SEGMENTED);
       const before = readFileSync(file);
       expect(before.toString('utf8')).toContain(CLAIM);
-      // At the staged seam the version 2 record and its stage are durable; the hook turns the record into a version 3 one
+      // At the staged seam the version 2 record and its stage are durable; the hook turns the record into a version 4 one
       // that also embeds the staged bytes as `after` (a layout a version 1 reader would act on), then the pass "crashes".
       let written: any = null;
       let effectId = '';
@@ -79,7 +79,7 @@ for (const kind of testBackends()) {
         const v2 = json(row!.recovery);
         expect(v2).toMatchObject({ version: 2, after: null });
         effectId = String(detail.effectId);
-        written = { ...v2, version: 3, after: readFileSync(v2.staging.publication.path).toString('base64'), next: { layout: 'future' } };
+        written = { ...v2, version: 4, after: readFileSync(v2.staging.publication.path).toString('base64'), next: { layout: 'future' } };
         await brain.engine.executeRaw('UPDATE persistence_effects SET recovery=$2::text::jsonb WHERE id=$1', [detail.effectId, JSON.stringify(written)]);
         throw new Error('modelled crash after the stage was written');
       });
@@ -144,11 +144,11 @@ for (const kind of testBackends()) {
       } finally { installFaultHook(undefined); }
     }, 600_000);
 
-    test('a version 3 write request recovery record is refused by staging upgrade, file listing and clearing, and left as it is', async () => {
+    test('a version 4 write request recovery record is refused by staging upgrade, file listing and clearing, and left as it is', async () => {
       const [request] = await brain.engine.executeRaw<{ id: string; request_id: string; worktree_id: string }>(
         `SELECT id::text AS id, request_id::text AS request_id, worktree_id::text AS worktree_id FROM persistence_requests WHERE source_id=$1 AND state='committed' AND worktree_id IS NOT NULL ORDER BY sequence DESC LIMIT 1`, [brain.sourceId]);
       // No staging: a version 1 reader's upgradeRecoveryStaging would allocate a restoration stage from `before` and rewrite the record.
-      const record = { version: 3, path: fileOf(brain, SEGMENTED), root: brain.root, before: Buffer.from('prior bytes').toString('base64'), beforeHash: sha(Buffer.from('prior bytes')),
+      const record = { version: 4, path: fileOf(brain, SEGMENTED), root: brain.root, before: Buffer.from('prior bytes').toString('base64'), beforeHash: sha(Buffer.from('prior bytes')),
         afterHash: sha(readFileSync(fileOf(brain, SEGMENTED))), mode: null, ownerEpoch: '1', attempt: randomUUID(), next: { layout: 'future' } };
       // The request protocol trigger admits only the record shapes this schema knows; a newer gbrain's would come with its
       // own schema, so the trigger is set aside for this one write (replica role) to model that brain.
