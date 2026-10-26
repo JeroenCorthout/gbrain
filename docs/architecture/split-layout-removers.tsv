@@ -1,0 +1,55 @@
+# Wave B PR 5 lane 5e round 6: every file removal (unlink, rm) outside the publication door in a file that can reach a page path, reviewed by test/split-layout-writer-census.test.ts.
+# A file is in scope when split-layout-writers.tsv classes it door, split_aware or refuse_before_write, or its code names a page path resolver (resolvePageWriteTarget, source_path, resolveSourceLocalFilePath, itemPagePath, isWriteTargetContained).
+# Columns: path, ceiling (removal calls), class (checked: names assertPageFileRemovable before it removes a page file; door: the publication door; not_page_path: never removes a page file), reason. A rename over a page path is a write and is reviewed in split-layout-writers.tsv.
+src/commands/bootstrap.ts	2	not_page_path	removes its probe working directory (probeCwd, a mkdtemp scratch) and the push status, announced and stop-push JSON files under gbrain home; never a page path.
+src/commands/eval-cross-modal.ts	1	not_page_path	removes batchTempDir, the eval batch scratch directory it created; never a page path.
+src/commands/extract-attendance-repair.ts	1	not_page_path	removes only its own temporary copy (temporary) on a failed write; the page file is replaced by rename, which the writer census covers.
+src/commands/files.ts	4	not_page_path	removes the storage marker, redirect breadcrumbs and binary originals from collectFiles, which skips every .md file; never a page path.
+src/commands/integrations.ts	1	not_page_path	removes an orphaned voice-agent reference file (targetAbs) under the voice agent directory on --auto take-theirs; never a brain page.
+src/commands/migrate-engine.ts	4	not_page_path	removes the migration manifest, the autopilot pause marker and tombstone files under gbrain home; never a page path.
+src/commands/pages-split-storage.ts	1	not_page_path	removes only its staged scratch copy (staged); the page layout itself changes through the publication door.
+src/commands/source-reconcile.ts	1	not_page_path	removes only its own temporary copy (temporary) after a failed write; the page file is replaced by rename, which the writer census covers.
+src/core/agent-install/setup.ts	1	not_page_path	removes its staging directory (stage) for an agent install; never a page path.
+src/core/agent-install/state.ts	1	not_page_path	removes its temporary state file (tmp) after a failed write; never a page path.
+src/core/atomic-write.ts	1	door	removes its own temporary file (tmpPath) when the staged bytes it wrote are still its own; the page file is replaced only by the rename the door plans.
+src/core/backup/archive.ts	1	not_page_path	removes its temporary archive file (temporary) after streaming it; never a checkout path.
+src/core/backup/snapshot.ts	2	not_page_path	removes the mkdtemp work directory it made beside the backup output and the .restore- stage directory it made under the restore root; never a page file.
+src/core/bootstrap/atomic-write.ts	1	not_page_path	removes its own temporary file (tmp) on a failed write; the target is replaced by rename after assertOneFileWritable.
+src/core/bootstrap/harness.ts	4	not_page_path	removes a harness credentials.json and the opencode rollback backup file; never a page path.
+src/core/cycle/derived-write-through.ts	2	checked	removes its staged dream copy (staged) and a retired dream page file only after assertPageFileRemovable, so a split page stays and is reported as held.
+src/core/cycle/phantom-redirect.ts	2	checked	removes its temporary canonical copy (tmpPath) and the phantom page file, which assertPageFileRemovable checks before the redirect changes any row.
+src/core/facts/fence-write.ts	3	not_page_path	removes only its temporary copy (tmpPath) on refusal and error paths; the page file is written through writeSplitPageFile or a rename the writer census covers.
+src/core/facts/forget.ts	3	not_page_path	removes only its temporary copy (tmpPath) on every refusal and error path; the page file is replaced by rename after splitWriteRefusal.
+src/core/facts/proposal-supersede.ts	1	not_page_path	removes only its temporary copy (tmp) in a finally; the page file is replaced by rename after the split preflight.
+src/core/facts/purge-verify.ts	2	not_page_path	removes leftover <file>.tmp siblings of page files (stale temporary copies of a purge), never the page file itself.
+src/core/facts/unfenced-facts.ts	2	not_page_path	removes only its temporary copy (tmpPath) on error and refusal; the page file is replaced by rename after the split preflight.
+src/core/github-source.ts	3	checked	removes its temporary item copy (tmpPath) and item page files it owns, each after assertPageFileRemovable and before its row is deleted.
+src/core/google/google-source.ts	1	checked	removes the page files of Gmail threads that vanished, each after assertPageFileRemovable and before its row is deleted.
+src/core/google/sweep-shared.ts	3	checked	removes its temporary copies (tmpPath) and a deleted page file only after assertPageFileRemovable, before the connector deletes its row.
+src/core/harness/install.ts	2	not_page_path	removes its install receipt and the skill files it owns, only when their bytes match the hash it recorded writing them as one file (assertOneFileWritable), so never a split head.
+src/core/harness/native-router.ts	1	not_page_path	removes a native router SKILL.md it owns, only when its bytes match the recorded hash of the one file it wrote, so never a split head.
+src/core/persistence/bundle-files.ts	1	door	the publication door: removes a unit file under its recovery record (record.path).
+src/core/persistence/coordinator.ts	1	door	the publication door coordinator: removes a planned unit file (file.path) under the door lock.
+src/core/persistence/git-door.ts	1	door	the Git door: removes its scratch directory after a publication.
+src/core/persistence/large-file.ts	1	door	the door large-file helper: removes its staged path after use.
+src/core/persistence/recovery-resolve.ts	3	door	repair stuck-recovery resolves a publication recovery record: removes its temporary copies and a stage file under the persistence home; page files change only by rename under the record.
+src/core/persistence/split-files.ts	2	door	the door split planner: removes its reassembly scratch file.
+src/core/persistence/staging.ts	2	door	the door staging area: removes a verified stage file under the persistence home.
+src/core/persistence/topology-recovery.ts	2	door	door topology recovery: removes a retained stage or aside directory under its recovery record.
+src/core/persistence/upload-streamed.ts	1	not_page_path	removes its upload session directory (a mkdtemp under the system temp directory); never a checkout path.
+src/core/pglite-engine.ts	2	not_page_path	removes its scratch directory (scratchDir) for a dump or restore; never a checkout path.
+src/core/repair/file-drift.ts	1	not_page_path	removes a repair artifact JSON under the artifact directory; never a page path.
+src/core/shared-skills/adapter.ts	1	not_page_path	removes skill files it owns, only when their bytes match the hash it recorded writing them as one file, so never a split head.
+src/core/skillopt/version-store.ts	2	not_page_path	removes skillopt version snapshots (v<n>_ files in the versions directory) and the best pointer; never a page path.
+src/core/skillpack/harness-bridge.ts	1	not_page_path	removes a bridged skill file whose bytes are the bundle copy it wrote as one file (edited files are kept); never a split head.
+src/core/skillpack/harvest.ts	2	not_page_path	rollbackHarvest removes the skill directory and paired files this harvest just wrote in the skillpack workspace; never a brain page.
+src/core/skillpack/installer.ts	3	not_page_path	removes its install lock file and a skill file identical to the bundle copy it wrote as one file; never a split head.
+src/core/skillpack/tarball.ts	3	not_page_path	removes its tarball stage file; never a page path.
+src/core/sources-ops.ts	9	door	removes its clone temp directories and, on sources remove, a whole clone gbrain owns (head and parts go together with the checkout); never a single page file.
+src/core/split-layout/plan.ts	3	door	the split planner: removes its staged plan files under the split staging directory.
+src/core/split-write-through.ts	1	not_page_path	writePageTemp removes a stale temporary copy (tmpPath) before creating it; the page file is never removed here.
+src/core/storage/local.ts	1	not_page_path	removes a binary blob from the local file storage backend; never a page path.
+src/core/timeline-write-through.ts	1	not_page_path	removes only its temporary copy (tmpPath) after a refusal; the page file is written through writeSplitPageFile or a rename.
+src/core/transcripts/hermes.ts	1	not_page_path	removes its temporary extraction directory (tmp); never a page path.
+src/core/write-through.ts	1	checked	deletePageThrough removes the page file only after assertPageFileRemovable; a split page is kept (skipped: split_page_unsupported).
+src/eval/brainbench/trust-scenario.ts	1	not_page_path	removes its own synthetic scenario root under the system temp directory; never a user checkout.

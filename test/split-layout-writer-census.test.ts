@@ -16,6 +16,12 @@
  *    wrapper of a primitive is not listed as a helper, a classified writer stops naming the preflight, a file outside the
  *    split modules checks for a parts directory without a reviewed row, a not_page_path writer names a .md file without
  *    saying why, or a canonical database writer (canonical-writers.tsv) that also writes files has no row.
+ *    Removals: every file that can reach a page path (classed door, split_aware or refuse_before_write above, or naming a
+ *    page path resolver) and removes a file (unlink/unlinkSync, rm/rmSync) is reviewed in
+ *    docs/architecture/split-layout-removers.tsv with a ceiling and a class (checked, door, not_page_path); a checked
+ *    remover names assertPageFileRemovable, the refusal of a split page every removal outside the door runs first.
+ * 2b. Fails when: a page-reaching file removes a file without a row or over its ceiling, or a checked remover stops
+ *    naming assertPageFileRemovable.
  * 3. Source-text tripwire, no engine.
  */
 import { expect, test } from 'bun:test';
@@ -30,6 +36,10 @@ const PLANNER = /\b(?:writeSplitPageFile|splitPublicationTargets|planSplit)\b/;
 const SHORTCUT = /\bpartsDir(?:For|Name)\s*\(|\.gbparts\//g;
 const MD_NAME = /\.mdx?\b["'`]|["'`]SKILL\.md\b/;
 const SPLIT_MODULES = (path: string) => path.startsWith('src/core/split-layout/') || path === 'src/core/split-write-through.ts';
+const REMOVAL = /(?<![\w.])(?:fs\.|fsp\.|promises\.)?(?:unlinkSync|unlink|rmSync|rm)\s*\(/g;
+const PAGE_PATH = /\b(?:resolvePageWriteTarget|source_path|resolveSourceLocalFilePath|itemPagePath|isWriteTargetContained)\b/;
+const REMOVAL_CHECK = /\bassertPageFileRemovable\b/;
+const REMOVER_CLASSES = ['checked', 'door', 'not_page_path'];
 const DECLARATION = /^export (?:async )?function\s+(\w+)|^export const (\w+)\s*=\s*(?:async\s*)?(?:\([^)]*\)|\w+)\s*(?::[^=]*)?=>/gm;
 
 function files(directory: string): string[] {
@@ -38,9 +48,10 @@ function files(directory: string): string[] {
 }
 const rowsOf = (file: string) => readFileSync(join(root, 'docs/architecture', file), 'utf8').split('\n').filter(line => line && !line.startsWith('#')).map(line => line.split('\t'));
 type Row = { ceiling: number; klass: string; reason: string };
-type Census = { inventory: Map<string, Row>; helpers: Map<string, string>; readers: Map<string, number> };
+type Census = { inventory: Map<string, Row>; helpers: Map<string, string>; readers: Map<string, number>; removers: Map<string, Row> };
 function loadCensus(): Census {
   return {
+    removers: new Map(rowsOf('split-layout-removers.tsv').map(([path, ceiling, klass, reason]) => [path!, { ceiling: Number(ceiling), klass: klass!, reason: reason ?? '' }])),
     inventory: new Map(rowsOf('split-layout-writers.tsv').map(([path, ceiling, klass, reason]) => [path!, { ceiling: Number(ceiling), klass: klass!, reason: reason ?? '' }])),
     helpers: new Map(rowsOf('split-layout-write-helpers.tsv').map(([path, name, kind]) => [`${path}#${name}`, kind!])),
     readers: new Map(rowsOf('split-layout-parts-dir-readers.tsv').map(([path, ceiling]) => [path!, Number(ceiling)])),
@@ -76,6 +87,11 @@ function gapsFor(sources: Array<[string, string]>, census: Census): string[] {
     const sites = count(body, census), row = census.inventory.get(path);
     if (sites > 0 && (!row || sites > row.ceiling)) gaps.push(`${path}: ${sites} file writes; reviewed ceiling ${row?.ceiling ?? 0}`);
     for (const name of wrappersIn(body)) if (!census.helpers.has(`${path}#${name}`)) gaps.push(`${path}: ${name} wraps a file write and is not a listed write helper`);
+    const code = codeOf(body), removals = [...code.matchAll(REMOVAL)].length, remover = census.removers.get(path);
+    if (removals > 0 && ((row && row.klass !== 'not_page_path') || PAGE_PATH.test(code)) && (!remover || removals > remover.ceiling)) {
+      gaps.push(`${path}: ${removals} file removals in a file that reaches a page path; reviewed ceiling ${remover?.ceiling ?? 0}`);
+    }
+    if (remover?.klass === 'checked' && !REMOVAL_CHECK.test(code)) gaps.push(`${path}: checked remover without assertPageFileRemovable`);
     const shortcuts = SPLIT_MODULES(path) ? 0 : [...body.matchAll(SHORTCUT)].length;
     if (shortcuts > (census.readers.get(path) ?? 0)) gaps.push(`${path}: ${shortcuts} parts-directory checks outside the split helper; reviewed readers ${census.readers.get(path) ?? 0}`);
     if (!row) continue;
@@ -103,6 +119,11 @@ test('every file writer in src is reviewed with a ceiling, a class and its split
   const census = loadCensus();
   for (const [path, row] of census.inventory) {
     expect(CLASSES).toContain(row.klass);
+    expect(row.reason.length).toBeGreaterThan(20);
+    expect(existsSync(join(root, path))).toBe(true);
+  }
+  for (const [path, row] of census.removers) {
+    expect(REMOVER_CLASSES).toContain(row.klass);
     expect(row.reason.length).toBeGreaterThan(20);
     expect(existsSync(join(root, path))).toBe(true);
   }
@@ -153,6 +174,27 @@ test('a planted bypass fails the census: a new writer, an over-ceiling or indire
   expect(configRow.klass).toBe('not_page_path');
   expect(gapsFor([['src/core/config.ts', config.replace(/^(export function saveConfig)/m, "function seedNote(dir: string) { return join(dir, 'SKILL.md'); }\n$1")]], census))
     .toEqual(['src/core/config.ts: not_page_path names a .md file without saying why it is never a page']);
+});
+
+test('a planted removal bypass fails the census: a new page remover, an extra removal, a dropped split check', () => {
+  const census = loadCensus();
+  // test-reads-source-ok[structural]: the census is a source-text tripwire by design; the planted copies prove it flags a bypass.
+  const [, writeThrough] = source('src/core/write-through.ts');
+  const [, sweep] = source('src/core/google/sweep-shared.ts');
+  const sweepRow = census.removers.get('src/core/google/sweep-shared.ts')!;
+  expect(sweepRow.klass).toBe('checked');
+  expect(gapsFor([['src/core/write-through.ts', writeThrough], ['src/core/google/sweep-shared.ts', sweep]], census)).toEqual([]);
+  expect(gapsFor([
+    ['src/core/cycle/new-remover.ts', "const target = await resolvePageWriteTarget(engine, slug, sourceId);\nif (target.ok) unlinkSync(target.filePath);\n"],
+    ['src/core/google/sweep-shared.ts', `${sweep}\nrmSync(join(deps.cfg.dir, relPath), { force: true });\n`],
+    ['src/core/write-through.ts', writeThrough.replace(/assertPageFileRemovable/g, 'checkRemoval')],
+  ], census)).toEqual([
+    'src/core/cycle/new-remover.ts: 1 file removals in a file that reaches a page path; reviewed ceiling 0',
+    `src/core/google/sweep-shared.ts: ${sweepRow.ceiling + 1} file removals in a file that reaches a page path; reviewed ceiling ${sweepRow.ceiling}`,
+    'src/core/write-through.ts: checked remover without assertPageFileRemovable',
+  ]);
+  expect([...'unlinkSync(a); await unlink(a); rmSync(a, { force: true }); await fsp.rm(a); fs.rmSync(a)'.matchAll(REMOVAL)].length).toBe(5);
+  expect([...'readFileSync(a); this.rm(a); x.unlink(a); confirm(a)'.matchAll(REMOVAL)].length).toBe(0);
 });
 
 test('every canonical database writer that also writes files has a row', () => {
