@@ -8,6 +8,7 @@ src/core/persistence/effect-git.ts	2	Door: the Git effect commits a split head t
 src/core/persistence/effects.ts	1	Door: the withdrawal-mirror Git effect decides whether a mirrored page commits as a head plus its parts.
 src/core/persistence/file-repair.ts	1	Door: the managed file repair reads the head's bytes when a parts directory sits beside it, before it submits through the coordinator.
 src/core/persistence/split-files.ts	3	Door: the publication door's split unit (lane 5b); one match is its doc comment, one the round 6 landed-commit search over the whole unit.
+src/core/persistence/split-unit-guard.ts	3	Door: the one split-unit refusal predicate (assertSplitUnitMutable) maps a path to its unit and reads the parts directory on disk, in the index and in HEAD.
 src/core/persistence/split-mirror.ts	2	Door: the split withdrawal mirror lists the parts directory it revalidates under the publication lock.
 src/core/persistence/sync-holds.ts	1	Reader: matches the parts directory of a held head in sync hold records.
 src/core/persistence/sync-pass.ts	1	Reader: sorts part files out of a sync listing by their .gbparts/ segment.
