@@ -10,9 +10,11 @@ import type { Migration } from './types.ts';
 // records the rendered view the read is bound to (view_key: head, metadata and
 // overlay identity) and that view's size and sha256. Hashes and sizes only, no
 // page text. Rows expire (expires_at) and go with their page (ON DELETE
-// CASCADE). DDL only, nothing to backfill.
-export const v275: Migration = {
-  version: 275,
+// CASCADE). DDL only, nothing to backfill. RLS is enabled here (under a role
+// that bypasses it), since `gbrain apply-migrations --yes` never replays the
+// schema blob's RLS block (v275).
+export const v276: Migration = {
+  version: 276,
   name: 'page_read_pins',
   idempotent: true,
   sql: `
@@ -33,5 +35,10 @@ export const v275: Migration = {
       created_at TIMESTAMPTZ NOT NULL DEFAULT now()
     );
     CREATE INDEX IF NOT EXISTS page_read_pins_generation ON page_read_pins (page_id, body_generation);
+    DO $rls$ BEGIN
+      IF EXISTS (SELECT 1 FROM pg_roles r WHERE pg_has_role(current_user, r.oid, 'USAGE') AND (r.rolbypassrls OR r.rolsuper)) THEN
+        ALTER TABLE page_read_pins ENABLE ROW LEVEL SECURITY;
+      END IF;
+    END $rls$;
   `,
 };

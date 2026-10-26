@@ -3153,7 +3153,7 @@
           "13 expires_at timestamp with time zone/timestamptz NOT NULL",
           "14 created_at timestamp with time zone/timestamptz NOT NULL DEFAULT now()"
         ],
-        "flags": "relkind=r rls=false force_rls=false"
+        "flags": "relkind=r rls=true force_rls=false"
       },
       "page_retrievals": {
         "columns": [

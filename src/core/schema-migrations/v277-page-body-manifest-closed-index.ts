@@ -18,13 +18,13 @@ export const PAGE_BODY_MANIFEST_CLOSED_INDEX = {
   sql: 'CREATE INDEX IF NOT EXISTS page_body_manifest_closed ON page_body_manifest (page_id, gen_to) WHERE gen_to IS NOT NULL',
 };
 
-export const v276: Migration = {
-  version: 276,
+export const v277: Migration = {
+  version: 277,
   name: 'page_body_manifest_closed_index',
   idempotent: true,
   transaction: false,
   sql: '',
   handler: async engine => {
-    await buildIndexOnline(engine, 276, PAGE_BODY_MANIFEST_CLOSED_INDEX, { notice: migrationNotice });
+    await buildIndexOnline(engine, 277, PAGE_BODY_MANIFEST_CLOSED_INDEX, { notice: migrationNotice });
   },
 };
