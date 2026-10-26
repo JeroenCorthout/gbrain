@@ -5,9 +5,12 @@
  * 1. Protects: deletePageThrough (bound to the page's bytes or not) and the classic Google connector's delete refuse
  *    `split_page_unsupported` on a split page whose head a human edited, the Google route before it deletes its row; an
  *    overwrite not bound to the bytes it compared (writePageThrough without `expectedFileBytes`) or over a held head
- *    (writeSplitPageFile with no precondition) refuses the same way.
+ *    (writeSplitPageFile with no precondition) refuses the same way. Every split preflight (assertSplitWritable,
+ *    splitWriteRefusal, oneFileWriteRefusal, assertOneFileWritable, assertPageThroughWritable) and writeSplitPageFile refuse
+ *    incoming content that is itself a split head (`split_head_content`), as the publication door does.
  * 2. Fails when: a remover outside the door unlinks a split head or its parts, deletes the row of a page whose files it
- *    then refuses to remove, or an unbound overwrite replaces a split head.
+ *    then refuses to remove, an unbound overwrite replaces a split head, or a writer outside the door takes a split head
+ *    as a page file.
  * 3. Real PGLite and Postgres engines, the probe shape of the round 6 review (a split head edited by hand).
  */
 import { afterEach, describe, expect, test } from 'bun:test';
@@ -18,8 +21,9 @@ import type { BrainEngine } from '../src/core/engine.ts';
 import { deletePageByRelPath } from '../src/core/google/sweep-shared.ts';
 import { serializePageToMarkdown } from '../src/core/markdown.ts';
 import { __setSplitLimitsForTests, readPageFile } from '../src/core/split-layout/index.ts';
-import { writeSplitPageFile } from '../src/core/split-write-through.ts';
-import { _resetWriteThroughCacheForTest, deletePageThrough, writePageThrough } from '../src/core/write-through.ts';
+import { atomicWriteTextFile } from '../src/core/bootstrap/atomic-write.ts';
+import { assertOneFileWritable, assertSplitWritable, oneFileWriteRefusal, splitWriteRefusal, writeSplitPageFile } from '../src/core/split-write-through.ts';
+import { _resetWriteThroughCacheForTest, assertPageThroughWritable, deletePageThrough, writePageThrough } from '../src/core/write-through.ts';
 import { isolatedSharedSkillsEngine } from './helpers/shared-skills-engine.ts';
 import { writeSplitPage } from './helpers/split-page.ts';
 import { requirePostgresTestDatabase, testBackends } from './helpers/test-backends.ts';
@@ -39,6 +43,32 @@ async function state(engine: BrainEngine, root: string) {
 
 /** What a writer returned, or the code it threw. */
 const outcomeOf = (run: () => Promise<unknown>) => run().then(value => value, (error: { code?: string }) => ({ thrown: error.code }));
+
+/** The head file text of a split page, written in a scratch directory under `home`: content no writer outside the door takes. */
+async function splitHeadText(home: string): Promise<string> {
+  const scratch = join(home, 'scratch');
+  mkdirSync(scratch, { recursive: true });
+  return (await writeSplitPage(scratch, 'source.md', `---\ntype: note\ntitle: Example\n---\n\n${body}\n`)).head;
+}
+
+test('the engine-free preflight and the generic text writer refuse incoming split head content (split_head_content) at an ordinary target', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'split-outside-door-head-'));
+  try {
+    await withEnv({ GBRAIN_HOME: home }, async () => {
+      __setSplitLimitsForTests({ ...LIMITS, thresholdDefault: 24 * 1024 ** 2 });
+      const head = await splitHeadText(home);
+      const root = join(home, 'brain');
+      mkdirSync(root);
+      const target = join(root, 'target.md');
+      writeFileSync(target, 'Original target body\n');
+      expect(await outcomeOf(async () => atomicWriteTextFile(target, head))).toEqual({ thrown: 'split_head_content' });
+      expect(await outcomeOf(async () => assertOneFileWritable(target, head))).toEqual({ thrown: 'split_head_content' });
+      expect(await outcomeOf(async () => assertOneFileWritable(target, Buffer.from(head)))).toEqual({ thrown: 'split_head_content' });
+      expect(readdirSync(root)).toEqual(['target.md']);
+      expect(readFileSync(target, 'utf8')).toBe('Original target body\n');
+    });
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});
 
 for (const backend of testBackends()) describe(`[${backend}] split git layout: removals outside the door refuse`, () => {
   const databaseUrl = backend === 'postgres' ? requirePostgresTestDatabase() : undefined;
@@ -77,6 +107,22 @@ for (const backend of testBackends()) describe(`[${backend}] split git layout: r
     const before = await state(engine, root);
     const page = serializePageToMarkdown((await engine.getPage(SLUG, { sourceId: 'default' }))!, []);
     expect(await outcomeOf(() => writeSplitPageFile(engine, join(root, `${SLUG}.md`), root, page.replace('title: Example', 'title: Retitled example')))).toEqual({ thrown: 'split_page_unsupported' });
+    expect(await state(engine, root)).toEqual(before);
+  }), 120_000);
+
+  test('every engine preflight and writeSplitPageFile refuse incoming split head content (split_head_content) at an ordinary page: files and rows stay', () => withEditedSplitPage(async (engine, root) => {
+    const head = await splitHeadText(join(root, '..'));
+    const target = join(root, 'notes/target.md');
+    writeFileSync(target, 'Original target body\n');
+    await engine.putPage('notes/target', { type: 'note', title: 'Target', compiled_truth: 'Original target body' });
+    const before = await state(engine, root);
+    for (const run of [
+      () => assertSplitWritable(engine, target, root, head),
+      () => splitWriteRefusal(engine, target, root, head),
+      () => oneFileWriteRefusal(engine, target, root, head),
+      () => assertPageThroughWritable(engine, 'notes/target', 'default', head),
+      () => writeSplitPageFile(engine, target, root, head),
+    ]) expect(await outcomeOf(run)).toEqual({ thrown: 'split_head_content' });
     expect(await state(engine, root)).toEqual(before);
   }), 120_000);
 

@@ -33,6 +33,7 @@ import { readSlugRootMode, resolveSlugRootMode, type SlugRootMode } from './sync
 import { resolveSlugForPath } from './sync.ts';
 import { PUSH_SCAN_MAX_FILE_BYTES } from './page-size-policy.ts';
 import { splitThresholdBytes } from './split-layout/limits.ts';
+import { assertNoReservedPartsKey } from './persistence/split-head-admission.ts';
 import { assertPageFileOverwritable, assertPageFileRemovable, assertSplitWritable, PageFileChanged, readPageFileText, writeSplitPageFile } from './split-write-through.ts';
 import { canonicalFilesystemPath } from './persistence/root-registry.ts';
 import {
@@ -431,10 +432,11 @@ export async function resolvePageWriteTarget(
  * calls writePageThrough (brainstorm and lsd saves, a classic concept publication): plans the page file writePageThrough
  * would render once the import lands (the parsed page rendered as serializePageToMarkdown renders the stored row, with
  * `frontmatterOverrides`) at the page's write target, and throws `split_page_unsupported` before the import when that
- * write would be refused. A no-op when write-through would write no file (off, a URL clone, no target).
+ * write would be refused, or `split_head_content` when `content` is itself a split head (on every brain). Otherwise a no-op when write-through would write no file (off, a URL clone, no target).
  */
 export async function assertPageThroughWritable(engine: BrainEngine, slug: string, sourceId: string, content: string,
   frontmatterOverrides?: Record<string, unknown>): Promise<void> {
+  assertNoReservedPartsKey(content, sourceId);
   if (await isWriteThroughDisabled(engine) || await urlCloneReadOnly(engine, sourceId)) return;
   const target = await resolvePageWriteTarget(engine, slug, sourceId);
   if (!target.ok) return;

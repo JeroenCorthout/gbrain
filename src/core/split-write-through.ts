@@ -15,6 +15,7 @@ import type { BrainEngine } from './engine.ts';
 import { opError, type OperationError } from './ops/contract.ts';
 import type { MutationFile } from './persistence/bundle-files.ts';
 import { hashFile } from './persistence/large-file.ts';
+import { assertNoReservedPartsKey } from './persistence/split-head-admission.ts';
 import { releaseSplitTargets, splitKeptPartsChanged, splitPublicationTargets, type SplitFileFields } from './persistence/split-files.ts';
 import { parseHead } from './split-layout/head.ts';
 import { parseSplitThreshold } from './split-layout/limits.ts';
@@ -39,9 +40,11 @@ export function readPageFileText(path: string): { text: string | null; split: bo
  * `filePath` and releases it, writing nothing: false when F is one ordinary file, true when it is a split unit whose
  * parts all stay (a new head only), and otherwise throws `split_page_unsupported` (a part would be written or removed,
  * including a page growing into the layout or shrinking out of it) or the planner's own refusal
- * (`split_parts_unexpected`, a part over its bounds), exactly as `writeSplitPageFile` would later.
+ * (`split_parts_unexpected`, a part over its bounds), exactly as `writeSplitPageFile` would later. Content that is itself
+ * a split head (a top-level `gbrain_parts` key) refuses `split_head_content` first, so does every wrapper of this check.
  */
 export async function assertSplitWritable(engine: BrainEngine, filePath: string, root: string, content: string): Promise<boolean> {
+  assertNoReservedPartsKey(content);
   const unit: MutationFile & SplitFileFields = { path: filePath, root, content, expectedBeforeHash: hashFile(filePath) };
   try {
     if (!await splitPublicationTargets(engine, unit)) return false;
@@ -85,13 +88,14 @@ export async function oneFileWriteRefusal(engine: BrainEngine, filePath: string,
  * `split_page_unsupported`, writing nothing, when the file there is a split head (its text carries a `gbrain_parts`
  * manifest, whether or not its parts directory exists), its path has a parts directory, or `content` is over the split
  * threshold (`threshold`, the built-in default unless the caller read the brain's), so a page never grows into the
- * layout here. A path that can never be a split head (not a .md file) passes, so a generic write helper can call it on
- * every file it writes.
+ * layout here, and `split_head_content` when `content` is itself a split head (a top-level `gbrain_parts` key). A path
+ * that can never be a split head (not a .md file) passes, so a generic write helper can call it on every file it writes.
  */
 export function assertOneFileWritable(filePath: string, content: string | Uint8Array, threshold = parseSplitThreshold(null)): void {
   if (!isSplitHeadPath(filePath)) return;
   const bytes = typeof content === 'string' ? Buffer.byteLength(content) : content.byteLength;
   if (bytes > threshold || isSplitPageFile(filePath, threshold)) throw splitPageUnsupported(filePath);
+  assertNoReservedPartsKey(typeof content === 'string' ? content : Buffer.from(content).toString('utf8'));
 }
 
 /**
@@ -153,11 +157,13 @@ function splitPageOutsideDoor(filePath: string, action: 'removed' | 'overwritten
  * threshold and no parts directory), which the caller writes as before; the head path when F is a split unit whose parts
  * all stay, its head written atomically (refused when its bytes changed since the unit was planned) with the exact `mode`
  * if given (the Google connector's 0600), else its file's mode. Throws `split_page_unsupported` when a part would be
- * written or removed or the split page there is held (a head edited by hand, a part missing or changed), `PageFileChanged` when a kept part changed, and whatever `precondition` throws, before any file
+ * written or removed or the split page there is held (a head edited by hand, a part missing or changed),
+ * `split_head_content` when `content` is itself a split head, `PageFileChanged` when a kept part changed, and whatever `precondition` throws, before any file
  * is written.
  */
 export async function writeSplitPageFile(engine: BrainEngine, filePath: string, root: string, content: string,
   precondition?: () => void, mode?: number): Promise<string[] | null> {
+  assertNoReservedPartsKey(content);
   const headHash = hashFile(filePath);
   const unit: MutationFile & SplitFileFields = { path: filePath, root, content, expectedBeforeHash: headHash };
   if (!await splitPublicationTargets(engine, unit)) return null;
