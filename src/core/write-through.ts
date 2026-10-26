@@ -26,13 +26,14 @@ import { existsSync, statSync, mkdirSync, unlinkSync, readdirSync } from 'fs';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'path';
 import { atomicWriteFileSync } from './atomic-write.ts';
 import type { BrainEngine } from './engine.ts';
-import { isRelativeFileUri, serializePageToMarkdown, resolvePageFilePath, resolveSourceLocalFilePath } from './markdown.ts';
+import type { Page } from './types.ts';
+import { isRelativeFileUri, parseMarkdown, serializePageToMarkdown, resolvePageFilePath, resolveSourceLocalFilePath } from './markdown.ts';
 import { isWriteTargetContained, msysToNativePath } from './path-confine.ts';
 import { readSlugRootMode, resolveSlugRootMode, type SlugRootMode } from './sync-anchor.ts';
 import { resolveSlugForPath } from './sync.ts';
 import { PUSH_SCAN_MAX_FILE_BYTES } from './page-size-policy.ts';
 import { splitThresholdBytes } from './split-layout/limits.ts';
-import { PageFileChanged, readPageFileText, removeSplitPageFile, writeSplitPageFile } from './split-write-through.ts';
+import { assertSplitWritable, PageFileChanged, readPageFileText, removeSplitPageFile, writeSplitPageFile } from './split-write-through.ts';
 import { canonicalFilesystemPath } from './persistence/root-registry.ts';
 import {
   isDurabilityHardened, commitWriteThroughFile, currentBranch, getLastPushOutcome,
@@ -430,6 +431,24 @@ export async function resolvePageWriteTarget(
  * and rejects non-deliberate skips so a file failure rolls back the DB write.
  * A clone gbrain owns on an unmanaged brain is skipped (`url_clone`, #6946).
  */
+/**
+ * The split preflight (`assertSplitWritable`) of a database-first writer that imports `content` as `slug` and then
+ * calls writePageThrough (brainstorm and lsd saves, a classic concept publication): plans the page file writePageThrough
+ * would render once the import lands (the parsed page rendered as serializePageToMarkdown renders the stored row, with
+ * `frontmatterOverrides`) at the page's write target, and throws `split_page_unsupported` before the import when that
+ * write would be refused. A no-op when write-through would write no file (off, a URL clone, no target).
+ */
+export async function assertPageThroughWritable(engine: BrainEngine, slug: string, sourceId: string, content: string,
+  frontmatterOverrides?: Record<string, unknown>): Promise<void> {
+  if (await isWriteThroughDisabled(engine) || await urlCloneReadOnly(engine, sourceId)) return;
+  const target = await resolvePageWriteTarget(engine, slug, sourceId);
+  if (!target.ok) return;
+  const parsed = parseMarkdown(content, `${slug}.md`);
+  const md = serializePageToMarkdown({ slug, type: parsed.type, title: parsed.title, compiled_truth: parsed.compiled_truth, timeline: parsed.timeline,
+    frontmatter: parsed.frontmatter } as Page, parsed.tags, { frontmatterOverrides });
+  await assertSplitWritable(engine, target.filePath, target.writeRoot, md);
+}
+
 export async function writePageThrough(
   engine: BrainEngine,
   slug: string,

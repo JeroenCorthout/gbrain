@@ -9,7 +9,7 @@
  * removed, including a page that would grow into the layout or shrink out of it. A refused write leaves every file as
  * it was. Callers hold the source filesystem lock.
  */
-import { existsSync, lstatSync, unlinkSync } from 'node:fs';
+import { existsSync, lstatSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { atomicWriteFileSync } from './atomic-write.ts';
 import type { BrainEngine } from './engine.ts';
@@ -34,18 +34,45 @@ export function readPageFileText(path: string): { text: string | null; split: bo
 }
 
 /**
- * Plans the split unit of `content` (F) at `filePath` and releases it, writing nothing: throws every refusal the planner
- * raises (`split_parts_unexpected`, a part over its bounds) and `split_page_unsupported` as `writeSplitPageFile` does,
- * so a writer that commits its database row before its file (the classic connectors) refuses before that commit. True
- * when the target is a split unit whose parts all stay.
+ * The one split preflight of every writer outside the publication door, called before its first database or file write
+ * (docs/architecture/split-layout-writers.tsv lists each writer and its class). Plans the split unit of `content` (F) at
+ * `filePath` and releases it, writing nothing: false when F is one ordinary file, true when it is a split unit whose
+ * parts all stay (a new head only), and otherwise throws `split_page_unsupported` (a part would be written or removed,
+ * including a page growing into the layout or shrinking out of it) or the planner's own refusal
+ * (`split_parts_unexpected`, a part over its bounds), exactly as `writeSplitPageFile` would later.
  */
-export async function preflightSplitPageFile(engine: BrainEngine, filePath: string, root: string, content: string): Promise<boolean> {
+export async function assertSplitWritable(engine: BrainEngine, filePath: string, root: string, content: string): Promise<boolean> {
   const unit: MutationFile & SplitFileFields = { path: filePath, root, content, expectedBeforeHash: hashFile(filePath) };
   try {
     if (!await splitPublicationTargets(engine, unit)) return false;
     if (unit.parts?.length) throw splitPageUnsupported(filePath);
     return true;
   } finally { releaseSplitTargets(unit); }
+}
+
+/**
+ * The refusal `writeSplitPageFile` would raise for `content` at `filePath` (`split_page_unsupported`), read before a
+ * writer creates its temporary copy of the page, so a refused write never leaves the copy behind; undefined when the
+ * write may go ahead. Any other planner refusal throws.
+ */
+export async function splitWriteRefusal(engine: BrainEngine, filePath: string, root: string, content: string): Promise<OperationError | undefined> {
+  try {
+    await assertSplitWritable(engine, filePath, root, content);
+    return undefined;
+  } catch (error) {
+    if ((error as { code?: string } | null)?.code === 'split_page_unsupported') return error as OperationError;
+    throw error;
+  }
+}
+
+/**
+ * Writes a raw writer's temporary copy of the page file at `filePath` (`tmpPath`, renamed over it later) as a new file
+ * with the page file's mode from its first byte (0644 when there is none), so a private page's copy is never readable
+ * by others and the rename keeps the page's mode.
+ */
+export function writePageTemp(tmpPath: string, filePath: string, content: string): void {
+  rmSync(tmpPath, { force: true });
+  writeFileSync(tmpPath, content, { encoding: 'utf-8', flag: 'wx', mode: (statSync(filePath, { throwIfNoEntry: false })?.mode ?? 0o644) & 0o777 });
 }
 
 /** The refusal of a write outside the publication door that would write or remove a part file of `filePath`. */
