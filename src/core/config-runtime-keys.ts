@@ -20,5 +20,4 @@ export const RUNTIME_READER_CONFIG_KEYS: readonly string[] = [
   'context.hot_memory.session_only', // facts/meta-hook.ts, read by the turn_context and context_pack IPC handlers: hot memory never falls back to other sessions' facts, default off
   'serve.cli_socket', // config.ts loadConfigWithEngine (snapshot only) → serve.ts: a Postgres serve answers CLI reads over a private Unix socket, default off
   'serve.vector_prewarm', // config.ts loadConfigWithEngine (snapshot only) → serve.ts: a Postgres serve prewarms the HNSW indexes into shared_buffers at start when they fit, default off
-  'git.push_max_pack_bytes', // persistence/effects.ts → push-preflight.ts: largest pack one Git-effect push sends before it batches, default 1.5 GiB (at most 2 GiB toward github.com)
 ];

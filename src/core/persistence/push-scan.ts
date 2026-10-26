@@ -44,9 +44,22 @@ export function isSplitPartPath(rel: string): boolean {
   return /(^|\/)\.[^/]+\.gbparts\//.test(rel);
 }
 
-/** Whether a file the door or a push carries is scanned: a split part, or a file over PAGE_MAX_BYTES. */
-export function coveredFile(rel: string, bytes: number): boolean {
-  return bytes > PAGE_MAX_BYTES || isSplitPartPath(rel);
+/** The parts directory a split head at `rel` would have (`dir/name.md` -> `dir/.name.gbparts`), or null for a non-page path. */
+export function partsDirOf(rel: string): string | null {
+  const slash = rel.lastIndexOf('/');
+  const name = rel.slice(slash + 1);
+  return name.endsWith('.md') && name.length > 3 ? `${rel.slice(0, slash + 1)}.${name.slice(0, -3)}.gbparts` : null;
+}
+
+/** Whether a file the door or a push carries is scanned: a split head or part, or a file over PAGE_MAX_BYTES. */
+export function coveredFile(rel: string, bytes: number, splitHead = false): boolean {
+  return bytes > PAGE_MAX_BYTES || isSplitPartPath(rel) || splitHead;
+}
+
+/** A page file whose parts directory sits beside it in the working tree. */
+export function splitHeadOnDisk(root: string, rel: string): boolean {
+  const dir = partsDirOf(rel);
+  return dir !== null && existsSync(join(root, dir));
 }
 
 /** Test seam: runs once a door or commit-push scan cleared its files, before Git hashes them. */
@@ -180,7 +193,7 @@ function newlines(bytes: Buffer): number {
 }
 
 /** Scans what the file at `fd` adds over `base` (a spooled blob) and hashes all of it as a Git blob. */
-function* scanFileSteps(fd: number, size: number, base: { path: string; size: number } | null, algorithm: 'sha1' | 'sha256', allowlist: string[]): Generator<void, { oid: string; findings: SecretFinding[] }> {
+function* scanFileSteps(fd: number, size: number, base: { path: string; size: number } | null, algorithm: 'sha1' | 'sha256', allowlist: string[]): Generator<void, { oid: string; findings: SecretFinding[]; suppressed: number }> {
   const readAt = reader(fd, size);
   let lo = 0;
   let hi = size;
@@ -216,10 +229,11 @@ function* scanFileSteps(fd: number, size: number, base: { path: string; size: nu
     yield;
   }
   if (pos !== size) throw opError('git_unavailable', 'A file changed while it was being scanned, so nothing was committed.', 'Another process is writing the file; retry once it is done.');
-  return { oid: hash.digest('hex'), findings: scanner.finish().map(finding => ({ ...finding, line: finding.line + before })) };
+  const findings = scanner.finish().map(finding => ({ ...finding, line: finding.line + before }));
+  return { oid: hash.digest('hex'), findings, suppressed: scanner.suppressed };
 }
 
-function* scanBlobSteps(path: string, size: number, allowlist: string[]): Generator<void, SecretFinding[]> {
+function* scanBlobSteps(path: string, size: number, allowlist: string[]): Generator<void, { findings: SecretFinding[]; suppressed: number }> {
   const scanner = createStreamScanner({ allowlist });
   const fd = openSync(path, 'r');
   try {
@@ -232,7 +246,8 @@ function* scanBlobSteps(path: string, size: number, allowlist: string[]): Genera
       yield;
     }
   } finally { closeSync(fd); }
-  return scanner.finish();
+  const findings = scanner.finish();
+  return { findings, suppressed: scanner.suppressed };
 }
 
 function runSync<T>(steps: Generator<void, T>): T {
@@ -253,54 +268,100 @@ function headBlob(root: string, repoPath: string): { oid: string; size: number }
   return mode && type === 'blob' && oid && Number.isFinite(Number(size)) ? { oid, size: Number(size) } : null;
 }
 
-function readEdge(abs: string, from: 'head' | 'tail'): Buffer {
-  const fd = openSync(abs, 'r');
-  try {
-    const size = statSync(abs).size;
-    return reader(fd, size)(from === 'head' ? 0 : Math.max(0, size - SCAN_SEAM_BYTES), SCAN_SEAM_BYTES);
-  } finally { closeSync(fd); }
-}
-
-/** Line breaks in a part before its last SCAN_SEAM_BYTES, so a seam finding is reported at its line in the earlier part. */
-function linesBeforeTail(abs: string): number {
+/** The head and tail SCAN_SEAM_BYTES of a file, and its line breaks before the tail (a seam finding's line in that file). */
+function fileEdges(abs: string): { head: Buffer; tail: Buffer; linesBeforeTail: number } {
   const fd = openSync(abs, 'r');
   try {
     const size = statSync(abs).size;
     const read = reader(fd, size);
-    let n = 0;
-    for (let pos = 0, end = Math.max(0, size - SCAN_SEAM_BYTES); pos < end; pos += CHUNK_BYTES) n += newlines(read(pos, Math.min(CHUNK_BYTES, end - pos)));
-    return n;
+    const tailStart = Math.max(0, size - SCAN_SEAM_BYTES);
+    let linesBeforeTail = 0;
+    for (let pos = 0; pos < tailStart; pos += CHUNK_BYTES) linesBeforeTail += newlines(read(pos, Math.min(CHUNK_BYTES, tailStart - pos)));
+    return { head: read(0, SCAN_SEAM_BYTES), tail: read(tailStart, SCAN_SEAM_BYTES), linesBeforeTail };
   } finally { closeSync(fd); }
 }
 
-const scanBytes = (bytes: Buffer, allowlist: string[]) => { const scanner = createStreamScanner({ allowlist }); scanner.push(bytes); return scanner.finish(); };
+function blobEdges(root: string, gitDir: string, oid: string, size: number): ReturnType<typeof fileEdges> {
+  const spooled = spoolBlob(root, gitDir, oid, size);
+  try { return fileEdges(spooled); } finally { rmSync(spooled, { force: true }); }
+}
+
+function memo<T>(make: () => T): () => T {
+  let value: { v: T } | null = null;
+  return () => (value ??= { v: make() }).v;
+}
+
+interface SeamPart { path: string; oid: string; edges: () => ReturnType<typeof fileEdges> }
+
+const seamKey = (left: SeamPart, right: SeamPart) => `seam:${left.oid}:${right.oid}`;
+
+function scanBytes(bytes: Buffer, allowlist: string[]): { findings: SecretFinding[]; suppressed: number } {
+  const scanner = createStreamScanner({ allowlist });
+  scanner.push(bytes);
+  const findings = scanner.finish();
+  return { findings, suppressed: scanner.suppressed };
+}
 
 /**
  * A value cut across two consecutive parts of a split page (`NNNN-<hash>.gbpart`, in name order): the last
- * SCAN_SEAM_BYTES of one part and the first of the next are scanned together for every seam a written part touches. Only
- * a finding neither side holds alone is the seam's (each side's own bytes are the part scans', and an unchanged part's
- * old bytes are not rescanned).
+ * SCAN_SEAM_BYTES of one part and the first of the next are scanned together. Only a finding neither side holds alone is the
+ * seam's (each side's own bytes are its part scan's). A pair that scans clean with nothing suppressed is recorded in the
+ * ledger by both blob ids, so it is not scanned again.
  */
-function partSeamHits(root: string, parts: string[], allowlist: string[]): ScanHit[] {
+function checkSeams(pairs: Array<{ left: SeamPart; right: SeamPart; commit?: string }>, allowlist: string[], cleared: Set<string>): { hits: ScanHit[]; clean: string[] } {
   const hits: ScanHit[] = [];
-  const dirs = new Set(parts.map(rel => rel.slice(0, rel.lastIndexOf('/') + 1)));
-  const written = new Set(parts);
-  for (const dir of dirs) {
-    let names: string[];
-    try { names = readdirSync(join(root, dir)).filter(name => name.endsWith('.gbpart')).sort(); } catch { continue; }
+  const clean: string[] = [];
+  const seen = new Set<string>();
+  for (const { left, right, commit } of pairs) {
+    const key = seamKey(left, right);
+    if (cleared.has(key) || seen.has(key)) continue;
+    seen.add(key);
+    const [l, r] = [left.edges(), right.edges()];
+    const [tail, head, both] = [scanBytes(l.tail, allowlist), scanBytes(r.head, allowlist), scanBytes(Buffer.concat([l.tail, r.head]), allowlist)];
+    const own = new Set([...tail.findings, ...head.findings].map(finding => finding.fingerprint));
+    const found = both.findings.filter(finding => !own.has(finding.fingerprint));
+    if (pathAllowlisted(left.path, allowlist)) continue;
+    if (!found.length && both.suppressed <= tail.suppressed + head.suppressed) { clean.push(key); continue; }
+    for (const finding of found) hits.push({ path: left.path, line: l.linesBeforeTail + finding.line, rule: finding.pattern, fingerprint: finding.fingerprint, commit });
+  }
+  return { hits, clean };
+}
+
+/** Parts of a split head's directory in a tree (`ls-tree -l` of `<commit>:<dir>`), sorted by name. */
+function treeParts(root: string, commit: string, repoDir: string): Array<{ name: string; oid: string; size: number }> {
+  return git(root, ['ls-tree', '-z', '-l', '--full-tree', commit, '--', repoDir]).stdout.split('\0').filter(Boolean).flatMap(line => {
+    const [, type, oid, size] = line.slice(0, line.indexOf('\t')).trim().split(/\s+/);
+    const name = line.slice(line.lastIndexOf('/') + 1);
+    return type === 'blob' && oid && name.endsWith('.gbpart') ? [{ name, oid, size: Number(size) }] : [];
+  }).sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
+}
+
+/**
+ * The seams a door or commit-push write touches, in the tree it commits: each written part with its neighbours, a
+ * neighbour the write does not carry read from HEAD (the committed blob, never a dirty working-tree file).
+ */
+function doorSeamPairs(root: string, gitDir: string, parts: Array<ScanFile & { oid: string }>): Array<{ left: SeamPart; right: SeamPart }> {
+  const pairs: Array<{ left: SeamPart; right: SeamPart }> = [];
+  const byDir = new Map<string, Array<ScanFile & { oid: string }>>();
+  for (const part of parts) {
+    const dir = part.rel.slice(0, part.rel.lastIndexOf('/') + 1);
+    byDir.set(dir, [...(byDir.get(dir) ?? []), part]);
+  }
+  for (const [dir, written] of byDir) {
+    const first = written[0]!;
+    const repoDir = first.repoPath.slice(0, first.repoPath.length - first.rel.length) + dir;
+    const byName = new Map<string, SeamPart>(written.map(part => [part.rel.slice(dir.length), { path: part.rel, oid: part.oid, edges: memo(() => fileEdges(part.abs)) }]));
+    const ours = new Set(byName.keys());
+    for (const entry of treeParts(root, 'HEAD', repoDir)) {
+      if (byName.has(entry.name) || !existsSync(join(root, dir, entry.name))) continue;
+      byName.set(entry.name, { path: dir + entry.name, oid: entry.oid, edges: memo(() => blobEdges(root, gitDir, entry.oid, entry.size)) });
+    }
+    const names = [...byName.keys()].sort();
     for (let i = 1; i < names.length; i++) {
-      const [left, right] = [`${dir}${names[i - 1]}`, `${dir}${names[i]}`];
-      if (!written.has(left) && !written.has(right)) continue;
-      const tail = readEdge(join(root, left), 'tail');
-      const head = readEdge(join(root, right), 'head');
-      const own = new Set([...scanBytes(tail, allowlist), ...scanBytes(head, allowlist)].map(finding => finding.fingerprint));
-      for (const finding of scanBytes(Buffer.concat([tail, head]), allowlist)) {
-        if (own.has(finding.fingerprint) || pathAllowlisted(left, allowlist)) continue;
-        hits.push({ path: left, line: linesBeforeTail(join(root, left)) + finding.line, rule: finding.pattern, fingerprint: finding.fingerprint });
-      }
+      if (ours.has(names[i - 1]!) || ours.has(names[i]!)) pairs.push({ left: byName.get(names[i - 1]!)!, right: byName.get(names[i]!)! });
     }
   }
-  return hits;
+  return pairs;
 }
 
 export interface ScanFile {
@@ -314,20 +375,23 @@ export interface ScanFile {
 function* doorSteps(root: string, files: ScanFile[], algorithm: 'sha1' | 'sha256', local: boolean): Generator<void, Map<string, string>> {
   const scanned = new Map<string, string>();
   const covered = files.flatMap(file => {
-    try { const stat = statSync(file.abs); return stat.isFile() && coveredFile(file.rel, stat.size) ? [{ ...file, size: stat.size }] : []; }
+    try { const stat = statSync(file.abs); return stat.isFile() && coveredFile(file.rel, stat.size, splitHeadOnDisk(root, file.rel)) ? [{ ...file, size: stat.size }] : []; }
     catch { return []; }
   });
   if (!covered.length) return scanned;
   const gitDir = commonDir(root);
   const allowlist = loadWorkspaceAllowlist(root);
   const hits: ScanHit[] = [];
+  const clean: string[] = [];
   for (const file of covered) {
     const base = headBlob(root, file.repoPath);
     const spooled = base ? spoolBlob(root, gitDir, base.oid, base.size) : null;
     const fd = openSync(file.abs, 'r');
     try {
       const result = yield* scanFileSteps(fd, file.size, spooled ? { path: spooled, size: base!.size } : null, algorithm, allowlist);
-      if (!pathAllowlisted(file.rel, allowlist)) for (const finding of result.findings) hits.push({ path: file.rel, line: finding.line, rule: finding.pattern, fingerprint: finding.fingerprint });
+      const allowed = pathAllowlisted(file.rel, allowlist);
+      if (!allowed) for (const finding of result.findings) hits.push({ path: file.rel, line: finding.line, rule: finding.pattern, fingerprint: finding.fingerprint });
+      if (!allowed && !result.findings.length && !result.suppressed) clean.push(result.oid);
       scanned.set(file.rel, result.oid);
     } finally {
       closeSync(fd);
@@ -335,9 +399,11 @@ function* doorSteps(root: string, files: ScanFile[], algorithm: 'sha1' | 'sha256
     }
     yield;
   }
-  hits.push(...partSeamHits(root, covered.filter(file => isSplitPartPath(file.rel)).map(file => file.rel), allowlist));
+  const parts = covered.filter(file => isSplitPartPath(file.rel)).map(file => ({ ...file, oid: scanned.get(file.rel)! }));
+  const seams = parts.length ? checkSeams(doorSeamPairs(root, gitDir, parts), allowlist, readCleared(gitDir)) : { hits: [], clean: [] };
+  hits.push(...seams.hits);
   if (hits.length) throw secretFound(hits, local);
-  recordCleared(gitDir, scanned.values());
+  recordCleared(gitDir, [...clean, ...seams.clean]);
   scanSeams.afterDoorScan?.(root);
   return scanned;
 }
@@ -362,28 +428,62 @@ function* backstopSteps(root: string, tip: string, remote: string): Generator<vo
   if (!named.length) return;
   const info = git(root, ['cat-file', '--batch-check=%(objectname) %(objecttype) %(objectsize) %(rest)'], `${named.join('\n')}\n`);
   if (info.code !== 0) throw unscannable(`the objects ${tip.slice(0, 12)} adds over ${remote}`);
-  const candidates = info.stdout.split('\n').flatMap(line => {
+  const blobs = info.stdout.split('\n').flatMap(line => {
     const match = /^([0-9a-f]+) blob (\d+) (.+)$/.exec(line);
-    return match && coveredFile(match[3]!, Number(match[2])) ? [{ oid: match[1]!, size: Number(match[2]), path: match[3]! }] : [];
+    return match ? [{ oid: match[1]!, size: Number(match[2]), path: match[3]! }] : [];
   });
+  const headsMaybe = blobs.some(blob => blob.size <= PAGE_MAX_BYTES && partsDirOf(blob.path) !== null);
+  const partsDirs = headsMaybe ? new Set(git(root, ['ls-tree', '-r', '-d', '-z', '--name-only', '--full-tree', tip]).stdout.split('\0').filter(dir => /(^|\/)\.[^/]+\.gbparts$/.test(dir))) : new Set<string>();
+  const candidates = blobs.filter(blob => coveredFile(blob.path, blob.size, partsDirs.has(partsDirOf(blob.path) ?? '')));
   if (!candidates.length) return;
   const gitDir = commonDir(root);
   const cleared = readCleared(gitDir);
   const allowlist = loadWorkspaceAllowlist(root);
   const clean: string[] = [];
   const hits: ScanHit[] = [];
+  const range = (oid: string) => git(root, ['log', '-1', '--format=%H', `--find-object=${oid}`, tip, '--not', `--remotes=${remote}`, '--']).stdout.trim() || undefined;
   for (const blob of candidates) {
     if (cleared.has(blob.oid) || pathAllowlisted(blob.path, allowlist)) continue;
     const spooled = spoolBlob(root, gitDir, blob.oid, blob.size);
-    let findings: SecretFinding[];
-    try { findings = yield* scanBlobSteps(spooled, blob.size, allowlist); }
+    let scan: { findings: SecretFinding[]; suppressed: number };
+    try { scan = yield* scanBlobSteps(spooled, blob.size, allowlist); }
     finally { rmSync(spooled, { force: true }); }
-    if (!findings.length) { clean.push(blob.oid); continue; }
-    const commit = git(root, ['log', '-1', '--format=%H', `--find-object=${blob.oid}`, tip, '--not', `--remotes=${remote}`, '--']).stdout.trim() || undefined;
-    for (const finding of findings) hits.push({ path: blob.path, line: finding.line, rule: finding.pattern, fingerprint: finding.fingerprint, commit });
+    if (!scan.findings.length) { if (!scan.suppressed) clean.push(blob.oid); continue; }
+    const commit = range(blob.oid);
+    for (const finding of scan.findings) hits.push({ path: blob.path, line: finding.line, rule: finding.pattern, fingerprint: finding.fingerprint, commit });
   }
-  recordCleared(gitDir, clean);
+  const seams = checkSeams(rangeSeamPairs(root, gitDir, tip, remote, candidates.filter(blob => isSplitPartPath(blob.path))), allowlist, cleared);
+  hits.push(...seams.hits);
+  recordCleared(gitDir, [...clean, ...seams.clean]);
   if (hits.length) throw pushSecretHold(hits, root);
+}
+
+/**
+ * The seams of every unpushed commit whose parts directory holds a part the range adds: adjacent parts in that commit's
+ * tree where either is one of those blobs (read from Git, never the working tree).
+ */
+function rangeSeamPairs(root: string, gitDir: string, tip: string, remote: string, added: Array<{ oid: string; path: string }>): Array<{ left: SeamPart; right: SeamPart; commit: string }> {
+  if (!added.length) return [];
+  const addedOids = new Set(added.map(blob => blob.oid));
+  const dirs = [...new Set(added.map(blob => blob.path.slice(0, blob.path.lastIndexOf('/') + 1)))];
+  const commits = git(root, ['rev-list', tip, '--not', `--remotes=${remote}`, '--', ...dirs]);
+  if (commits.code !== 0) throw unscannable(`the commits ${tip.slice(0, 12)} adds over ${remote}`);
+  const parts = new Map<string, SeamPart>();
+  const part = (dir: string, entry: { name: string; oid: string; size: number }) => {
+    if (!parts.has(entry.oid)) parts.set(entry.oid, { path: dir + entry.name, oid: entry.oid, edges: memo(() => blobEdges(root, gitDir, entry.oid, entry.size)) });
+    return parts.get(entry.oid)!;
+  };
+  const pairs: Array<{ left: SeamPart; right: SeamPart; commit: string }> = [];
+  for (const commit of commits.stdout.split('\n').filter(Boolean)) {
+    for (const dir of dirs) {
+      const entries = treeParts(root, commit, dir);
+      for (let i = 1; i < entries.length; i++) {
+        const [l, r] = [entries[i - 1]!, entries[i]!];
+        if (addedOids.has(l.oid) || addedOids.has(r.oid)) pairs.push({ left: part(dir, l), right: part(dir, r), commit });
+      }
+    }
+  }
+  return pairs;
 }
 
 /** The pre-push backstop of the Git effect: scans the covered blobs `tip` adds over `remote`'s tracking refs. */

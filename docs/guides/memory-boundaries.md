@@ -425,11 +425,12 @@ page writes to the checkout's remote. Large pages change four things:
   staging ref is deleted afterwards. A push stopped between batches resumes
   after the last batch that landed. A single commit over the cap is held
   `git_push_pack_too_large`: the host owner raises the cap (`gbrain config set
-  git.push_max_pack_bytes 1.8GiB`), then `gbrain sources writer retry-effects
+  git.push_max_pack_bytes 1.8GiB`, kept in this host's `~/.gbrain/config.json`
+  and read by both the Git effect and `gbrain git commit-push`), then `gbrain sources writer retry-effects
   <source> --parked-pushes` pushes it.
 - **Secrets are refused before the commit.** On a strict source
   (`canonical: git`) the door scans every file over 24 MiB and every split
-  part before it commits, and `gbrain git commit-push` does the same before
+  page (its head and parts) before it commits, and `gbrain git commit-push` does the same before
   `git commit`. Only bytes new to Git are scanned, so an append never trips
   over text an earlier commit already holds. A hit refuses the write with
   `secret_found`, naming the rule and fingerprint, never the text. Such a

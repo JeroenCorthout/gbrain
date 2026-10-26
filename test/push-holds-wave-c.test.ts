@@ -13,21 +13,26 @@
  */
 import { describe, expect, test } from 'bun:test';
 import { randomBytes, randomUUID } from 'node:crypto';
-import { chmodSync, mkdirSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import type { BrainEngine } from '../src/core/engine.ts';
 import { operations, type OperationContext } from '../src/core/operations.ts';
 import { runPersistenceEffects } from '../src/core/persistence/effects.ts';
 import { localHostId } from '../src/core/persistence/identity.ts';
 import { readGitPushHolds } from '../src/core/persistence/git-push-holds.ts';
+import { pushTiming, setPushMaxPackConfig } from '../src/core/persistence/push-preflight.ts';
+import { getWorktreeBinding } from '../src/core/persistence/ownership.ts';
+import { loadConfigFileOnly, saveConfig, type GBrainConfig } from '../src/core/config.ts';
 import { runPersistenceAdministration } from '../src/core/persistence/administration.ts';
 import { checkParkedEffects } from '../src/commands/doctor/checks/parked-effects.ts';
 import { durableGitRepo, git } from './helpers/git-publication.ts';
 import { managedBrain } from './helpers/managed-brain.ts';
+import { effectSql, pauseGitEffects, release } from './helpers/git-coalescing-fixture.ts';
 import { requirePostgresTestDatabase, testBackends } from './helpers/test-backends.ts';
 import { withEnv } from './helpers/with-env.ts';
 
 const MiB = 1024 ** 2;
+const longPushBytes = pushTiming.longPushBytes;
 const TOKEN = 'AKIA' + 'QX7EXAMPLEZ3K9TB';
 const LINE = 'Acme example meeting note, nothing secret in this line at all.\n';
 const filler = (bytes: number) => LINE.repeat(Math.ceil(bytes / LINE.length)).slice(0, bytes);
@@ -69,6 +74,10 @@ function childCli(root: string): string {
   chmodSync(cli, 0o700);
   return cli;
 }
+/** The setter `gbrain config set git.push_max_pack_bytes <size>` runs, against this test's GBRAIN_HOME (the file plane). */
+function setCap(value: string): void {
+  expect(setPushMaxPackConfig(loadConfigFileOnly() ?? ({} as GBrainConfig), value, saveConfig)).toBeNull();
+}
 
 for (const backend of testBackends()) describe('[' + backend + '] Wave C 1A: push holds park at once with ask_user fixes', () => {
   const databaseUrl = backend === 'postgres' ? requirePostgresTestDatabase() : undefined;
@@ -109,7 +118,7 @@ for (const backend of testBackends()) describe('[' + backend + '] Wave C 1A: pus
 
   test('one commit over git.push_max_pack_bytes parks git_push_pack_too_large at once; raising the cap releases it', () => managedBrain(async ({ engine, ctx, root }) => withEnv({ GBRAIN_GIT_ALLOW_FILE_TRANSPORT: '1', GBRAIN_JOB_CHILD_CLI: childCli(root) }, async () => {
     const pushed = remoteTip(root);
-    await engine.setConfig('git.push_max_pack_bytes', String(MiB));
+    setCap(String(MiB));
     externalCommit(root, 'imports/blob.bin', randomBytes(2 * MiB));
     expect(await put(ctx, 'notes/first', 'First page.')).toMatchObject({ state: 'committed' });
     await pass(engine);
@@ -123,7 +132,7 @@ for (const backend of testBackends()) describe('[' + backend + '] Wave C 1A: pus
     expect(structuredClone(hold!.fix)).toMatchObject({ ask_user: true, actor: 'host_admin' });
     expect(argv.slice(0, 4)).toEqual(['gbrain', 'config', 'set', 'git.push_max_pack_bytes']);
     expect(Number(argv[4])).toBeGreaterThan(bytes);
-    await engine.setConfig('git.push_max_pack_bytes', argv[4]!);
+    setCap(argv[4]!);
     expect(await runPersistenceAdministration(engine, 'writer_retry_effects', { source_id: 'default', parked_pushes: true })).toMatchObject({ status: 'ok', requests: 1 });
     await pass(engine);
     expect((await gitEffects(engine)).map(e => e.state)).toEqual(['committed']);
@@ -131,3 +140,54 @@ for (const backend of testBackends()) describe('[' + backend + '] Wave C 1A: pus
   }), { databaseUrl, setup }), 240_000);
 });
 
+describe('[pglite] Wave C 1A review: a long Git effect push runs without the worktree writer lock', () => {
+  /** The remote's pre-receive hook tries the worktree writer lock from another process and logs free or busy per push. */
+  async function probeDuringPush(engine: BrainEngine, root: string): Promise<string> {
+    const binding = await getWorktreeBinding(engine, 'default');
+    const log = join(root, '..', 'lock-probe.log'), probe = join(root, '..', 'lock-probe.ts');
+    writeFileSync(probe, "import { tryAcquireNativeLock } from '" + resolve(import.meta.dir, '../src/core/persistence/native-lock.ts') + "';\n"
+      + "const lock = await tryAcquireNativeLock(process.argv[2]!);\nconsole.log(lock ? 'free' : 'busy');\nawait lock?.release();\n");
+    const hook = join(root, '..', 'remote.git', 'hooks', 'pre-receive');
+    writeFileSync(hook, "#!/bin/sh\ncat >/dev/null\n'" + process.execPath + "' '" + probe + "' '" + binding!.coordination_path + "' >> '" + log + "' 2>&1\n");
+    chmodSync(hook, 0o755);
+    writeFileSync(log, '');
+    return log;
+  }
+
+  test('forced probe: under the threshold the push holds the lock', () => managedBrain(async ({ engine, ctx, root }) => withEnv({ GBRAIN_GIT_ALLOW_FILE_TRANSPORT: '1' }, async () => {
+    const log = await probeDuringPush(engine, root);
+    expect(await put(ctx, 'notes/first', 'First page.')).toMatchObject({ state: 'committed' });
+    await pass(engine);
+    expect(readFileSync(log, 'utf8').trim().split('\n')).toEqual(['busy']);
+    expect(remoteTip(root)).toBe(git(root, 'rev-parse', 'HEAD').trim());
+  }), { setup }), 240_000);
+
+  test('over the threshold the page effect releases the lock before it pushes', () => managedBrain(async ({ engine, ctx, root }) => withEnv({ GBRAIN_GIT_ALLOW_FILE_TRANSPORT: '1' }, async () => {
+    const log = await probeDuringPush(engine, root);
+    pushTiming.longPushBytes = 0;
+    try {
+      expect(await put(ctx, 'notes/first', 'First page.')).toMatchObject({ state: 'committed' });
+      await pass(engine);
+    } finally { pushTiming.longPushBytes = longPushBytes; }
+    expect(readFileSync(log, 'utf8').trim().split('\n')).toEqual(['free']);
+    expect((await gitEffects(engine)).map(e => e.state)).toEqual(['committed']);
+    expect(remoteTip(root)).toBe(git(root, 'rev-parse', 'HEAD').trim());
+  }), { setup }), 240_000);
+  test('a Git page walk (the source-scan path) releases the lock before a long push too', () => managedBrain(async ({ engine, ctx, root }) => withEnv({ GBRAIN_GIT_ALLOW_FILE_TRANSPORT: '1' }, async () => {
+    expect(await put(ctx, 'notes/first', 'First page.')).toMatchObject({ state: 'committed' });
+    await pass(engine);
+    await pauseGitEffects(engine, () => put(ctx, 'notes/second', 'Second page.'));
+    const [walk] = await engine.executeRaw<{ id: string }>("SELECT e.id FROM persistence_effects e JOIN persistence_requests r ON r.id=e.request_id WHERE e.kind='git' ORDER BY r.sequence DESC LIMIT 1");
+    await effectSql(engine, "UPDATE persistence_effects SET data=data||'{\"source_scan\":true,\"after_slug\":\"zzzz\"}'::jsonb WHERE id=$1", [walk!.id]);
+    writeFileSync(join(root, 'later.txt'), 'A later edit\n');
+    git(root, 'add', 'later.txt'); git(root, 'commit', '-q', '-m', 'Later');
+    const log = await probeDuringPush(engine, root);
+    pushTiming.longPushBytes = 0;
+    try {
+      await release(engine);
+      await pass(engine);
+    } finally { pushTiming.longPushBytes = longPushBytes; }
+    expect(readFileSync(log, 'utf8').trim().split('\n')).toEqual(['free']);
+    expect(remoteTip(root)).toBe(git(root, 'rev-parse', 'HEAD').trim());
+  }), { setup }), 240_000);
+});

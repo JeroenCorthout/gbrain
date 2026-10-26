@@ -20,7 +20,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { commitAndPush } from '../src/core/git/commit-push.ts';
 import { pushGitRoot } from '../src/core/persistence/effect-git.ts';
-import { PUSH_MAX_PACK_BYTES_ENV, pushSeams, pushTiming, pushTimeoutMs, planBatches, parseByteSize, pushCap, readPushProgress } from '../src/core/persistence/push-preflight.ts';
+import { PUSH_MAX_PACK_BYTES_ENV, PUSH_TIMEOUT_CAP_MS, pushRange, pushSeams, pushTiming, pushTimeoutMs, planBatches, parseByteSize, pushCap, readPushProgress } from '../src/core/persistence/push-preflight.ts';
 import { git } from './helpers/git-publication.ts';
 import { withEnv } from './helpers/with-env.ts';
 
@@ -206,4 +206,48 @@ describe('Wave C 1A: pushes that need no preflight', () => {
     expect(await pushGitRoot(r.root)).toEqual({ push: 'committed' });
     expect(updates(r).map(u => [u.to, u.ref])).toEqual([[tip, 'refs/heads/main']]);
   }), 120_000);
+});
+
+describe('Wave C 1A review: progress and measurement', () => {
+  test('progress recorded toward one remote is not reused after the remote changes: the new remote gets every batch', () => withEnv(env(2.5 * MiB), async () => {
+    const r = repo();
+    git(r.remote, 'config', 'receive.maxInputSize', String(3 * MiB));
+    const [, second, , fourth] = [1, 2, 3, 4].map(i => commitBlob(r.root, 'part-' + i + '.bin', 1.2 * MiB));
+    pushSeams.afterBatch = () => { throw new Error('killed between batches'); };
+    expect(() => commitAndPush({ repo: r.root, pushOnly: true, cwd: r.root })).toThrow('killed between batches');
+    expect(readPushProgress(join(r.root, '.git'))).toMatchObject({ pushed: second, urls: [r.remote] });
+    pushSeams.afterBatch = undefined;
+    const moved = join(r.home, 'moved.git'), movedLog = join(r.home, 'moved.log');
+    git(r.home, 'clone', '-q', '--bare', '--branch', 'main', r.remote, moved);
+    git(moved, 'update-ref', 'refs/heads/main', 'refs/heads/main~2');
+    git(moved, 'config', 'receive.maxInputSize', String(3 * MiB));
+    writeFileSync(join(moved, 'hooks', 'post-receive'), '#!/bin/sh\ncat >> \'' + movedLog + '\'\n');
+    chmodSync(join(moved, 'hooks', 'post-receive'), 0o755);
+    git(moved, 'gc', '-q', '--prune=now');
+    git(r.root, 'remote', 'set-url', 'origin', moved);
+    expect(commitAndPush({ repo: r.root, pushOnly: true, cwd: r.root })).toMatchObject({ outcome: 'pushed', sha: fourth });
+    expect(readFileSync(movedLog, 'utf8').split('\n').filter(Boolean).map(line => line.split(' ')[1])).toEqual([second, fourth]);
+    expect(readPushProgress(join(r.root, '.git'))).toBeNull();
+  }), 120_000);
+
+  test('an unmeasured push goes as one push with the longest deadline; an unmeasured batch plan pushes nothing', () => {
+    const pushes: Array<[string[], number]> = [];
+    const io = (measure: (args: string[]) => boolean) => ({
+      gitDir: realpathSync(mkdtempSync(join(tmpdir(), 'gbrain-push-unmeasured-'))), remote: 'origin', urls: ['/srv/remote.git'],
+      git: (args: string[]) => args.includes('--disk-usage')
+        ? (measure(args) ? { code: 0, stdout: String(5 * MiB), stderr: '' } : { code: 128, stdout: '', stderr: 'unsupported' })
+        : args[0] === 'rev-list' ? { code: 0, stdout: 'c1\nc2\n', stderr: '' } : { code: 1, stdout: '', stderr: '' },
+      push: (refspecs: string[], timeoutMs: number) => { pushes.push([refspecs, timeoutMs]); return { code: 0, stdout: '', stderr: '' }; },
+    });
+    const single = io(() => false);
+    homes.push(single.gitDir);
+    expect(pushRange(single, { tip: 'c2', ref: 'refs/heads/main', cap: MiB, remoteTip: null }).code).toBe(0);
+    expect(pushes).toEqual([[['c2:refs/heads/main'], PUSH_TIMEOUT_CAP_MS]]);
+    pushes.length = 0;
+    const batched = io(args => args.includes('--remotes=origin') && args.length === 6);
+    homes.push(batched.gitDir);
+    const result = pushRange(batched, { tip: 'c2', ref: 'refs/heads/main', cap: MiB, remoteTip: null });
+    expect({ code: result.code, stderr: result.stderr }).toEqual({ code: 1, stderr: expect.stringContaining('could not measure') });
+    expect(pushes).toEqual([]);
+  });
 });

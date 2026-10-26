@@ -13,7 +13,7 @@ import type { Action } from '../agent-output.ts';
 import type { NativeLockHandle } from './native-lock.ts';
 import { proveIndexLockAbandoned, reclaimIndexLock, type IndexLockReclaim } from './index-lock-reclaim.ts';
 import { acquireNativeLock } from './native-lock.ts';
-import { LONG_PUSH_BYTES, PUSH_MAX_PACK_BYTES_ENV, pushCap, pushTimeoutMs } from './push-preflight.ts';
+import { PUSH_MAX_PACK_BYTES_ENV, PUSH_TIMEOUT_CAP_MS, pushCap, pushTiming, pushTimeoutMs } from './push-preflight.ts';
 import { backstopScan } from './push-scan.ts';
 import { PUBLISH_LOCK_NAME } from '../git/commit-push.ts';
 
@@ -366,7 +366,7 @@ export const NON_FAST_FORWARD = /\[rejected\][^\n]*\((?:non-fast-forward|fetch f
 export interface PushOptions {
   /** `git.push_max_pack_bytes` as configured; unset or null uses the default. */
   maxPackBytes?: number | null;
-  /** Runs once before a push over LONG_PUSH_BYTES starts: the caller releases the worktree writer lock, which a push never needs. */
+  /** Runs once before a push over pushTiming.longPushBytes (or of unmeasured size) starts: the caller releases the worktree writer lock, which a push never needs. */
   beforeLongPush?: () => Promise<void>;
 }
 
@@ -403,18 +403,19 @@ export async function pushGitRoot(root: string, signal?: AbortSignal, opts: Push
     const tip = head.stdout.trim();
     session.timeoutMs = PUSH_MEASURE_TIMEOUT_MS;
     const usage = await git(session, ['rev-list', '--objects', '--disk-usage', tip, '--not', `--remotes=${remoteName}`, '--']);
-    const pending = usage.code === 0 ? Number(usage.stdout.trim()) || 0 : 0;
+    const measured = usage.code === 0 && usage.stdout.trim() !== '' ? Number(usage.stdout.trim()) : NaN;
+    const pending = Number.isFinite(measured) ? measured : null;
     const urls = (await git(session, ['remote', 'get-url', '--push', '--all', '--', remoteName])).stdout.split('\n').filter(Boolean);
     await backstopScan(root, tip, remoteName);
     signal?.throwIfAborted();
     const cap = pushCap(opts.maxPackBytes, urls);
-    if (pending > LONG_PUSH_BYTES) await opts.beforeLongPush?.();
-    if (pending > cap) return publishKeepingCheckout(root, signal, pending, cap);
+    if (pending === null || pending > pushTiming.longPushBytes) await opts.beforeLongPush?.();
+    if (pending !== null && pending > cap) return publishKeepingCheckout(root, signal, pending, cap);
     const lockPath = await git(session, ['rev-parse', '--git-path', PUBLISH_LOCK_NAME]);
     const lock = lockPath.code === 0 ? await acquireNativeLock(resolvePath(root, lockPath.stdout.replace(/\n$/, '')), { timeoutMs: 0 }) : null;
     if (!lock) throw pushInProgress(root);
     try {
-      session.timeoutMs = pushTimeoutMs(pending);
+      session.timeoutMs = pending === null ? PUSH_TIMEOUT_CAP_MS : pushTimeoutMs(pending);
       const push = await git(session, ['push', '--', remoteName, `${tip}:${merge.stdout.trim()}`]);
       if (push.code === 0) return { push: 'committed' } as const;
       if (!NON_FAST_FORWARD.test(push.stderr)) throw opError('git_push_unavailable', 'The canonical commit is durable locally; its push will retry.',
@@ -436,14 +437,14 @@ const KEEP_CHECKOUT_PUBLISH_TIMEOUT_MS = 600_000;
  * install would not know the flag); a busy publish lock fails at once and the effect retries. Wave C 1A: the child gets
  * the configured cap (PUSH_MAX_PACK_BYTES_ENV) and as long again as the push's scaled deadline.
  */
-async function publishKeepingCheckout(root: string, signal: AbortSignal | undefined, pending: number, cap: number): Promise<{ push: 'committed'; integrated?: number }> {
+async function publishKeepingCheckout(root: string, signal: AbortSignal | undefined, pending: number | null, cap: number): Promise<{ push: 'committed'; integrated?: number }> {
   const { CHILD_ENV, resolveChildCliInvocation } = await import('../minions/job-isolation.ts');
   const cli = resolveChildCliInvocation(process.env, process.execPath, process.argv[1], () => null);
   if (!cli) throw opError('git_push_unavailable', 'The canonical commit is durable locally; its push will retry.',
     `The remote branch moved, and publishing over it runs gbrain git commit-push --push-only --keep-checkout, but this process could not locate its own gbrain executable (set ${CHILD_ENV.childCliOverride} to it). Nothing is lost locally.`,
     { fix: effectStatusFix });
   const child = await execFileBounded(cli.cmd, [...cli.argsPrefix, 'git', 'commit-push', '--push-only', '--keep-checkout', '--path', root, '--json'], {
-    timeout: KEEP_CHECKOUT_PUBLISH_TIMEOUT_MS + pushTimeoutMs(pending), termGraceMs: GIT_TERM_GRACE_MS, maxBuffer: 1024 * 1024, signal,
+    timeout: KEEP_CHECKOUT_PUBLISH_TIMEOUT_MS + (pending === null ? PUSH_TIMEOUT_CAP_MS : pushTimeoutMs(pending)), termGraceMs: GIT_TERM_GRACE_MS, maxBuffer: 1024 * 1024, signal,
     env: { ...process.env, GBRAIN_PUBLISH_LOCK_WAIT_SECONDS: '0', GBRAIN_PUSH_LOCK_WAIT_SECONDS: '0', [PUSH_MAX_PACK_BYTES_ENV]: String(cap) },
   });
   signal?.throwIfAborted();

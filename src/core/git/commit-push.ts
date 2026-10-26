@@ -35,8 +35,8 @@ import { assertManagedFilesystemWrite, hasFilesystemPublication, managedFilesyst
 import { acquireNativeLock, acquireNativeLockSync, type NativeLockSyncHandle } from '../persistence/native-lock.ts';
 import { OperationError, opError } from '../ops/contract.ts';
 import { shellQuote } from '../agent-output.ts';
-import { envPushCap, pushCap, pushRange, type PushIO } from '../persistence/push-preflight.ts';
-import { backstopScanSync, cleanFilterRefused, scanCommitFilesSync } from '../persistence/push-scan.ts';
+import { envPushCap, filePushCap, pushCap, pushRange, type PushIO } from '../persistence/push-preflight.ts';
+import { backstopScanSync, cleanFilterRefused, coveredFile, scanCommitFilesSync, splitHeadOnDisk } from '../persistence/push-scan.ts';
 
 export const COMMIT_LOCK_NAME = 'brain-commit.lock';
 /** Taken by pre-#6530 helpers and hooks; held too so they still exclude us during the mixed-version window. */
@@ -129,6 +129,8 @@ interface Ctx {
   mergeRef: string;
   trackingRef: string;
   keepCheckout?: boolean;
+  /** `--allow-secret`: no pre-push secret backstop for this run. */
+  allowSecret?: boolean;
 }
 
 interface GitRun { code: number; stdout: string; stderr: string }
@@ -449,14 +451,17 @@ function commitPaths(root: string, rel: string[], message: string, scope: Commit
     const partners = paths.filter(p => !insideSourceRoots(p, scope.roots));
     if (partners.length) throw outsideRootError(root, scope.roots, partners, 'A staged rename would commit');
     if (git(root, ['--literal-pathspecs', 'diff', '--cached', '--quiet', '--', ...paths]).code === 0) return null;
-    if (!scope.allowSecret) scanStaged(root, paths);
+    const scanned = scope.allowSecret ? null : scanStaged(root, paths);
+    const parent = git(root, ['rev-parse', '--quiet', '--verify', 'HEAD^{commit}']).stdout.trim();
     const env = { [COMMIT_VIA_ENV]: scope.lockPath, ...(scope.markHeld ? { [COMMIT_LOCK_ENV]: scope.lockPath } : {}) };
     const commit = withIndexRetry(root, ['--literal-pathspecs', 'commit', '--only', '-m', message, '--', ...paths], 'git commit', env);
     if (commit.code !== 0) {
       throw opError('git_unavailable', `git commit failed in ${root}; the paths were unstaged again and keep their bytes.`,
         `${commit.stderr.trim().slice(0, 300)} A missing git identity (user.name, user.email) or a refusing pre-commit hook are common causes.`);
     }
-    return gitOk(root, ['rev-parse', 'HEAD'], 'rev-parse HEAD');
+    const head = gitOk(root, ['rev-parse', 'HEAD'], 'rev-parse HEAD');
+    if (scanned) assertCommittedScanned(root, paths, scanned, parent, head);
+    return head;
   } catch (e) {
     try { restoreIndex(root, rel, before); } catch { /* the index lock outlasted the retries; the error below still stands */ }
     throw e;
@@ -889,7 +894,7 @@ export function readQuarantine(repo: string): QuarantineEntry[] {
  * 24 MiB, only the bytes new to Git), before `git commit`. The blob each path stages must be the bytes scanned: a
  * transforming clean filter refuses `git_clean_filter_refused`, a file that changed meanwhile `git_unavailable`.
  */
-function scanStaged(root: string, paths: string[]): void {
+function scanStaged(root: string, paths: string[]): Map<string, string> {
   const staged = new Map(git(root, ['--literal-pathspecs', 'ls-files', '-s', '-z', '--', ...paths]).stdout.split('\0').filter(Boolean)
     .map(line => [line.slice(line.indexOf('\t') + 1), line.split(' ')[1]!] as const));
   const algorithm = git(root, ['rev-parse', '--show-object-format']).stdout.trim() === 'sha256' ? 'sha256' : 'sha1';
@@ -900,22 +905,44 @@ function scanStaged(root: string, paths: string[]): void {
     if (raw === oid && git(root, ['--literal-pathspecs', 'hash-object', '--', path]).stdout.trim() !== oid) throw cleanFilterRefused(path);
     throw opError('git_unavailable', `${path} changed while it was being scanned and staged, so nothing was committed.`, 'Another process wrote the file meanwhile; rerun the same gbrain git commit-push command once it is done.');
   }
+  return scanned;
 }
 
 /**
- * Wave C 1A (push-preflight.ts): push `candidate` with a deadline scaled to what it sends, in ordered batches when that is
- * over `git.push_max_pack_bytes` (the Git effect hands its configured cap down through PUSH_MAX_PACK_BYTES_ENV).
+ * `git commit --only` stages the named paths again from the working tree (and a pre-commit hook may change them), so the
+ * commit is checked against the scan: a covered file whose committed blob is not the one scanned takes the commit back
+ * (a compare-and-swap of the branch to its parent, before anything is pushed) and refuses.
+ */
+function assertCommittedScanned(root: string, paths: string[], scanned: Map<string, string>, parent: string, head: string): void {
+  const listed = git(root, ['--literal-pathspecs', 'ls-tree', '-z', '-l', head, '--', ...paths]).stdout.split('\0').filter(Boolean);
+  const unscanned = listed.flatMap(line => {
+    const [, type, oid, size] = line.slice(0, line.indexOf('\t')).trim().split(/\s+/);
+    const path = line.slice(line.indexOf('\t') + 1);
+    return type === 'blob' && coveredFile(path, Number(size), splitHeadOnDisk(root, path)) && scanned.get(path) !== oid ? [path] : [];
+  });
+  if (!unscanned.length) return;
+  const undo = git(root, parent ? ['update-ref', '-m', 'gbrain: take back an unscanned commit', 'HEAD', parent, head] : ['update-ref', '-d', 'HEAD', head]);
+  throw opError('git_unavailable', `${unscanned[0]} changed after its secret scan, before git commit took it, so ${undo.code === 0 ? 'the commit was taken back and nothing is committed' : `commit ${head.slice(0, 12)} holds unscanned bytes and is never pushed while the pre-push scan holds`}.`,
+    'Another process or a pre-commit hook wrote the file during the commit. Rerun the same gbrain git commit-push command once it is done.');
+}
+
+/**
+ * Wave C 1A (push-preflight.ts, push-scan.ts): every candidate (the start, and each in-memory merge with its resolution
+ * blobs) passes the pre-push secret backstop, then is pushed with a deadline scaled to what it sends, in ordered batches
+ * when that is over `git.push_max_pack_bytes` (the Git effect hands its configured cap down through PUSH_MAX_PACK_BYTES_ENV).
  */
 function pushCandidate(ctx: Ctx, candidate: string): GitRun {
+  if (!ctx.allowSecret) backstopScanSync(ctx.root, candidate, ctx.remote);
   const urls = git(ctx.root, ['remote', 'get-url', '--push', '--all', '--', ctx.remote]).stdout.split('\n').filter(Boolean);
   const io: PushIO = {
     gitDir: dirname(absGitPath(ctx.root, 'gbrain-push-progress.json')),
+    urls,
     remote: ctx.remote,
     git: args => git(ctx.root, args, { timeoutMs: 600_000 }),
     push: (refspecs, timeoutMs) => remoteGit(ctx.root, 'push', [...(ctx.keepCheckout ? ['--no-verify'] : []), '--', ctx.remote, ...refspecs], Math.max(120_000, timeoutMs)),
   };
   const tracked = git(ctx.root, ['rev-parse', '--quiet', '--verify', `${ctx.trackingRef}^{commit}`]);
-  return pushRange(io, { tip: candidate, ref: ctx.mergeRef, cap: pushCap(envPushCap(), urls), remoteTip: tracked.code === 0 ? tracked.stdout.trim() : null });
+  return pushRange(io, { tip: candidate, ref: ctx.mergeRef, cap: pushCap(envPushCap() ?? filePushCap(), urls), remoteTip: tracked.code === 0 ? tracked.stdout.trim() : null });
 }
 
 /**
@@ -1147,7 +1174,7 @@ export function commitAndPush(opts: CommitPushOptions): CommitPushResult {
     throw opError('commit_paths_invalid', 'A commit message is required.', 'Pass -m "<message>".');
   }
   const upstream = resolveCtx(root);
-  const ctx = { ...withBranch(upstream, opts.branch), ...(opts.keepCheckout ? { keepCheckout: true } : {}) };
+  const ctx = { ...withBranch(upstream, opts.branch), ...(opts.keepCheckout ? { keepCheckout: true } : {}), ...(opts.allowSecret ? { allowSecret: true } : {}) };
   const elsewhere = ctx.mergeRef !== upstream.mergeRef;
   assertNoOperationInProgress(root);
 
@@ -1191,7 +1218,6 @@ export function commitAndPush(opts: CommitPushOptions): CommitPushResult {
       const head = gitOk(root, ['rev-parse', 'HEAD'], 'rev-parse HEAD');
       const target = start && !isAncestor(root, start, head) ? start : head;
       if (!opts.allowOutsideSourceRoot) assertLocalCommitsInsideRoots(ctx, target, roots);
-      if (!opts.allowSecret) backstopScanSync(root, target, ctx.remote);
       const published = publish(ctx, target, resolutions, opts.expectRemote, cwd);
       if (!elsewhere) rmSync(absGitPath(root, CONFLICT_STATE_NAME), { force: true });
       const moved = published.sha === head || elsewhere || opts.keepCheckout ? { checkout: 'unchanged' as const } : advanceWithLock(root, published.sha, head, onlyWhenClean, opts.lockWaitMs);

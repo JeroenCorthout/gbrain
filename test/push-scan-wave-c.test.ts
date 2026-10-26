@@ -20,7 +20,7 @@
  */
 import { afterEach, describe, expect, test } from 'bun:test';
 import { generateKeyPairSync } from 'node:crypto';
-import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { commitAndPush } from '../src/core/git/commit-push.ts';
@@ -69,6 +69,7 @@ const door = (root: string, ...rels: string[]) => commitThroughDoor(root, rels.m
 const caught = async (work: () => unknown): Promise<any> => { try { await work(); } catch (error) { return error; } throw new Error('expected a refusal'); };
 const printed = (error: any) => JSON.stringify({ message: error.message, suggestion: error.suggestion, detail: error.detail, fix: error.fix, why: error.why });
 const findings = (bytes: string) => { const scanner = createStreamScanner(); scanner.push(Buffer.from(bytes)); return scanner.finish(); };
+const ledgerText = (root: string) => { const path = join(root, '.git', 'gbrain-scan-cleared'); return existsSync(path) ? readFileSync(path, 'utf8') : ''; };
 const env = (r: Repo) => ({ GBRAIN_HOME: join(r.home, 'gbrain-home'), GBRAIN_GIT_ALLOW_FILE_TRANSPORT: '1' });
 
 describe('Wave C 1A: the door scan', () => {
@@ -236,4 +237,88 @@ describe('Wave C 1A: the pre-push backstop', () => {
     appendFileSync(ledger, SCAN_RULESET_ID + ' ' + blob + '\n');
     expect(await pushGitRoot(r.root)).toEqual({ push: 'committed' });
   }); }, 180_000);
+});
+
+describe('Wave C 1A review: the committed tree is the scanned tree', () => {
+  test('commit-push takes back a commit whose covered file changed after its scan', () => { const r = repo(); return withEnv(env(r), async () => {
+    const before = head(r.root);
+    write(r.root, 'notes/big.md', filler(25 * MiB));
+    scanSeams.afterDoorScan = root => appendFileSync(join(root, 'notes/big.md'), 'aws_key = ' + TOKEN + '\n');
+    const error = await caught(() => commitAndPush({ repo: r.root, paths: ['notes/big.md'], message: 'Big page', cwd: r.root }));
+    expect(error.code).toBe('git_unavailable');
+    expect(error.message).toContain('changed after its secret scan');
+    expect(head(r.root)).toBe(before);
+    expect(remoteTip(r)).toBe(before);
+    expect(git(r.root, 'diff', '--cached', '--name-only').trim()).toBe('');
+  }); }, 120_000);
+
+  test('a merge resolution file is scanned before the merge is pushed', () => { const r = repo(); return withEnv(env(r), async () => {
+    write(r.root, 'notes/big.md', filler(25 * MiB));
+    git(r.root, 'add', 'notes/big.md'); git(r.root, 'commit', '-q', '-m', 'Big'); git(r.root, 'push', '-q');
+    const other = join(r.home, 'other');
+    git(r.home, 'clone', '-q', r.remote, other);
+    git(other, 'config', 'user.name', 'Other Machine'); git(other, 'config', 'user.email', 'other@example.invalid');
+    appendFileSync(join(other, 'notes/big.md'), 'Their line\n');
+    git(other, 'add', 'notes/big.md'); git(other, 'commit', '-q', '-m', 'Theirs'); git(other, 'push', '-q');
+    const theirs = git(other, 'rev-parse', 'HEAD').trim();
+    appendFileSync(join(r.root, 'notes/big.md'), 'Our line\n');
+    git(r.root, 'add', 'notes/big.md'); git(r.root, 'commit', '-q', '-m', 'Ours');
+    const merged = write(r.home, 'merged.md', filler(25 * MiB) + 'Our line\nTheir line\naws_key = ' + TOKEN + '\n');
+    const error = await caught(() => commitAndPush({ repo: r.root, pushOnly: true, keepCheckout: true, cwd: r.root,
+      resolutions: new Map([['notes/big.md', { kind: 'file' as const, path: merged }]]), expectRemote: theirs }));
+    expect(error.code).toBe('git_push_secret_found');
+    expect(remoteTip(r)).toBe(theirs);
+  }); }, 180_000);
+
+  test('a seam is checked against the committed neighbour, not a dirty working-tree copy', () => { const r = repo(); return withEnv(env(r), async () => {
+    write(r.root, 'notes/big.md', 'head\n');
+    write(r.root, 'notes/.big.gbparts/0001-aaaaaaaa.gbpart', LINE.repeat(40) + 'aws_key = ' + TOKEN.slice(0, 9));
+    git(r.root, 'add', 'notes'); git(r.root, 'commit', '-q', '-m', 'First part');
+    const before = head(r.root);
+    write(r.root, 'notes/.big.gbparts/0001-aaaaaaaa.gbpart', LINE.repeat(41));
+    write(r.root, 'notes/.big.gbparts/0002-bbbbbbbb.gbpart', TOKEN.slice(9) + '\n' + LINE.repeat(40));
+    expect((await caught(() => door(r.root, 'notes/.big.gbparts/0002-bbbbbbbb.gbpart'))).code).toBe('secret_found');
+    expect(head(r.root)).toBe(before);
+  }); }, 120_000);
+
+  test('the backstop checks seams between parts external commits add', () => { const r = repo(); return withEnv(env(r), async () => {
+    const pushed = remoteTip(r);
+    write(r.root, 'notes/big.md', 'head\n');
+    write(r.root, 'notes/.big.gbparts/0001-aaaaaaaa.gbpart', LINE.repeat(40) + 'aws_key = ' + TOKEN.slice(0, 9));
+    git(r.root, 'add', 'notes'); git(r.root, 'commit', '-q', '-m', 'First part by hand');
+    write(r.root, 'notes/.big.gbparts/0002-bbbbbbbb.gbpart', TOKEN.slice(9) + '\n' + LINE.repeat(40));
+    git(r.root, 'add', 'notes'); git(r.root, 'commit', '-q', '-m', 'Second part by hand');
+    const held = await caught(() => pushGitRoot(r.root));
+    expect(held.code).toBe('git_push_secret_found');
+    expect(JSON.parse(held.detail)).toMatchObject({ path: 'notes/.big.gbparts/0001-aaaaaaaa.gbpart', commit: head(r.root) });
+    expect(remoteTip(r)).toBe(pushed);
+  }); }, 120_000);
+
+  test('a blob cleared only by an allowlist entry is not cached: removing the entry holds the push again', () => { const r = repo(); return withEnv(env(r), async () => {
+    const fingerprint = findings('aws_key = ' + TOKEN + '\n')[0]!.fingerprint;
+    write(r.root, '.gbrain-scan-allow', fingerprint + '\n');
+    write(r.root, 'notes/big.md', filler(25 * MiB) + 'aws_key = ' + TOKEN + '\n');
+    await door(r.root, 'notes/big.md');
+    const blob = git(r.root, 'rev-parse', 'HEAD:notes/big.md').trim();
+    expect(ledgerText(r.root)).not.toContain(blob);
+    rmSync(join(r.root, '.gbrain-scan-allow'));
+    expect((await caught(() => pushGitRoot(r.root))).code).toBe('git_push_secret_found');
+    write(r.root, '.gbrain-scan-allow', 'notes/big.md\n');
+    expect(await pushGitRoot(r.root)).toEqual({ push: 'committed' });
+    expect(ledgerText(r.root)).not.toContain(blob);
+  }); }, 180_000);
+
+  test('a split head is covered at the door and by the backstop, whatever its size', () => { const r = repo(); return withEnv(env(r), async () => {
+    const pushed = remoteTip(r);
+    write(r.root, 'notes/.big.gbparts/0001-aaaaaaaa.gbpart', LINE.repeat(10));
+    write(r.root, 'notes/big.md', '---\ntitle: Big\n---\naws_key = ' + TOKEN + '\n');
+    expect((await caught(() => door(r.root, 'notes/big.md', 'notes/.big.gbparts/0001-aaaaaaaa.gbpart'))).code).toBe('secret_found');
+    write(r.root, 'notes/small.md', 'aws_key = ' + TOKEN + '\n');
+    expect(await door(r.root, 'notes/small.md')).toBe(head(r.root));
+    git(r.root, 'add', 'notes'); git(r.root, 'commit', '-q', '-m', 'Split page by hand');
+    const held = await caught(() => pushGitRoot(r.root));
+    expect(held.code).toBe('git_push_secret_found');
+    expect(JSON.parse(held.detail).path).toBe('notes/big.md');
+    expect(remoteTip(r)).toBe(pushed);
+  }); }, 120_000);
 });

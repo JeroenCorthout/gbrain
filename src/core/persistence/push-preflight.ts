@@ -18,15 +18,17 @@
 import { existsSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { OperationError, opError } from '../ops/contract.ts';
+import { loadConfigFileOnly, type GBrainConfig } from '../config.ts';
 
 const MiB = 1024 ** 2;
 const GiB = 1024 ** 3;
 
-/** Base and per-MiB budget of a push; a test seam only (master's fixed step timeout is `msPerMiB: 0`). */
-export const pushTiming = { baseMs: 20_000, msPerMiB: 1_000 };
+/**
+ * Base and per-MiB budget of a push (master's fixed step timeout is `msPerMiB: 0`), and `longPushBytes`: a Git effect
+ * push over it runs without the worktree writer lock. Test seams only.
+ */
+export const pushTiming = { baseMs: 20_000, msPerMiB: 1_000, longPushBytes: 256 * MiB };
 export const PUSH_TIMEOUT_CAP_MS = 60 * 60_000;
-/** A push over this many bytes runs without the worktree writer lock, and its effect claims are renewed while it runs. */
-export const LONG_PUSH_BYTES = 256 * MiB;
 export const PUSH_MAX_PACK_BYTES_KEY = 'git.push_max_pack_bytes';
 export const PUSH_MAX_PACK_BYTES_DEFAULT = 1.5 * GiB;
 /** GitHub refuses a push over 2 GiB. */
@@ -66,6 +68,21 @@ export function pushCap(configured: number | null | undefined, pushUrls: readonl
   return pushUrls.some(githubUrl) ? Math.min(cap, GITHUB_PUSH_MAX_BYTES) : cap;
 }
 
+/** `git.push_max_pack_bytes` from the host's file plane (~/.gbrain/config.json), read engine-free; null when unset or invalid. */
+export function filePushCap(): number | null {
+  const raw = loadConfigFileOnly()?.git?.push_max_pack_bytes;
+  return raw === undefined || raw === null ? null : parseByteSize(String(raw));
+}
+
+/** `gbrain config set git.push_max_pack_bytes <size>`: validated, then written to the file plane only; the refusal otherwise. */
+export function setPushMaxPackConfig(cfg: GBrainConfig, value: string, save: (cfg: GBrainConfig) => void): OperationError | null {
+  const refusal = pushMaxPackValueRefusal(value);
+  if (refusal) return refusal;
+  save({ ...cfg, git: { ...(cfg.git ?? {}), push_max_pack_bytes: value.trim() } });
+  console.log(`Set ${PUSH_MAX_PACK_BYTES_KEY} = ${value.trim()} (file plane: ~/.gbrain/config.json). Git pushes from this host batch above it${parseByteSize(value)! > GITHUB_PUSH_MAX_BYTES ? '; a github.com remote still takes at most 2 GiB' : ''}.`);
+  return null;
+}
+
 /** The cap the Git effect set for its child (PUSH_MAX_PACK_BYTES_ENV); null when unset or invalid. */
 export function envPushCap(env: NodeJS.ProcessEnv = process.env): number | null {
   const raw = env[PUSH_MAX_PACK_BYTES_ENV];
@@ -96,14 +113,15 @@ export function stagingRef(branchRef: string): string {
   return `refs/gbrain/push-staging/${branchRef.replace(/^refs\/heads\//, '')}`;
 }
 
-export interface PushProgress { ref: string; staging: string | null; tip: string; pushed: string; at: string }
+/** The batch push in progress: the remote (by name and push URLs) and ref it goes to, and the last commit that landed. */
+export interface PushProgress { remote: string; urls: string[]; ref: string; staging: string | null; tip: string; pushed: string; at: string }
 
 export function readPushProgress(gitDir: string): PushProgress | null {
   const path = join(gitDir, PROGRESS_NAME);
   if (!existsSync(path)) return null;
   try {
     const doc = JSON.parse(readFileSync(path, 'utf8')) as PushProgress;
-    return typeof doc.ref === 'string' && typeof doc.pushed === 'string' && /^[0-9a-f]{40,64}$/.test(doc.pushed) ? doc : null;
+    return typeof doc.remote === 'string' && Array.isArray(doc.urls) && typeof doc.ref === 'string' && typeof doc.pushed === 'string' && /^[0-9a-f]{40,64}$/.test(doc.pushed) ? doc : null;
   } catch { return null; }
 }
 
@@ -135,6 +153,8 @@ export function packTooLarge(sha: string, bytes: number, cap: number, remote: st
 export interface PushIO {
   gitDir: string;
   remote: string;
+  /** The remote's push URLs: recorded progress is reused only toward the same ones. */
+  urls: string[];
   git(args: string[]): { code: number; stdout: string; stderr: string };
   push(refspecs: string[], timeoutMs: number): { code: number; stdout: string; stderr: string };
 }
@@ -142,11 +162,17 @@ export interface PushIO {
 /** Test seam: runs after each batch but the last has pushed and its progress is recorded. */
 export const pushSeams: { afterBatch?: (index: number, end: string) => void } = {};
 
-/** Bytes of the objects `tip` reaches and none of `exclude` does (`--disk-usage`); 0 when git cannot tell. */
-export function pendingBytes(io: Pick<PushIO, 'git'>, tip: string, exclude: readonly string[]): number {
+/**
+ * Bytes of the objects `tip` reaches and none of `exclude` does (`--disk-usage`, git 2.31+); null when git cannot tell.
+ * An unmeasured push goes as one push with the longest deadline (never batched); an unmeasured batch plan pushes nothing.
+ */
+export function pendingBytes(io: Pick<PushIO, 'git'>, tip: string, exclude: readonly string[]): number | null {
   const usage = io.git(['rev-list', '--objects', '--disk-usage', tip, '--not', ...exclude]);
-  return usage.code === 0 ? Number(usage.stdout.trim()) || 0 : 0;
+  const bytes = Number(usage.stdout.trim());
+  return usage.code === 0 && usage.stdout.trim() !== '' && Number.isFinite(bytes) ? bytes : null;
 }
+
+const unmeasured = (what: string) => ({ code: 1, stdout: '', stderr: `gbrain could not measure ${what} before pushing (git rev-list failed), so nothing was pushed.` });
 
 /**
  * Pushes `tip` to `ref` (header): one push when its objects fit the cap, else ordered batches. `remoteTip` is the
@@ -157,28 +183,37 @@ export function pushRange(io: PushIO, opts: { tip: string; ref: string; cap: num
   const { tip, ref, cap } = opts;
   const isAncestor = (a: string, b: string) => io.git(['merge-base', '--is-ancestor', a, b]).code === 0;
   let progress = readPushProgress(io.gitDir);
-  if (progress && (progress.ref !== ref || !isAncestor(progress.pushed, tip))) { clearPushProgress(io.gitDir); progress = null; }
+  const sameRemote = progress && progress.remote === io.remote && progress.urls.join('\n') === io.urls.join('\n') && progress.ref === ref;
+  const landed = progress && (progress.staging || isAncestor(progress.pushed, `refs/remotes/${io.remote}/${ref.replace(/^refs\/heads\//, '')}`));
+  if (progress && (!sameRemote || !landed || !isAncestor(progress.pushed, tip))) { clearPushProgress(io.gitDir); progress = null; }
   const exclude = [`--remotes=${io.remote}`, ...(progress ? [progress.pushed] : [])];
   const finish = (staging: string | null) => {
     if (staging) io.push([`:${staging}`], pushTimeoutMs(0));
     clearPushProgress(io.gitDir);
   };
   const pending = pendingBytes(io, tip, exclude);
-  if (pending <= cap) {
-    const pushed = io.push([`${tip}:${ref}`], pushTimeoutMs(pending));
+  if (pending === null || pending <= cap) {
+    const pushed = io.push([`${tip}:${ref}`], pending === null ? PUSH_TIMEOUT_CAP_MS : pushTimeoutMs(pending));
     if (pushed.code === 0 && progress) finish(progress.staging);
     return pushed;
   }
-  const chain = io.git(['rev-list', '--first-parent', '--reverse', tip, '--not', ...exclude]).stdout.split('\n').filter(Boolean);
-  const plan = planBatches(chain.map((sha, i) => ({ sha, bytes: pendingBytes(io, sha, [...exclude, ...(i ? [chain[i - 1]!] : [])]) })), cap);
+  const listed = io.git(['rev-list', '--first-parent', '--reverse', tip, '--not', ...exclude]);
+  const chain = listed.stdout.split('\n').filter(Boolean);
+  if (listed.code !== 0 || !chain.length) return unmeasured(`the commits ${tip.slice(0, 12)} adds over ${io.remote}`);
+  const sizes = chain.map((sha, i) => ({ sha, bytes: pendingBytes(io, sha, [...exclude, ...(i ? [chain[i - 1]!] : [])]) }));
+  if (sizes.some(commit => commit.bytes === null)) return unmeasured(`the commits ${tip.slice(0, 12)} adds over ${io.remote}`);
+  const plan = planBatches(sizes as Array<{ sha: string; bytes: number }>, cap);
   if ('tooLarge' in plan) throw packTooLarge(plan.tooLarge.sha, plan.tooLarge.bytes, cap, io.remote);
   const staging = progress?.staging ?? (opts.remoteTip && chain.length && !isAncestor(opts.remoteTip, chain[0]!) ? stagingRef(ref) : null);
   let result = { code: 0, stdout: '', stderr: '' };
   for (const [i, batch] of plan.batches.entries()) {
     result = io.push([staging ? `+${batch.end}:${staging}` : `${batch.end}:${ref}`], pushTimeoutMs(batch.bytes));
-    if (result.code !== 0) return result;
+    if (result.code !== 0) {
+      if (progress && i === 0) clearPushProgress(io.gitDir);
+      return result;
+    }
     if (batch.end === tip) break;
-    writePushProgress(io.gitDir, { ref, staging, tip, pushed: batch.end });
+    writePushProgress(io.gitDir, { remote: io.remote, urls: io.urls, ref, staging, tip, pushed: batch.end });
     pushSeams.afterBatch?.(i, batch.end);
   }
   if (staging) {

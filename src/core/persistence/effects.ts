@@ -41,7 +41,7 @@ import { isSourceDbOnlySlug } from './source-storage.ts';
 import { advanceEffectCursor, claimCoalescedGitEffects, claimPersistenceEffect, completeEffect, effectClaimStamp, effectClaimKeeper, failEffect, hasRearmableTargets, mirrorGates, parkEffect, rearmWithheldTargets, renewPersistenceEffectClaim, requeueEffect, retryBusyEffect, retryEffect, singleFileGitEffect, type MirrorGate } from './effect-journal.ts';
 import { guardEffectSource, recoverEffectPublication, reserveEffectRecovery } from './effect-recovery.ts';
 import { commitGitTargets, DURABILITY_NOT_ENABLED, gitRootAhead, publishGitEffect, pushGitRoot, type GitEffectOwner } from './effect-git.ts';
-import { parseByteSize, PUSH_MAX_PACK_BYTES_KEY } from './push-preflight.ts';
+import { filePushCap } from './push-preflight.ts';
 import { retryIndexLockParks } from './effect-retry.ts';
 import { assertSegmentedMirrorGate, resumeGatedMirrors } from './segmented-mirror-gate.ts';
 import { gitDurabilityPolicy } from './git-durability-policy.ts';
@@ -316,11 +316,9 @@ async function singleFileGitTarget(engine: BrainEngine, effect: PersistenceEffec
   return relative(binding.local_path, path).split(sep).join('/');
 }
 
-/** Wave C 1A: `git.push_max_pack_bytes` as configured; null (the default cap) when unset or invalid. */
-async function configuredPushCap(engine: BrainEngine): Promise<number | null> {
-  const raw = await engine.getConfig(PUSH_MAX_PACK_BYTES_KEY).catch(() => null);
-  return raw ? parseByteSize(raw) : null;
-}
+
+/** Wave C 1A: a push over pushTiming.longPushBytes runs without the worktree writer lock (released early; the caller's release is idempotent). */
+const releaseFor = (owner: GitEffectOwner | undefined) => owner ? () => owner.writerLock.release() : undefined;
 
 /** Wave C 1A: renews `effects`' claims while their push runs, since a large push outlasts the 2-minute claim. */
 async function withClaimsRenewed<T>(engine: BrainEngine, effects: PersistenceEffect[], work: () => Promise<T>): Promise<T> {
@@ -354,7 +352,7 @@ async function publishGitPage(engine: BrainEngine, effect: PersistenceEffect, bi
   if (!targetedWithdrawalEffect(effect) && !effect.data.source_scan) {
     const target = await singleFileGitTarget(engine, effect, { ...binding, local_path: root }, attempt);
     if (target !== null) await completeEffect(engine, effect, await withClaimsRenewed(engine, [effect], async () =>
-      publishGitEffect(root, target, opts.signal, hardened, gitCommitNote(effect), undefined, owner, { maxPackBytes: await configuredPushCap(engine) })));
+      publishGitEffect(root, target, opts.signal, hardened, gitCommitNote(effect), undefined, owner, { maxPackBytes: filePushCap(), beforeLongPush: releaseFor(owner) })));
     return;
   }
   // Only a page walk reads snapshots; a single-file effect completes by its recorded hash.
@@ -364,7 +362,7 @@ async function publishGitPage(engine: BrainEngine, effect: PersistenceEffect, bi
     // edited), so a walk that ends while the root is ahead of its upstream pushes before it completes.
     const durable = hardened ?? (await gitDurabilityPolicy(binding, root)).durable;
     await completeEffect(engine, effect, durable && await gitRootAhead(root, opts.signal)
-      ? await withClaimsRenewed(engine, [effect], async () => pushGitRoot(root, opts.signal, { maxPackBytes: await configuredPushCap(engine) })) : {});
+      ? await withClaimsRenewed(engine, [effect], async () => pushGitRoot(root, opts.signal, { maxPackBytes: filePushCap(), beforeLongPush: releaseFor(owner) })) : {});
     return;
   }
   attempt.target = snapshot.page.slug;
@@ -410,7 +408,7 @@ async function publishGitPage(engine: BrainEngine, effect: PersistenceEffect, bi
     return;
   }
   const result = await withClaimsRenewed(engine, [effect], async () => publishGitEffect(root, relative(root, path).split(sep).join('/'), opts.signal, hardened,
-    gitCommitNote(effect), undefined, owner, { maxPackBytes: await configuredPushCap(engine) }));
+    gitCommitNote(effect), undefined, owner, { maxPackBytes: filePushCap(), beforeLongPush: releaseFor(owner) }));
   if (result.reason === 'durability_not_enabled') await completeEffect(engine, effect, result);
   else await finishPage(engine, effect, snapshot, result);
 }
@@ -498,7 +496,6 @@ async function embedPage(engine: BrainEngine, config: GBrainConfig, effect: Pers
   if (grant) pending = pending.filter(chunk => grant.chunkIndexes.has(chunk.chunk_index));
   if (grant && !pending.length) { await grant.settle({ ok: true }); await completeEffect(engine, effect, { embedding: 'skipped', reason: 'budget_capped' }); return; }
   if (pending.length) {
-    await assertEmbeddingEffectEnabled(engine, config);
     if (effect.attempts - (effect.data.embedding_retry_base ?? effect.data.embedding_attempt_base ?? 0) > MAX_RATE_LIMIT_RETRIES) {
       await exhaustEmbedding(engine, effect, snapshot.page.slug); return;
     }
@@ -1089,7 +1086,7 @@ async function runEffectPass(engine: BrainEngine, config: GBrainConfig, opts: Ef
       if (!lock) throw writerBusy(items[0]!.effect);
       const held = lock;
       pushed = await withClaimsRenewed(engine, items.map(item => item.effect), async () => pushGitRoot(root, opts.signal, {
-        maxPackBytes: await configuredPushCap(engine), beforeLongPush: async () => { await held.release(); lock = null; } }));
+        maxPackBytes: filePushCap(), beforeLongPush: async () => { await held.release(); lock = null; } }));
     } catch (error) { failure = error; } finally { await lock?.release(); }
     for (const { effect, outcome, target } of items) {
       try {
