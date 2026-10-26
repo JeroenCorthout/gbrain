@@ -16,7 +16,7 @@
  */
 
 import { spawn } from '../spawn.ts';
-import { existsSync, readFileSync, unlinkSync } from 'node:fs';
+import { existsSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import type { BrainEngine } from '../engine.ts';
 import { getCode } from '../retry-matcher.ts';
@@ -34,6 +34,8 @@ import { derivationClaimCandidateSql, derivationHoldsClaimSql, derivationSweepSc
 import { claimForms, quotes, type LedgerPurgeReport } from '../belief/purge.ts';
 import { CARRYING_FIELDS } from '../belief/keys.ts';
 import { relationExists } from '../persistence/rebuildable-cache.ts';
+import { readPageFile } from '../split-layout/page-file.ts';
+import { partsDirFor } from '../split-layout/paths.ts';
 
 export type StoreCount = Record<string, number>;
 export type StoreStatus = 'deleted' | 'would_remove' | 'retained_inactive' | 'unverified' | 'out_of_reach' | 'out_of_scope' | 'not_present' | 'incomplete';
@@ -387,13 +389,17 @@ async function sweptInventoryReports(engine: BrainEngine, reported: ReadonlySet<
   return reports;
 }
 
-/** Commits in the page files' history that add or remove the claim's fence cell. The pattern never enters argv. */
+/**
+ * Commits in the page files' history that add or remove the claim's fence cell, a split page's part files (the parts
+ * directory beside each `.md` path) included. The pattern never enters argv.
+ */
 export async function gitResidualCommits(root: string, paths: readonly string[], claim: string, limits = { bytes: PURGE_PROBE_LIMITS.gitBytes, ms: PURGE_PROBE_LIMITS.gitMs }):
   Promise<StoreReport> {
   if (!paths.length || !existsSync(join(root, '.git'))) return { store: 'git_history', status: 'out_of_reach', reason: 'no_repository', detail: 'No brain repository is recorded for these pages.' };
   const needles = [escapeFenceCell(claim).toLowerCase(), claim.toLowerCase()];
+  const pathspecs = paths.flatMap(path => path.endsWith('.md') ? [path, partsDirFor(path)] : [path]);
   return new Promise(resolve => {
-    const child = spawn('git', ['-C', root, '--literal-pathspecs', 'log', '--all', '--format=commit %H %cI', '-p', '--no-color', '--no-ext-diff', '--', ...paths],
+    const child = spawn('git', ['-C', root, '--literal-pathspecs', 'log', '--all', '--format=commit %H %cI', '-p', '--no-color', '--no-ext-diff', '--', ...pathspecs],
       { stdio: ['ignore', 'pipe', 'ignore'], env: gitChildEnv({ GIT_TERMINAL_PROMPT: '0', GIT_CONFIG_NOSYSTEM: '1' }) });
     const commits: Array<{ commit: string; committed_at: string }> = [];
     let current: { commit: string; committed_at: string } | null = null, bytes = 0, tail = '', bounded: string | null = null;
@@ -438,7 +444,13 @@ async function pageFilePaths(engine: BrainEngine, sourceId: string, pageIds: num
 /** The canonical files, their .tmp evidence and the failure log; the .tmp copy carrying the claim is deleted. */
 function onDiskReports(files: string[], claim: string, dryRun: boolean): StoreReport[] {
   const needle = claim.toLowerCase();
-  const carrying = (path: string) => { try { return existsSync(path) && readFileSync(path, 'utf8').toLowerCase().includes(needle); } catch { return false; } };
+  const carrying = (path: string) => {
+    try {
+      if (!existsSync(path)) return false;
+      const file = readPageFile(path);
+      return file.hold !== undefined || file.bytes.toString('utf8').toLowerCase().includes(needle);
+    } catch { return false; }
+  };
   const stale = files.filter(carrying);
   const tmp = files.map(f => `${f}.tmp`).filter(carrying);
   if (!dryRun) for (const path of tmp) { try { unlinkSync(path); } catch { /* reported below */ } }
