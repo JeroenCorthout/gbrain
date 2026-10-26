@@ -73,6 +73,16 @@ export function readPageFile(path: string, opts: { maxBytes?: number } = {}): Pa
   }
 }
 
+/**
+ * The page file at `path` as text, for a reader that skips what it cannot read: a split head that cannot be read throws
+ * its hold's message (`readPageFile`'s bound applies).
+ */
+export function readPageText(path: string): string {
+  const page = readPageFile(path);
+  if (page.hold) throw new Error(page.hold.message);
+  return page.bytes.toString('utf8');
+}
+
 /** A head is small, so only a file at most this large is read whole to look for one; a larger file is hashed streamed. */
 const HEAD_WINDOW_BYTES = 16 * 1024 ** 2;
 

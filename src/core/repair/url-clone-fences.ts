@@ -48,6 +48,8 @@ import { withPageLock } from '../page-lock.ts';
 import { maintenanceTransaction } from '../persistence/attribution.ts';
 import { managedPersistenceEnabled } from '../persistence/ownership.ts';
 import { clearApprovedSet, loadApprovedSet, previewChangedError, previewHash, saveApprovedSet, type ApprovedSetKey } from '../persistence/preview-approval.ts';
+import { SPLIT_PAGE_UNSUPPORTED } from '../persistence/file-repair.ts';
+import { partsDirFor } from '../split-layout/paths.ts';
 import { resolveSlugForPath } from '../sync.ts';
 import { isOwnedClone, trackedChanges, urlCloneReadOnly, urlCloneRepairPreviewArgv } from '../url-clone.ts';
 import { afterCursor, type RepairHandler, type RepairItem, type RepairItemOutcome, type RepairListing, type RepairPlan } from './core.ts';
@@ -131,6 +133,10 @@ async function survey(engine: BrainEngine, sourceIds: string[]): Promise<{ files
     }
     for (const path of paths) {
       const item = `${source.id}:${path}`;
+      if (existsSync(partsDirFor(join(root, path)))) {
+        listing.push({ item, class: SPLIT_PAGE_UNSUPPORTED, detail: `${path} is a split page head (its page continues in part files), and this repair imports and restores one file, so it is left as it is. Keep or remove that change yourself (git -C ${root} diff HEAD -- ${path} shows it), then preview again: ${preview(source.id)}` });
+        continue;
+      }
       const work = existsSync(join(root, path)) ? readFileSync(join(root, path), 'utf8') : null;
       const head = headBytes(root, path);
       const proof: Proof = staged.has(path) ? { ok: false, class: 'staged_change', reason: 'the file has a staged change, which gbrain never makes' } : proveFenceRowsOnly(head, work);

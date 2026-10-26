@@ -27,7 +27,7 @@
  * run it (`explicit_kind_required`).
  */
 import { randomUUID } from 'node:crypto';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import type { BrainEngine } from '../engine.ts';
 import { OperationError } from '../ops/contract.ts';
@@ -35,6 +35,7 @@ import { readFix } from '../ops/op-fix.ts';
 import type { Action } from '../agent-output.ts';
 import { parseFactsFence } from '../facts-fence.ts';
 import { importFile } from '../import-file.ts';
+import { readPageFile } from '../split-layout/page-file.ts';
 import { movePageIdReferences } from '../page-state/rename-alias.ts';
 import { maintenanceTransaction } from '../persistence/attribution.ts';
 import { managedPersistenceEnabled } from '../persistence/ownership.ts';
@@ -82,7 +83,9 @@ async function readNewFile(engine: Pick<BrainEngine, 'executeRaw'>, record: Iden
   const [source] = await engine.executeRaw<{ local_path: string | null }>('SELECT local_path FROM sources WHERE id = $1', [record.source_id]);
   const path = source?.local_path ? join(source.local_path, record.to) : null;
   if (!path || !existsSync(path)) throw changedSincePreview(record, `the new file ${record.to} is not in the source checkout`);
-  return { path, text: readFileSync(path, 'utf8') };
+  const page = readPageFile(path);
+  if (page.hold) throw changedSincePreview(record, `the new file ${record.to} is held (${page.hold.code}): ${page.hold.message}`);
+  return { path, text: page.bytes.toString('utf8') };
 }
 
 /** Each fence row of the old page against the new file's facts fence and the provisional page's stored row at that row number. */

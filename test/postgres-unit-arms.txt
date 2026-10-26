@@ -455,6 +455,7 @@ test/split-layout-publish-drift.test.ts
 test/split-layout-publish-mode.test.ts
 test/split-layout-publish-recovery.test.ts
 test/split-layout-publish.test.ts
+test/split-layout-raw-readers.test.ts
 test/split-layout-sync.test.ts
 test/split-layout-withdrawal-mirror.test.ts
 test/split-layout-write-through.test.ts
