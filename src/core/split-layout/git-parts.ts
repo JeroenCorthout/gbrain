@@ -4,7 +4,7 @@
  * 100755; a symlink, a submodule or a tree never matches) of exactly its manifest size and SHA-256, and every other
  * entry of the parts directory is unlisted. Paths are Git paths from the repository root.
  */
-import { execFileSync } from 'node:child_process';
+import { execFileSync } from '../spawn.ts';
 import { createHash } from 'node:crypto';
 import { posix } from 'node:path';
 import { gitChildEnv } from '../git-env.ts';

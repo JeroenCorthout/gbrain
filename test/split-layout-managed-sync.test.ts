@@ -15,7 +15,7 @@ import { readGitHold } from '../src/core/persistence/sync-holds.ts';
 import { git } from './helpers/git-publication.ts';
 import { managedBrain, type ManagedBrain } from './helpers/managed-brain.ts';
 import { writeSplitPage } from './helpers/split-page.ts';
-import { requirePostgresTestDatabase } from './helpers/test-backends.ts';
+import { requirePostgresTestDatabase, testBackends } from './helpers/test-backends.ts';
 import { registerLocalWriter, withVerifiedLocalRegistration } from '../src/core/persistence/identity.ts';
 import { runReconcilePreview } from '../src/core/persistence/reconcile.ts';
 import { prepareManagedSyncMutation, type SyncIntent } from '../src/core/persistence/sync-prepare.ts';
@@ -34,7 +34,7 @@ import type { Check } from '../src/commands/doctor.ts';
 import type { DoctorContext } from '../src/commands/doctor/context.ts';
 import { splitLayoutEntry } from '../src/commands/doctor/checks/split-layout.ts';
 
-const databaseUrl = process.env.GBRAIN_TEST_BACKEND === 'postgres' ? requirePostgresTestDatabase() : undefined;
+const databaseUrl = testBackends().includes('postgres') ? requirePostgresTestDatabase() : undefined;
 const LIMITS = { thresholdMin: 1024, partTarget: 512, partMax: 1024, leadMax: 128, partCountMax: 500 };
 const HEAD = 'notes/big.md';
 const page = (version: string) => '---\ntype: note\ntitle: Split fixture\n---\n\n'

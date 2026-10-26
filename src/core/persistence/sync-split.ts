@@ -10,7 +10,7 @@
  * head's bytes, so the publication's "file unchanged" check and every hold keyed by the file's bytes see the head;
  * the head is clean when `rawHash` is the mark's `head_sha256` (`frozenFileHash`), never F''s hash.
  */
-import { execFileSync } from 'node:child_process';
+import { execFileSync } from '../spawn.ts';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { gitChildEnv } from '../git-env.ts';
@@ -157,8 +157,8 @@ export const STALE_SPLIT_SCAN_LIMIT = 10_000;
 
 /**
  * Wave B PR 5: the live pages of a source an older gbrain stored from a split page head, as the short page the head is
- * on its own: their frontmatter carries the top-level `gbrain_parts` key, which no current write admits (head.ts
- * `assertNoReservedPartsKey`). `frontmatter ? 'gbrain_parts'` is the jsonb key-existence operator, served by the GIN
+ * on its own: their frontmatter carries the top-level `gbrain_parts` key, which no current write admits
+ * (persistence/split-head-admission.ts `assertNoReservedPartsKey`). `frontmatter ? 'gbrain_parts'` is the jsonb key-existence operator, served by the GIN
  * index idx_pages_frontmatter on Postgres and PGLite alike; bounded by `limit`.
  */
 export async function staleSplitImports(engine: Pick<BrainEngine, 'executeRaw'>, sourceId: string, limit = STALE_SPLIT_SCAN_LIMIT):

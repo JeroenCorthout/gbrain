@@ -10,9 +10,9 @@ import type { BrainEngine } from '../src/core/engine.ts';
 import { dispatchToolCall } from '../src/mcp/dispatch.ts';
 import { registerLocalWriter, withVerifiedLocalRegistration } from '../src/core/persistence/identity.ts';
 import { managedBrain } from './helpers/managed-brain.ts';
-import { requirePostgresTestDatabase } from './helpers/test-backends.ts';
+import { requirePostgresTestDatabase, testBackends } from './helpers/test-backends.ts';
 
-const databaseUrl = process.env.GBRAIN_TEST_BACKEND === 'postgres' ? requirePostgresTestDatabase() : undefined;
+const databaseUrl = testBackends().includes('postgres') ? requirePostgresTestDatabase() : undefined;
 const remoteAuth = { token: 'fixture', clientId: 'fixture-client', scopes: ['read', 'write'], sourceId: 'default', boundSlugPrefixes: ['notes'] };
 const RESERVED = 'The content is a split page head, not a page file, so it was not written.';
 const reserved = (title: string) => `---\ntitle: ${title}\ngbrain_parts:\n  format: 1\n  parts: []\n---\n\nA synthetic body.\n`;

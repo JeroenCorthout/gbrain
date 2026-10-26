@@ -37,7 +37,7 @@ import { TIMELINE_SEPARATOR } from '../page-window/document.ts';
 import { PAGE_MAX_BYTES } from '../page-size-policy.ts';
 import type { WriteRequest } from './model.ts';
 import type { PreparedMutation } from './coordinator.ts';
-import { assertNoReservedPartsKey } from '../split-layout/head.ts';
+import { assertNoReservedPartsKey } from './split-head-admission.ts';
 
 export const EDIT_PAGE_MAX_EDITS = 50;
 export const EDIT_PAGE_DIFF_MAX_BYTES = 8 * 1024;
