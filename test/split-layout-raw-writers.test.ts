@@ -470,6 +470,23 @@ for (const backend of testBackends()) describe(`[${backend}] split git layout: r
     expect(await snapshot(engine, head)).toEqual(before);
   }), 120_000);
 
+  for (const brain of ['with', 'without'] as const) {
+    test(`lint --fix ${brain} a brain holds a split head whose whole parts directory is missing (split_page_incomplete) and never rewrites the head`, () => withSplitPage(databaseUrl, async (engine, root, head) => {
+      const content = '---\ntype: note\ntitle: Split example\ncreated: 2026-01-01\n---\n' + PREAMBLE + '\n\n' + body + '\n';
+      rmSync(head); rmSync(partsDirFor(head), { recursive: true });
+      await writeSplitPage(root, SLUG + '.md', content);
+      rmSync(partsDirFor(head), { recursive: true });
+      const before = readFileSync(head, 'utf8');
+      const codes: string[] = [];
+      const result = await runLintCore({ target: root, fix: true, ...(brain === 'with' ? { engine } : {}), contentSanity: undefined, typePack: null,
+        onPageIssues: (_rel, found) => { codes.push(...found.map(issue => issue.code ?? issue.rule)); } });
+      expect(result.total_fixed).toBe(0);
+      expect(codes).toContain('split_page_incomplete');
+      expect(readFileSync(head, 'utf8')).toBe(before);
+      expect(existsSync(partsDirFor(head))).toBe(false);
+    }), 120_000);
+  }
+
   test('a managed lint fix publishes the whole page file through the door; the page stays a head plus parts', () => managedBrain(async ({ engine, ctx, root }) => {
     __setSplitLimitsForTests(LIMITS);
     await engine.setConfig(SPLIT_MAX_FILE_BYTES_KEY, '4096');
