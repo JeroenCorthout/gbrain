@@ -38,7 +38,7 @@ import { engineMutationPrecondition, parseMutationPrecondition } from './precond
 import { assertPurgeParams } from './purge-params.ts';
 import { authorizeWrite, slugDisclosable } from './authority.ts';
 import { findLiveFileClaimants, refusePartFileTarget, type FileClaimant, type FileClaimTarget } from './file-claims.ts';
-import { partFilesOnly, preparedParts, readSplitHead, resolvesModifiedHead, type SplitHeadReading } from './split-files.ts';
+import { partFilesOnly, preparedParts, readSplitHead, resolvesModifiedHead, splitInvalidRefusal, type SplitHeadReading } from './split-files.ts';
 import { digest, sha256 } from './digest.ts';
 import { replaceableFile } from '../facts/file-body-guard.ts';
 import { getWorktreeBinding } from './ownership.ts';
@@ -330,15 +330,18 @@ export async function prepareFileTarget(engine: BrainEngine, row: Pick<WriteRequ
     : piecewise || statSync(path).size > LARGE_FILE_MIN_BYTES ? FileBytes.open(path) : readFileSync(path);
   // Wave B PR 5: a split head (split-files.ts) compares as the page file its parts reassemble to; the target still expects the head's bytes.
   // A head whose body was edited compares as itself (drift) unless this write is that edit's resolution.
-  let head: SplitHeadReading | null = null;
+  let head: SplitHeadReading = { kind: 'plain' };
   try {
     partFilesOnly(path, root);
-    head = before ? readSplitHead(path, before) : null;
-    if (head?.modified && await resolvesModifiedHead(engine, row, path, head.modified, content)) return { path, root, content, expectedBeforeHash: head.headHash, expectedParts: head.parts };
-    const target = await compareFileTarget(engine, row, snapshot, content, options, { root, path, mode, capturedPath, before: head?.reassembled ?? before });
+    if (before) head = readSplitHead(path, before);
+    if (head.kind === 'split_invalid') {
+      if (head.modified && await resolvesModifiedHead(engine, row, path, head.modified, content)) return { path, root, content, expectedBeforeHash: head.headHash, expectedParts: head.parts };
+      throw splitInvalidRefusal(row, path, head);
+    }
+    const target = await compareFileTarget(engine, row, snapshot, content, options, { root, path, mode, capturedPath, before: head.kind === 'split' ? head.reassembled : before });
     if (!target) return target;
-    return head ? { ...target, expectedBeforeHash: head.headHash, expectedParts: head.parts } : { ...target, expectedParts: preparedParts(path, root) };
-  } finally { try { head?.dispose(); } finally { if (before instanceof FileBytes) before.close(); } }
+    return head.kind === 'split' ? { ...target, expectedBeforeHash: head.headHash, expectedParts: head.parts } : { ...target, expectedParts: preparedParts(path, root) };
+  } finally { try { if (head.kind === 'split') head.dispose(); } finally { if (before instanceof FileBytes) before.close(); } }
 }
 
 /** prepareFileTarget's comparison of the file at `path` (`before`, its bytes or a piecewise reading) with the snapshot. */
