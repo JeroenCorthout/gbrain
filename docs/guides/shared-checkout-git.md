@@ -539,6 +539,53 @@ A person who needs a plain commit once bypasses it for that one command:
 GBRAIN_COMMIT_GUARD=off git commit -m "fix the README by hand" -- README.md
 ```
 
+## Git maintenance
+
+gbrain's door writes pages with git plumbing (`hash-object`, `commit-tree`,
+`update-ref`), which never runs `git gc --auto`. Each append to a large page
+leaves a full loose copy of the file it rewrote, so a busy strict source grows
+loose objects without bound unless something packs them. The maintenance
+cycle's `git_maintenance` phase does that for every strict source and hosted
+bare repository on the host:
+
+- **When loose objects pass 256 MiB, or grew 64 MiB since the last run**, it
+  runs `git repack -d --geometric=2 --write-midx` and `git prune-packed`.
+- **Once a day** it runs `git prune --expire=2.weeks.ago`, then
+  `git repack -d --cruft --cruft-expiration=2.weeks.ago --write-midx` and
+  `git prune-packed`. Unreachable objects older than git's own two-week grace
+  are deleted for good; younger ones stay in a cruft pack, so an aborted
+  publication or a branch reset this week can still be recovered with git.
+
+Maintenance never takes the writer lock: `repack` and `prune` take git's own
+locks and are safe beside door writers, so a write never waits on a repack.
+Runs hold only `gbrain-maintenance.lock` in the repository's git directory, so
+two never overlap, and each run is recorded in `gbrain-maintenance.json` next to
+it. It never runs `gc --aggressive` and never rewrites history.
+
+A door write that needs an old unreachable object again (a page restored to
+bytes it held weeks ago) is protected the way git protects its own commands:
+`hash-object -w` refreshes the object's mtime, so prune treats it as new, and
+prune keeps everything a recent object references. What git leaves open is
+the instant between prune's age check and its unlink; a write that refreshes
+the object inside that window can lose it, the same risk `git gc --auto`
+carries beside any concurrent git command
+([git-gc NOTES](https://git-scm.com/docs/git-gc#_notes)).
+
+```bash
+gbrain git maintenance --source source-a          # preview: sizes, last run, what a run would prune
+gbrain git maintenance --source source-a --apply  # run it now
+gbrain config set git.maintenance off             # stop the cycle from running it
+```
+
+The cycle skips a repository whose owner scheduled git's own maintenance
+(`maintenance.auto` or `maintenance.strategy` set, or the repository listed
+in `maintenance.repo`). `gbrain doctor` reports each strict source's object
+store as `git_repo_health`: it warns above 256 MiB of loose objects, above 50
+packs, after a failed run, and at 2 GB packed when a remote is on github.com,
+where GitHub's soft repository limits start. Its fix is the preview above,
+then `--apply`. A run that finds the maintenance lock held exits with
+`git_maintenance_busy`; retry after the running one finishes.
+
 ## Limits
 
 - **Two agents editing the same file at the same time still conflict.** The

@@ -1003,6 +1003,10 @@
       },
       {
         "category": "brain",
+        "name": "git_repo_health"
+      },
+      {
+        "category": "brain",
         "name": "fence_integrity"
       },
       {

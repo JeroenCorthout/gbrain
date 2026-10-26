@@ -3811,6 +3811,18 @@
           {
             "category": "brain",
             "details": {
+              "docs": "docs/guides/shared-checkout-git.md#git-maintenance",
+              "maintenance": "auto",
+              "sources": []
+            },
+            "elapsed_ms": "<volatile>",
+            "message": "No strict source has a Git checkout on this host.",
+            "name": "git_repo_health",
+            "status": "ok"
+          },
+          {
+            "category": "brain",
+            "details": {
               "auto_repair": {
                 "active": false,
                 "enabled": true,
@@ -4257,7 +4269,7 @@
             "category": "meta",
             "details": {
               "counts": {
-                "global": 16,
+                "global": 17,
                 "mixed": 2,
                 "source": 12
               },
@@ -4277,6 +4289,7 @@
                 "extract_facts": "source",
                 "facts_drain": "global",
                 "fence_repair": "global",
+                "git_maintenance": "global",
                 "grade_takes": "global",
                 "lint": "source",
                 "orphans": "global",
@@ -4295,7 +4308,7 @@
               }
             },
             "elapsed_ms": "<volatile>",
-            "message": "Phase taxonomy: 12 source-scoped, 16 brain-global, 2 mixed. Source-safe: [lint, backlinks, sync, extract, extract_facts, extract_atoms, recompute_emotional_weight, consolidate, propose_takes, conversation_facts_backfill, enrich_thin, schema-suggest]. Brain-global: [fence_repair, content_repair, unindexed_files, resolve_symbol_edges, synthesize_concepts, grade_takes, calibration_profile, edge_contradictions, drift, standing_questions, chronicle, facts_drain, skillopt, embed, orphans, purge]. Mixed: [synthesize, patterns].",
+            "message": "Phase taxonomy: 12 source-scoped, 17 brain-global, 2 mixed. Source-safe: [lint, backlinks, sync, extract, extract_facts, extract_atoms, recompute_emotional_weight, consolidate, propose_takes, conversation_facts_backfill, enrich_thin, schema-suggest]. Brain-global: [fence_repair, content_repair, unindexed_files, git_maintenance, resolve_symbol_edges, synthesize_concepts, grade_takes, calibration_profile, edge_contradictions, drift, standing_questions, chronicle, facts_drain, skillopt, embed, orphans, purge]. Mixed: [synthesize, patterns].",
             "name": "cycle_phase_scope",
             "status": "ok"
           },
@@ -8547,6 +8560,18 @@
           {
             "category": "brain",
             "details": {
+              "docs": "docs/guides/shared-checkout-git.md#git-maintenance",
+              "maintenance": "auto",
+              "sources": []
+            },
+            "elapsed_ms": "<volatile>",
+            "message": "No strict source has a Git checkout on this host.",
+            "name": "git_repo_health",
+            "status": "ok"
+          },
+          {
+            "category": "brain",
+            "details": {
               "auto_repair": {
                 "active": false,
                 "enabled": true,
@@ -8993,7 +9018,7 @@
             "category": "meta",
             "details": {
               "counts": {
-                "global": 16,
+                "global": 17,
                 "mixed": 2,
                 "source": 12
               },
@@ -9013,6 +9038,7 @@
                 "extract_facts": "source",
                 "facts_drain": "global",
                 "fence_repair": "global",
+                "git_maintenance": "global",
                 "grade_takes": "global",
                 "lint": "source",
                 "orphans": "global",
@@ -9031,7 +9057,7 @@
               }
             },
             "elapsed_ms": "<volatile>",
-            "message": "Phase taxonomy: 12 source-scoped, 16 brain-global, 2 mixed. Source-safe: [lint, backlinks, sync, extract, extract_facts, extract_atoms, recompute_emotional_weight, consolidate, propose_takes, conversation_facts_backfill, enrich_thin, schema-suggest]. Brain-global: [fence_repair, content_repair, unindexed_files, resolve_symbol_edges, synthesize_concepts, grade_takes, calibration_profile, edge_contradictions, drift, standing_questions, chronicle, facts_drain, skillopt, embed, orphans, purge]. Mixed: [synthesize, patterns].",
+            "message": "Phase taxonomy: 12 source-scoped, 17 brain-global, 2 mixed. Source-safe: [lint, backlinks, sync, extract, extract_facts, extract_atoms, recompute_emotional_weight, consolidate, propose_takes, conversation_facts_backfill, enrich_thin, schema-suggest]. Brain-global: [fence_repair, content_repair, unindexed_files, git_maintenance, resolve_symbol_edges, synthesize_concepts, grade_takes, calibration_profile, edge_contradictions, drift, standing_questions, chronicle, facts_drain, skillopt, embed, orphans, purge]. Mixed: [synthesize, patterns].",
             "name": "cycle_phase_scope",
             "status": "ok"
           },

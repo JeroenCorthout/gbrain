@@ -1759,6 +1759,26 @@ Reasons: `opt_in_off`, `checkout_unconfigured`.
 
 More: [docs/guides/write-refusals.md#git_lfs_not_enabled](../../docs/guides/write-refusals.md#git_lfs_not_enabled)
 
+### git_maintenance_busy
+
+<a id="git_maintenance_busy"></a>
+
+| Meaning | Why | Next step | Who acts · consent | Verify | Exit | Retryable |
+|---|---|---|---|---|---|---|
+| Another git maintenance run holds this repository's maintenance lock, so this one did not start; the object store is unchanged. | gbrain packs and prunes a repository under its own maintenance lock (never the writer lock), so two runs never overlap. | Wait for the running maintenance to finish (a first repack of a large repository takes minutes), then run gbrain git maintenance --source <id> --dry-run to see what is left. | agent | `repeat the read that failed` | 1 | yes |
+
+More: [docs/guides/shared-checkout-git.md#git-maintenance](../../docs/guides/shared-checkout-git.md#git-maintenance)
+
+### git_maintenance_failed
+
+<a id="git_maintenance_failed"></a>
+
+| Meaning | Why | Next step | Who acts · consent | Verify | Exit | Retryable |
+|---|---|---|---|---|---|---|
+| A git step of gbrain git maintenance failed; the run is recorded as failed and nothing past that step ran. | repack, prune and prune-packed are git's own commands, and gbrain stops at the first one that fails instead of continuing on a repository git could not process. | Read the git error in the message (a full disk, a corrupt object, a permission), fix its cause, then run gbrain git maintenance --source <id> --apply again; doctor git_repo_health shows the recorded failure. | host_admin | `gbrain doctor --json` | 1 | no |
+
+More: [docs/guides/shared-checkout-git.md#git-maintenance](../../docs/guides/shared-checkout-git.md#git-maintenance)
+
 ### git_object_missing
 
 <a id="git_object_missing"></a>
