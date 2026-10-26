@@ -46,7 +46,7 @@ src/commands/schema.ts	4	not_page_path	Writes only gbrainPath('schema-packs', na
 src/commands/serve-health.ts	1	not_page_path	Writes only the serve exit-ledger JSON file (0600) under the gbrain home.
 src/commands/skillpack.ts	2	not_page_path	Writes only the config JSON (cfgPath) with skillpack.registry_url via tmp plus renameSync.
 src/commands/source-reconcile.ts	2	not_page_path	writeReconcilePreview writes only a new --out preview JSON (O_EXCL temp then linkSync, never replacing a file) and refuses managed canonical worktrees via assertManagedFilesystemWrite.
-src/commands/sources-demo.ts	1	refuse_before_write	Runs oneFileWriteRefusal on every demo item page and repo card before it writes any of them, so a --dir whose demo path is a split head (or a page that would split) is refused split_page_unsupported with nothing written.
+src/commands/sources-demo.ts	1	refuse_before_write	no helper: the offline demo runs with no brain or engine to plan with (sources demo passes none); before it writes any page it refuses split_page_unsupported when a demo item page or repo card path already has a parts directory (partsDirFor), so a --dir holding a split head is left as it was.
 src/commands/sources.ts	1	not_page_path	runAttach writes only the .gbrain-source dotfile in process.cwd().
 src/commands/sync/full.ts	0	split_aware	no helper: the full reconcile re-exports a database-only page through writePageThrough, which runs assertSplitWritable and writeSplitPageFile itself before any file write; the database row already exists, so nothing is stored before the refusal.
 src/commands/sync/gitignore.ts	1	not_page_path	Appends db_only directory lines to the checkout's .gitignore, which is not a page.

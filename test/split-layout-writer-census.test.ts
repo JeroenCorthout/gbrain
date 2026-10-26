@@ -74,8 +74,9 @@ test('a planted bypass fails the census: a new writer, a write over a ceiling, a
     `src/commands/sources-demo.ts: ${demoRow.ceiling + 1} file writes; reviewed ceiling ${demoRow.ceiling}`,
     'src/commands/lint.ts: split_aware without the split preflight or the planner',
   ]);
-  expect(gapsFor([['src/commands/sources-demo.ts', demo.replace(/oneFileWriteRefusal/g, 'demoWriteCheck')]], inventory))
-    .toEqual(['src/commands/sources-demo.ts: refuse_before_write without the split preflight']);
+  const [, repair] = source('src/core/repair/frontmatter.ts');
+  expect(gapsFor([['src/core/repair/frontmatter.ts', repair.replace(/oneFileWriteRefusal/g, 'repairWriteCheck')]], inventory))
+    .toEqual(['src/core/repair/frontmatter.ts: refuse_before_write without the split preflight']);
 });
 
 test('every canonical database writer that also writes files has a row', () => {

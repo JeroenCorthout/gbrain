@@ -425,13 +425,6 @@ export async function resolvePageWriteTarget(
 }
 
 /**
- * Render the DB row for `slug` to markdown and atomically write it under
- * `sync.repo_path`. Never throws — failures are reported via the result's
- * `skipped` / `error` fields. put_page calls it before its transaction commits
- * and rejects non-deliberate skips so a file failure rolls back the DB write.
- * A clone gbrain owns on an unmanaged brain is skipped (`url_clone`, #6946).
- */
-/**
  * The split preflight (`assertSplitWritable`) of a database-first writer that imports `content` as `slug` and then
  * calls writePageThrough (brainstorm and lsd saves, a classic concept publication): plans the page file writePageThrough
  * would render once the import lands (the parsed page rendered as serializePageToMarkdown renders the stored row, with
@@ -449,6 +442,13 @@ export async function assertPageThroughWritable(engine: BrainEngine, slug: strin
   await assertSplitWritable(engine, target.filePath, target.writeRoot, md);
 }
 
+/**
+ * Render the DB row for `slug` to markdown and atomically write it under
+ * `sync.repo_path`. Never throws — failures are reported via the result's
+ * `skipped` / `error` fields. put_page calls it before its transaction commits
+ * and rejects non-deliberate skips so a file failure rolls back the DB write.
+ * A clone gbrain owns on an unmanaged brain is skipped (`url_clone`, #6946).
+ */
 export async function writePageThrough(
   engine: BrainEngine,
   slug: string,

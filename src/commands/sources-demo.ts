@@ -15,11 +15,12 @@
  *   guide:      docs/guides/github-source.md
  */
 
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 
 import type { BrainEngine } from '../core/engine.ts';
-import { oneFileWriteRefusal } from '../core/split-write-through.ts';
+import { opError } from '../core/ops/contract.ts';
+import { partsDirFor } from '../core/split-layout/paths.ts';
 import {
   renderItemPage,
   renderRepoCard,
@@ -29,7 +30,7 @@ import {
 import { DEMO_ITEMS, DEMO_REPOS } from '../fixtures/github-demo.ts';
 
 export async function runSourcesDemo(
-  engine: BrainEngine,
+  _engine: BrainEngine,
   args: string[],
 ): Promise<void> {
   let dir = 'gbrain-demo';
@@ -78,10 +79,9 @@ export async function runSourcesDemo(
     ...items.map(item => ({ path: itemPagePath(dir, item.repo, item.number), content: renderItemPage(item) })),
     ...DEMO_REPOS.filter(repo => repoNames.has(repo.full_name)).map(repo => ({ path: repoCardPath(dir, repo.full_name), content: renderRepoCard(repo.full_name, repo) })),
   ];
-  for (const page of pages) {
-    const refusal = await oneFileWriteRefusal(engine, page.path, dir, page.content);
-    if (refusal) throw refusal;
-  }
+  const split = pages.find(page => existsSync(partsDirFor(page.path)));
+  if (split) throw opError('split_page_unsupported', `split_page_unsupported: ${split.path} is a split page head, and the demo writes one whole file, so nothing was written.`,
+    `Give the demo a --dir that holds no brain (the default is ./gbrain-demo).`);
   for (const page of pages) {
     mkdirSync(dirname(page.path), { recursive: true });
     writeFileSync(page.path, page.content);
