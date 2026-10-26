@@ -47,7 +47,7 @@ import {
 } from '../page-window/segmented.ts';
 import { confirmBodyPin, hiddenBefore, openSegmentedBody, type BodyPin } from '../page-body/read-range.ts';
 import { inlineRegions, inlineTailDigest } from '../page-body/tail-digest.ts';
-import { createReadPin, digestKey, fenceOverlayIdentity, readPinPrincipal, renderKey, useReadPin, type ReadPin } from '../page-body/read-pins.ts';
+import { bodyExtends, createReadPin, digestKey, fenceOverlayIdentity, readPinPrincipal, renderKey, useReadPin, type ReadPin } from '../page-body/read-pins.ts';
 import { TIMELINE_SEPARATOR } from '../page-window/document.ts';
 import { renderTrustedText, type TrustFields } from '../eligibility/labels.ts';
 import { pageTrustForRead, type QuarantinedView } from './get-page-projection.ts';
@@ -368,7 +368,7 @@ function inlineDocument(doc: PageDocument): WindowDocument {
 interface SegmentedWindows {
   doc: WindowDocument;
   size: Record<string, unknown>;
-  /** The read pin a cursor carried, when it continues this read on its pinned generation and view past a revision change. */
+  /** The read pin a cursor carried, when it continues this read on its pinned generation and view past an append. */
   continued: ReadPin | null;
   /** The cursor's live pin names another rendered view of the same revision (an overlay moved): its offsets no longer apply. */
   viewMoved: boolean;
@@ -381,8 +381,8 @@ interface SegmentedWindows {
  * per rendered view), for a trusted caller the stored body size, and for `none` the tail digest; a markdown view's size
  * is its cached digest. A remote caller gets projected totals only, as for an inline page.
  *
- * Wave C 1E: a cursor's read pin (page-body/read-pins.ts) continues the read on its pinned body generation after the
- * page moved on, while the rendered view is otherwise the one pinned (the same head, metadata, tags and overlay) and
+ * Wave C 1E: a cursor's read pin (page-body/read-pins.ts) continues the read on its pinned body generation after an
+ * append (the current body extends the pinned one; any other edit restarts the read with revision_changed), while the rendered view is otherwise the one pinned (the same head, metadata, tags and overlay) and
  * get_page has authorized this window again; its size is the pinned view's. Anything else reads the current page.
  */
 async function segmentedWindows(ctx: OperationContext, input: PartialReadInput, req: BodyRequest, mode: BodyMode, cursor: WindowCursor | null): Promise<SegmentedWindows> {
@@ -390,8 +390,12 @@ async function segmentedWindows(ctx: OperationContext, input: PartialReadInput, 
   const audience = ctx.remote === false ? 'trusted' : 'remote';
   const principal = readPinPrincipal(ctx);
   const held = cursor?.pin ? await useReadPin(ctx.engine, { token: cursor.pin, pageId: page.id, revision: cursor.revision, view: req.view, audience, principal }) : null;
-  const pinned = held && cursor!.revision !== revision ? held : null;
-  const body = await openSegmentedBody(ctx.engine, { pageId: page.id, ...(pinned ? { generation: pinned.generation } : {}), pin: { ...input.pin, revision } });
+  const open = (generation?: number) => openSegmentedBody(ctx.engine, { pageId: page.id, ...(generation === undefined ? {} : { generation }), pin: { ...input.pin, revision } });
+  const current = await open();
+  const moved = held && cursor!.revision !== revision ? held : null;
+  const older = moved && moved.generation !== current.generation ? await open(moved.generation) : null;
+  const pinned = moved && (!older || await bodyExtends(ctx.engine, older, current)) ? moved : null;
+  const body = pinned && older ? older : current;
   const head = req.view === 'markdown' ? markdownHead(page, tags) : null;
   const key = renderKey(req.view, req.view === 'markdown' ? audience : 'remote', head, body.ledger, await fenceOverlayIdentity(ctx.engine, page.source_id, page.slug));
   if (pinned && pinned.viewKey !== key) return segmentedWindows(ctx, input, req, mode, null);

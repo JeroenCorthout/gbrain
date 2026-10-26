@@ -7,14 +7,16 @@
  *    change (a withdrawal or a fence hold, which move no page revision) each report the sha256 of the bytes served, and
  *    a pinned cursor refuses after such a change rather than resume at its old offset in other bytes; a paged read that
  *    an append overtakes reads on to the end on its pinned generation without revision_changed (get_page and the thin
- *    client's printPagedPage, which no longer restarts), with the size it started with; a live pin keeps its generation
+ *    client's printPagedPage, which no longer restarts), with the size it started with, while any other edit mid-read
+ *    restarts it with revision_changed and the thin client then prints the edited page whole; a live pin keeps its generation
  *    through version pruning and a segment sweep, and an expired pin lets the sweep collect it and the read refuses
  *    rather than return a short body; a remote caller's pinned read stops when the page turns private, is deleted,
  *    leaves the caller's grant, or when another principal presents the cursor; gbrain's thin client pages the markdown
  *    in windows over the HTTP default egress cap while other remote callers keep it.
  * 2. Fails when: the digest cache is keyed by page revision (master: a withdrawal of the same length serves the cached
  *    sha256 of the bytes before it); a cursor binds the read to the page revision (master: revision_changed after an
- *    append, and printPagedPage pages the page twice); pins are not a GC root, or a pin survives its expiry; the pin is
+ *    append, and printPagedPage pages the page twice); a pin continues past an edit that is not an append (248ce816:
+ *    the read goes on serving the pinned generation, edited-out text included); pins are not a GC root, or a pin survives its expiry; the pin is
  *    used without get_page's authorization of the window, or by another caller; paged windows stay at 1 MiB.
  * 3. Runs on PGLite, and on Postgres when DATABASE_URL is set. Remote calls go through dispatchToolCall (remote: true,
  *    HTTP transport, the egress backstop included).
@@ -220,6 +222,48 @@ for (const kind of testBackends()) {
       expect(out.join('')).toBe(whole);
       expect(pagedReadWork.spooled).toBe(calls);
       expect(pagedReadWork.replayed).toBe(calls);
+    }, 300_000);
+
+    test('only an append continues a pinned read: any other edit mid-read restarts with revision_changed, and the thin client returns the edited page whole', async () => {
+      const slug = await seed();
+      const edit = async (from: string, to: string) => {
+        const res = await brain.call('edit_page', { slug, expected_revision: await revision(slug), edits: [{ old_text: from, new_text: to }], request_id: randomUUID() });
+        expect(res.isError).toBe(false);
+      };
+      for (const [i, c] of ([{}, { remote: false }] as Caller[]).entries()) {
+        const first = await markdown(slug, { max_bytes: 256 * 1024 }, c);
+        expect(first.isError).toBe(false);
+        await append(slug, `\n\nAppended turn ${randomUUID()} after the read began.\n`);
+        const second = await markdown(slug, { cursor: first.body.next_cursor }, c);
+        expect(second.isError).toBe(false);
+        expect(second.body.revision).toBe(first.body.revision);
+        expect(second.body.next_cursor).toBeTruthy();
+        const ahead = `## Section a ${300 + i}\n`;
+        expect(text([first, second]).includes(ahead)).toBe(false);
+        await edit(ahead, `## Section a ${300 + i} revised\n`);
+        const third = await markdown(slug, { cursor: second.body.next_cursor }, c);
+        expect(third.isError).toBe(true);
+        expect(code(third)).toBe('revision_changed');
+        expect(third.body.window).toBeUndefined();
+        const restarted = text(await pageOn(slug, await markdown(slug, { max_bytes: 4 * 1024 * 1024 }, c), c));
+        expect(restarted).toContain(`## Section a ${300 + i} revised\n`);
+        expect(restarted).not.toContain(ahead);
+      }
+      let calls = 0;
+      const out: string[] = [];
+      Object.assign(pagedReadWork, { spooled: 0, replayed: 0 });
+      await printPagedPage(async params => {
+        const r = await markdown(slug, { ...params, ...(params.cursor === undefined ? { max_bytes: 256 * 1024 } : {}) });
+        if (r.isError) throw Object.assign(new Error(String(r.body.message ?? code(r))), { detail: { code: code(r) } });
+        if (++calls === 1) await edit('## Section a 310\n', '## Section a 310 revised\n');
+        return r.body;
+      }, { slug }, async t => { out.push(t); });
+      const whole = text(await pageOn(slug, await markdown(slug, { max_bytes: 4 * 1024 * 1024 }), {}));
+      expect(whole).toContain('## Section a 310 revised\n');
+      expect(whole).not.toContain('## Section a 310\n');
+      expect(out.join('')).toBe(whole);
+      expect(pagedReadWork.spooled).toBe(calls);
+      expect(pagedReadWork.replayed).toBe(calls - 1);
     }, 300_000);
 
     test('a live pin keeps its generation through version pruning and a sweep; an expired one does not, and the read refuses', async () => {

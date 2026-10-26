@@ -15,7 +15,8 @@
  * a page of any size prints with one window in memory. A segmented page's
  * windows carry a read pin, so an append mid-read does not restart the copy:
  * the host keeps answering the pinned revision until the read ends, or stops
- * it when the page is deleted or the caller loses access.
+ * it when the page is deleted or the caller loses access. Any other edit
+ * mid-read restarts it (revision_changed), as for an inline page.
  *
  * A segmented page (Wave B) is never returned whole by get_page. Locally the
  * refusal is page_body_segmented and `gbrain get` streams the page instead:

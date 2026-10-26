@@ -10,6 +10,10 @@
  * bytes it started on. Access is not part of the pin: every window is authorized again by get_page before the pin is
  * used, so a delete, a privacy change or a revoked grant stops the read whatever the pin says.
  *
+ * A read continues on its pin only across an append (spec §10 1E): the page's current body must extend the pinned one
+ * (bodyExtends). Any other edit mid-read restarts it with revision_changed, so text an edit removed is never served
+ * after the edit commits.
+ *
  * Pins hold hashes and sizes only, never page text. They expire READ_PIN_TTL_MS after their last use, and a page holds
  * at most READ_PINS_PER_PAGE live ones; a pin that cannot be written (a read-only database, the per-page cap) leaves
  * the read revision-bound, as it was before pins.
@@ -18,6 +22,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import type { BrainEngine } from '../engine.ts';
 import type { OperationContext } from '../ops/contract.ts';
 import type { BodyLedger } from './segment-ledger.ts';
+import type { BodyRow, SegmentedBody } from './read-range.ts';
 import { activationSuppressedSql } from '../eligibility/sql.ts';
 
 export const READ_PIN_TTL_MS = 15 * 60 * 1000;
@@ -94,6 +99,40 @@ export function digestKey(key: string, generation: number): string {
 }
 
 /** A new pin, or null when none could be written (read-only database, or the page already holds READ_PINS_PER_PAGE live pins). */
+/**
+ * Whether `now` extends `was`, as an append leaves a body: each region's stored bytes in `was` are a prefix of that
+ * region in `now`. Rows equal in order (sha256 and length) match without reading text; from the first that differs,
+ * texts are compared byte for byte, stopping at the first difference, so an append reads only the tail it re-cut.
+ */
+export async function bodyExtends(engine: Pick<BrainEngine, 'readSegmentTexts'>, was: SegmentedBody, now: SegmentedBody): Promise<boolean> {
+  if (was.sourceId !== now.sourceId) return false;
+  const text = async (row: BodyRow) => (await engine.readSegmentTexts(was.sourceId, [row.sha256])).get(Buffer.from(row.sha256).toString('hex'));
+  for (const region of ['truth', 'timeline'] as const) {
+    const old = was.rows.filter(r => r.region === region);
+    const cur = now.rows.filter(r => r.region === region);
+    let i = 0;
+    while (i < old.length && i < cur.length && old[i]!.byteLen === cur[i]!.byteLen && Buffer.from(old[i]!.sha256).equals(Buffer.from(cur[i]!.sha256))) i++;
+    let j = i;
+    let have: Buffer | null = null;
+    for (const row of old.slice(i)) {
+      const want = await text(row);
+      if (!want) return false;
+      for (let off = 0; off < want.length;) {
+        if (!have?.length) {
+          const next = j < cur.length ? await text(cur[j++]!) : undefined;
+          if (!next) return false;
+          have = Buffer.from(next.buffer, next.byteOffset, next.byteLength);
+        }
+        const n = Math.min(want.length - off, have.length);
+        if (!have.subarray(0, n).equals(Buffer.from(want.buffer, want.byteOffset + off, n))) return false;
+        off += n;
+        have = have.subarray(n);
+      }
+    }
+  }
+  return true;
+}
+
 export async function createReadPin(engine: BrainEngine, pin: Omit<ReadPin, 'token'>): Promise<string | null> {
   const token = randomBytes(16).toString('hex');
   try {
