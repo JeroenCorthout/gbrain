@@ -10,18 +10,17 @@
  * never writes them. `mirrorFileBody` re-reads the stored body under a row lock inside the caller's transaction and
  * writes only when it still equals the body the caller compared, keeping the replaced body in page_versions first.
  *
- * `splitPageToken` runs before that comparison: a split page's canonical file is a head whose page continues in part
- * files (split-layout/), which only a managed brain's publication lays out, so an unmanaged writer never plans on or
- * rewrites one and takes its database-only route with the typed reason instead.
+ * A split page's canonical file is a head whose page continues in part files (split-layout/): `replaceableFile` compares
+ * its page file F', and a writer that does not rewrite one refuses with `splitPageToken`'s typed reason, nothing changed.
  */
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import type { BrainEngine } from '../engine.ts';
 import { sanitizeText } from '../batch-rows.ts';
 import { parseMarkdown, parseMarkdownHead } from '../markdown.ts';
 import { contentHash, contentHashFrontmatterAndTags } from '../utils.ts';
 import { stableJson } from '../persistence/digest.ts';
 import { classifyItemFailure } from '../item-failure.ts';
-import { pageFileSha256 } from '../split-layout/page-file.ts';
+import { pageFileSha256, readPageFile } from '../split-layout/page-file.ts';
 
 export interface StoredBody {
   compiled_truth: string | null;
@@ -38,17 +37,17 @@ export function fileDatabaseDriftToken(slug: string, sourceId: string, when: 'be
 }
 
 /**
- * The diagnostic an unmanaged writer reports for the page file at `filePath` when it is a split head, or null: `split_page`
- * for a head whose parts verify, else the hold that keeps its page file unreadable (`split_page_incomplete`,
- * `split_head_modified`). `disposition` says what happened to the write instead.
+ * The refusal an unmanaged writer that does not rewrite a split page reports for the page file at `filePath`, or null:
+ * `split_page` for a head whose parts verify, else the hold that keeps its page file unreadable (`split_page_incomplete`,
+ * `split_head_modified`). `disposition` says what was left unchanged.
  */
 export function splitPageToken(filePath: string, slug: string, disposition: string): string | null {
   if (!existsSync(filePath)) return null;
   const file = pageFileSha256(filePath);
   if (!file.split) return null;
   if (file.hold) return `${slug} (${file.hold.code}: ${file.hold.message} Meanwhile ${disposition})`;
-  return `${slug} (split_page: its canonical file is a split head whose page continues in part files, which only a managed brain's `
-    + `publication rewrites, so the file was neither compared nor rewritten and ${disposition})`;
+  return `${slug} (split_page: its canonical file is a split head whose page continues in part files, which this writer does `
+    + `not rewrite, so the file was neither compared nor rewritten and ${disposition})`;
 }
 
 /** The file's body and timeline as the mirror would store them. */
@@ -150,7 +149,8 @@ function fileHeldBy(fileBytes: string, slug: string, state: StoredState): boolea
  * imported, or an unindexed file at the path), and the caller leaves it and reports the page.
  *
  * `expectedFileBytes` is what the caller passes to `writePageThrough` (null: the file must still be absent), so a file
- * that changes between this check and the write is refused there too.
+ * that changes between this check and the write is refused there too. For a split head it is the page file F' (a head
+ * whose parts do not verify is never replaceable), which `writePageThrough` compares and writes back as its split unit.
  *
  * `alsoHeldAs` (GBRA-133, #7292): other bytes the file stands for, or null. A connector passes the file with the live
  * page's `## Facts` fence put back: that fence is gbrain's own content, which the provider's render never had, so a
@@ -159,7 +159,9 @@ function fileHeldBy(fileBytes: string, slug: string, state: StoredState): boolea
 export async function replaceableFile(engine: BrainEngine, sourceId: string, slug: string, filePath: string,
   alsoHeldAs?: (fileBytes: string) => string | null): Promise<{ ok: true; expectedFileBytes: string | null } | { ok: false }> {
   if (!existsSync(filePath)) return { ok: true, expectedFileBytes: null };
-  const bytes = readFileSync(filePath, 'utf-8');
+  const file = readPageFile(filePath);
+  if (file.hold) return { ok: false };
+  const bytes = file.bytes.toString('utf-8');
   const states = await engine.executeRaw<StoredState>(
     `(SELECT p.compiled_truth, p.timeline, p.frontmatter, p.title, p.type,
              to_jsonb(ARRAY(SELECT t.tag FROM tags t WHERE t.page_id = p.id)) AS tags

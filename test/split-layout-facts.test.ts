@@ -5,13 +5,15 @@
  *    reads the page file F' a split head and its parts reassemble to, never the head alone. The facts reconcile finds
  *    an inline or segmented split page fresh, derives the rows that live in its parts and detaches a stray row; a
  *    split head whose parts do not verify holds the destructive reconcile with its hold code. An unmanaged writer
- *    (writeFactsToFence, forget's fence mirror, the unfenced-row fence step) never plans on or rewrites a head: it
- *    takes its database-only fallback with the typed reason split_page (or the hold code), leaving the head and every
- *    part as they are. On a managed brain an append publishes through the door and keeps the split layout. Takes
+ *    (writeFactsToFence, forget's fence mirror) edits the page file F' and writes it back as its split unit, files
+ *    before database, so the head, parts and stored body agree; a head whose parts do not verify refuses with its hold
+ *    code and nothing changes. The unfenced-row fence step and a proposal accept refuse a split page with the typed
+ *    reason split_page, nothing changed. On a managed brain an append publishes through the door and keeps the split layout. Takes
  *    extraction from the checkout and a purge preview read F' too.
  * 2. Fails when: a reader compares or parses the head (a FACTS_PAGE_CACHE_STALE skip, rows in the parts never derived,
  *    a file_database_drift label for a page that has no drift), a writer rewrites the head or writes the whole page
- *    over it, or a hold is reported as anything but its code.
+ *    over it, records a fact or a strike in the database only
+ *    while the file keeps the old page, or a hold is reported as anything but its code.
  * 3. PGLite always; PostgreSQL when DATABASE_URL is set (test/postgres-unit-arms.txt). KB-sized limits through
  *    __setSplitLimitsForTests. Unmanaged split heads are written with planSplit, as a pull of another host's
  *    publication leaves them.
@@ -28,6 +30,7 @@ import { FACTS_FENCE_BEGIN, FACTS_FENCE_END, parseFactsFence } from '../src/core
 import { extractFactsFromFenceText } from '../src/core/facts/extract-from-fence.ts';
 import { writeFactsToFence, type FenceInputFact } from '../src/core/facts/fence-write.ts';
 import { forgetFactInFence } from '../src/core/facts/forget.ts';
+import { fileBodyMatchesStored, readStoredBody } from '../src/core/facts/file-body-guard.ts';
 import { applyProposalAction } from '../src/core/facts/proposal-supersede.ts';
 import { auditUnadoptableFacts, fenceUnfencedFacts, planUnfencedFacts } from '../src/core/facts/unfenced-facts.ts';
 import { insertProposal } from '../src/core/ai/decide/proposals-store.ts';
@@ -87,6 +90,26 @@ async function writeSplit(path: string, content: string) {
   const file = readPageFile(path);
   expect(file.hold).toBeUndefined();
   if (!file.hold) expect(file.bytes.toString('utf8')).toBe(content);
+}
+
+/** The writer tests' limits: a KB threshold, so the page they rewrite stays a head plus parts. */
+const WRITE_LIMITS = { ...LIMITS, thresholdDefault: 1024 };
+
+/**
+ * Files and database agree after an unmanaged write: the head is still a split head whose parts directory holds exactly
+ * its manifest, nothing is left at .tmp, and the stored body is the page file's. Returns the page file F'.
+ */
+async function expectSplitAgrees(engine: BrainEngine, file: string): Promise<string> {
+  const read = readPageFile(file);
+  if (read.hold) throw new Error(read.hold.message);
+  expect(read.split).toBe(true);
+  const parsed = parseHead(readFileSync(file, 'utf8'));
+  if (!parsed || 'error' in parsed) throw new Error('the head does not parse');
+  expect(readdirSync(partsDirFor(file)).sort()).toEqual(parsed.manifest.parts.map(part => part.path.split('/').pop()!).sort());
+  expect(existsSync(file + '.tmp')).toBe(false);
+  const text = read.bytes.toString('utf8');
+  expect(fileBodyMatchesStored(text, SLUG, (await readStoredBody(engine, 'default', SLUG))!)).toBe(true);
+  return text;
 }
 
 interface SplitBrain { engine: BrainEngine; root: string; file: string }
@@ -216,56 +239,60 @@ for (const backend of testBackends()) describe('[' + backend + '] split git layo
     });
   }, 180_000);
 
-  test('writeFactsToFence on an unmanaged split page falls back database-only with reason split_page; the head and parts stay', async () => {
-    __setSplitLimitsForTests(LIMITS);
+  test('writeFactsToFence on an unmanaged split page writes the fact into its page file and keeps the split layout; files and database agree', async () => {
+    __setSplitLimitsForTests(WRITE_LIMITS);
     await withSplitBrain(databaseUrl, fenceInParts(60, CLAIM), async ({ engine, root, file }) => {
+      await indexFence(engine, fenceInParts(60, CLAIM));
+      const result = await writeFactsToFence(engine, target(root), [fact(SECOND)]);
+      expect(result).toMatchObject({ inserted: 1 });
+      expect(result.legacyFallback).toBeUndefined();
+      const text = await expectSplitAgrees(engine, file);
+      expect(parseFactsFence(text).facts.map(f => [f.rowNum, f.claim, f.active])).toEqual([[1, CLAIM, true], [2, SECOND, true]]);
+      expect(await activeRows(engine)).toEqual([{ row_num: 1, fact: CLAIM }, { row_num: 2, fact: SECOND }]);
+    });
+  }, 180_000);
+
+  test('writeFactsToFence on an unmanaged split head with a missing part refuses with the hold code; nothing is written', async () => {
+    __setSplitLimitsForTests(WRITE_LIMITS);
+    await withSplitBrain(databaseUrl, fenceInParts(60, CLAIM), async ({ engine, root, file }) => {
+      missingPart(file);
       const before = { disk: disk(file), body: await storedBody(engine) };
       const result = await writeFactsToFence(engine, target(root), [fact(SECOND)]);
-      expect(result).toMatchObject({ inserted: 0, legacyFallback: true, databaseOnlyReason: 'split_page' });
-      expect(result.warning).toContain(SLUG + ' (split_page:');
+      expect(result).toMatchObject({ inserted: 0, fenceWriteFailed: true });
+      expect(result.legacyFallback).toBeUndefined();
+      expect(result.fenceRefusal?.code).toBe('split_page_incomplete');
       expect({ disk: disk(file), body: await storedBody(engine) }).toEqual(before);
       expect(await engine.executeRaw('SELECT id FROM facts')).toEqual([]);
     });
   }, 180_000);
 
-  test('writeFactsToFence on an unmanaged split head with a missing part names the hold and writes nothing', async () => {
-    __setSplitLimitsForTests(LIMITS);
-    await withSplitBrain(databaseUrl, fenceInParts(60, CLAIM), async ({ engine, root, file }) => {
-      missingPart(file);
-      const before = { disk: disk(file), body: await storedBody(engine) };
-      const result = await writeFactsToFence(engine, target(root), [fact(SECOND)]);
-      expect(result).toMatchObject({ inserted: 0, legacyFallback: true, databaseOnlyReason: 'split_page' });
-      expect(result.warning).toContain(SLUG + ' (split_page_incomplete:');
-      expect({ disk: disk(file), body: await storedBody(engine) }).toEqual(before);
-    });
-  }, 180_000);
-
-  test('forget on an unmanaged split page expires the row database-only with reason split_page; the head and parts stay', async () => {
-    __setSplitLimitsForTests(LIMITS);
+  test('forget on an unmanaged split page strikes the row in its page file and keeps the split layout; files and database agree', async () => {
+    __setSplitLimitsForTests(WRITE_LIMITS);
     const content = fenceInParts(60, CLAIM);
     await withSplitBrain(databaseUrl, content, async ({ engine, file }) => {
       const [id] = await indexFence(engine, content);
-      const before = disk(file);
       const result = await forgetFactInFence(engine, id!);
-      expect(result).toMatchObject({ ok: true, path: 'legacy_db' });
-      expect(result.warning).toContain(SLUG + ' (split_page:');
-      expect(disk(file)).toEqual(before);
+      expect(result).toMatchObject({ ok: true, path: 'fence' });
+      expect(result.warning).toBeUndefined();
+      const text = await expectSplitAgrees(engine, file);
+      expect(parseFactsFence(text).facts.map(f => [f.rowNum, f.claim, f.active])).toEqual([[1, CLAIM, false]]);
       expect(await activeRows(engine)).toEqual([]);
     });
   }, 180_000);
 
-  test("forget on an unmanaged segmented split page whose fence is in the head's lead never rewrites the head", async () => {
-    __setSplitLimitsForTests({ ...SEGMENTED_LIMITS, leadMax: 4096 });
+  test("forget on an unmanaged segmented split page whose fence is in the head's lead strikes it in the page file and keeps the split layout", async () => {
+    __setSplitLimitsForTests({ ...SEGMENTED_LIMITS, leadMax: 4096, thresholdDefault: 1024 ** 2 });
     const content = page(facts(CLAIM) + NL + NL + prose(17_000));
     await withSplitBrain(databaseUrl, content, async ({ engine, file }) => {
       expect(readFileSync(file, 'utf8')).toContain(CLAIM);
       const [id] = await indexFence(engine, content);
-      const before = disk(file);
       const result = await forgetFactInFence(engine, id!);
-      expect(result).toMatchObject({ ok: true, path: 'legacy_db' });
-      expect(result.warning).toContain(SLUG + ' (split_page:');
-      expect(disk(file)).toEqual(before);
-      expect(readPageFile(file).hold).toBeUndefined();
+      expect(result).toMatchObject({ ok: true, path: 'fence' });
+      const read = readPageFile(file);
+      if (read.hold) throw new Error(read.hold.message);
+      expect(read.split).toBe(true);
+      expect(parseFactsFence(read.bytes.toString('utf8')).facts.map(f => [f.rowNum, f.claim, f.active])).toEqual([[1, CLAIM, false]]);
+      expect(existsSync(file + '.tmp')).toBe(false);
       expect(await activeRows(engine)).toEqual([]);
     }, { segmented: true });
   }, 300_000);

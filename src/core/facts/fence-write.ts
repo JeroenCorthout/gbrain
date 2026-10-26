@@ -50,7 +50,9 @@ import { isWriteThroughDisabled, resolvePageWriteTarget } from '../write-through
 import { isDurabilityHardened, commitWriteThroughFile } from '../brain-repo-durability.ts';
 import { upsertFactRow, parseFactsFence, formatFenceDate } from '../facts-fence.ts';
 import { unparsedFenceRefusal } from '../fence-repair/refusal.ts';
-import type { OperationError } from '../ops/contract.ts';
+import { OperationError } from '../ops/contract.ts';
+import { PageFileChanged, readPageFileText, writeSplitPageFile } from '../split-write-through.ts';
+import type { PageFileHold } from '../split-layout/page-file.ts';
 import { extractFactsFromFenceText } from './extract-from-fence.ts';
 import { logStubGuardEvent } from './stub-guard-audit.ts';
 import { isFactWithdrawn } from './withdrawal.ts';
@@ -63,7 +65,7 @@ import type { TaintInput, WriteTrust } from '../trust/tier.ts';
 import { gitChildEnv } from '../git-env.ts';
 import { urlCloneReadOnly } from '../url-clone.ts';
 import { bodyUnread } from '../page-body/page-shape.ts';
-import { bestEffortStoredBodyMirror, fileBodyMatchesStored, fileDatabaseDriftToken, mirrorFileBody, readStoredBody, splitPageToken } from './file-body-guard.ts';
+import { bestEffortStoredBodyMirror, fileBodyMatchesStored, fileDatabaseDriftToken, mirrorFileBody, readStoredBody } from './file-body-guard.ts';
 
 /** Resolved source binding for the entity page. */
 export interface FenceTarget {
@@ -118,11 +120,8 @@ export interface FenceWriteResult {
   ids: number[];
   /** True when the path fell through to DB-only: local_path unset, `sync.write_through` off, or a gbrain-owned clone (`databaseOnlyReason`). */
   legacyFallback?: true;
-  /**
-   * #6946: why a `legacyFallback` is expected — `url_clone`: the source is a clone gbrain owns and pulls (url-clone.ts), so its checkout is never written;
-   * `split_page`: the page's file is a split head (head plus part files, which only a managed brain's publication writes), named with any hold in `warning`.
-   */
-  databaseOnlyReason?: 'url_clone' | 'file_database_drift' | 'split_page';
+  /** #6946: why a `legacyFallback` is expected — `url_clone`: the source is a clone gbrain owns and pulls (url-clone.ts), so its checkout is never written. */
+  databaseOnlyReason?: 'url_clone' | 'file_database_drift';
   /** A held file mirror's typed diagnostic and repair instructions; facts take the DB-only fallback. */
   warning?: string;
   /** True when fence parse-validate failed; rows were NOT inserted, .tmp quarantined. */
@@ -237,6 +236,8 @@ export async function commitFactFenceFile(
   slug: string,
   sourceId: string,
   prewriteState: FactFenceGitPathState,
+  /** A split page's head and the part files written or removed with it, committed together. */
+  splitPaths: readonly string[] = [],
 ): Promise<void> {
   // Self-dirt does NOT block the commit: a prior fence-commit failure
   // (index.lock contention, kill mid-commit) leaves the fence file itself
@@ -261,7 +262,7 @@ export async function commitFactFenceFile(
     if (delayMs > 0) {
       await new Promise(resolve => setTimeout(resolve, delayMs));
     }
-    if (commitWriteThroughFile(repoPath, filePath, slug) && gitPathState(repoPath, filePath) === 'clean') {
+    if (commitWriteThroughFile(repoPath, filePath, slug, 'write-through', splitPaths) && gitPathState(repoPath, filePath) === 'clean') {
       return;
     }
   }
@@ -309,8 +310,7 @@ export function stubEntityPage(
  *
  * Returns `legacyFallback: true` when `target.localPath` is null (also
  * under `sync.write_through` off and, with `databaseOnlyReason: 'url_clone'`,
- * for a clone gbrain owns, #6946, and, with `databaseOnlyReason: 'split_page'`,
- * for a page whose file is a split head, which only a managed publication writes) —
+ * for a clone gbrain owns, #6946) —
  * the caller is responsible for falling through to the legacy
  * DB-only `engine.insertFact` path. We don't do the legacy fallback
  * here because the caller has the FactsBackstopCtx (visibility,
@@ -323,7 +323,12 @@ export function stubEntityPage(
  * and the DB is NOT touched. The caller treats this as a hard
  * failure on the page (no rows inserted, no duplicate count, no
  * fact_ids). The same flag, with `fenceRefusal` and no .tmp, means the
- * page's existing fence does not parse cleanly (#6385 R12).
+ * page's existing fence does not parse cleanly (#6385 R12), or that the page's
+ * file is a split head whose page file cannot be read (its hold code).
+ *
+ * Wave B PR 5: a split page (split-layout/) is edited as its page file F' and
+ * written back as its split unit (split-write-through.ts), the head and parts
+ * as one file write, so the facts reach the files before the database.
  */
 export async function writeFactsToFence(
   engine: BrainEngine,
@@ -405,9 +410,9 @@ export async function writeFactsToFence(
       };
       const drift = (when: 'before' | 'during') => databaseOnly(fileDatabaseDriftToken(target.slug, target.sourceId, when), 'file_database_drift');
       if (fromFile) {
-        const split = splitPageToken(filePath, target.slug, 'facts are recorded database-only');
-        if (split) return databaseOnly(split, 'split_page');
-        body = readFileSync(filePath, 'utf-8');
+        const file = readPageFileText(filePath);
+        if (file.hold) return { inserted: 0, ids: [], fenceWriteFailed: true, fenceRefusal: splitHoldRefusal(target, filePath, file.hold), ...withdrawnSkipped };
+        body = file.text!;
         const refusal = refuseUnparsedFence(body, target, filePath);
         if (refusal) return { inserted: 0, ids: [], fenceWriteFailed: true, fenceRefusal: refusal, ...withdrawnSkipped };
         const page = await engine.getPage(target.slug, { sourceId: target.sourceId });
@@ -580,21 +585,21 @@ export async function writeFactsToFence(
         source_session: facts[i].sessionId,
       }));
 
+      const fileMoved = () => { const now = readPageFileText(filePath); return now.hold !== undefined || now.text !== fileBefore; };
+      let splitPaths: string[] = [];
       const result = await maintenanceTransaction(engine, async tx => {
-        if (fileBefore === null ? existsSync(filePath) : !existsSync(filePath) || readFileSync(filePath, 'utf-8') !== fileBefore) return null;
+        if (fileMoved()) return null;
         if (stored && !await bestEffortStoredBodyMirror(tx, target.sourceId, target.slug, stored,
           savepoint => withPageTierKept(savepoint, target, () => mirrorFileBody(savepoint, target.sourceId, target.slug, tmpBody, stored)),
           err => console.warn(`[facts.fence] FACTS_PAGE_MIRROR_FAILED: ${target.slug} (source ${target.sourceId}): ${err instanceof Error ? err.message : String(err)}; page cache stale until gbrain sync --source ${target.sourceId}`))) return null;
         if (!stored && await readStoredBody(tx, target.sourceId, target.slug, true)) return null;
         const inserted = await insertFenceRows(tx, target.sourceId, enriched, facts, derivation);
-        if (fileBefore === null ? existsSync(filePath) : !existsSync(filePath) || readFileSync(filePath, 'utf-8') !== fileBefore) {
-          throw new FenceFileChanged();
-        }
+        if (fileMoved()) throw new FenceFileChanged();
         assertSourceFilesystemActive();
-        renameSync(tmpPath, filePath);
+        splitPaths = await publishFenceTmp(tx, filePath, writeRoot, tmpBody, () => { if (fileMoved()) throw new FenceFileChanged(); });
         return inserted;
       }).catch(err => {
-        if (err instanceof FenceFileChanged) return null;
+        if (err instanceof FenceFileChanged || err instanceof PageFileChanged) return null;
         throw err;
       });
       if (!result) {
@@ -616,6 +621,7 @@ export async function writeFactsToFence(
           target.slug,
           target.sourceId,
           durabilityPrewriteState,
+          splitPaths,
         );
       }
       return { inserted: result.inserted, ids: result.ids, ...withdrawnSkipped };
@@ -625,6 +631,25 @@ export async function writeFactsToFence(
 }
 
 class FenceFileChanged extends Error {}
+
+/** A split head whose page file cannot be read: the fact write refuses with the hold code and records nothing. */
+function splitHoldRefusal(target: FenceTarget, filePath: string, hold: PageFileHold): OperationError {
+  recordWriteFailure(target.slug, target.sourceId, [`${hold.code}: ${hold.message}`], filePath);
+  return new OperationError(hold.code, hold.message, 'Restore the head and its parts (or resolve the edited head) as the message says, then run the fact write again; no fact was recorded.');
+}
+
+/**
+ * Puts a validated `.tmp` page file in place: renamed over an ordinary file, or written as its split unit
+ * (split-write-through.ts; `precondition` runs before any file is touched) and the `.tmp` removed. Returns the split
+ * unit's paths, for the durability commit.
+ */
+export async function publishFenceTmp(engine: BrainEngine, filePath: string, root: string, tmpBody: string, precondition: () => void): Promise<string[]> {
+  const tmpPath = `${filePath}.tmp`;
+  const split = await writeSplitPageFile(engine, filePath, root, tmpBody, precondition);
+  if (!split) { renameSync(tmpPath, filePath); return []; }
+  rmSync(tmpPath, { force: true });
+  return split;
+}
 
 /**
  * The DB stamp of new fence rows in one attributed transaction: at the
