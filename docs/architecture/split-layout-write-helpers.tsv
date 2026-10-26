@@ -154,7 +154,6 @@ src/core/sources-ops.ts	recloneIfMissing	helper
 src/core/split-layout/resolve-head.ts	writeKeptEdit	helper
 src/core/split-layout/verify.ts	reassemble	helper
 src/core/split-write-through.ts	writePageTemp	helper
-src/core/split-write-through.ts	writeSplitPageFile	helper
 src/core/sweep.ts	acquireCorpusClaim	helper
 src/core/sync-identity-downgrades.ts	noteIdentityDowngrades	helper
 src/core/takes-quality-eval/receipt-write.ts	writeReceiptArtifact	helper
