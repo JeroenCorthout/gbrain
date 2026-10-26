@@ -283,7 +283,7 @@ or a physical projection that leaves attribution untouched):
 - `src/core/persistence/grandfather.ts` (2): request preparer.
 - `src/core/persistence/links-maintenance.ts` (1): coordinated maintenance.
 - `src/core/persistence/loop-fact-retirement.ts` (1): request preparer.
-- `src/core/persistence/memory-mutations.ts` (1): `forget` inside its request's coordinated write.
+- `src/core/persistence/forget-prepare.ts` (1): `forget` / `forget_fact` request preparer; the struck page files publish first, then the withdrawal's rows in the same publication.
 - `src/core/persistence/memory-prepare.ts` (2): `remember` request preparer; the fence row and its facts row go through `prepareFenceFactAppend`.
 - `src/core/persistence/page-append.ts` (1): segmented `append_page` / `edit_page` request preparer; the splice versions the page inside its request's publication.
 - `src/core/persistence/page-prepare.ts` (12): page request preparer (including the restore of a segmented page over 24 MiB, which flips `deleted_at` without re-serializing, and the tag flip of a segmented page, which versions it and changes its tag rows and `content_hash` without re-serializing).
