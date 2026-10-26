@@ -54,7 +54,8 @@
  *   `failed_pages` with `split_page` or its hold code.
  * A page that fails is reported in `failed_pages`; the others still fence.
  */
-import { existsSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, renameSync, rmSync } from 'node:fs';
+import { splitWriteRefusal, writePageTemp } from '../split-write-through.ts';
 
 import type { BrainEngine } from '../engine.ts';
 import { sanitizeText } from '../batch-rows.ts';
@@ -593,8 +594,10 @@ async function fenceFilePage(engine: BrainEngine, sourceId: string, entitySlug: 
     const durable = isDurabilityHardened(writeRoot);
     const prewrite = durable ? gitPathState(writeRoot, filePath) : 'clean';
     const tmpPath = `${filePath}.tmp`;
+    const refusal = await splitWriteRefusal(engine, filePath, writeRoot, fence.body);
+    if (refusal) { outcome.failed_pages.push(`${entitySlug} (${refusal.message} Its rows stay unfenced, active and searchable.)`); return; }
     assertSourceFilesystemActive();
-    writeFileSync(tmpPath, fence.body, 'utf-8');
+    writePageTemp(tmpPath, filePath, fence.body);
     const tmpBody = readFileSync(tmpPath, 'utf-8');
     const parsed = parseFactsFence(tmpBody);
     if (parsed.warnings.length > 0) {
@@ -620,7 +623,7 @@ async function fenceFilePage(engine: BrainEngine, sourceId: string, entitySlug: 
       if (readFileSync(filePath, 'utf-8') !== bytes) throw new FileChangedDuringFence();
       renameSync(tmpPath, filePath);
       return true;
-    }).catch(error => { if (error instanceof FileChangedDuringFence) return false; throw error; });
+    }).catch(error => { if (error instanceof FileChangedDuringFence) return false; rmSync(tmpPath, { force: true }); throw error; });
     if (!written) {
       rmSync(tmpPath, { force: true });
       outcome.failed_pages.push(fileDatabaseDriftToken(entitySlug, sourceId, 'during'));

@@ -13,7 +13,7 @@ import { createHash } from 'node:crypto';
 import { closeSync, constants, lstatSync, openSync, readFileSync, readSync, rmSync } from 'node:fs';
 import { PUSH_SCAN_MAX_FILE_BYTES } from '../page-size-policy.ts';
 import { parseHead, type ParsedHead } from './head.ts';
-import { partsDirFor } from './paths.ts';
+import { isSplitHeadPath, partsDirFor } from './paths.ts';
 import { splitScratchPath } from './plan.ts';
 import { PARTS_KEY } from './types.ts';
 import { reassemble, verifyParts, type SplitVerdict } from './verify.ts';
@@ -43,9 +43,9 @@ function holdFor(path: string, verdict: Exclude<SplitVerdict, { ok: true }> | { 
   return { code: 'split_page_incomplete', message: `${path} is a split page head whose part files in ${partsDirFor(path)} do not match its manifest (${verdict.reason}), so the page file it names cannot be read; nothing was changed. Restore the head and its parts from Git, then run the command again.` };
 }
 
-/** The head at `path` parsed, when its bytes declare a split page: null for an ordinary file, a hold for an unreadable head. */
+/** The head at `path` parsed, when its bytes declare a split page: null for an ordinary file (any file not a .md one), a hold for an unreadable head. */
 function parsedHead(path: string, bytes: Buffer): ParsedHead | PageFileHold | null {
-  if (!bytes.includes(PARTS_KEY)) return null;
+  if (!isSplitHeadPath(path) || !bytes.includes(PARTS_KEY)) return null;
   const parsed = parseHead(bytes.toString('utf8'));
   if (parsed === null) return null;
   return 'error' in parsed ? holdFor(path, parsed.error) : parsed;

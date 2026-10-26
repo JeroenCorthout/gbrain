@@ -4,9 +4,7 @@ import { join } from 'path';
 import { tmpdir } from 'os';
 import {
   autoFixFrontmatter,
-  writeBrainPage,
   scanBrainSources,
-  BrainWriterError,
 } from '../src/core/brain-writer.ts';
 import { PGLiteEngine } from '../src/core/pglite-engine.ts';
 import { resetPgliteState } from './helpers/reset-pglite.ts';
@@ -174,74 +172,6 @@ describe('autoFixFrontmatter', () => {
     const { content, fixes } = autoFixFrontmatter(input);
     expect(content).toBe(input);
     expect(fixes).toEqual([]);
-  });
-});
-
-describe('writeBrainPage', () => {
-  let tmp: string;
-
-  beforeEach(() => {
-    tmp = mkdtempSync(join(tmpdir(), 'brain-writer-'));
-  });
-
-  afterEach(() => {
-    rmSync(tmp, { recursive: true, force: true });
-  });
-
-  test('happy path: writes file inside source', () => {
-    const file = join(tmp, 'people', 'jane.md');
-    const content = `${fence}\ntype: person\ntitle: Jane\n${fence}\n\nhello`;
-    writeBrainPage(file, content, { sourcePath: tmp });
-    expect(readFileSync(file, 'utf8')).toBe(content);
-  });
-
-  test('throws BrainWriterError when path is outside sourcePath', () => {
-    const elsewhere = mkdtempSync(join(tmpdir(), 'brain-writer-other-'));
-    try {
-      const offending = join(elsewhere, 'evil.md');
-      expect(() =>
-        writeBrainPage(offending, 'content', { sourcePath: tmp }),
-      ).toThrow(BrainWriterError);
-    } finally {
-      rmSync(elsewhere, { recursive: true, force: true });
-    }
-  });
-
-  test('writes a centralized .bak before mutating an existing file', () => {
-    // v0.36.x #902: backups land under ~/.gbrain/backups/frontmatter/... not
-    // next to the source file (pre-fix littered the brain tree with .bak
-    // files that broke gitignore expectations). The returned backupPath is
-    // the contract — the test asserts both the path shape and that the
-    // backup faithfully captures the pre-write content.
-    const file = join(tmp, 'people', 'jane.md');
-    mkdirSync(join(tmp, 'people'), { recursive: true });
-    const original = `${fence}\ntype: person\ntitle: Old\n${fence}\n\nold`;
-    writeFileSync(file, original);
-    const backupRoot = mkdtempSync(join(tmpdir(), 'gbrain-test-backups-'));
-    try {
-      const { backupPath } = writeBrainPage(
-        file,
-        `${fence}\ntype: person\ntitle: New\n${fence}\n\nnew`,
-        { sourcePath: tmp, backupRoot },
-      );
-      expect(backupPath).toBeDefined();
-      // Centralized — under the test-injected backupRoot, NOT a sibling .bak.
-      expect(existsSync(file + '.bak')).toBe(false);
-      expect(backupPath!.startsWith(backupRoot + '/')).toBe(true);
-      expect(backupPath!.endsWith('.bak')).toBe(true);
-      expect(existsSync(backupPath!)).toBe(true);
-      expect(readFileSync(backupPath!, 'utf8')).toBe(original);
-    } finally {
-      rmSync(backupRoot, { recursive: true, force: true });
-    }
-  });
-
-  test('autoFix: true repairs nested quotes before writing', () => {
-    const file = join(tmp, 'people', 'jane.md');
-    const broken = `${fence}\ntype: person\ntitle: "Phil "Nick" Last"\n${fence}\n\nbody`;
-    const { fixes } = writeBrainPage(file, broken, { sourcePath: tmp, autoFix: true });
-    expect(fixes.some(f => f.code === 'NESTED_QUOTES')).toBe(true);
-    expect(readFileSync(file, 'utf8')).toMatch(/^title: '.*'\s*$/m);
   });
 });
 

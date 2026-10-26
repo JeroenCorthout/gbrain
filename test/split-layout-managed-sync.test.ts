@@ -6,14 +6,17 @@
  * Postgres with GBRAIN_TEST_BACKEND=postgres (test/postgres-unit-arms.txt).
  */
 import { afterEach, expect, test } from 'bun:test';
-import { chmodSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import { censusGitGap } from '../src/commands/sources-git-gap.ts';
+import { operations } from '../src/core/operations.ts';
 import { join } from 'node:path';
 import type { BrainEngine } from '../src/core/engine.ts';
 import { __setSplitLimitsForTests } from '../src/core/split-layout/index.ts';
 import { performManagedSync } from '../src/core/persistence/sync-run.ts';
 import { readGitHold } from '../src/core/persistence/sync-holds.ts';
 import { git } from './helpers/git-publication.ts';
-import { managedBrain, type ManagedBrain } from './helpers/managed-brain.ts';
+import { managedBrain, settleManagedGitEffects, type ManagedBrain } from './helpers/managed-brain.ts';
 import { writeSplitPage } from './helpers/split-page.ts';
 import { requirePostgresTestDatabase, testBackends } from './helpers/test-backends.ts';
 import { registerLocalWriter, withVerifiedLocalRegistration } from '../src/core/persistence/identity.ts';
@@ -215,6 +218,26 @@ async function heldAt(engine: BrainEngine, path: string) {
 }
 const livePaths = async (engine: BrainEngine) => (await engine.executeRaw<{ slug: string; source_path: string | null }>(
   "SELECT slug, source_path FROM pages WHERE source_id='default' AND deleted_at IS NULL ORDER BY slug")).map(row => `${row.slug}=${row.source_path}`);
+
+test('an .mdx page and a changed non-Markdown file have no parts directory: a put to the page commits through its Git effect and the git-gap census counts it', () => brain(async ({ engine, ctx, root }) => {
+  mkdirSync(join(root, 'notes'), { recursive: true });
+  writeFileSync(join(root, 'notes/mdx-example.mdx'), '---\ntype: note\ntitle: Mdx example\n---\n\nA synthetic MDX page.\n');
+  writeFileSync(join(root, 'README.txt'), 'A synthetic readme.\n');
+  git(root, 'add', '-A'); git(root, 'commit', '-qm', 'Synthetic MDX page and readme');
+  await sync(engine);
+  const synced = await engine.readPageSnapshot('notes/mdx-example', { sourceId: 'default' });
+  expect(synced?.page.compiled_truth).toContain('A synthetic MDX page.');
+  writeFileSync(join(root, 'README.txt'), 'A synthetic readme, edited.\n');
+  const put = operations.find(o => o.name === 'put_page')!;
+  await put.handler(ctx, { slug: 'notes/mdx-example', content: '---\ntype: note\ntitle: Mdx example\n---\n\nA synthetic MDX page, edited through put_page.\n', request_id: randomUUID(), expected_revision: synced!.revision, wait_ms: 30_000 });
+  await settleManagedGitEffects(engine);
+  expect(await engine.executeRaw("SELECT kind, state, error_code FROM persistence_effects WHERE kind='git' AND state<>'committed'")).toEqual([]);
+  expect(git(root, 'show', 'HEAD:notes/mdx-example.mdx')).toContain('edited through put_page');
+  const census = await censusGitGap(engine, 'default', { sample: 10 });
+  expect(census.complete).toBe(true);
+  expect(census.sample.filter(sample => sample.slug === 'notes/mdx-example')).toEqual([]);
+  expect(census.states.equal).toBeGreaterThan(0);
+}));
 
 test('a split page renamed with its parts directory (git mv) is found whole at its new path and nothing is left at the old one', () => brain(async b => {
   const { engine, root } = b;

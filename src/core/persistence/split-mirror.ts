@@ -5,18 +5,20 @@
  * of every part the new manifest drops, or one file with every part removed once the page is at or under the threshold.
  *
  * The unit is one version 3 recovery record (effect-model.ts `SplitMirrorFile`): the head first, then the parts, each
- * file with its prior and new SHA-256 and the stage its new bytes are renamed from. Every stage is written and fsynced
+ * file with its prior and new SHA-256 and the stage its new bytes are renamed from, then every part the new manifest
+ * keeps as it is (equal prior and new SHA-256, no stage), so a kept part edited before publication blocks it. The unit's
+ * parts are the ones the mirror compared (`expectedParts`): a part that changed since is a local edit (`splitPartsDrifted`). Every stage is written and fsynced
  * after the record is durable and before any file is touched, so recovery is forward-only like every mirror (it never
  * restores withdrawn bytes): once any file of the unit holds its new bytes, every other file is renamed from its stage or
  * removed; while none does, a moved page or a missing stage discards the stages and the mirror renders again.
  */
 import { lstatSync, mkdirSync } from 'node:fs';
-import { basename, dirname } from 'node:path';
-import { atomicStagingPath } from '../atomic-write.ts';
+import { basename, dirname, join } from 'node:path';
+import { atomicStagingPath, mkdirPrivate } from '../atomic-write.ts';
 import type { BrainEngine } from '../engine.ts';
 import { opError } from '../ops/contract.ts';
 import { isWriteTargetContained } from '../path-confine.ts';
-import { PART_FILE_RE, partsDirFor } from '../split-layout/index.ts';
+import { diskParts, PART_FILE_RE, partsDirFor } from '../split-layout/index.ts';
 import type { MutationFile } from './bundle-files.ts';
 import { persistenceFileHash, publishPersistenceFile } from './coordinator.ts';
 import type { EffectRecovery, SplitMirrorFile } from './effect-model.ts';
@@ -42,20 +44,33 @@ export async function splitMirrorPlan(engine: BrainEngine, target: SplitMirrorTa
     const content = member.content === null ? null : await streamedOf(engine, member.content);
     if (content) contents.set(member.path, content);
     files.push({ path: member.path, root: member.root, beforeHash: index ? member.expectedBeforeHash ?? null : target.beforeHash,
-      afterHash: content?.hash ?? null, mode: index ? null : target.mode,
+      afterHash: content?.hash ?? null, mode: index ? (content ? (member as { publishMode?: number }).publishMode ?? null : null) : target.mode,
       ...(content ? { staging: { publication: { path: atomicStagingPath(member.path), hash: content.hash, bytes: content.bytes } } } : {}) });
   }
+  for (const [path, hash] of Object.entries(unit.split?.kept ?? {})) files.push({ path, root: unit.root, beforeHash: hash, afterHash: hash, mode: null });
   if (files[0]!.afterHash === null) throw opError('storage_error', 'A withdrawal mirror has no head to write.', 'The mirror of a split page planned no head file, so nothing was written. Inspect the owner\'s effects.');
   const record = { ...target, version: 3 as const, afterHash: files[0]!.afterHash, after: null, files };
   const staged = [...contents.values()].reduce((sum, content) => sum + content.bytes, 0);
   return { record, contents, bytes: Buffer.byteLength(JSON.stringify(record)) + staged + 4096 };
 }
 
-/** Creates the directory a stage is written in (a new parts directory), confined to the source root before and after. */
+/**
+ * Whether the parts directory differs from the one the mirror compared (`expectedParts`, prepareFileTarget): a part the unit
+ * rewrites, removes or keeps holds other bytes, or a file came or went. Read when the unit was planned.
+ */
+export function splitPartsDrifted(unit: MutationFile & SplitFileFields): boolean {
+  if (!unit.expectedParts) return false;
+  const found = new Map<string, string | null>(Object.entries(unit.split?.kept ?? {}));
+  for (const part of unit.parts ?? []) found.set(part.path, part.expectedBeforeHash ?? null);
+  return [...new Set([...found.keys(), ...Object.keys(unit.expectedParts)])].some(path => (found.get(path) ?? null) !== (unit.expectedParts![path] ?? null));
+}
+
+/** Creates the directory a stage is written in (a new parts directory, 0700 for a part whose mode grants nothing to group or other), confined to the source root before and after. */
 function stageParent(file: SplitMirrorFile): void {
   const confined = () => isWriteTargetContained(file.path, file.root);
   if (!confined()) throw unsafeUnit(file.path);
-  mkdirSync(dirname(file.path), { recursive: true });
+  if (file.mode === null || file.mode & 0o077) mkdirSync(dirname(file.path), { recursive: true });
+  else mkdirPrivate(dirname(file.path), dirname(dirname(file.path)));
   if (!confined() || !lstatSync(dirname(file.path)).isDirectory()) throw unsafeUnit(file.path);
 }
 
@@ -81,16 +96,34 @@ export function splitMirrorFilesBelong(record: EffectRecovery): boolean {
   const paths = new Set<string>();
   for (const file of [head, ...parts]) {
     if (file.root !== record.root || !isWriteTargetContained(file.path, record.root) || paths.has(file.path)) return false;
-    if (file.afterHash !== null && file.staging?.publication?.hash !== file.afterHash) return false;
+    const kept = file !== head && file.beforeHash === file.afterHash && !file.staging?.publication;
+    if (file.afterHash !== null && !kept && file.staging?.publication?.hash !== file.afterHash) return false;
     paths.add(file.path);
   }
   return parts.every(part => dirname(part.path) === dir && PART_FILE_RE.test(basename(part.path)));
 }
 
-/** Where the unit stands on disk: every file must hold its prior or its new bytes (`unexpected` names one that holds neither). */
+/** An entry of the head's parts directory the record does not name (a part file added since the unit was planned), as the reader counts it unlisted; null when there is none. */
+function unlistedPart(record: EffectRecovery): string | null {
+  const dir = partsDirFor(record.path);
+  const entries = diskParts(record.path).list(basename(dir));
+  if (entries === 'missing') return null;
+  if (entries === 'not_a_directory') return dir;
+  const named = new Set((record.files ?? []).slice(1).map(file => basename(file.path)));
+  const extra = entries.find(name => !named.has(name));
+  return extra === undefined ? null : join(dir, extra);
+}
+
+/**
+ * Where the unit stands on disk: every file must hold its prior or its new bytes and the parts directory may hold only
+ * the parts the record names (`unexpected` names a file that holds neither, or an unlisted entry). Read again under the
+ * publication lock right before anything is renamed or removed.
+ */
 export function splitMirrorState(record: EffectRecovery): { unexpected: string | null; moved: boolean; pending: SplitMirrorFile[]; staged: boolean } {
   const pending: SplitMirrorFile[] = [];
   let moved = false;
+  const unlisted = unlistedPart(record);
+  if (unlisted) return { unexpected: unlisted, moved, pending, staged: false };
   for (const file of record.files ?? []) {
     const actual = persistenceFileHash(file.path);
     if (actual !== file.beforeHash && actual !== file.afterHash) return { unexpected: file.path, moved, pending, staged: false };

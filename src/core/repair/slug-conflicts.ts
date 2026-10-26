@@ -74,6 +74,7 @@ import { clearGitHold, readGitHold, readGitSourceHolds, recordContentHoldRepair,
 import { rotate, rotationAfter, rotationBrain, rotationKeyOf, saveRotation } from './rotation.ts';
 import { confinedRepairTarget, prepareRepairPublication, repairScreenConfig, SPLIT_PAGE_UNSUPPORTED, submitManagedFileRepair } from '../persistence/file-repair.ts';
 import { readPageFile, type PageFileHoldCode } from '../split-layout/index.ts';
+import { oneFileWriteRefusal } from '../split-write-through.ts';
 import { repairBusy, repairBusyMessage } from '../persistence/repair-busy.ts';
 import { frozenImportScreenInput, loadSyncScreenRun, screenFrozenContent } from '../persistence/sync-screen.ts';
 import type { PageSnapshot } from '../page-state/types.ts';
@@ -693,6 +694,8 @@ async function write(ctx: OperationContext, src: FenceSource, cand: Candidate, a
   }
   if (sha256(readFileSync(abs)) !== cand.before) return { applied: false, outcome: 'skipped', reason: 'changed_since_read', detail: { ...detail, message: `${cand.path} changed after the repair read it, so nothing was written.` }, ...spend };
   const edits = after !== cand.content;
+  const refusal = edits ? await oneFileWriteRefusal(engine, abs, root, after) : undefined;
+  if (refusal) return held(SPLIT_PAGE_UNSUPPORTED, `${refusal.message} ${refusal.suggestion ?? ''}`.trim(), null, spend);
   const backup = edits ? createFrontmatterBackup(abs, { sourcePath: root, backupRoot: gbrainPath('backups', 'content-repair', makeFrontmatterBackupRunId()) }) : null;
   if (edits) writeFileSync(abs, after);
   const imported = await importFromFile(engine, abs, cand.sourcePath, { sourceId: src.id, noEmbed: !opts.embed });

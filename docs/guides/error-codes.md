@@ -4059,6 +4059,16 @@ More: [docs/guides/troubleshooting.md#split-head-modified](../../docs/guides/tro
 
 More: [docs/guides/troubleshooting.md#split-page-incomplete](../../docs/guides/troubleshooting.md#split-page-incomplete)
 
+### split_page_unsupported
+
+<a id="split_page_unsupported"></a>
+
+| Meaning | Why | Next step | Who acts · consent | Verify | Exit | Retryable |
+|---|---|---|---|---|---|---|
+| A writer outside the publication door (an unmanaged brain's raw writer, a classic connector) would write or remove a part file of a split page: the page is a head plus part files, or the write would grow it into that layout or shrink it out of it. Nothing was written and the database was not changed. | A split page is a head file plus part files in a .<name>.gbparts directory, and a reader holds the head while its parts directory lists a part the manifest does not name or misses one it does. The publication door writes a head and its parts under a recovery record that finishes them after a crash; a writer outside it has none, so it writes only a new head whose parts all stay and refuses any write that changes a part. | Read the whole page with gbrain get and ask the user how it should be edited; on a brain with a canonical owner, write it through put_page, whose door publishes the head and parts together. gbrain pages split-storage shows how the page is stored. | user | `repeat the read that failed` | 1 | no |
+
+More: [docs/guides/write-refusals.md#split_page_unsupported](../../docs/guides/write-refusals.md#split_page_unsupported)
+
 ### split_parts_unexpected
 
 <a id="split_parts_unexpected"></a>

@@ -285,6 +285,11 @@ then its body. A page whose file would be larger than `sync.max_file_bytes`
   up to 16 MiB of the body, cut at a line break near 8 MiB. Joined in order they
   are the body, byte for byte.
 
+A leading byte-order mark (BOM) on the page file is not kept: the head is
+written without one, and a BOM added to a head by hand is ignored when it is
+read, the same way import drops a leading BOM from any page file. Every byte
+after it is kept.
+
 The page stays one page: one slug, one search entry, one set of links. gbrain
 writes the head and every changed part in one publication (one commit on a
 `canonical: git` source), and sync reads them back as the whole page. An append
@@ -293,6 +298,21 @@ title) like any page; an edit to the head's body or to a part file is not
 imported: sync holds the page (`split_head_modified` or
 `split_page_incomplete`) and keeps the last imported content until you resolve
 it.
+
+**Writers outside the publication door.** On a brain with a canonical owner,
+every page write goes through its publication door, which writes a head and its
+parts under a recovery record and finishes them after a crash. A writer outside
+that door (an unmanaged brain's takes, facts, timeline and lint fixes, dream
+files, the classic GitHub and Google connectors) has no such record, so it
+writes a split page only when every part stays as it is: a new head, renamed
+into place in one step (a frontmatter edit). A write that would change a part,
+or grow a page into this layout or shrink it out of it, is refused with
+`split_page_unsupported` before any file is written and before the database
+takes it, so the files and the stored page stay as they were. A forget on such a
+page still withdraws the fact; only its strike in the page file waits.
+`gbrain frontmatter validate --fix` fixes a head's frontmatter in place and refuses a
+fix that would change the head's body or its `gbrain_parts` block
+(`split_page_unsupported`; nothing is written).
 
 **What older versions see.** A gbrain from before this layout imports the head
 as a short page: the first 64 KiB, the notice line and a `gbrain_parts`

@@ -21,7 +21,7 @@
  * the page is reported in the hook's `held` list (`file_database_drift`).
  */
 import { execFileSync } from '../spawn.ts';
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
 import type { BrainEngine } from '../engine.ts';
 import type { PhaseResult } from '../cycle.ts';
@@ -33,7 +33,7 @@ import { deletePageThrough, isWriteThroughDisabled, resolvePageWriteTarget, writ
 import { urlCloneReadOnly } from '../url-clone.ts';
 import { gitChildEnv } from '../git-env.ts';
 import { fileDatabaseDriftToken, replaceableFile } from '../facts/file-body-guard.ts';
-import { PageFileChanged, readPageFileText, removeSplitPageFile, writeSplitPageFile } from '../split-write-through.ts';
+import { PageFileChanged, readPageFileText, removeSplitPageFile, writePageTemp, writeSplitPageFile } from '../split-write-through.ts';
 
 export const DERIVED_WRITE_THROUGH_KEYS = {
   extract_atoms: 'cycle.extract_atoms.write_through',
@@ -179,8 +179,9 @@ export type DreamPageFileWrite = { written: true; path: string } | { written: fa
  * checkout (no root configured, or the root is missing) keeps the caller's brainDir layout (`<brainDir>/<slug>.md`,
  * foreign sources under `.sources/<id>/`). The file is replaced only when `replaceableFile` finds nothing in it the
  * database lacks, and is re-read after the replacement is staged, right before the rename, so an edit that lands in
- * between is kept as well. A page over the split threshold, or a split page head, is written as its split unit (head
- * plus parts, split-write-through.ts) under the same comparison of its page file F'.
+ * between is kept as well. A page over the split threshold, or a split page head, goes through split-write-through.ts
+ * under the same comparison of its page file F': a new head whose parts all stay, or `split_page_unsupported` with
+ * nothing written.
  *
  * This is the reverse-write's own direct write (a staged sibling renamed over the file), as before, not
  * `writePageThrough` or `atomicWriteFileSync`: once a subagent's tool write has gone through the coordinator, the
@@ -210,13 +211,14 @@ export async function writeDreamPageFile(engine: BrainEngine, brainDir: string, 
     throw error;
   }
   const staged = `${filePath}.${process.pid}.tmp`;
-  writeFileSync(staged, opts.markdown, 'utf-8');
-  if ((existsSync(filePath) ? readFileSync(filePath, 'utf-8') : null) !== check.expectedFileBytes) {
-    rmSync(staged, { force: true });
-    return { written: false, held: dreamFileDriftToken(slug, sourceId, 'during') };
-  }
-  renameSync(staged, filePath);
-  return { written: true, path: filePath };
+  writePageTemp(staged, filePath, opts.markdown);
+  try {
+    if ((existsSync(filePath) ? readFileSync(filePath, 'utf-8') : null) !== check.expectedFileBytes) {
+      return { written: false, held: dreamFileDriftToken(slug, sourceId, 'during') };
+    }
+    renameSync(staged, filePath);
+    return { written: true, path: filePath };
+  } finally { rmSync(staged, { force: true }); }
 }
 
 /**

@@ -67,6 +67,7 @@ import { fenceWhere } from '../fence-repair/refusal.ts';
 import type { SyncRename } from '../persistence/sync-discovery.ts';
 import { canonicalRepairFields, confinedRepairTarget, managedRepairRoot, prepareRepairPublication, repairScreenConfig, SPLIT_PAGE_UNSUPPORTED, submitManagedFileRepair } from '../persistence/file-repair.ts';
 import { pageFileSha256, readPageFile } from '../split-layout/index.ts';
+import { oneFileWriteRefusal } from '../split-write-through.ts';
 import { clearApprovedSet, loadApprovedSet, previewChangedError, previewHash, saveApprovedSet } from '../persistence/preview-approval.ts';
 import type { PageSnapshot } from '../page-state/types.ts';
 import { materializedSnapshot, segmentedOverCeiling } from '../persistence/segmented-apply.ts';
@@ -583,6 +584,8 @@ async function applyRepair(ctx: OperationContext, repair: ApprovedRepair, select
   confinedRepairTarget(root, repair.path, repair.source_id);
   let backup: string | undefined;
   if (repair.before !== repair.after) {
+    const refusal = await oneFileWriteRefusal(ctx.engine, target, root, bound.content);
+    if (refusal) return { applied: false, outcome: 'refused', reason: `${refusal.message} ${refusal.suggestion ?? ''}`.trim(), detail: { path: repair.path, code: refusal.code } };
     backup = createFrontmatterBackup(target, { sourcePath: root, runId: makeFrontmatterBackupRunId() });
     writeFileSync(target, bound.content);
   }

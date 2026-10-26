@@ -123,9 +123,8 @@ that's not the brain repo itself, you may want a separate hook strategy:
   gbrain writes itself carry no `slug:`, so bootstrap-created brains are
   unaffected.
 - **Brain repo is auto-generated** (e.g. by a sync daemon writing to a
-  bucket): skip the hook entirely; gate at the writer instead via
-  `import { writeBrainPage } from 'gbrain/brain-writer'` (planned in a
-  later release; currently the CLI is the surface).
+  bucket): skip the hook entirely and gate at the writer, for example with
+  `gbrain frontmatter validate --stdin --path <p>` before it writes a file.
 
 ## How it fits into the broader frontmatter pipeline
 

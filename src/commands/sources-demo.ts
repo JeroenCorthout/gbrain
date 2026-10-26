@@ -15,10 +15,12 @@
  *   guide:      docs/guides/github-source.md
  */
 
-import { mkdirSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { dirname } from 'node:path';
 
 import type { BrainEngine } from '../core/engine.ts';
+import { opError } from '../core/ops/contract.ts';
+import { partsDirFor } from '../core/split-layout/paths.ts';
 import {
   renderItemPage,
   renderRepoCard,
@@ -70,24 +72,19 @@ export async function runSourcesDemo(
     }
   }
 
-  mkdirSync(join(dir, 'gh'), { recursive: true });
-
   const items = DEMO_ITEMS.slice(0, limit);
-  for (const item of items) {
-    const page = renderItemPage(item);
-    const p = itemPagePath(dir, item.repo, item.number);
-    mkdirSync(join(dir, 'gh', item.repo), { recursive: true });
-    writeFileSync(p, page);
-  }
-
   const repoNames = new Set<string>();
   for (const item of items) repoNames.add(item.repo);
-  for (const repo of DEMO_REPOS) {
-    if (!repoNames.has(repo.full_name)) continue;
-    const card = renderRepoCard(repo.full_name, repo);
-    const p = repoCardPath(dir, repo.full_name);
-    mkdirSync(join(dir, 'gh', repo.full_name), { recursive: true });
-    writeFileSync(p, card);
+  const pages = [
+    ...items.map(item => ({ path: itemPagePath(dir, item.repo, item.number), content: renderItemPage(item) })),
+    ...DEMO_REPOS.filter(repo => repoNames.has(repo.full_name)).map(repo => ({ path: repoCardPath(dir, repo.full_name), content: renderRepoCard(repo.full_name, repo) })),
+  ];
+  const split = pages.find(page => existsSync(partsDirFor(page.path)));
+  if (split) throw opError('split_page_unsupported', `split_page_unsupported: ${split.path} is a split page head, and the demo writes one whole file, so nothing was written.`,
+    `Give the demo a --dir that holds no brain (the default is ./gbrain-demo).`);
+  for (const page of pages) {
+    mkdirSync(dirname(page.path), { recursive: true });
+    writeFileSync(page.path, page.content);
   }
 
   console.log(`wrote ${items.length} item pages + ${repoNames.size} repo cards to ${dir}`);

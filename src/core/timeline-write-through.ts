@@ -46,7 +46,7 @@ import { assertInlineBody } from './page-body/page-shape.ts';
  * eventual-consistency contract as the facts fence lane.
  */
 
-import { existsSync, writeFileSync, renameSync, unlinkSync, readdirSync } from 'node:fs';
+import { existsSync, renameSync, unlinkSync, readdirSync } from 'node:fs';
 import { basename, dirname } from 'node:path';
 import type { BrainEngine } from './engine.ts';
 import { sanitizeForJsonb } from './batch-rows.ts';
@@ -69,7 +69,7 @@ import {
 import { extractTimelineFromContent } from './timeline-extract.ts';
 import { urlCloneReadOnly } from './url-clone.ts';
 import type { PageFileHoldCode } from './split-layout/page-file.ts';
-import { readPageFileText, writeSplitPageFile } from './split-write-through.ts';
+import { readPageFileText, writePageTemp, writeSplitPageFile } from './split-write-through.ts';
 
 /** Raw op params for one manual timeline entry (date pre-validated by caller). */
 export interface TimelineEntryWriteInput {
@@ -395,7 +395,7 @@ export async function writeTimelineEntryThrough(
           assertSourceFilesystemActive();
           splitPaths = await writeSplitPageFile(engine, filePath, writeRoot, afterText, assertSourceFilesystemActive);
           if (!splitPaths) {
-            writeFileSync(tmpPath, afterText, 'utf8');
+            writePageTemp(tmpPath, filePath, afterText);
             renameSync(tmpPath, filePath);
           }
         } catch (writeErr) {

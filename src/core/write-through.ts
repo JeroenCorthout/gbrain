@@ -26,13 +26,14 @@ import { existsSync, statSync, mkdirSync, unlinkSync, readdirSync } from 'fs';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'path';
 import { atomicWriteFileSync } from './atomic-write.ts';
 import type { BrainEngine } from './engine.ts';
-import { isRelativeFileUri, serializePageToMarkdown, resolvePageFilePath, resolveSourceLocalFilePath } from './markdown.ts';
+import type { Page } from './types.ts';
+import { isRelativeFileUri, parseMarkdown, serializePageToMarkdown, resolvePageFilePath, resolveSourceLocalFilePath } from './markdown.ts';
 import { isWriteTargetContained, msysToNativePath } from './path-confine.ts';
 import { readSlugRootMode, resolveSlugRootMode, type SlugRootMode } from './sync-anchor.ts';
 import { resolveSlugForPath } from './sync.ts';
 import { PUSH_SCAN_MAX_FILE_BYTES } from './page-size-policy.ts';
 import { splitThresholdBytes } from './split-layout/limits.ts';
-import { PageFileChanged, readPageFileText, removeSplitPageFile, writeSplitPageFile } from './split-write-through.ts';
+import { assertSplitWritable, PageFileChanged, readPageFileText, removeSplitPageFile, writeSplitPageFile } from './split-write-through.ts';
 import { canonicalFilesystemPath } from './persistence/root-registry.ts';
 import {
   isDurabilityHardened, commitWriteThroughFile, currentBranch, getLastPushOutcome,
@@ -101,8 +102,11 @@ export interface WriteThroughResult {
    *   - over_push_scan_cap: the rendered file stays one file (at or under the
    *     split threshold) yet is over the pre-push secret-scan cap
    *     (PUSH_SCAN_MAX_FILE_BYTES), so committing it would block every push.
+   *   - split_page_unsupported: the page is, or would become, a split page whose
+   *     part files the write changes, which only the publication door writes
+   *     with recovery (split-write-through.ts) — nothing is written.
    */
-  skipped?: 'disabled_by_config' | 'url_clone' | 'no_repo_configured' | 'repo_not_found' | 'source_repo_belongs_to_other_source' | 'page_not_found_after_write' | 'path_escapes_source_root' | 'case_insensitive_collision' | 'file_changed' | 'over_push_scan_cap';
+  skipped?: 'disabled_by_config' | 'url_clone' | 'no_repo_configured' | 'repo_not_found' | 'source_repo_belongs_to_other_source' | 'page_not_found_after_write' | 'path_escapes_source_root' | 'case_insensitive_collision' | 'file_changed' | 'over_push_scan_cap' | 'split_page_unsupported';
   /** Caller-visible advisory when a permitted DB-only outcome is still risky. */
   warning?: string;
   /** Set when the render/write/rename itself threw (EACCES, ENOTDIR, disk full). */
@@ -421,6 +425,24 @@ export async function resolvePageWriteTarget(
 }
 
 /**
+ * The split preflight (`assertSplitWritable`) of a database-first writer that imports `content` as `slug` and then
+ * calls writePageThrough (brainstorm and lsd saves, a classic concept publication): plans the page file writePageThrough
+ * would render once the import lands (the parsed page rendered as serializePageToMarkdown renders the stored row, with
+ * `frontmatterOverrides`) at the page's write target, and throws `split_page_unsupported` before the import when that
+ * write would be refused. A no-op when write-through would write no file (off, a URL clone, no target).
+ */
+export async function assertPageThroughWritable(engine: BrainEngine, slug: string, sourceId: string, content: string,
+  frontmatterOverrides?: Record<string, unknown>): Promise<void> {
+  if (await isWriteThroughDisabled(engine) || await urlCloneReadOnly(engine, sourceId)) return;
+  const target = await resolvePageWriteTarget(engine, slug, sourceId);
+  if (!target.ok) return;
+  const parsed = parseMarkdown(content, `${slug}.md`);
+  const md = serializePageToMarkdown({ slug, type: parsed.type, title: parsed.title, compiled_truth: parsed.compiled_truth, timeline: parsed.timeline,
+    frontmatter: parsed.frontmatter } as Page, parsed.tags, { frontmatterOverrides });
+  await assertSplitWritable(engine, target.filePath, target.writeRoot, md);
+}
+
+/**
  * Render the DB row for `slug` to markdown and atomically write it under
  * `sync.repo_path`. Never throws — failures are reported via the result's
  * `skipped` / `error` fields. put_page calls it before its transaction commits
@@ -465,7 +487,7 @@ export async function writePageThrough(
     });
     // The pre-push secret scan refuses to push any file it cannot scan, so a
     // file over its cap would block every later push of the brain repo. A page
-    // over the split threshold is written as a head plus parts, each under it.
+    // over the split threshold is a head plus parts, each under it.
     const mdBytes = Buffer.byteLength(md, 'utf-8');
     if (mdBytes > PUSH_SCAN_MAX_FILE_BYTES && mdBytes <= await splitThresholdBytes(engine)) {
       opts.logger?.warn(`[write-through] ${slug}: the rendered file is over the ${PUSH_SCAN_MAX_FILE_BYTES}-byte pre-push secret-scan cap — file not written (DB row is intact)`);
@@ -521,6 +543,7 @@ export async function writePageThrough(
       if (!paths) atomicWriteFileSync(filePath, md, { verify });
     } catch (error) {
       if (error === changedWhileStaging || error instanceof PageFileChanged) return { written: false, skipped: 'file_changed' };
+      if ((error as { code?: string }).code === 'split_page_unsupported') return { written: false, skipped: 'split_page_unsupported' };
       throw error;
     }
 

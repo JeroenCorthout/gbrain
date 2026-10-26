@@ -1,28 +1,25 @@
 /**
  * Wave B PR 5 lane 5e (split git layout, spec §9 option B): the unmanaged writers' page file. A page whose canonical
- * file F is over `sync.max_file_bytes`, or whose path already has a parts directory, is written as the split unit the
- * publication door writes (`splitPublicationTargets`, split-files.ts): a head plus its new or changed parts, the removal
- * of every part the new manifest drops, or one file with every part removed once F is at or under the threshold. So an
- * unmanaged writer stays file-first for a split page exactly as for any other page: the files take the new page or the
- * writer refuses and nothing changes.
- *
- * Order: `precondition` (the caller's check of the page file it planned on) before any file is touched, then the new
- * parts (content-addressed names, so an old head never names one), then the head (atomically, refused when its bytes
- * changed since the unit was planned), then the removals. A crash leaves the old head with its parts plus unreferenced new
- * parts, or the new head with its parts plus unreferenced old ones, never a head naming a missing part. Callers hold
- * the source filesystem lock.
+ * file F is over `sync.max_file_bytes`, or whose path already has a parts directory, is planned as the split unit the
+ * publication door writes (`splitPublicationTargets`, split-files.ts). Outside the door there is no recovery record, and
+ * a reader holds a head whose parts directory lists a part it does not name or misses one it does
+ * (`split_page_incomplete`), so no order of writing a head and parts one by one survives a crash between them. An
+ * unmanaged writer therefore writes only a unit whose parts all stay as they are (a new head, renamed into place
+ * atomically) and refuses `split_page_unsupported` before any file is written when a part would be written or
+ * removed, including a page that would grow into the layout or shrink out of it. A refused write leaves every file as
+ * it was. Callers hold the source filesystem lock.
  */
-import { existsSync, lstatSync, mkdirSync, unlinkSync } from 'node:fs';
+import { existsSync, lstatSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { atomicWriteFileSync } from './atomic-write.ts';
 import type { BrainEngine } from './engine.ts';
 import { flushDirectory } from './fs-durable.ts';
-import { isWriteTargetContained } from './path-confine.ts';
+import { opError, type OperationError } from './ops/contract.ts';
 import type { MutationFile } from './persistence/bundle-files.ts';
-import { hashFile, isStreamedContent } from './persistence/large-file.ts';
+import { hashFile } from './persistence/large-file.ts';
 import { partFilesOnly, releaseSplitTargets, removeEmptyPartsDir, splitKeptPartsChanged, splitPublicationTargets, type SplitFileFields } from './persistence/split-files.ts';
 import { readPageFile, type PageFileHold } from './split-layout/page-file.ts';
-import { partsDirFor } from './split-layout/paths.ts';
+import { isSplitHeadPath, partsDirFor } from './split-layout/paths.ts';
 
 /** A file of the unit changed after it was planned (a part, or the head under `verify`); nothing more was written. */
 export class PageFileChanged extends Error {
@@ -37,41 +34,86 @@ export function readPageFileText(path: string): { text: string | null; split: bo
 }
 
 /**
- * Writes `content` (F) at `filePath` as its split unit; null, writing nothing, when the target is one ordinary file
- * (F at or under the threshold and no parts directory), which the caller writes as before. Returns every path written
- * or removed, head first. Throws `PageFileChanged` when the head or a part changed since the unit was planned, and
- * whatever `precondition` throws, before any file is written.
+ * The one split preflight of every writer outside the publication door, called before its first database or file write
+ * (docs/architecture/split-layout-writers.tsv lists each writer and its class). Plans the split unit of `content` (F) at
+ * `filePath` and releases it, writing nothing: false when F is one ordinary file, true when it is a split unit whose
+ * parts all stay (a new head only), and otherwise throws `split_page_unsupported` (a part would be written or removed,
+ * including a page growing into the layout or shrinking out of it) or the planner's own refusal
+ * (`split_parts_unexpected`, a part over its bounds), exactly as `writeSplitPageFile` would later.
+ */
+export async function assertSplitWritable(engine: BrainEngine, filePath: string, root: string, content: string): Promise<boolean> {
+  const unit: MutationFile & SplitFileFields = { path: filePath, root, content, expectedBeforeHash: hashFile(filePath) };
+  try {
+    if (!await splitPublicationTargets(engine, unit)) return false;
+    if (unit.parts?.length) throw splitPageUnsupported(filePath);
+    return true;
+  } finally { releaseSplitTargets(unit); }
+}
+
+/**
+ * The refusal `writeSplitPageFile` would raise for `content` at `filePath` (`split_page_unsupported`), read before a
+ * writer creates its temporary copy of the page, so a refused write never leaves the copy behind; undefined when the
+ * write may go ahead. Any other planner refusal throws.
+ */
+export async function splitWriteRefusal(engine: BrainEngine, filePath: string, root: string, content: string): Promise<OperationError | undefined> {
+  try {
+    await assertSplitWritable(engine, filePath, root, content);
+    return undefined;
+  } catch (error) {
+    if ((error as { code?: string } | null)?.code === 'split_page_unsupported') return error as OperationError;
+    throw error;
+  }
+}
+
+/**
+ * The refusal of a writer that writes `content` (F) at `filePath` as one whole file, read before its first write:
+ * undefined only when F is one ordinary file there (`assertSplitWritable` false), else `split_page_unsupported` (a
+ * split unit, even one whose parts all stay, is not one file). Any other planner refusal throws.
+ */
+export async function oneFileWriteRefusal(engine: BrainEngine, filePath: string, root: string, content: string): Promise<OperationError | undefined> {
+  try {
+    return await assertSplitWritable(engine, filePath, root, content) ? splitPageUnsupported(filePath) : undefined;
+  } catch (error) {
+    if ((error as { code?: string } | null)?.code === 'split_page_unsupported') return error as OperationError;
+    throw error;
+  }
+}
+
+/**
+ * Writes a raw writer's temporary copy of the page file at `filePath` (`tmpPath`, renamed over it later) as a new file
+ * with the page file's mode from its first byte (0644 when there is none), so a private page's copy is never readable
+ * by others and the rename keeps the page's mode.
+ */
+export function writePageTemp(tmpPath: string, filePath: string, content: string): void {
+  rmSync(tmpPath, { force: true });
+  writeFileSync(tmpPath, content, { encoding: 'utf-8', flag: 'wx', mode: (statSync(filePath, { throwIfNoEntry: false })?.mode ?? 0o644) & 0o777 });
+}
+
+/** The refusal of a write outside the publication door that would write or remove a part file of `filePath`. */
+function splitPageUnsupported(filePath: string): OperationError {
+  return opError('split_page_unsupported', 'split_page_unsupported: a split page whose part files would change cannot be written outside the publication door.',
+    `${filePath} is, or would become, a split page (a head plus part files in ${partsDirFor(filePath)}) whose part files this write changes. A writer outside the publication door has no recovery record for a head and parts written one by one, so nothing was written. On a brain with a canonical owner the page is written through its door; otherwise ask the user how the page should be edited.`);
+}
+
+/**
+ * Writes `content` (F) at `filePath`: null, writing nothing, when the target is one ordinary file (F at or under the
+ * threshold and no parts directory), which the caller writes as before; the head path when F is a split unit whose parts
+ * all stay, its head written atomically (refused when its bytes changed since the unit was planned) with the exact `mode`
+ * if given (the Google connector's 0600), else its file's mode. Throws `split_page_unsupported` when a part would be
+ * written or removed, `PageFileChanged` when a kept part changed, and whatever `precondition` throws, before any file
+ * is written.
  */
 export async function writeSplitPageFile(engine: BrainEngine, filePath: string, root: string, content: string,
-  precondition?: () => void): Promise<string[] | null> {
+  precondition?: () => void, mode?: number): Promise<string[] | null> {
   const headHash = hashFile(filePath);
   const unit: MutationFile & SplitFileFields = { path: filePath, root, content, expectedBeforeHash: headHash };
   if (!await splitPublicationTargets(engine, unit)) return null;
   try {
-    const parts = unit.parts ?? [];
+    if (unit.parts?.length) throw splitPageUnsupported(filePath);
     if (splitKeptPartsChanged(unit)) throw new PageFileChanged(partsDirFor(filePath));
-    for (const part of parts) if (hashFile(part.path) !== (part.expectedBeforeHash ?? null)) throw new PageFileChanged(part.path);
     precondition?.();
-    const touched = [filePath];
-    for (const part of parts) {
-      if (part.content === null) continue;
-      mkdirSync(dirname(part.path), { recursive: true });
-      if (!isWriteTargetContained(part.path, root) || !lstatSync(dirname(part.path)).isDirectory()) throw new Error(`${part.path} resolves outside its source root`);
-      const pieces: Uint8Array[] = [];
-      if (isStreamedContent(part.content)) for await (const piece of part.content.pieces(engine)) pieces.push(piece);
-      else pieces.push(typeof part.content === 'string' ? Buffer.from(part.content, 'utf8') : part.content);
-      atomicWriteFileSync(part.path, Buffer.concat(pieces), { durable: true });
-      touched.push(part.path);
-    }
-    atomicWriteFileSync(filePath, unit.content as string, { durable: true, verify: () => { if (hashFile(filePath) !== headHash) throw new PageFileChanged(filePath); } });
-    for (const part of parts) {
-      if (part.content !== null) continue;
-      unlinkSync(part.path);
-      touched.push(part.path);
-    }
-    if (parts.some(part => part.content === null) && existsSync(partsDirFor(filePath))) flushDirectory(partsDirFor(filePath));
-    removeEmptyPartsDir(filePath);
-    return touched;
+    atomicWriteFileSync(filePath, unit.content as string, { durable: true, mode, verify: () => { if (hashFile(filePath) !== headHash) throw new PageFileChanged(filePath); } });
+    return [filePath];
   } finally {
     releaseSplitTargets(unit);
   }
@@ -83,7 +125,7 @@ export async function writeSplitPageFile(engine: BrainEngine, filePath: string, 
  * directory. Refuses `split_parts_unexpected` for anything in the parts directory that is not a part file.
  */
 export function removeSplitPageFile(filePath: string, root: string): string[] | null {
-  if (!lstatSync(partsDirFor(filePath), { throwIfNoEntry: false })) return null;
+  if (!isSplitHeadPath(filePath) || !lstatSync(partsDirFor(filePath), { throwIfNoEntry: false })) return null;
   const parts = partFilesOnly(filePath, root);
   unlinkSync(filePath);
   flushDirectory(dirname(filePath));

@@ -26,7 +26,7 @@ import { loadConfig } from '../core/config.ts';
 import { StructuredAgentError } from '../core/errors.ts';
 import { serializeMarkdown } from '../core/markdown.ts';
 import { importFromContent } from '../core/import-file.ts';
-import { isWriteThroughDisabled, resolvePageWriteTarget, writePageThrough, type WriteThroughResult } from '../core/write-through.ts';
+import { assertPageThroughWritable, isWriteThroughDisabled, resolvePageWriteTarget, writePageThrough, type WriteThroughResult } from '../core/write-through.ts';
 import { fileDatabaseDriftToken, replaceableFile } from '../core/facts/file-body-guard.ts';
 import { managedPersistenceEnabled } from '../core/persistence/ownership.ts';
 import { submitPageMutation } from '../core/persistence/page-mutations.ts';
@@ -364,6 +364,8 @@ export interface SaveOutcome {
   writeThrough: WriteThroughResult;
   /** Set when nothing was saved because the page's file holds content the database lacks (`file_database_drift`). */
   held?: string;
+  /** Set when nothing was saved because the page's file would need part files no writer outside the door may write (`split_page_unsupported`). */
+  refused?: string;
   /** G6: the door accepted the save and it was still pending when the CLI write wait ended; it may still commit. */
   pending?: { requestId: string; poll: string; acceptPending: boolean };
 }
@@ -392,6 +394,17 @@ export interface SaveMessage {
  * saved and `held` says why. The file write is bound to the bytes compared, so
  * an edit landing during the save is kept (`skipped: 'file_changed'`).
  */
+/** The split refusal the save's file write would raise (`assertPageThroughWritable`), read before the database import so a refused save stores nothing. */
+async function splitSaveRefusal(engine: BrainEngine, args: { slug: string; content: string; provenanceVia: string }, sourceId: string): Promise<string | undefined> {
+  try {
+    await assertPageThroughWritable(engine, args.slug, sourceId, args.content, { source_kind: args.provenanceVia });
+    return undefined;
+  } catch (error) {
+    if ((error as { code?: string } | null)?.code !== 'split_page_unsupported') throw error;
+    return `${(error as Error).message} ${(error as { suggestion?: string }).suggestion ?? ''}`.trim();
+  }
+}
+
 export async function persistSavedIdea(
   engine: BrainEngine,
   args: { slug: string; content: string; sourceId?: string; provenanceVia: string },
@@ -427,6 +440,8 @@ export async function persistSavedIdea(
       return { dbSaved: false, held: fileDatabaseDriftToken(args.slug, sourceId, 'before', 'the idea was not saved'), writeThrough: { written: false } };
     }
     expectedFileBytes = file?.expectedFileBytes;
+    const refusal = await splitSaveRefusal(engine, args, sourceId);
+    if (refusal) return { dbSaved: false, refused: refusal, writeThrough: { written: false, skipped: 'split_page_unsupported' } };
     await importFromContent(engine, args.slug, args.content, {
       noEmbed: true,
       sourceId,
@@ -461,6 +476,10 @@ export function formatSaveOutcome(
   const stderr: string[] = [];
   if (outcome.held) {
     stderr.push(`gbrain ${ctx.profileLabel}: save refused: ${outcome.held}. Rerun with --resume <run_id> once the page and its file agree.`);
+    return { stderr, exitCode: 1 };
+  }
+  if (outcome.refused) {
+    stderr.push(`gbrain ${ctx.profileLabel}: save refused: ${outcome.refused} Nothing was saved.`);
     return { stderr, exitCode: 1 };
   }
   if (outcome.pending) {
@@ -509,6 +528,10 @@ export function formatSaveOutcome(
       stderr,
       exitCode: 0,
     };
+  }
+  if (dbSaved && writeThrough.skipped === 'split_page_unsupported') {
+    stderr.push(`gbrain ${ctx.profileLabel}: file write refused (split_page_unsupported): the page \`${ctx.slug}\` was saved to the database, but its file would need part files that only a brain with a canonical owner writes, so the database holds content its file lacks and \`gbrain sync\` will not reconcile it.`);
+    return { stderr, exitCode: 1 };
   }
   if (dbSaved) {
     // File write attempted but errored (already on stderr). Row is durable.

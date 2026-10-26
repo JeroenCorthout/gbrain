@@ -16,7 +16,7 @@
  */
 import { afterEach, describe, expect, test } from 'bun:test';
 import { randomUUID } from 'node:crypto';
-import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import type { BrainEngine } from '../src/core/engine.ts';
 import { operations, type OperationContext } from '../src/core/operations.ts';
@@ -188,6 +188,23 @@ for (const backend of testBackends()) describe(`[${backend}] split git layout: a
     expectWithdrawnEverywhere(root, LIVE_ROW);
   }, { databaseUrl, setup }), 240_000);
 
+  test('a withdrawal mirror of a private split page writes its new parts with the head file\'s 0600 mode', () => managedBrain(async ({ engine, ctx, root }) => {
+    __setSplitLimitsForTests(LIMITS);
+    await engine.setConfig(SPLIT_MAX_FILE_BYTES_KEY, '4096');
+    await put(ctx, pageOf(120));
+    const id = await remember(ctx, engine, root);
+    const { head, dir } = pageFiles(root);
+    chmodSync(dir, 0o700);
+    for (const path of [head, ...readdirSync(dir).map(name => join(dir, name))]) chmodSync(path, 0o600);
+    const before = new Set(readdirSync(dir));
+    await forget(ctx, id);
+    await settle(engine);
+    expectWithdrawnEverywhere(root, LIVE_ROW);
+    expect(readdirSync(dir).filter(name => !before.has(name)).length).toBeGreaterThan(0);
+    expect([head, ...readdirSync(dir).map(name => join(dir, name))].map(path => statSync(path).mode & 0o777)).toEqual([head, ...readdirSync(dir)].map(() => 0o600));
+    expect(statSync(dir).mode & 0o777).toBe(0o700);
+  }, { databaseUrl, setup }), 240_000);
+
   /** Where the mirror stops once: mid-staging (a stage cut short), once every stage is written (no file renamed), and once every file is renamed (its transaction rolled back). */
   const SEAMS = { staging: 'large_file:stage_streaming', staged: 'effect_recovery:split_staged', published: 'effect_recovery:before_clear' } as const;
   for (const interruption of Object.keys(SEAMS) as (keyof typeof SEAMS)[]) {
@@ -210,6 +227,83 @@ for (const backend of testBackends()) describe(`[${backend}] split git layout: a
       expectWithdrawnEverywhere(root, LIVE_ROW);
       const { head, dir } = pageFiles(root);
       expect([...readdirSync(join(head, '..')), ...readdirSync(dir)].filter(name => name.includes('.tmp.'))).toEqual([]);
+    }, { databaseUrl, setup }), 240_000);
+  }
+
+  /** Runs effect passes until the mirror settles or the passes run out; returns the mirror effect rows. */
+  async function runMirror(engine: BrainEngine, boundary?: (name: string) => Promise<void> | void) {
+    for (let pass = 0; pass < 30; pass++) {
+      await engine.transaction(async tx => { await declarePersistenceProtocol(tx); await tx.executeRaw(`UPDATE persistence_effects SET next_attempt_at=now() WHERE state='queued'`); });
+      await runPersistenceEffects(engine, { engine: engine.kind, embedding_disabled: true } as never, { hostId: localHostId(), limit: 20, ...(boundary ? { boundary: async (name: string) => { await boundary(name); } } : {}) }).catch(() => undefined);
+      const rows = await mirrorEffects(engine);
+      if (rows.length && (rows[0] as { state: string }).state === 'committed') return rows;
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+    return mirrorEffects(engine);
+  }
+  const EDIT = 'An uncommitted edit by alice-example\n';
+
+  test('a part edited after the mirror compared the page file is kept: the mirror passes the page by and writes nothing', () => managedBrain(async ({ engine, ctx, root }) => {
+    __setSplitLimitsForTests(LIMITS);
+    await engine.setConfig(SPLIT_MAX_FILE_BYTES_KEY, '4096');
+    await put(ctx, pageOf(120));
+    const id = await remember(ctx, engine, root);
+    const { head, dir } = pageFiles(root);
+    const first = join(dir, readdirSync(dir).sort()[0]!);
+    const headBefore = readFileSync(head, 'utf8');
+    await forget(ctx, id);
+    const getConfig = engine.getConfig;
+    let edited = false;
+    // The mirror reads the split threshold when it plans the unit, after prepareFileTarget compared the page file.
+    engine.getConfig = function (this: BrainEngine, key: string) {
+      if (key !== SPLIT_MAX_FILE_BYTES_KEY || edited) return getConfig.call(this, key);
+      return getConfig.call(this, key).then(value => { edited = true; writeFileSync(first, EDIT); return value; });
+    };
+    try { await runMirror(engine); } finally { engine.getConfig = getConfig; }
+    expect(edited).toBe(true);
+    expect(readFileSync(first, 'utf8')).toBe(EDIT);
+    expect(readFileSync(head, 'utf8')).toBe(headBefore);
+    expect(readdirSync(dir).filter(name => name.includes('.tmp.'))).toEqual([]);
+  }, { databaseUrl, setup }), 240_000);
+
+  test('a kept part edited after the mirror staged its unit blocks the publication: nothing is renamed and the edit stays', () => managedBrain(async ({ engine, ctx, root }) => {
+    __setSplitLimitsForTests(LIMITS);
+    await engine.setConfig(SPLIT_MAX_FILE_BYTES_KEY, '4096');
+    await put(ctx, pageOf(120));
+    const id = await remember(ctx, engine, root);
+    const { head, dir } = pageFiles(root);
+    const first = join(dir, readdirSync(dir).sort()[0]!);
+    const headBefore = readFileSync(head, 'utf8');
+    let edited = false;
+    installFaultHook(point => { if (point === 'effect_recovery:split_staged' && !edited) { edited = true; writeFileSync(first, EDIT); } });
+    await forget(ctx, id);
+    const rows = await runMirror(engine);
+    expect(edited).toBe(true);
+    expect(rows).toEqual([expect.objectContaining({ kind: 'withdrawal-mirror', clear: false })]);
+    expect((rows[0] as { state: string }).state).not.toBe('committed');
+    expect(readFileSync(first, 'utf8')).toBe(EDIT);
+    expect(readFileSync(head, 'utf8')).toBe(headBefore);
+  }, { databaseUrl, setup }), 240_000);
+
+  for (const change of ['a kept part edited', 'a part the mirror removes edited', 'a part file added'] as const) {
+    test(`${change} after recovery checked the unit and before it publishes blocks the publication: nothing is renamed or removed, the change stays and the effect keeps its recovery`, () => managedBrain(async ({ engine, ctx, root }) => {
+      __setSplitLimitsForTests(LIMITS);
+      await engine.setConfig(SPLIT_MAX_FILE_BYTES_KEY, '4096');
+      await put(ctx, pageOf(120));
+      const id = await remember(ctx, engine, root);
+      const { head, dir } = pageFiles(root);
+      const names = readdirSync(dir).sort();
+      const target = join(dir, change === 'a part file added' ? '9999-01234567.gbpart' : change === 'a kept part edited' ? names[0]! : names.at(-1)!);
+      const headBefore = readFileSync(head, 'utf8');
+      await forget(ctx, id);
+      let changed = false;
+      const rows = await runMirror(engine, name => { if (name === 'before_mirror_file' && !changed) { changed = true; writeFileSync(target, EDIT); } });
+      expect(changed).toBe(true);
+      expect(rows).toEqual([expect.objectContaining({ kind: 'withdrawal-mirror', clear: false })]);
+      expect((rows[0] as { state: string }).state).not.toBe('committed');
+      expect(readFileSync(target, 'utf8')).toBe(EDIT);
+      expect(readFileSync(head, 'utf8')).toBe(headBefore);
+      expect(readdirSync(dir).filter(name => !name.includes('.tmp.')).sort()).toEqual(change === 'a part file added' ? [...names, '9999-01234567.gbpart'].sort() : names);
     }, { databaseUrl, setup }), 240_000);
   }
 });

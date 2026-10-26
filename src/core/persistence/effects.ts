@@ -59,8 +59,8 @@ import { nativeFileTarget } from './native-file-target.ts';
 import { withFilesystemPublication } from './filesystem-guard.ts';
 import type { MutationFile } from './bundle-files.ts';
 import { releaseSplitTargets, splitPublicationTargets, type SplitFileFields } from './split-files.ts';
-import { splitMirrorPlan, stageSplitMirror } from './split-mirror.ts';
-import { pageFileSha256, partsDirFor } from '../split-layout/index.ts';
+import { splitMirrorPlan, splitPartsDrifted, stageSplitMirror } from './split-mirror.ts';
+import { isSplitHeadPath, pageFileSha256, partsDirFor } from '../split-layout/index.ts';
 import { sourceMirrorReadOnly } from './mirror-read-only.ts';
 import { isLockOpenFailure, type NativeLockHandle } from './native-lock.ts';
 import { planPageEmbedding } from '../page-embedding-budget.ts';
@@ -272,9 +272,11 @@ async function mirrorPage(engine: BrainEngine, effect: PersistenceEffect, bindin
     mode: statSync(file.path).mode & 0o7777, ownerEpoch: String(binding!.owner_epoch), pageId: snapshot.page.id,
     sourceIncarnation: snapshot.sourceIncarnation, slug: snapshot.page.slug, revision: snapshot.revision };
   // Wave B PR 5: a split page, or a render over the threshold, is mirrored as one unit (head plus parts, split-mirror.ts).
-  const unit: MutationFile & SplitFileFields = { path: file.path, root: file.root, content, expectedBeforeHash: file.expectedBeforeHash };
+  const unit: MutationFile & SplitFileFields = { path: file.path, root: file.root, content, expectedBeforeHash: file.expectedBeforeHash, expectedParts: file.expectedParts };
   if (await splitPublicationTargets(engine, unit)) {
     try {
+      // A part that changed since the file was compared is a local edit, passed by like a changed head.
+      if (splitPartsDrifted(unit)) { await materializeAndAdvance(engine, effect, snapshot, opts.hostId, 'file_database_drift'); return; }
       const plan = await splitMirrorPlan(engine, target, unit);
       await reserveEffectRecovery(engine, effect, plan.record, plan.bytes, opts.hostId);
       await withFilesystemPublication([file.root], () => stageSplitMirror(engine, plan));
@@ -411,7 +413,7 @@ async function publishGitPage(engine: BrainEngine, effect: PersistenceEffect, bi
   // segments, unreadPageFile, never held as one string).
   // A split head is compared through the page file its parts reassemble to (a recorded head hash would not cover its parts).
   const mirrored = attempt.gate?.files.get(snapshot.page.slug);
-  const split = mirrored?.split === true || existsSync(partsDirFor(path));
+  const split = mirrored?.split === true || (isSplitHeadPath(path) && existsSync(partsDirFor(path)));
   if (verdict === 'evidence' && (snapshot.page.deleted_at || walkedFileHash(path, split) !== (mirrored?.revision === snapshot.revision && !mirrored.split ? mirrored.hash
     : content === null ? (await unreadPageFile(engine, snapshot, keep)).hash : fileContentHash(content)))) {
     await skipTarget(engine, effect, snapshot, 'withdrawal_not_mirrored');

@@ -639,6 +639,8 @@ src/core/verbs/entity-names.ts	lookupOne	sql	LEAD	boundedBodyPrefixSql AS compil
 src/core/write-gate-scan.ts	SPECS	field	STREAM	
 src/core/write-gate-scan.ts	SPECS	sql	STREAM	
 src/core/write-gate.ts	assessPageForGate	field	STREAM	
+src/core/write-through.ts	assertPageThroughWritable	call:serializePageToMarkdown	NONE	renders the markdown the caller is about to import (parsed from its content), not a stored page row
+src/core/write-through.ts	assertPageThroughWritable	field	NONE	the parsed content of the caller's own markdown (parseMarkdown), not a page row
 src/core/write-through.ts	writePageThrough	call:serializePageToMarkdown	SEGW	
 src/eval/brainbench/metrics/trust-reads.ts	canaryHeld	sql	STREAM	
 src/eval/brainbench/metrics/trust-reads.ts	canaryPersisted	sql	STREAM	

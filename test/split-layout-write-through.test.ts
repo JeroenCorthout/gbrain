@@ -2,13 +2,14 @@
  * Wave B PR 5 lane 5e (split git layout, spec §9 option B): the unmanaged write-through on a split page.
  *
  * 1. Protects: `writePageThrough` and `deletePageThrough` (write-through.ts), the direct writers of an unmanaged brain
- *    (brainstorm --save, the cycle's derived pages, sync's re-export), stay file-first on a split page: the write lays
- *    the database's page out as a head plus parts (split-write-through.ts, the door's split unit), so the reassembled
- *    page file F' is the page the database holds; a page back under the threshold becomes one file with its parts
- *    removed; a delete removes the head and every part. `expectedFileBytes` is the page file F', so a caller that
- *    compared the raw head, or a head whose parts no longer verify, is refused as `file_changed` with every file kept.
- * 2. Fails when: the write-through passes a split page by (the database then holds an edit git never gets), renders
- *    the page over the head as one file (orphaning the parts), or unlinks the head alone.
+ *    (brainstorm --save, the cycle's derived pages, sync's re-export), never break a split page: a write whose parts all
+ *    stay rewrites only the head, so the reassembled page file F' is the page the database holds; a write that would
+ *    write or remove a part (a page that changed in its parts, or one back under the threshold) is skipped
+ *    `split_page_unsupported` with every file kept, since outside the door no recovery record finishes a head and parts
+ *    written one by one; a delete removes the head and every part. `expectedFileBytes` is the page file F', so a caller
+ *    that compared the raw head, or a head whose parts no longer verify, is refused as `file_changed` with every file kept.
+ * 2. Fails when: the write-through renders the page over the head as one file (orphaning the parts), writes or removes
+ *    a part outside the door, or unlinks the head alone.
  * 3. PGLite always; PostgreSQL when DATABASE_URL is set (test/postgres-unit-arms.txt). KB-sized limits through
  *    __setSplitLimitsForTests.
  */
@@ -86,17 +87,26 @@ for (const backend of testBackends()) describe(`[${backend}] split git layout: t
   const databaseUrl = backend === 'postgres' ? requirePostgresTestDatabase() : undefined;
   afterEach(() => { __setSplitLimitsForTests(null); });
 
-  for (const expected of ['page file', 'unbound'] as const) test(`writePageThrough lays the database's page out as a head plus parts (${expected} preimage)`, () => withSplitPage(databaseUrl, async (engine, root) => {
-    const result = await writePageThrough(engine, SLUG, expected === 'page file' ? { expectedFileBytes: file } : {});
-    expect(result).toMatchObject({ written: true, path: join(root, SLUG + '.md') });
-    await expectSplitAgrees(engine, root);
-    expect(readPageFileText(join(root, SLUG + '.md'))).toMatchObject({ text: expect.stringContaining(DB_EDIT) });
+  for (const expected of ['page file', 'unbound'] as const) test(`writePageThrough refuses a page whose part files the write would change (split_page_unsupported, ${expected} preimage): every file is kept`, () => withSplitPage(databaseUrl, async (engine, root) => {
+    const before = layout(root);
+    expect(await writePageThrough(engine, SLUG, expected === 'page file' ? { expectedFileBytes: file } : {})).toMatchObject({ written: false, skipped: 'split_page_unsupported' });
+    expect(layout(root)).toEqual(before);
+    expect(readdirSync(join(root, 'notes')).filter(name => name.includes('.tmp'))).toEqual([]);
   }), 120_000);
 
-  test('a page back under the threshold is written as one file and its parts are removed', () => withSplitPage(databaseUrl, async (engine, root) => {
+  test('writePageThrough rewrites only the head when every part stays (a frontmatter edit): the page file agrees with the database', () => withSplitPage(databaseUrl, async (engine, root) => {
+    const parts = layout(root).parts;
+    await engine.putPage(SLUG, { type: 'note', title: 'Split example retitled', compiled_truth: body });
+    expect(await writePageThrough(engine, SLUG, { expectedFileBytes: file })).toMatchObject({ written: true, path: join(root, SLUG + '.md') });
+    await expectSplitAgrees(engine, root);
+    expect(layout(root).parts).toEqual(parts);
+  }), 120_000);
+
+  test('a page back under the threshold is refused (split_page_unsupported): the head and its parts are kept', () => withSplitPage(databaseUrl, async (engine, root) => {
     await engine.putPage(SLUG, { type: 'note', title: 'Split example', compiled_truth: `A short page now. ${DB_EDIT}\n` });
-    expect(await writePageThrough(engine, SLUG, { expectedFileBytes: file })).toMatchObject({ written: true });
-    expect(layout(root)).toEqual({ head: await rendered(engine), parts: null });
+    const before = layout(root);
+    expect(await writePageThrough(engine, SLUG, { expectedFileBytes: file })).toMatchObject({ written: false, skipped: 'split_page_unsupported' });
+    expect(layout(root)).toEqual(before);
   }), 120_000);
 
   test('a preimage that is not the page file, or a head whose parts no longer verify, refuses with every file kept', () => withSplitPage(databaseUrl, async (engine, root, head) => {

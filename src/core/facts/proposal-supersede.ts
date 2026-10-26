@@ -17,6 +17,7 @@
  */
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { writePageTemp } from '../split-write-through.ts';
 import type { BrainEngine } from '../engine.ts';
 import type { GBrainConfig } from '../config.ts';
 import { formatFenceDate, parseFactsFence, type ParsedFact } from '../facts-fence.ts';
@@ -219,12 +220,11 @@ function publishFile(filePath: string, body: string, expected: string, slug: str
   if (!existsSync(filePath) || readFileSync(filePath, 'utf-8') !== expected) throw new ProposalFileDrift(proposalDrift(slug, sourceId, 'during'));
   const tmp = `${filePath}.tmp`;
   assertSourceFilesystemActive();
-  writeFileSync(tmp, body, 'utf-8');
-  if (parseFactsFence(readFileSync(tmp, 'utf-8')).warnings.length > 0) {
-    rmSync(tmp, { force: true });
-    throw new ProposalConflictError('the rewritten facts fence failed validation');
-  }
-  renameSync(tmp, filePath);
+  writePageTemp(tmp, filePath, body);
+  try {
+    if (parseFactsFence(readFileSync(tmp, 'utf-8')).warnings.length > 0) throw new ProposalConflictError('the rewritten facts fence failed validation');
+    renameSync(tmp, filePath);
+  } finally { rmSync(tmp, { force: true }); }
 }
 
 /** Restore a failed publication only while the checkout still carries this operation's published bytes. */

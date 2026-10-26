@@ -26,7 +26,7 @@ import { isSourceDbOnlySlug } from '../core/persistence/source-storage.ts';
 import { GIT_HOLD_OP, readSyncImportProvenances } from '../core/persistence/sync-holds.ts';
 import { DERIVED_LINK_SOURCES } from '../core/persistence/twin-merge.ts';
 import { scannerSlugRootMode, scannerSourcePath } from '../core/write-through.ts';
-import { pageFileAtRevision, partsDirFor } from '../core/split-layout/index.ts';
+import { isSplitHeadPath, pageFileAtRevision, partsDirFor } from '../core/split-layout/index.ts';
 import { compareInlineExportFile, compareSegmentedExportBlob, compareSegmentedExportBytes, DECLARED_CLASSES, declaredDatabaseOnly, ignoredPaths, readBlobs, readHeadTree, worktreeBlobOid,
   type DeclaredClass, type ExportFileComparison, type HeadTree, type TreeBlob } from '../core/persistence/git-gap.ts';
 
@@ -225,7 +225,7 @@ async function censusBatch(tx: BrainEngine, batch: Key[], census: GitGapCensus, 
 function splitPartBlobs(checkout: Checkout, rels: readonly string[]): Map<string, Map<string, TreeBlob>> {
   const out = new Map<string, Map<string, TreeBlob>>();
   const prefix = checkout.scope ? checkout.scope + '/' : '';
-  const wanted = new Map(rels.map(rel => [prefix + partsDirFor(rel).split(sep).join('/') + '/', rel]));
+  const wanted = new Map(rels.filter(isSplitHeadPath).map(rel => [prefix + partsDirFor(rel).split(sep).join('/') + '/', rel]));
   for (const [path, blob] of checkout.head.blobs) {
     const slash = path.lastIndexOf('/');
     const rel = slash < 0 ? undefined : wanted.get(path.slice(0, slash + 1));

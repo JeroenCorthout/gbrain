@@ -3,7 +3,7 @@
  * primitives every Google sweep (contacts, calendar, Gmail) shares. Peeled
  * from google-source.ts so the sweeps can live in their own modules.
  */
-import { chmodSync, closeSync, existsSync, fchmodSync, lstatSync, openSync, renameSync, rmSync, unlinkSync, writeSync } from 'node:fs';
+import { closeSync, existsSync, fchmodSync, lstatSync, openSync, renameSync, rmSync, unlinkSync, writeSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
 import type { BrainEngine } from '../engine.ts';
@@ -14,8 +14,7 @@ import { connectorRender } from '../connectors/connector-text.ts';
 import { isWriteTargetContained } from '../path-confine.ts';
 import { mkdirPrivate } from '../atomic-write.ts';
 import { replaceableFile } from '../facts/file-body-guard.ts';
-import { PageFileChanged, readPageFileText, removeSplitPageFile, writeSplitPageFile } from '../split-write-through.ts';
-import { partsDirFor } from '../split-layout/paths.ts';
+import { PageFileChanged, assertSplitWritable, readPageFileText, removeSplitPageFile, writeSplitPageFile } from '../split-write-through.ts';
 import { FACTS_FENCE_BEGIN, FACTS_FENCE_END, replaceOrInsertFactsFence } from '../facts-fence.ts';
 import { TAKES_FENCE_BEGIN } from '../takes-fence.ts';
 import { conceptPreservationHold, preserveCanonicalFences } from '../cycle/concept-publication.ts';
@@ -195,6 +194,7 @@ export async function importRendered(
     `${slug}: the checkout file has an edit not retained in the database, or changed during import. The file was not replaced. If the file is newer, run gbrain sync --source ${deps.sourceId}; if the database is newer, re-save its page with write-through on; if both changed, ask the user which version to keep before retrying.`,
     'Import the newer file with gbrain sync, or ask the user which version to keep; the item is held until then.');
   if (guard && !guard.ok) throw drift();
+  if (guard) await assertSplitWritable(deps.engine, filePath, deps.cfg.dir, markdown);
   const before = databaseOnly ? !!existing : existsSync(filePath);
   // Temp-write → import → rename: a failed import never destroys the
   // previously-good page (github-source pattern).
@@ -219,9 +219,8 @@ export async function importRendered(
     if (guard?.ok) {
       const unchanged = () => { const file = readPageFileText(filePath); if (file.hold || file.text !== guard.expectedFileBytes) throw drift(); };
       unchanged();
-      const split = await writeSplitPageFile(deps.engine, filePath, deps.cfg.dir, markdown, unchanged).catch(error => { throw error instanceof PageFileChanged ? drift() : error; });
+      const split = await writeSplitPageFile(deps.engine, filePath, deps.cfg.dir, markdown, unchanged, 0o600).catch(error => { throw error instanceof PageFileChanged ? drift() : error; });
       if (!split) renameSync(tmpPath, filePath);
-      else keepSplitPagePrivate(filePath, split);
     }
     if (result.status === 'imported') {
       summary.pagesAffected.push(result.slug);
@@ -236,12 +235,6 @@ export async function importRendered(
   } finally {
     if (!databaseOnly) rmSync(tmpPath, { force: true });
   }
-}
-
-/** A split page's head and parts stay as private as a one-file page (0600, the parts directory 0700). */
-function keepSplitPagePrivate(filePath: string, paths: readonly string[]): void {
-  if (existsSync(partsDirFor(filePath))) chmodSync(partsDirFor(filePath), 0o700);
-  for (const path of paths) if (existsSync(path)) chmodSync(path, 0o600);
 }
 
 export async function deletePageByRelPath(
