@@ -18,13 +18,13 @@ import type { PageSnapshot, PageWithdrawal } from '../page-state/types.ts';
 import { opError, verbError } from '../ops/contract.ts';
 import { overlayCanonicalBodies } from '../page-state/snapshot.ts';
 import { serializePageToMarkdown } from '../markdown.ts';
-import { pageBodyOverCeilingError } from '../page-body/page-shape.ts';
+import { isSegmentedPage } from '../page-body/page-shape.ts';
 import { planFactWithdrawal, recordFactWithdrawal } from '../facts/withdrawal.ts';
 import { rebuildPendingPageProjections } from '../page-state/projections.ts';
 import { privateProvenanceFilterFragment, resolveExcludePrivatePages } from '../search/private-visibility.ts';
 import { remoteForgetRaced, supersessionGuarded } from '../trust/supersede-handlers.ts';
-import { materializedPage, segmentedOverCeiling } from './segmented-apply.ts';
-import { prepareFileTarget } from './page-prepare.ts';
+import { materializedPage } from './segmented-apply.ts';
+import { prepareFileTarget, snapshotLedger, unreadPageFile } from './page-prepare.ts';
 import { pageIdentityError } from './page-identity.ts';
 import type { CompanionPage, PageMutationFile, PreparedMutation } from './coordinator.ts';
 import type { WriteRequest } from './model.ts';
@@ -100,14 +100,21 @@ export async function prepareForgetMutation(engine: BrainEngine, row: WriteReque
   const struck = new Set(plan.affected.map(page => page.slug));
   const strike = async (slug: string, snapshot: PageSnapshot | null): Promise<PageMutationFile | undefined> => {
     if (!snapshot || snapshot.page.deleted_at || !row.worktree_id || !struck.has(slug) || (plan.subject !== '*' && plan.subject !== slug)) return undefined;
-    if (segmentedOverCeiling(snapshot.page)) throw pageBodyOverCeilingError(snapshot.page, `${row.operation} facts fence write`);
+    const target = { source_id: sourceId, worktree_id: row.worktree_id, slug, operation: row.operation };
+    if (isSegmentedPage(snapshot.page)) {
+      // A segmented page's file is streamed from its segments under the ledger plus this withdrawal (export's overlay),
+      // never rendered as one string, so a page of any size can be struck.
+      const struckFile = await unreadPageFile(engine, snapshot, undefined, { ...snapshotLedger(snapshot), withdrawals: [...snapshot.withdrawals, withdrawal] });
+      if (struckFile.hash === (await unreadPageFile(engine, snapshot)).hash) return undefined;
+      const file = await prepareFileTarget(engine, target, snapshot, struckFile, undefined, { allowMissing: true, remote });
+      return file && file.content !== null && existsSync(file.path) ? file : undefined;
+    }
     const page = await materializedPage(engine, snapshot.page);
     const query = <T,>(sql: string, params?: unknown[]) => engine.executeRaw<T & Record<string, unknown>>(sql, params) as Promise<T[]>;
     const bodies = await overlayCanonicalBodies(query, page.compiled_truth, page.timeline ?? '', [...snapshot.withdrawals, withdrawal],
       { sourceId, marker: snapshot.globalPurges });
     if (bodies.compiled_truth === page.compiled_truth && bodies.timeline === (page.timeline ?? '')) return undefined;
-    const file = await prepareFileTarget(engine, { source_id: sourceId, worktree_id: row.worktree_id, slug, operation: row.operation }, snapshot,
-      serializePageToMarkdown({ ...page, ...bodies }, snapshot.tags), undefined, { allowMissing: true, remote });
+    const file = await prepareFileTarget(engine, target, snapshot, serializePageToMarkdown({ ...page, ...bodies }, snapshot.tags), undefined, { allowMissing: true, remote });
     // A removal (a strict page turning private, git-declared.ts) is that transition's own write, never a withdrawal's.
     return file && file.content !== null && existsSync(file.path) ? file : undefined;
   };

@@ -641,9 +641,8 @@ async function prepareUnreadRestore(engine: BrainEngine, row: WriteRequest, snap
  * A withdrawal mirror of a segmented page (effects.ts, effect-recovery.ts) renders its file the same way, with
  * `between` (its claim renewal) run after each piece each time the file is produced.
  */
-export async function unreadPageFile(engine: BrainEngine, snapshot: PageSnapshot, between?: () => Promise<void>): Promise<StreamedFileContent> {
+export async function unreadPageFile(engine: BrainEngine, snapshot: PageSnapshot, between?: () => Promise<void>, ledger: BodyLedger = snapshotLedger(snapshot)): Promise<StreamedFileContent> {
   const head = serializePageToMarkdown({ ...withoutBody(snapshot.page), compiled_truth: '', timeline: '' }, snapshot.tags).slice(0, -1);
-  const ledger = snapshotLedger(snapshot);
   const produce = (exec: BrainEngine) => segmentedExportMarkdown(exec, snapshot.page, ledger, head);
   return StreamedFileContent.measure(engine, !between ? produce : async function* (exec) { for await (const piece of produce(exec)) { yield piece; await between(); } });
 }

@@ -622,7 +622,7 @@ export function compileCanonicalProjections(page: ParsedPage, slug: string, sour
   const scan=scanCanonicalFences(page);
   if(scan.defects.length) throw fenceOperationError(scan.defects[0]!, slug, sourceId);
   const fields:Array<[FenceSection,string]>=[['body',page.compiled_truth],['timeline',page.timeline ?? '']];
-  return { factRows: extractFactsFromFenceText(scan.facts,slug,sourceId,{ pageEffectiveDate: factDate }), takes: scan.takes, sections: scan.sections, quoted: scan.quoting ? quotedFenceRows(fields) : null };
+  return { fenceFacts: scan.facts, factRows: extractFactsFromFenceText(scan.facts,slug,sourceId,{ pageEffectiveDate: factDate }), takes: scan.takes, sections: scan.sections, quoted: scan.quoting ? quotedFenceRows(fields) : null };
 }
 
 /**
@@ -668,7 +668,7 @@ export async function prepareCanonicalProjections(engine: BrainEngine, page: Par
   ledger?: { deriveWithdrawals: boolean }): Promise<(tx: BrainEngine, pageId?: number) => Promise<CanonicalProjectionResult>> {
   // #7247: a fence row without a valid_from takes the page's stated date, as extract_facts does, never the import time.
   const factDate = pageFactDate({ slug, frontmatter: page.frontmatter, timeZone: await engine.getConfig('brain.timezone') });
-  const { factRows, takes, quoted, sections } = compileCanonicalProjections(page, slug, sourceId, factDate);
+  const { fenceFacts, factRows, takes, quoted, sections } = compileCanonicalProjections(page, slug, sourceId, factDate);
   // #6259: a page the content-quality gate hid as junk projects no facts or takes. Rows projected before it
   // was quarantined are left as they are (hiding them would need a new row state); only new projection stops.
   const projectFences = !isQuarantined(page.frontmatter);
@@ -818,7 +818,7 @@ export async function prepareCanonicalProjections(engine: BrainEngine, page: Par
         () => pipelined(tx, factGeneration.retiring ? [expireFacts, ...timelineRows] : timelineRows)));
       if (factsHeld) await step('timeline', () => pipelined(tx, timelineRows));
       if (guard.rows.length) await step('facts', () => tx.insertFacts(guard.rows, { source_id: sourceId })); // gbrain-allow-direct-insert: canonical fence projection shares the journal publication transaction
-      if (!factsHeld && ledger?.deriveWithdrawals) await step('withdrawals', () => deriveFenceWithdrawals(tx, sourceId, slug, factRows));
+      if (!factsHeld && ledger?.deriveWithdrawals) await step('withdrawals', () => deriveFenceWithdrawals(tx, sourceId, slug, fenceFacts));
       const contested = await step('fact_trust', () => guard.finish(tx));
       // W1 #6783 §12 (b): a fence row's field rewrite can lower a more trusted fact (the tier trigger); what was derived from it follows.
       const above = factRows.length ? await factsAboveWriter(tx, sourceId, slug) : [];
