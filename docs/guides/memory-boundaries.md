@@ -144,16 +144,17 @@ Don't send a growing page back whole to add a line. `append_page` (CLI
 page in time proportional to the text. It takes a `request_id`, so a retry
 never appends twice, and `expected_tail_sha256` refuses `tail_changed` when
 another writer appended first. `edit_page` on a page stored in segments
-rewrites only the segments its match touches; `within` restricts the match to
-a range a window read returned.
+rewrites only the segments a body-text match touches (an edit that reaches the
+header or the timeline marker prepares the whole body instead); `within`
+restricts the match to a range a window read returned.
 
 A page bigger than one request (see the limits below) goes in an upload
 session: `begin_page_upload`, then `upload_page_part` from part 0, then
 `commit_page_upload`, which returns `put_page`'s receipt. `get_page_upload`
 resumes after a lost reply and `abort_page_upload` discards the session.
-`gbrain put --file` and `gbrain capture --file` use a session on a remote
-brain, and `gbrain append` switches to one when the text is over the
-connection's request limit. A session belongs to the connection, source and
+On a remote brain, `gbrain put --file`, `gbrain capture --file` and
+`gbrain append` switch to a session when the request is over the connection's
+limit. A session belongs to the connection, source and
 page that began it, its staged bytes count against the `persistence.limits`
 upload quotas, and an idle session expires.
 

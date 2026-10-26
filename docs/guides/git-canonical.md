@@ -25,9 +25,10 @@ operator's view.
 
 Writes to a strict source pay for a local commit. The door commits with Git
 plumbing and updates the index only for the paths it wrote, so on a
-150,000-file checkout it adds about 230 ms per write (p50). A `put_pages` batch,
-a maintenance run (dream patterns, one `extract_entities` call, one atom
-generation) and other grouped writes share one commit.
+150,000-file checkout it adds about 230 ms per write (p50). Writes published
+as one group share a commit (a `put_pages` batch publishes up to 8 pages per
+group, and maintenance writers group their pages per run), so a large batch
+makes several commits. Independent writes each make their own.
 
 ## When to turn it on
 
@@ -86,16 +87,17 @@ gbrain sources canonical <source-id> --to git --apply --expect <hash> [--no-embe
 A plan that changed since the preview refuses with `preview_changed`; preview
 again. The apply adopts group by group (a crash leaves the source mixed, and the
 next preview lists only what is left), runs a full strict pass, sets
-`canonical: git`, then runs one more strict pass. Writes that land during the
-conversion can leave work behind; the command then reports
-`git_conversion_incomplete` and the source stays strict. Wait until
+`canonical: git`, then runs one more strict pass. A pass that stops early, or
+writes that land during the conversion, end it with
+`git_conversion_incomplete`: the source stays mixed if the first pass stopped
+before the flag was set, and strict (Git wins) if it stopped after. Wait until
 `gbrain sync status --source <id> --json` shows it idle, preview again and apply
 the new hash.
 
 **A new, empty source** can start strict instead:
-`gbrain sources host-repo <id> --dir <path> [--push-remote <url>]` creates a bare
-repository people clone, with a worktree gbrain owns, and makes the source
-strict. See [hosted repositories](multi-source-brains.md#hosted-repositories).
+`gbrain sources host-repo <id> --dir <path> [--push-remote <url>]` previews a bare
+repository people clone, with a worktree gbrain owns; running the printed
+command with `--expect <plan_hash>` creates them and makes the source strict. See [hosted repositories](multi-source-brains.md#hosted-repositories).
 
 ## How writes reach a strict source
 
@@ -133,13 +135,16 @@ file is refused with [`git_home_required`](write-refusals.md#git_home_required).
 | Derive-phase pages that never had a file | Kept database-only. |
 | Paths the checkout's Git ignores | Never committed and never given a Git effect. |
 | Detached pages and origin twins | Kept database-only. |
-| Derived data: chunks, embeddings, links and rows parsed from pages, receipts | Rebuilt from Git, never content of record. |
+| Derived data: chunks, embeddings, links and rows parsed from pages | Rebuilt from Git, never content of record. |
+| Write receipts and other operational records | Kept in the database as metadata; Git commits don't carry them. |
 
 A file under a Git LFS rule is refused with `git_lfs_not_enabled` unless
 `storage.git_lfs` is on and the checkout configures the LFS filter; the door
 then commits the LFS pointer.
 
-Back up the database for the declared classes: Git holds everything else.
+Git holds every page outside these classes, so a strict source's index can be
+rebuilt from it. Back up the database too: it holds the declared classes,
+receipts and other operational records.
 
 ## Turning it off
 

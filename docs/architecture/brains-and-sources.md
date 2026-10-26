@@ -58,7 +58,7 @@ database follows Git depends on the source:
 
 | Source | Where the record is | How the database follows |
 |---|---|---|
-| Checkout, mixed (the default) | The files in Git | Sync imports what is committed. A write publishes the file and its database row together (managed) or the row first (classic), and the Git commit follows later (a background Git effect once Git durability is on). When the two disagree, sync holds the page for review. |
+| Checkout, mixed (the default) | The files in Git | Sync imports what is committed (or the working tree when asked). A write publishes the file and its database row together (managed) or the row first (classic), and the Git commit follows later (a background Git effect once Git durability is on). When the two disagree, sync keeps the database version or holds the page for review. |
 | Checkout, strict (`canonical: git`, opt-in per source) | Git commits | Every write is committed to Git before its row. Sync indexes committed blobs only, and Git wins. Private pages, `storage.db_only` directories and ignored paths are declared database-only. |
 | Read-only mirror (`gbrain sources mirror-readonly`) | The upstream repository | Sync imports; gbrain never writes into the checkout. |
 | No checkout (connector sources, database-only sources) | The database | Nothing to derive from; back up the database. |
