@@ -1082,8 +1082,8 @@ export async function importFromFile(
     });
   }
 
-  const split = opts.splitBody ? null : openSplitPage(filePath, relativePath, content);
-  if (split) return 'refusal' in split ? splitRefusalResult(relativePath, split.refusal) : importFromFile(engine, filePath, relativePath, { ...opts, splitBody: split.path }).finally(split.dispose);
+  const split = opts.splitBody ? { kind: 'plain' as const } : openSplitPage(filePath, relativePath, content);
+  if (split.kind !== 'plain') return split.kind === 'split_invalid' ? splitRefusalResult(relativePath, split.refusal) : importFromFile(engine, filePath, relativePath, { ...opts, splitBody: split.path }).finally(split.dispose);
   const preInferenceParsed = parseMarkdown(content, relativePath, { validate: true });
   const preInferenceHold = classifyImportHold(preInferenceParsed);
   if (preInferenceHold) {

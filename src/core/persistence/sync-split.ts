@@ -19,7 +19,7 @@ import { gitParts, splitTreeOid, splitTreeOidAt } from '../split-layout/git-part
 import { parseHead } from '../split-layout/head.ts';
 import { splitPartOf } from '../split-layout/paths.ts';
 import { readBlobs, type GitTreeEntry } from './sync-git-stream.ts';
-import { openSplitPage, type OpenedSplitPage, type SplitRefusal } from '../split-layout/read.ts';
+import { openSplitPage, type OpenedSplitPage, type SplitPageOpen, type SplitRefusal } from '../split-layout/read.ts';
 import { sha256 } from './digest.ts';
 import { readSyncFile, syncGitPath, type SyncDiscovery, type SyncEntry } from './sync-discovery.ts';
 import { SYNC_READ_BOUND } from './sync-blobs.ts';
@@ -48,20 +48,22 @@ function git(cwd: string, args: string[], maxBuffer = 1024 ** 2): Buffer {
   return execFileSync('git', ['-c', 'core.quotepath=false', '-C', cwd, ...args], { env: gitChildEnv(), timeout: 60_000, maxBuffer, stdio: ['ignore', 'pipe', 'pipe'] });
 }
 
-function open(root: string, path: string, gitPath: string, commit: string | null, head: string): { refusal: SplitRefusal } | OpenedSplitPage | null {
+function open(root: string, path: string, gitPath: string, commit: string | null, head: string): SplitPageOpen {
   return openSplitPage(commit === null ? join(root, path) : gitParts(root, commit, gitPath), path, head);
 }
 
+/** The freeze of an import: `plain`, `split_invalid` with the refusal its hold carries, or `split` (SplitFreeze). */
+export type SplitFreeze = { kind: 'plain' } | { kind: 'split_invalid'; refusal: SplitRefusal } | { kind: 'split'; split: SyncSplitMark; content: string | null };
+
 /**
- * The freeze of an import whose bytes are `head`: null for an ordinary page, the refusal its hold carries, or the
- * mark with F' as text (null over `inlineMax` bytes: frozen by reference and streamed by its owner).
+ * The freeze of an import whose bytes are `head` (SplitFreeze); a split page's mark carries F' as text, null over
+ * `inlineMax` bytes (frozen by reference and streamed by its owner).
  */
-export function freezeSplitPage(input: { root: string; path: string; gitPath: string; commit: string | null; head: string; inlineMax: number }):
-  { refusal: SplitRefusal } | { split: SyncSplitMark; content: string | null } | null {
+export function freezeSplitPage(input: { root: string; path: string; gitPath: string; commit: string | null; head: string; inlineMax: number }): SplitFreeze {
   const opened = open(input.root, input.path, input.gitPath, input.commit, input.head);
-  if (!opened || 'refusal' in opened) return opened;
+  if (opened.kind !== 'split') return opened;
   try {
-    return { split: { head_sha256: sha256(input.head), commit: input.commit, git_path: input.gitPath, bytes: opened.bytes, sha256: opened.sha256,
+    return { kind: 'split', split: { head_sha256: sha256(input.head), commit: input.commit, git_path: input.gitPath, bytes: opened.bytes, sha256: opened.sha256,
       ...(input.commit === null ? {} : { tree_oid: splitTreeOidAt(input.root, input.commit, input.gitPath) }) },
       content: opened.bytes <= input.inlineMax ? readFileSync(opened.path, 'utf8') : null };
   } finally {
@@ -74,8 +76,8 @@ export function freezeSplitPage(input: { root: string; path: string; gitPath: st
  * pinned commit, or at HEAD when its head came from HEAD (`headOid`, the head's blob there); a working-tree entry
  * reads the files beside the head.
  */
-export function freezeSplitEntry(cursor: Pick<SyncDiscovery, 'root' | 'gitRoot' | 'target'>, entry: Pick<SyncEntry, 'path' | 'working'>, head: string, headOid: string | null) {
-  if (!head.includes(PARTS_KEY)) return null;
+export function freezeSplitEntry(cursor: Pick<SyncDiscovery, 'root' | 'gitRoot' | 'target'>, entry: Pick<SyncEntry, 'path' | 'working'>, head: string, headOid: string | null): SplitFreeze {
+  if (!head.includes(PARTS_KEY)) return { kind: 'plain' };
   const gitPath = syncGitPath(cursor, entry.path);
   const commit = entry.working ? null : headOid ? headCommitHolding(cursor.root, gitPath, headOid) : cursor.target;
   return freezeSplitPage({ root: cursor.root, path: entry.path, gitPath, commit, head, inlineMax: SYNC_READ_BOUND });
@@ -102,7 +104,7 @@ export function reopenSplitPage(root: string, path: string, mark: SyncSplitMark)
   try { head = mark.commit === null ? readSyncFile(root, path) : git(root, ['cat-file', 'blob', mark.commit + ':' + mark.git_path]); } catch {}
   if (!head || sha256(head) !== mark.head_sha256) return null;
   const opened = open(root, path, mark.git_path, mark.commit, head.toString('utf8'));
-  if (!opened || 'refusal' in opened) return null;
+  if (opened.kind !== 'split') return null;
   if (opened.bytes === mark.bytes && opened.sha256 === mark.sha256) return opened;
   opened.dispose();
   return null;
@@ -111,7 +113,7 @@ export function reopenSplitPage(root: string, path: string, mark: SyncSplitMark)
 /** The page file the working-tree head `head` at `path` stands for (its parts read beside it), or null: no verified split page, or over `max` bytes. */
 export function workingSplitPage(root: string, path: string, head: string, max: number): string | null {
   const opened = openSplitPage(join(root, path), path, head);
-  if (!opened || 'refusal' in opened) return null;
+  if (opened.kind !== 'split') return null;
   try { return opened.bytes <= max ? readFileSync(opened.path, 'utf8') : null; } finally { opened.dispose(); }
 }
 

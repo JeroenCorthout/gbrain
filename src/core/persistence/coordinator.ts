@@ -1,5 +1,6 @@
 import { closeSync, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { dirname, join } from 'node:path';
+import { splitUnitPaths, withSession } from './effect-git.ts';
 import type { BrainEngine } from '../engine.ts';
 import type { PageSnapshot } from '../page-state/types.ts';
 import { OperationError, opError } from '../ops/contract.ts';
@@ -205,7 +206,9 @@ function requestError(error: unknown): PublicationFailure {
     const detail = fenceFailureDetail(error) ?? withdrawalFailureDetail(error) ?? (error.syncRefusal as PublicationFailure['detail'] | undefined)
       ?? (error.detail === CANONICAL_FILE_MISSING ? { origin: CANONICAL_FILE_MISSING } : undefined)
       // #6693: a refusal on a page whose file awaits import or is held by sync; the replay after import selects on it.
-      ?? (error.code === 'source_changed' && (error.reason === PENDING_IMPORT || error.reason === SYNC_HELD) ? { origin: error.reason } : undefined);
+      ?? (error.code === 'source_changed' && (error.reason === PENDING_IMPORT || error.reason === SYNC_HELD) ? { origin: error.reason } : undefined)
+      // Wave B PR 5: a write over a declared split head that does not verify (split-files.ts splitInvalidRefusal).
+      ?? (error.code === 'source_changed' && (error.reason === 'split_page_incomplete' || error.reason === 'split_head_modified') ? { origin: error.reason } : undefined);
     return { code: error.code, message: error.message, ...(detail ? { detail } : {}) };
   }
   const refusal = databaseRefusal(error);
@@ -639,9 +642,15 @@ export async function publishMutation(engine: BrainEngine, row: WriteRequest, pr
       await recordPublicationFenceTrend(tx, row, outcome);
       // G2: a strict source's file is committed before its row; its Git effect only pushes.
       if (door?.door) Object.assign(outcome.persistence as object, { git_state: 'committed', git_commit: await commitThroughDoor(door.door.root, [{ path: door.path, note: prepared.file?.commit }], lock ?? undefined) });
-      // Wave B PR 5: a split page's head and every part file it writes or removes land in one door commit.
-      if (splitDoor) Object.assign(outcome.persistence as object, { git_state: 'committed', git_commit: await commitThroughDoor(splitDoor.root,
-        files.map((file, index) => ({ path: file.path, ...(index ? {} : { note: prepared.file?.commit }) })), lock ?? undefined) });
+      // Wave B PR 5: a split page lands as its whole unit (splitUnitPaths) in one door commit: the head, every manifest part
+      // (the parts it kept unwritten included) and the removal of anything else Git holds in its parts directory.
+      if (splitDoor) {
+        const unit = await withSession(splitDoor.root, undefined, undefined, false, session => splitUnitPaths(session, splitDoor.root, files[0]!.path,
+          reason => opError('split_page_incomplete', 'The split page just published does not match its part files, so it was not committed.',
+            `${reason}. The strict door commit of a split page holds its head with every part, so nothing was committed and recovery restores the prior files. Inspect the checkout with git status on the brain host before retrying the write with a new request_id.`), { staged: true }));
+        Object.assign(outcome.persistence as object, { git_state: 'committed', git_commit: await commitThroughDoor(splitDoor.root,
+          [unit.head, ...unit.parts, ...unit.stale].map((rel, index) => ({ path: join(splitDoor.root, rel), ...(index ? {} : { note: prepared.file?.commit }) })), lock ?? undefined) });
+      }
       await timePublicationStep('effects', row.slug, () => queuePublicationEffects(tx, row, final, outcome, prepared, { pushOnly: !!door?.door || !!splitDoor }));
       if (prepared.afterEffects) await withCoordinatedWrite(tx, [row.source_id], () => prepared.afterEffects!(tx, outcome), publicationAttribution(row, prepared.trust));
       await hooks.boundary?.('before_commit', row);

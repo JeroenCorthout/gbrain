@@ -71,16 +71,25 @@ export function screenSplitHead(headPath: string, relPath: string, text: string)
 export interface OpenedSplitPage { path: string; bytes: number; sha256: string; dispose: () => void }
 
 /**
- * Opens the page a split head names, its parts read beside `headPath` on disk or from `parts` (a commit's tree,
- * git-parts.ts): F' in a private scratch file, a refusal, or null when `text` (the head's content as import read it)
- * is an ordinary page.
+ * What a page file opens as for import: `plain` (an ordinary page), `split` (F' in a private scratch file, its parts
+ * verified) or `split_invalid` (a declared split head that does not verify, with the refusal its hold carries). A
+ * declared head is never read as an ordinary page.
  */
-export function openSplitPage(headPath: string | PartsSource, relPath: string, text: string): { refusal: SplitRefusal } | OpenedSplitPage | null {
+export type SplitPageOpen = { kind: 'plain' } | ({ kind: 'split' } & OpenedSplitPage) | { kind: 'split_invalid'; refusal: SplitRefusal };
+
+/**
+ * Opens the page a split head names, its parts read beside `headPath` on disk or from `parts` (a commit's tree,
+ * git-parts.ts); `text` is the head's content as import read it (SplitPageOpen).
+ */
+export function openSplitPage(headPath: string | PartsSource, relPath: string, text: string): SplitPageOpen {
   const head = parseSplitHead(relPath, text);
-  if (!head || 'refusal' in head) return head;
+  if (!head) return { kind: 'plain' };
+  if ('refusal' in head) return { kind: 'split_invalid', refusal: head.refusal };
   const path = splitScratchPath();
   const verdict = reassemble(headPath, head.parsed, path);
-  return verdict.ok ? { path, bytes: verdict.bytes, sha256: verdict.sha256, dispose: () => rmSync(path, { force: true }) } : { refusal: refusalFor(relPath, verdict) };
+  if (verdict.ok) return { kind: 'split', path, bytes: verdict.bytes, sha256: verdict.sha256, dispose: () => rmSync(path, { force: true }) };
+  rmSync(path, { force: true });
+  return { kind: 'split_invalid', refusal: refusalFor(relPath, verdict) };
 }
 
 /**
