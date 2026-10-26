@@ -9,7 +9,8 @@
  * 2. Fails when: the head is parsed as the page file (false drift, a dead-end reconcile, a review_required verdict) or
  *    the import publishes the head as the page.
  * 3. PGLite always; PostgreSQL when DATABASE_URL is set (test/postgres-unit-arms.txt). KB-sized limits through
- *    __setSplitLimitsForTests; managed brains through managedBrain + put_page over the threshold.
+ *    __setSplitLimitsForTests; managed brains through managedBrain on a git-canonical source (canonical: git, the only
+ *    kind whose door lays out a split page) + put_page over the threshold.
  */
 import { afterEach, describe, expect, test } from 'bun:test';
 import { randomUUID } from 'node:crypto';
@@ -31,7 +32,12 @@ const SLUG = 'notes/big-example';
 const op = (name: string) => operations.find(o => o.name === name)!;
 const lines = Array.from({ length: 80 }, (_, i) => `Line ${String(i).padStart(4, '0')} of the split page body, long enough to fill a part.`);
 const content = `---\ntype: note\ntitle: Split example\n---\n\n${lines.join('\n')}\n`;
-const setup = ({ root }: { root: string }) => { writeFileSync(join(root, '.gitignore'), '\n'); durableGitRepo(root, ['.gitignore']); };
+/** A git-canonical source (canonical: git): its door lays out a page over the threshold as a head plus parts. */
+const setup = async ({ engine, root }: { engine: BrainEngine; root: string }) => {
+  writeFileSync(join(root, '.gitignore'), '\n');
+  durableGitRepo(root, ['.gitignore']);
+  await engine.executeRaw(`UPDATE sources SET config = config || '{"canonical":"git"}'::jsonb WHERE id='default'`);
+};
 
 /** A committed split page at SLUG; returns the head path. */
 async function splitPage(engine: BrainEngine, ctx: OperationContext, root: string): Promise<string> {
