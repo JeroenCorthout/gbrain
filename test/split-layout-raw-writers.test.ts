@@ -525,6 +525,24 @@ describe('split git layout: filesystem scans and writers on an unmanaged checkou
     expect(rules).toContain('placeholder-date');
   }), 120_000);
 
+  test('check-backlinks fix runs the split preflight on the bytes it would write: a page the backlink grows past the split threshold, or a split head whose parts directory is missing, is refused (split_page_unsupported) and stays as it was', () => withHome(async (_home, root) => {
+    mkdirSync(join(root, 'people'), { recursive: true });
+    const gap = (target: string) => ({ sourcePage: 'notes/meeting.md', targetPage: target, entityName: 'Alice Example', sourceTitle: 'Meeting' });
+    const near = join(root, 'people/alice-example.md');
+    const before = ('---\ntype: person\ntitle: Alice Example\n---\n\n# Alice Example\n\n' + 'Synthetic text.\n'.repeat(80)).slice(0, 1020) + '\n';
+    writeFileSync(near, before);
+    const headless = join(root, 'people/bob-example.md');
+    await writeSplitPage(root, 'people/bob-example.md', `---\ntype: person\ntitle: Bob Example\n---\n\n# Bob Example\n\n${lines('Bob').join('\n')}\n`);
+    rmSync(partsDirFor(headless), { recursive: true });
+    const headBefore = readFileSync(headless, 'utf8');
+    const result = await fixBacklinkGaps(root, [gap('people/alice-example.md'), gap('people/bob-example.md')], false, { lockRoot: root });
+    expect(result.fixed).toBe(0);
+    expect(result.skipped.map(skip => [skip.page, skip.reason.startsWith('split_page_unsupported')])).toEqual([['people/alice-example.md', true], ['people/bob-example.md', true]]);
+    expect(readFileSync(near, 'utf8')).toBe(before);
+    expect(readFileSync(headless, 'utf8')).toBe(headBefore);
+    expect([existsSync(partsDirFor(near)), existsSync(partsDirFor(headless))]).toEqual([false, false]);
+  }), 120_000);
+
   test('the backlink scan reads split pages whole and check-backlinks fix refuses a split target (split_page_unsupported)', () => withHome(async (_home, root) => {
     mkdirSync(join(root, 'people'), { recursive: true });
     mkdirSync(join(root, 'notes'), { recursive: true });

@@ -17,7 +17,8 @@ import { createProgress, startHeartbeat } from '../core/progress.ts';
 import { getCliOptions, cliOptsToProgressOptions } from '../core/cli-options.ts';
 import { parseMarkdown, frontmatterBodyOffset, findTimelineSplitIndex } from '../core/markdown.ts';
 import { atomicWriteFileSync } from '../core/atomic-write.ts';
-import { isSplitHeadPath, partsDirFor, readPageFile } from '../core/split-layout/index.ts';
+import { readPageFile } from '../core/split-layout/index.ts';
+import { assertOneFileWritable } from '../core/split-write-through.ts';
 import { withPageLock } from '../core/page-lock.ts';
 
 export interface BacklinkGap {
@@ -355,10 +356,6 @@ export async function fixBacklinkGaps(
     const lockKey = targetPage.replace(/\.md$/, '');
     try {
       await withPageLock(lockKey, async () => {
-        if (isSplitHeadPath(targetPath) && existsSync(partsDirFor(targetPath))) {
-          outcome.skipped.push({ page: targetPage, reason: 'split_page_unsupported: the page is a split page head (it continues in part files), which only a brain with a canonical owner writes back as a head plus parts — file left untouched' });
-          return;
-        }
         let content = readFileSync(targetPath, 'utf-8');
 
         const preError = firstEditBlockingError(content, targetPath);
@@ -393,6 +390,11 @@ export async function fixBacklinkGaps(
           return;
         }
 
+        try { assertOneFileWritable(targetPath, content); } catch (error) {
+          if ((error as { code?: string } | null)?.code !== 'split_page_unsupported') throw error;
+          outcome.skipped.push({ page: targetPage, reason: `${(error as Error).message} Only a brain with a canonical owner writes a head and its part files together — file left untouched` });
+          return;
+        }
         if (!dryRun) {
           atomicWriteFileSync(targetPath, content, {
             verify: (onDisk) => {
