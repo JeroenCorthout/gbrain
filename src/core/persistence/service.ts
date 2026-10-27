@@ -351,8 +351,8 @@ export async function waitForWrite(engine: BrainEngine, row: WriteRequest, confi
  * before a grouped publication settles them together; waiting one after
  * another left all but the first to the progress polls.
  */
-export async function waitForWrites(engine: BrainEngine, rows: readonly WriteRequest[], config: GBrainConfig, waitMs = 5000): Promise<WriteRequest[]> {
-  return Promise.all(rows.map(row => waitForWrite(engine, row, config, waitMs)));
+export async function waitForWrites(engine: BrainEngine, rows: readonly WriteRequest[], config: GBrainConfig, waitMs = 5000, whileIndexingMs?: number): Promise<WriteRequest[]> {
+  return Promise.all(rows.map(row => waitForWrite(engine, row, config, waitMs, whileIndexingMs)));
 }
 /** B4: what a terminal receipt means for the caller, without guessing a mutation. */
 function terminalReceiptHint(row: WriteRequest, reason: string): string {

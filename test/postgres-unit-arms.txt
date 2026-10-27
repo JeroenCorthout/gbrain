@@ -537,6 +537,7 @@ test/wave-c/no-bytes-before-door.test.ts
 test/wave-c/pages-status-indexing.test.ts
 test/wave-c/pages-verify-reindex.test.ts
 test/wave-c/pending-head-admission.test.ts
+test/wave-c/review-1i-notes.test.ts
 test/wave-c/strict-segmented-git-first.test.ts
 test/wave-c/upload-spool.test.ts
 test/wave-c/v278-upgrade-path.test.ts

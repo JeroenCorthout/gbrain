@@ -17,6 +17,7 @@
 import { join } from 'node:path';
 import type { BrainEngine } from '../core/engine.ts';
 import { setCliExitVerdict } from '../core/cli-force-exit.ts';
+import { exitCodeForCode } from '../core/error-catalogue.ts';
 import { cliRenderContext, renderAction, toAgentError, type Action } from '../core/agent-output.ts';
 import { OperationError, opError } from '../core/ops/contract.ts';
 import { resolveSourceId } from '../core/source-resolver.ts';
@@ -201,7 +202,7 @@ export async function applyPageReindex(engine: BrainEngine, sourceId: string, sl
 function refused(error: OperationError, command: string, json: boolean, usage: string): void {
   const env = toAgentError(error, { transport: 'cli', command, render: cliRenderContext() });
   console.log(json ? JSON.stringify({ status: 'refused', ...env }) : `${command} refused (${error.code}): ${error.message}\nFix: ${error.suggestion ?? usage}`);
-  setCliExitVerdict(1);
+  setCliExitVerdict(exitCodeForCode(env.code, env.reason));
 }
 
 export async function runPagesVerify(engine: BrainEngine, args: string[]): Promise<void> {

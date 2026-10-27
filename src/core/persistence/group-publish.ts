@@ -58,7 +58,7 @@ import { assertUnboundPublication, classifyUnboundPage } from './unbound-source.
 import { boundPublication, declarePublication, publicationLeaseMs, publicationTransaction, type PublicationBound } from './publication-deadline.ts';
 import { classifyMirrorPage, sourceMirrorReadOnly } from './mirror-read-only.ts';
 import { commitThroughDoor, doorMarker, prehashDoorFile, sourceCanonicalGit, strictChanged, type PrehashedBlob } from './git-door.ts';
-import { assertNoPrivateCommit, declareStrictPublication, strictTargetRefuses } from './git-declared.ts';
+import { assertNoPrivateCommit, assertStrictFileTarget, declareStrictPublication, strictTargetRefuses } from './git-declared.ts';
 import { gitFirstStrictActive } from './git-first-gate.ts';
 import { assertNoPendingIndex, clearPublishedPendingHeads } from './git-first.ts';
 import { authorizePageVisibility } from './page-visibility.ts';
@@ -393,6 +393,7 @@ export async function publishGroup(engine: BrainEngine, rows: WriteRequest[], pr
               await member.validate?.(tx);
               await assertNoPendingIndex(tx, row);
               await assertNoPrivateCommit(tx, row, member, snapshot, binding);
+              await assertStrictFileTarget(tx, row, member, snapshot, binding);
               if (persistenceFileHash(file.record.path) !== file.record.beforeHash) throw new OperationError('unexpected_file_bytes', 'The canonical file changed during preparation.', 'The members publish one at a time.');
               await seam('before_publication', row);
               await withFilesystemPublication([file.record.root], async () => publishPersistenceFile(member.file!, file.record.staging?.publication?.path));
