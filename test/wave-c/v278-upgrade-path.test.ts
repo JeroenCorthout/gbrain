@@ -8,8 +8,9 @@
  * validated, the page keeps its row with indexed_commit NULL (nothing is backfilled), and a second run applies nothing.
  * Head is read after a repeat boot: on master a repeat boot already re-creates bump_page_generation_clock_fn from the blob
  * with a differently formatted body (pinned by test/pglite-upgrade-replay.test.ts), which is not this migration's.
+ * Each backend's brain is opened once; each test returns it to head, so the next one starts from head again.
  */
-import { describe, expect, test } from 'bun:test';
+import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import postgres from '#postgres';
 import { randomUUID } from 'node:crypto';
 import type { BrainEngine } from '../../src/core/engine.ts';
@@ -24,60 +25,64 @@ import { requirePostgresTestDatabase, testBackends } from '../helpers/test-backe
 const V278 = /page_pending_heads|page_upload_spool|indexed_commit|persistence_requests_state_check/;
 const migration = MIGRATIONS.find(m => m.name === 'git_first_strict_path')!;
 
-const DOWNGRADE = `
-  DROP TABLE page_upload_spool_parts;
-  DROP TABLE page_upload_spools;
-  DROP TABLE page_pending_heads;
-  ALTER TABLE pages DROP COLUMN indexed_commit;
-  ALTER TABLE persistence_requests DROP CONSTRAINT persistence_requests_state_check;
-  ALTER TABLE persistence_requests ADD CONSTRAINT persistence_requests_state_check
-    CHECK (state IN ('queued','running','recovering','committed','conflict','failed','cancelled'));
-`;
+const DOWNGRADE = [
+  'DROP TABLE page_upload_spool_parts',
+  'DROP TABLE page_upload_spools',
+  'DROP TABLE page_pending_heads',
+  'ALTER TABLE pages DROP COLUMN indexed_commit',
+  'ALTER TABLE persistence_requests DROP CONSTRAINT persistence_requests_state_check',
+  `ALTER TABLE persistence_requests ADD CONSTRAINT persistence_requests_state_check
+    CHECK (state IN ('queued','running','recovering','committed','conflict','failed','cancelled'))`,
+];
 
-type Brain = { engine: BrainEngine; catalog: () => Promise<Map<string, string>> };
-
-async function withBrain(backend: 'pglite' | 'postgres', fn: (brain: Brain) => Promise<void>): Promise<void> {
-  const flat = async (query: Parameters<typeof snapshotCatalog>[0]) => {
-    const out = new Map<string, string>();
-    for (const [key, value] of flattenGoldenView(catalogGoldenView(await snapshotCatalog(query))))
-      out.set(key, /^tables\.[^.]+\.columns\[/.test(key) ? value.replace(/^\d+ /, '') : value);
-    return out;
-  };
-  if (backend === 'pglite') {
-    const engine = new PGLiteEngine();
-    await engine.connect({});
-    try { await engine.initSchema(); await fn({ engine, catalog: () => flat(pgliteCatalogQuery(engine)) }); } finally { await engine.disconnect(); }
-    return;
-  }
-  const url = requirePostgresTestDatabase();
-  assertSafeE2eDatabaseUrl(url);
-  const name = `gbrain_test_v278_${randomUUID().replace(/-/g, '')}`;
-  const admin = postgres(url, { max: 1, prepare: false, onnotice: () => {} });
-  try {
-    await admin.unsafe(`CREATE DATABASE ${name}`);
-    const at = new URL(url); at.pathname = `/${name}`;
-    const engine = new PostgresEngine();
-    try {
-      await engine.connect({ database_url: at.toString(), poolSize: 2 });
-      await engine.initSchema();
-      await fn({ engine, catalog: () => flat(postgresCatalogQuery(engine.sql)) });
-    } finally {
-      await engine.disconnect();
-      await admin.unsafe(`DROP DATABASE IF EXISTS ${name} WITH (FORCE)`);
-    }
-  } finally { await admin.end({ timeout: 5 }); }
+async function flatCatalog(query: Parameters<typeof snapshotCatalog>[0]): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  for (const [key, value] of flattenGoldenView(catalogGoldenView(await snapshotCatalog(query))))
+    out.set(key, /^tables\.[^.]+\.columns\[/.test(key) ? value.replace(/^\d+ /, '') : value);
+  return out;
 }
 
 for (const backend of testBackends()) describe(`[${backend}] upgrade path to the git-first migration`, () => {
+  let engine: BrainEngine;
+  let catalog: () => Promise<Map<string, string>>;
+  let admin: ReturnType<typeof postgres> | null = null;
+  const database = `gbrain_test_v278_${randomUUID().replace(/-/g, '')}`;
+
+  beforeAll(async () => {
+    if (backend === 'pglite') {
+      const pglite = new PGLiteEngine();
+      await pglite.connect({});
+      engine = pglite;
+      catalog = () => flatCatalog(pgliteCatalogQuery(pglite));
+    } else {
+      const url = requirePostgresTestDatabase();
+      assertSafeE2eDatabaseUrl(url);
+      admin = postgres(url, { max: 1, prepare: false, onnotice: () => {} });
+      await admin.unsafe(`CREATE DATABASE ${database}`);
+      const at = new URL(url); at.pathname = `/${database}`;
+      const pg = new PostgresEngine();
+      await pg.connect({ database_url: at.toString(), poolSize: 2 });
+      engine = pg;
+      catalog = () => flatCatalog(postgresCatalogQuery(pg.sql));
+    }
+    await engine.initSchema();
+  }, 300_000);
+
+  afterAll(async () => {
+    await engine?.disconnect();
+    if (admin) { await admin.unsafe(`DROP DATABASE IF EXISTS ${database} WITH (FORCE)`); await admin.end({ timeout: 5 }); }
+  });
+
   test('the migration is the newest one, so the shape before it is the previous release\'s', () => {
     expect(migration.version).toBe(LATEST_VERSION);
   });
 
   for (const how of ['boot', 'migrations'] as const) {
-    test(`from the previous schema with a page: ${how === 'boot' ? 'a full boot (initSchema)' : 'migrations alone (runMigrations)'} reaches head`, () => withBrain(backend, async ({ engine, catalog }) => {
+    test(`from the previous schema with a page: ${how === 'boot' ? 'a full boot (initSchema)' : 'migrations alone (runMigrations)'} reaches head`, async () => {
+      const slug = `notes/before-upgrade-${how}`;
       await engine.initSchema();
       const head = await catalog();
-      for (const statement of DOWNGRADE.split(';').map(s => s.trim()).filter(Boolean)) await engine.executeRaw(statement);
+      for (const statement of DOWNGRADE) await engine.executeRaw(statement);
       await engine.setConfig('version', String(migration.version - 1));
       const before = await catalog();
       const differing = [...new Set([...head.keys(), ...before.keys()])].filter(key => head.get(key) !== before.get(key));
@@ -85,8 +90,8 @@ for (const backend of testBackends()) describe(`[${backend}] upgrade path to the
       expect(differing.filter(key => !V278.test(`${key} ${head.get(key) ?? ''} ${before.get(key) ?? ''}`))).toEqual([]);
       expect([...before.keys()].filter(key => !head.has(key))).toEqual([]);
 
-      await engine.putPage('notes/before-upgrade', { type: 'note', title: 'Before upgrade', compiled_truth: 'Written before the git-first migration.\n', timeline: '' });
-      const [page] = await engine.executeRaw<{ id: number; content_hash: string }>("SELECT id, content_hash FROM pages WHERE slug = 'notes/before-upgrade'");
+      await engine.putPage(slug, { type: 'note', title: 'Before upgrade', compiled_truth: 'Written before the git-first migration.\n', timeline: '' });
+      const [page] = await engine.executeRaw<{ id: number; content_hash: string }>('SELECT id, content_hash FROM pages WHERE slug = $1', [slug]);
 
       if (how === 'boot') await engine.initSchema();
       else expect((await runMigrations(engine)).applied).toBe(1);
@@ -96,10 +101,10 @@ for (const backend of testBackends()) describe(`[${backend}] upgrade path to the
         "SELECT convalidated AS validated, pg_get_constraintdef(oid) AS def FROM pg_constraint WHERE conname = 'persistence_requests_state_check'");
       expect(check?.validated).toBe(true);
       expect(check?.def).toContain('indexing');
-      expect(await engine.executeRaw("SELECT id, content_hash, indexed_commit FROM pages WHERE slug = 'notes/before-upgrade'"))
+      expect(await engine.executeRaw('SELECT id, content_hash, indexed_commit FROM pages WHERE slug = $1', [slug]))
         .toEqual([{ id: page!.id, content_hash: page!.content_hash, indexed_commit: null }]);
       expect((await runMigrations(engine)).applied).toBe(0);
       expect(await catalog()).toEqual(head);
-    }), 300_000);
+    }, 300_000);
   }
 });
