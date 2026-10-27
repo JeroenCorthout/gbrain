@@ -33,6 +33,7 @@
  * marker, so its request identity and replay are unchanged; when the group
  * does not commit it takes `publishMutation` like any other member.
  */
+import { isPublishedRequestState } from './request-states.ts';
 import { relative, sep } from 'node:path';
 import type { BrainEngine } from '../engine.ts';
 import { OperationError } from '../ops/contract.ts';
@@ -57,7 +58,7 @@ import { assertUnboundPublication, classifyUnboundPage } from './unbound-source.
 import { boundPublication, declarePublication, publicationLeaseMs, publicationTransaction, type PublicationBound } from './publication-deadline.ts';
 import { classifyMirrorPage, sourceMirrorReadOnly } from './mirror-read-only.ts';
 import { commitThroughDoor, doorMarker, prehashDoorFile, sourceCanonicalGit, strictChanged, type PrehashedBlob } from './git-door.ts';
-import { assertNoPrivateCommit, declareStrictPublication } from './git-declared.ts';
+import { assertNoPrivateCommit, declareStrictPublication, strictTargetRefuses } from './git-declared.ts';
 import { gitFirstStrictActive } from './git-first-gate.ts';
 import { assertNoPendingIndex, clearPublishedPendingHeads } from './git-first.ts';
 import { authorizePageVisibility } from './page-visibility.ts';
@@ -267,9 +268,10 @@ export async function publishGroup(engine: BrainEngine, rows: WriteRequest[], pr
   const beside = !lane && rows.length === 1 && singleWrite(head) && await foregroundPriority(engine);
   // Wave C (spec §3.5): a strict group stores its members' blobs before it takes the writer lock (git-door.ts rechecks them).
   const prehashed: Array<PrehashedBlob | null> = [];
-  if (binding.canonical_git === true) for (const member of prepared) {
+  if (binding.canonical_git === true) for (const [i, member] of prepared.entries()) {
     const content = member.noop ? null : member.file?.content;
-    prehashed.push(typeof content === 'string' || content instanceof Uint8Array ? await prehashDoorFile(binding.local_path, member.file!.path, content) : null);
+    prehashed.push((typeof content === 'string' || content instanceof Uint8Array) && !await strictTargetRefuses(engine, rows[i]!, content, binding)
+      ? await prehashDoorFile(binding.local_path, member.file!.path, content) : null);
   }
   let joined: NativeLockHandle | null, lock: NativeLockHandle | null;
   try {
@@ -898,7 +900,7 @@ export async function executeClaimedGroup(engine: BrainEngine, rows: WriteReques
         if (reclaimed) { row = reclaimed; current = reclaimed; }
       }
       if (!current || current.execution_token !== row.execution_token || current.state !== 'running') {
-        if (current && ['committed', 'conflict', 'failed', 'cancelled'].includes(current.state)) { run.settled(current); progressed = true; }
+        if (current && isPublishedRequestState(current.state)) { run.settled(current); progressed = true; }
         else if (!ordered) release = true;
         continue;
       }
@@ -908,7 +910,7 @@ export async function executeClaimedGroup(engine: BrainEngine, rows: WriteReques
       if ('released' in p) { await releaseUnpublishedClaim(engine, row, p.released === 'claim_lost' ? 'claim_lost' : 'group_member_waiting'); if (ordered) release = true; continue; }
       const done = await bounded(() => publishMutation(engine, row, (p as { ok: PreparedMutation }).ok, run.hostId));
       run.settled(done);
-      if (['committed', 'conflict', 'failed', 'cancelled'].includes(done.state)) progressed = true;
+      if (isPublishedRequestState(done.state)) progressed = true;
       else release = true;
     }
     return progressed;

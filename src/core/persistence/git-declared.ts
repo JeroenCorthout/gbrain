@@ -204,6 +204,19 @@ export async function assertNoPrivateCommit(tx: BrainEngine, row: WriteRequest, 
 }
 
 /**
+ * Wave C (spec §3.5): whether the door would refuse this strict file publication's incoming head (a private or declared
+ * class), read before the writer lock so a refused page's blob is never pre-hashed into the object store. The checks
+ * under the lock (`assertNoPrivateCommit`, `assertStrictFileTarget`) still decide; this only skips the pre-hash.
+ */
+export async function strictTargetRefuses(engine: BrainEngine, row: WriteRequest, content: string | Uint8Array,
+  binding: Pick<WorktreeBinding, 'canonical_git' | 'local_path' | 'relative_path'>): Promise<boolean> {
+  if (binding.canonical_git !== true || !binding.local_path || syncRow(row)) return false;
+  const snapshot = await engine.readPageSnapshot(row.slug, { sourceId: row.source_id }).catch(() => null);
+  return !!await strictPageClass(engine, row.source_id, join(binding.local_path, binding.relative_path ?? ''),
+    renderedPageForClass(row.slug, content, snapshot), snapshot?.page ?? null);
+}
+
+/**
  * Wave C (eng-r3-outside-1, spec §3.1 step 4): the file-publication half of `declareStrictPublication`, judged on the
  * incoming head (its parsed frontmatter, its slug and the page's prior file) instead of a written row, so a git-first
  * publication refuses a target Git must not hold before `commit-tree` and writes its rows only after the door commit.

@@ -9,7 +9,7 @@
  * file is gone (the expiry transitions skip a session whose spool row is not marked removed).
  */
 import { createHash } from 'node:crypto';
-import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readdirSync, readSync, rmSync, statfsSync, writeSync } from 'node:fs';
+import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readdirSync, readSync, rmSync, statfsSync, statSync, writeSync } from 'node:fs';
 import { join } from 'node:path';
 import { opError, type OperationError } from '../ops/contract.ts';
 import { persistenceHome } from './identity.ts';
@@ -119,10 +119,14 @@ export async function removeSpool(exec: SqlEngine, stagingId: string, hostId: st
   return true;
 }
 
+/** A spool file no record names is kept this long: a session being opened has its file before its row commits (openSpool). */
+const UNNAMED_SPOOL_GRACE_MS = 10 * 60 * 1000;
+const spoolMtimeMs = (file: string) => { try { return statSync(file).mtimeMs; } catch { return 0; } };
+
 /**
  * The owner sweep (at start and with segment GC): removes this host's spool files of sessions no longer live (committed,
  * aborted, expired) or lapsed, marks them removed so expiry releases their reservations, and deletes spool files no
- * record names. Returns the files removed.
+ * record names once they are older than a grace period. Returns the files removed.
  */
 export async function sweepUploadSpools(exec: SqlEngine, hostId: string): Promise<number> {
   const stale = await exec.executeRaw<{ id: string }>(`SELECT sp.staging_id::text AS id FROM page_upload_spools sp
@@ -137,7 +141,10 @@ export async function sweepUploadSpools(exec: SqlEngine, hostId: string): Promis
     const known = new Set((await exec.executeRaw<{ id: string }>('SELECT staging_id::text AS id FROM page_upload_spools WHERE removed_at IS NULL')).map(row => row.id));
     for (const name of readdirSync(uploadSpoolDir())) {
       const id = name.endsWith('.spool') ? name.slice(0, -'.spool'.length) : null;
-      if (id && !known.has(id)) { rmSync(join(uploadSpoolDir(), name), { force: true }); removed++; }
+      const file = join(uploadSpoolDir(), name);
+      if (!id || known.has(id) || Date.now() - spoolMtimeMs(file) < UNNAMED_SPOOL_GRACE_MS) continue;
+      rmSync(file, { force: true });
+      removed++;
     }
   }
   return removed;
