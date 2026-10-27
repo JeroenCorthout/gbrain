@@ -50,6 +50,15 @@ The writer guards on pages, facts, takes, tags, timeline entries, aliases, sourc
 
 The migration replaces five function bodies. It changes no privileges and rewrites no data. Function owners and `search_path` settings stay the same.
 
+### Correction to 0.60.473.0
+
+The 0.60.473.0 notes on converting a source to Git-canonical got three things wrong and left one fix out:
+
+- **Stopping an apply late does not leave the source mixed.** The source is git-canonical once `recordConversion` runs before strict_pass_2; the runtime report is authoritative. A stop before that point leaves the source mixed, and a new preview lists only what is left. A stop during the final strict pass leaves it git-canonical. The partial report's canonical state says which.
+- **Not every private page is kept out of Git.** A private page whose committed file differs from it has that file's removal committed and stays in the database. A private page whose committed file still equals it keeps that file in Git, and the apply pushes it as before. Content pushed before a page became private stays in Git history.
+- **Before 0.60.473.0, a private page whose committed file differed from it blocked the conversion.** The apply refused with `git_conversion_blocked` and counted the page as `git_overwrites_database`. The notes said its file stayed committed.
+- **Left out of the notes: a private page whose file was removed by hand is no longer deleted.** Before 0.60.473.0 the conversion's strict pass read the live page as removed by a commit and deleted it. Now the conversion withholds it and keeps the page in the database.
+
 ## [0.60.473.0] - 2026-10-27
 
 **Converting a source to Git-canonical now plans quickly on big brains, tells you where it is while it runs, keeps private pages out of Git, and pushes what it commits.**
