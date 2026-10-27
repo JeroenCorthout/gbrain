@@ -970,6 +970,10 @@ const COLUMN_EXEMPTIONS = new Set<string>([
   // column order; no blob statement or index reads it, and the DCR insert falls
   // back to the unmarked insert while the column is missing.
   'oauth_clients.registered_via',
+  // Wave C 1H pages.indexed_commit (migration git_first_strict_path, v278 provisional):
+  // migration-only like embedding_pending_since, so fresh and upgraded brains share
+  // pages column ordinals; no blob statement or index reads it.
+  'pages.indexed_commit',
   // T7 — search_telemetry rank-1 drift columns (migration v111). search_telemetry
   // is created entirely by migration v57 (not in the schema blob), so the v57+v111
   // chain handles fresh + upgrade; no CREATE INDEX references these columns, so
