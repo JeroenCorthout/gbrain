@@ -55,6 +55,7 @@ export { assertValidSlugPrefixes } from './grants/encoding.ts';
 
 import type { SqlQuery, SqlValue } from './sql-query.ts';
 import { storedMinTrust } from './trust/tier.ts';
+import { MemberBindingRefused, storedMayActFor, verifiedMember } from './access/members.ts';
 export type { SqlQuery, SqlValue };
 
 export interface AgentClientBindings {
@@ -214,6 +215,19 @@ export function validateRedirectUri(uri: string): void {
  * (the `client_secret_expires_at` field is optional, undefined means
  * "did not expire").
  */
+/**
+ * GBRA-218 verify join: the live member a credential is bound to (null when
+ * unbound). A binding to a disabled, removed or missing member, or one that
+ * cannot be read, refuses the credential (access_member_disabled).
+ */
+async function verifyMemberBinding(sql: SqlQuery, memberId: unknown): Promise<{ id: string; groups: string[] } | null> {
+  try {
+    return await verifiedMember(sql, memberId);
+  } catch (e) {
+    throw new InvalidTokenError(e instanceof MemberBindingRefused ? e.message : 'access_member_disabled: the member binding of this credential could not be verified.');
+  }
+}
+
 export function coerceTimestamp(value: unknown): number | undefined {
   if (value === null || value === undefined) return undefined;
   const n = Number(value);
@@ -879,10 +893,12 @@ export class GBrainOAuthProvider implements OAuthServerProvider {
       const sourcesNone = currentGrant.source_grant === 'none';
       const clientHolders = Array.isArray(currentGrant.takes_holders)
         ? (currentGrant.takes_holders as unknown[]).filter((h): h is string => typeof h === 'string') : undefined;
+      const member = await verifyMemberBinding(this.sql, currentGrant.member_id);
       return {
         token,
         clientId: row.client_id as string,
         principal: { kind: 'oauth_client', id: row.client_id as string },
+        member, mayActFor: storedMayActFor(currentGrant.may_act_for),
         clientName: (row.client_name as string | null) ?? undefined,
         scopes: effectiveScopes,
         issuedScopes,
@@ -950,10 +966,12 @@ export class GBrainOAuthProvider implements OAuthServerProvider {
       // including [] as deny. Takes holders null → the /mcp dispatch site
       // defaults to the fail-closed ['world'].
       const grant = await resolveTokenGrant(this.sql, legacyRows[0]);
+      const member = await verifyMemberBinding(this.sql, legacyRows[0].member_id);
       return {
         token,
         clientId: name,
         principal: { kind: 'legacy_token', id: String(legacyRows[0].id) },
+        member, mayActFor: storedMayActFor(legacyRows[0].may_act_for),
         clientName: name,
         scopes: grant.scopes,
         ...(grant.allowedOperations === null ? {} : { allowedOperations: grant.allowedOperations }),

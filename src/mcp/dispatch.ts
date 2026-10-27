@@ -900,7 +900,7 @@ export async function dispatchToolCall(
   const resolved = opts.metaHook && (opts.hotMemoryOff === true || hotMemoryOffIn(params)) ? { ...opts, metaHook: undefined } : opts;
   // GBRA-218: a remote call also carries its credential's member identity, which every caller-aware read checks page readers against.
   const run = async () => {
-    const access = opts.remote === false ? { privateReadableSources: [] } : await remoteCallerAccess(engine, opts.auth, privateSources);
+    const access = opts.remote === false ? { privateReadableSources: [] } : await remoteCallerAccess(engine, opts.auth, privateSources, opts.transport);
     return withCallerAccess(access, () => withRequestIdentityMemo(() => dispatchResolvedCall(engine, name, params, resolved)));
   };
   if (name === 'search' || name === 'query') return withSearchConnectionBudget(() => withRequestConfigSnapshot(engine, run));

@@ -55,6 +55,7 @@ import { redactUrlsInText } from '../core/url-redact.ts';
 import { authSourcesFromGrant, privatePagesAuth } from '../core/grants/model.ts';
 import { resolveTokenGrant, touchTokenLastUsed } from '../core/grants/legacy-token.ts';
 import { storedMinTrust } from '../core/trust/tier.ts';
+import { storedMayActFor, verifiedMember } from '../core/access/members.ts';
 export { parseLegacyTokenScope } from '../core/legacy-token-scope.ts';
 
 const DEFAULT_BODY_CAP = 1024 * 1024; // 1 MiB
@@ -100,6 +101,8 @@ interface HttpTransportOptions {
 
 interface AuthResult {
   ok: boolean;
+  /** GBRA-218: why a known token was refused (a member binding that cannot read). */
+  code?: 'access_member_disabled';
   tokenId?: string;
   tokenName?: string;
   /** v0.28: per-token allow-list for takes.holder. Default ['world'] when permissions row absent. */
@@ -278,12 +281,20 @@ export async function startHttpTransport(opts: HttpTransportOptions) {
       // on the legacy shape is converted on this read. Takes holders fail safe
       // to ['world']; #1336 honors the stored source grant.
       const grant = await resolveTokenGrant(sql, row);
+      // GBRA-218 verify join: a token bound to a disabled, removed or missing member is refused.
+      let member: { id: string; groups: string[] } | null;
+      try {
+        member = await verifiedMember(sql, row.member_id);
+      } catch {
+        return { ok: false, code: 'access_member_disabled' };
+      }
       const allowList = grant.takesHolders ?? ['world'];
       const { sourceId, allowedSources, hasSourceGrant } = authSourcesFromGrant(grant);
       const auth: AuthInfo = {
         token,
         clientId: rowId,
         principal: { kind: 'legacy_token', id: rowId },
+        member, mayActFor: storedMayActFor(row.may_act_for),
         clientName: rowName,
         scopes: grant.scopes,
         sourceId,
@@ -394,7 +405,9 @@ export async function startHttpTransport(opts: HttpTransportOptions) {
       if (!auth.ok) {
         logRequest(null, 'unknown', 'auth_failed', Date.now() - startedMs);
         return Response.json(
-          { error: 'invalid_token', message: 'Bearer token required. Create one: gbrain auth create <name>' },
+          auth.code === 'access_member_disabled'
+            ? { error: 'invalid_token', code: auth.code, message: 'This token is bound to a member who is disabled, removed or missing. Ask the brain operator to enable the member or rebind the token (gbrain auth rescope --token <name> --member <id>|none).' }
+            : { error: 'invalid_token', message: 'Bearer token required. Create one: gbrain auth create <name>' },
           { status: 401, headers: corsHeaders(origin) },
         );
       }

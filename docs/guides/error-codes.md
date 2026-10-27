@@ -71,6 +71,40 @@ More: [docs/guides/google-connect.md#troubleshooting](../../docs/guides/google-c
 
 More: [docs/guides/google-connect.md#troubleshooting](../../docs/guides/google-connect.md#troubleshooting)
 
+### access_member_disabled
+
+<a id="access_member_disabled"></a>
+
+| Meaning | Why | Next step | Who acts · consent | Verify | Exit | Retryable |
+|---|---|---|---|---|---|---|
+| The credential (access token, OAuth client or stdio binding) is bound to a member who is disabled, removed or missing, so it was refused at verification and nothing was read. | A credential bound to a member reads as that member. While the member cannot read, the credential is refused rather than silently treated as unbound. | Ask the brain operator to enable the member (gbrain access member enable <id>) or rebind the credential (gbrain auth rescope --token <name>\|--client <id> --member <id>\|none). | user | `gbrain doctor --json` | 1 | no |
+
+Reasons: `disabled`, `removed`, `missing`, `malformed`.
+
+More: [docs/guides/write-refusals.md#access_member_disabled](../../docs/guides/write-refusals.md#access_member_disabled)
+
+### access_member_id_retired
+
+<a id="access_member_id_retired"></a>
+
+| Meaning | Why | Next step | Who acts · consent | Verify | Exit | Retryable |
+|---|---|---|---|---|---|---|
+| The member id was removed earlier and member ids are never reused, so nothing was created or enabled. | Pages and audit history may still name a removed id; reusing it would hand that history to a different person. | Choose a new member id. Run: gbrain access member list --all --json | agent | `gbrain access member list --all --json` | 1 | no |
+
+More: [docs/guides/write-refusals.md#access_member_id_retired](../../docs/guides/write-refusals.md#access_member_id_retired)
+
+### access_member_invalid
+
+<a id="access_member_invalid"></a>
+
+| Meaning | Why | Next step | Who acts · consent | Verify | Exit | Retryable |
+|---|---|---|---|---|---|---|
+| A member or group id given to an access command, a credential binding or --as is ill-formed or names no usable member, so nothing was read or changed. | Ids are matched exactly against page readers; an unknown or disabled member is refused rather than read as unbound, so a typo never previews or binds the wrong view. | Check the id with gbrain access member list --all, or add the member first. Run: gbrain access member list --all --json | agent | `gbrain access member list --all --json` | 1 | no |
+
+Reasons: `ill_formed`, `unknown`, `disabled`, `removed`, `exists`, `unknown_group`.
+
+More: [docs/guides/write-refusals.md#access_member_invalid](../../docs/guides/write-refusals.md#access_member_invalid)
+
 ### acknowledgment_unavailable
 
 <a id="acknowledgment_unavailable"></a>
