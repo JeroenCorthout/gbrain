@@ -1,7 +1,8 @@
 import { readFileSync, writeFileSync, unlinkSync, existsSync, mkdirSync, readdirSync, realpathSync } from 'fs';
-import { join, dirname, resolve } from 'path';
+import { join, dirname, parse, resolve } from 'path';
 import type { StorageBackend } from '../storage.ts';
 import { assertOneFileWritable } from '../split-write-through.ts';
+import { assertSplitUnitMutableSync } from '../persistence/split-unit-guard.ts';
 
 /**
  * Local filesystem storage — for testing and development.
@@ -38,6 +39,7 @@ export class LocalStorage implements StorageBackend {
 
   async delete(path: string): Promise<void> {
     const full = this.contained(path);
+    assertSplitUnitMutableSync({ root: parse(full).root, path: full, route: 'remover' });
     if (existsSync(full)) unlinkSync(full);
   }
 

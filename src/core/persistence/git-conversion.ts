@@ -44,6 +44,7 @@ import { scannerSlugRootMode, scannerSourcePath } from '../write-through.ts';
 import { censusGitGap, type GitGapCensus, type GitGapPage } from '../../commands/sources-git-gap.ts';
 import { compareInlineExportFile, ignoredPaths } from './git-gap.ts';
 import { commitThroughDoor } from './git-door.ts';
+import { assertSplitUnitMutable } from './split-unit-guard.ts';
 import { currentVerifiedLocalWriter, localHostId } from './identity.ts';
 import { acquireWorktree, readManagedMode } from './ownership.ts';
 import { resolveManagedSyncContext, type ManagedSyncContext } from './sync-discovery.ts';
@@ -361,6 +362,7 @@ async function adoptGroups(engine: BrainEngine, plan: GitConversionPlan, preview
         const target = join(root, item.path);
         const disk = diskBytes(target);
         if (!live || live.revision !== item.revision || (disk ? sha256(disk) : null) !== item.disk) throw previewChangedError(plan.preview.preview_hash, previewCommand);
+        await assertSplitUnitMutable({ root, path: target, route: 'raw_writer', strict: false, sourceId: context.sourceId, slug: item.slug });
         files.push({ path: target, bytes: Buffer.from(inlineExportMarkdown(await readExportPage(engine, item, withdrawals))) });
       }
       for (const file of files) writeAtomically(root, file.path, file.bytes);

@@ -9,18 +9,20 @@
  * - `outside_door`: a writer, remover, connector, mirror or repair outside the publication door.
  * - `index_flag`: a unit path carries skip-worktree, assume-unchanged or intent-to-add in the index.
  * - `git_attribute`: a conversion attribute (text, eol, crlf, ident, filter, working-tree-encoding, a diff textconv)
- *   or core.autocrlf applies to the head or a part.
+ *   applies to the head or a part, or core.autocrlf=true or core.eol=crlf would convert one that is not -text on checkout.
  * - `unit_diverged`: Git HEAD, the index and the disk hold different versions of the unit.
  * - `recovery_unit_changed`: recovery of a record that is not the strict door's own would change a unit.
  */
-import { closeSync, existsSync, lstatSync, openSync, readdirSync, readSync } from 'node:fs';
-import { dirname, join, relative, resolve, sep } from 'node:path';
+import { closeSync, existsSync, lstatSync, openSync, readdirSync, readFileSync, readSync, realpathSync } from 'node:fs';
+import { basename, dirname, join, parse, relative, resolve, sep } from 'node:path';
 import type { Action } from '../agent-output.ts';
 import { opError, type OperationError } from '../ops/contract.ts';
 import { readFix } from '../ops/op-fix.ts';
 import { FRONTMATTER_HEAD_MAX_BYTES } from '../page-body/limits.ts';
-import { assertNoPartsKey, isSplitHeadPath, partsDirFor, splitPartOf, SplitLayoutError } from '../split-layout/index.ts';
+import { assertNoPartsKey, isSplitHeadPath, parseHead, partFilePath, partsDirFor, splitPartOf, SplitLayoutError, verifyParts } from '../split-layout/index.ts';
 import { git, gitFailure, gitReadOnly, rawBlobOid, withSession, type GitSession } from './effect-git.ts';
+import { gitChildEnv } from '../git-env.ts';
+import { spawnSync } from '../spawn.ts';
 
 export const SPLIT_UNSUPPORTED_REASONS = ['non_strict_source', 'outside_door', 'index_flag', 'git_attribute', 'unit_diverged', 'recovery_unit_changed'] as const;
 export type SplitUnsupportedReason = typeof SPLIT_UNSUPPORTED_REASONS[number];
@@ -41,7 +43,7 @@ export interface SplitUnitGuardInput {
   slug?: string;
   /** The door's planned part paths (absolute) for a publication that lays the page out as a split unit. */
   planned?: readonly string[];
-  /** The door's step: `publish` (before any write) also compares the unit's three states; `commit` checks what it commits. */
+  /** The door's step: `publish` (before any write) also compares the unit's three states; `commit` checks only flags and conversion. */
   phase?: 'publish' | 'commit';
   /** A remote caller: the refusal names the page, never a path. */
   remote?: boolean;
@@ -50,6 +52,8 @@ export interface SplitUnitGuardInput {
 const FRONTMATTER_PREFIX_BYTES = FRONTMATTER_HEAD_MAX_BYTES + 3;
 const lenient = new TextDecoder('utf-8');
 const toRel = (root: string, path: string) => relative(root, path).split(sep).join('/');
+/** `root` resolved through symlinks, as unit paths are (splitUnitOf). */
+const physicalRoot = (root: string) => { try { return realpathSync(root); } catch { return resolve(root); } };
 
 /** Whether leading bytes of a file declare a top-level `gbrain_parts` key: the head of a split page. */
 export function declaresPartsKey(prefix: Uint8Array): boolean {
@@ -64,67 +68,114 @@ function headDeclaresParts(path: string): boolean {
   try { return declaresPartsKey(prefix.subarray(0, readSync(fd, prefix, 0, prefix.length, 0))); } finally { closeSync(fd); }
 }
 
-/** The split unit a path belongs to (absolute head and parts directory), or null for a path that cannot be in one. */
-export function splitUnitOf(root: string, path: string): { head: string; partsDir: string } | null {
-  const rel = toRel(root, path);
-  const part = rel && !rel.startsWith('..') ? splitPartOf(rel) : null;
-  const head = part ? join(root, part.head) : path;
+/** `path` with its parent directory resolved through symlinks (the nearest existing ancestor; the rest as named). */
+function physicalPath(path: string): string {
+  const abs = resolve(path), tail = [basename(abs)];
+  for (let dir = dirname(abs); ; dir = dirname(dir)) {
+    try { return join(realpathSync(dir), ...tail); } catch { /* not on disk yet: resolve its parent */ }
+    if (dirname(dir) === dir) return abs;
+    tail.unshift(basename(dir));
+  }
+}
+
+/**
+ * The split unit a path belongs to (the absolute physical head and parts directory), or null for a path that cannot be
+ * in one. Its parent directory is resolved through symlinks, so an alias of a parts directory names the real unit, and a
+ * part path is a unit path wherever it lies, inside the source root or not.
+ */
+export function splitUnitOf(path: string): { head: string; partsDir: string } | null {
+  const physical = physicalPath(path), top = parse(physical).root;
+  const part = splitPartOf(physical.slice(top.length).split(sep).join('/'));
+  const head = part ? join(top, part.head) : physical;
   return isSplitHeadPath(head) ? { head, partsDir: partsDirFor(head) } : null;
 }
 
-/** Roots seen at or under a directory holding `.git`; one whose `.git` later vanishes fails heldInGit's read, which answers it. */
-const gitRoots = new Set<string>();
+/** gitReadOnly's environment (effect-git.ts GIT_ENV): no prompts, literal pathspecs, no optional locks, C locale. */
+const READ_ONLY_GIT_ENV = { GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'Never', GIT_GLOB_PATHSPECS: '0', GIT_NOGLOB_PATHSPECS: '0',
+  GIT_ICASE_PATHSPECS: '0', GIT_OPTIONAL_LOCKS: '0', LC_ALL: 'C' };
 
-/** Whether a directory at or above `root` holds `.git` (a directory or a gitfile), found without spawning Git. */
-function underGitDir(root: string): boolean {
-  if (gitRoots.has(root)) return true;
-  for (let dir = resolve(root); ; dir = dirname(dir)) {
-    if (existsSync(join(dir, '.git'))) { gitRoots.add(root); return true; }
-    if (dirname(dir) === dir) return false;
+/** gitReadOnly for a caller that cannot await: the same arguments, environment and 20 s deadline, with no session or hooks. */
+function gitReadOnlySync(root: string, args: string[]): { stdout: string; stderr: string; code: number } {
+  const out = spawnSync('git', ['--literal-pathspecs', '-C', root, '-c', 'commit.gpgsign=false', ...args],
+    { timeout: 20_000, maxBuffer: 1024 * 1024, env: gitChildEnv(READ_ONLY_GIT_ENV), encoding: 'utf8' });
+  if (out.error || out.status === null) throw gitFailure('Git execution did not finish within its bounded attempt.',
+    'A git command in the canonical checkout did not finish within 20 seconds or could not start.');
+  return { stdout: out.stdout, stderr: out.stderr, code: out.status };
+}
+
+/** A read-only Git step: run at `cwd` by gitReadOnly or gitReadOnlySync. */
+type GitRead = { cwd: string; args: string[] };
+type GitReadResult = { stdout: string; stderr: string; code: number };
+
+/**
+ * The work tree toplevel of the repository holding `dir` (physical): the nearest directory at or above it that holds
+ * `.git` (a directory, or the gitfile of a linked worktree or submodule), found without spawning Git, or null.
+ */
+function gitHolder(dir: string): string | null {
+  for (let at = dir; ; at = dirname(at)) {
+    if (existsSync(join(at, '.git'))) return at;
+    if (dirname(at) === at) return null;
   }
 }
 
 /**
- * What HEAD or the index hold under `dirs` (relative to `root`): one read-only `ls-files --with-tree=HEAD` (an unborn
- * HEAD: the index alone); nothing when `root` is not inside a work tree.
+ * The paths of `paths` in a split unit now: a path inside a parts directory, or a head whose parts directory exists on
+ * disk or that declares gbrain_parts on disk, or whose parts directory HEAD or the index hold anything under. Git is read
+ * at the toplevel of the repository holding each target (gitHolder), so a nested repository is read as itself, with one
+ * read-only ls-files --with-tree=HEAD per repository (an unborn HEAD: the index alone).
  */
-async function heldInGit(root: string, dirs: string[]): Promise<string[]> {
-  let listed = await gitReadOnly(root, ['ls-files', '-z', '--with-tree=HEAD', '--', ...dirs]);
-  if (listed.code !== 0 && listed.stderr.includes('tree-ish HEAD not found')) listed = await gitReadOnly(root, ['ls-files', '-z', '--', ...dirs]);
-  if (listed.code === 0) return listed.stdout.split('\0').filter(Boolean);
-  if ((await gitReadOnly(root, ['rev-parse', '--is-inside-work-tree'])).stdout.trim() !== 'true') return [];
-  throw gitFailure('Cannot inspect the canonical Git target.', `git ls-files failed for ${dirs[0]}.`);
-}
-
-/**
- * The subset of `paths` (absolute) in a split unit now: a path inside a parts directory, or a head whose parts directory
- * exists on disk or that declares gbrain_parts on disk, or (inside a Git work tree, one read-only Git step for all of
- * them, no session) whose parts directory HEAD or the index hold anything under.
- */
-export async function splitUnitMembers(root: string, paths: readonly string[]): Promise<Set<string>> {
-  const present = new Set<string>(), byDir = new Map<string, string[]>();
+function* membersSteps(paths: readonly string[]): Generator<GitRead, Set<string>, GitReadResult> {
+  const present = new Set<string>(), byTop = new Map<string, Map<string, string[]>>();
   for (const path of paths) {
-    const unit = splitUnitOf(root, path);
+    const unit = splitUnitOf(path);
     if (!unit) continue;
     if (splitUnitOnDisk(unit, path)) { present.add(path); continue; }
-    const dir = toRel(root, unit.partsDir);
-    byDir.set(dir, [...byDir.get(dir) ?? [], path]);
+    const top = gitHolder(dirname(unit.head));
+    if (!top) continue;
+    const dirs = byTop.get(top) ?? new Map<string, string[]>(), dir = toRel(top, unit.partsDir);
+    byTop.set(top, dirs.set(dir, [...dirs.get(dir) ?? [], path]));
   }
-  if (!byDir.size || !existsSync(root) || !underGitDir(root)) return present;
-  for (const held of await heldInGit(root, [...byDir.keys()])) {
-    for (const [dir, heads] of byDir) if (held.startsWith(`${dir}/`)) for (const path of heads) present.add(path);
+  for (const [top, dirs] of byTop) {
+    let listed = yield { cwd: top, args: ['ls-files', '-z', '--with-tree=HEAD', '--', ...dirs.keys()] };
+    if (listed.code !== 0 && listed.stderr.includes('tree-ish HEAD not found')) listed = yield { cwd: top, args: ['ls-files', '-z', '--', ...dirs.keys()] };
+    if (listed.code !== 0) {
+      if ((yield { cwd: top, args: ['rev-parse', '--is-inside-work-tree'] }).stdout.trim() !== 'true') continue;
+      throw gitFailure('Cannot inspect the canonical Git target.', `git ls-files failed for ${[...dirs.keys()][0]}.`);
+    }
+    for (const held of listed.stdout.split('\0').filter(Boolean)) {
+      for (const [dir, heads] of dirs) if (held.startsWith(`${dir}/`)) for (const path of heads) present.add(path);
+    }
   }
   return present;
 }
 
+async function runAsync<T>(steps: Generator<GitRead, T, GitReadResult>): Promise<T> {
+  for (let step = steps.next(); ; ) {
+    if (step.done) return step.value;
+    step = steps.next(await gitReadOnly(step.value.cwd, step.value.args));
+  }
+}
+
+function runSync<T>(steps: Generator<GitRead, T, GitReadResult>): T {
+  for (let step = steps.next(); ; ) {
+    if (step.done) return step.value;
+    step = steps.next(gitReadOnlySync(step.value.cwd, step.value.args));
+  }
+}
+
+/** The subset of `paths` (absolute) in a split unit now (membersSteps). */
+export async function splitUnitMembers(paths: readonly string[]): Promise<Set<string>> {
+  return runAsync(membersSteps(paths));
+}
+
 /** Whether the disk alone shows `path` in `unit`: it lies inside the parts directory, the parts directory exists, or the head declares gbrain_parts. */
 function splitUnitOnDisk(unit: { head: string; partsDir: string }, path: string): boolean {
-  return unit.head !== path || existsSync(unit.partsDir) || headDeclaresParts(unit.head);
+  return unit.head !== physicalPath(path) || existsSync(unit.partsDir) || headDeclaresParts(unit.head);
 }
 
 /** Whether `path` is in a split unit now (splitUnitMembers). */
-export async function splitUnitPresent(root: string, path: string): Promise<boolean> {
-  return (await splitUnitMembers(root, [path])).size > 0;
+export async function splitUnitPresent(path: string): Promise<boolean> {
+  return (await splitUnitMembers([path])).size > 0;
 }
 
 /** A split page's unit in its three states: path (relative, `/`-separated) to blob id, raw bytes on disk. */
@@ -192,41 +243,35 @@ async function flaggedIndexEntry(session: GitSession, rels: string[]): Promise<s
 }
 
 const CONVERSION_ATTRIBUTES = ['text', 'eol', 'crlf', 'ident', 'filter', 'working-tree-encoding', 'diff'];
+const GIT_TRUE = new Set(['true', 'yes', 'on', '1']);
 
 /**
  * Why Git would store, check out or diff a unit file as other bytes than it holds, or null: a text, eol, crlf, ident,
- * filter or working-tree-encoding attribute (any value but unset/unspecified), or a diff driver with a textconv.
- * ident counts although its clean direction leaves an unexpanded token alone: a checkout expands it.
+ * filter or working-tree-encoding attribute (any value but unset/unspecified), a diff driver with a textconv, or
+ * core.autocrlf=true or core.eol=crlf, which convert a file on checkout unless it is explicitly -text. ident counts
+ * although its clean direction leaves an unexpanded token alone: a checkout expands it.
  */
 async function convertingAttribute(session: GitSession, rels: string[]): Promise<string | null> {
   const out = await git(session, ['check-attr', '-z', ...CONVERSION_ATTRIBUTES, '--', ...rels]);
   if (out.code !== 0) throw gitFailure('Cannot inspect the canonical Git target.', `git check-attr failed for the split unit of ${rels[0]}.`);
-  const fields = out.stdout.split('\0');
+  const fields = out.stdout.split('\0'), binary = new Set<string>();
   for (let i = 0; i + 2 < fields.length; i += 3) {
     const path = fields[i]!, attr = fields[i + 1]!, value = fields[i + 2]!;
+    if (attr === 'text' && value === 'unset') binary.add(path);
     if (value === 'unspecified' || value === 'unset') continue;
     if (attr === 'diff' && (value === 'set' || (await git(session, ['config', '--get', `diff.${value}.textconv`])).code !== 0)) continue;
     return `${path} has the Git attribute ${attr}${value === 'set' ? '' : `=${value}`}`;
   }
-  return null;
+  const [autocrlf, eol] = await Promise.all([git(session, ['config', '--get', 'core.autocrlf']), git(session, ['config', '--get', 'core.eol'])]);
+  const config = GIT_TRUE.has(autocrlf.stdout.trim().toLowerCase()) ? 'core.autocrlf=true' : eol.stdout.trim().toLowerCase() === 'crlf' ? 'core.eol=crlf' : null;
+  const exposed = config && rels.find(rel => !binary.has(rel));
+  return exposed ? `Git would check ${exposed} out converted under ${config} (it is not -text)` : null;
 }
 
-/** What Git's clean path does without an attribute (core.autocrlf): `hash-object` must be each file's raw blob id. */
-async function convertedOnCommit(session: GitSession, root: string, rels: string[]): Promise<string | null> {
-  const present = rels.filter(rel => lstatSync(join(root, rel), { throwIfNoEntry: false })?.isFile());
-  if (!present.length) return null;
-  const [format, hashed] = await Promise.all([git(session, ['rev-parse', '--show-object-format']), git(session, ['hash-object', '--', ...present])]);
-  const oids = hashed.stdout.split('\n').filter(Boolean);
-  if (format.code !== 0 || hashed.code !== 0 || oids.length !== present.length) throw gitFailure('Cannot hash the canonical Git target.', `git hash-object failed for the split unit of ${present[0]}.`);
-  const algorithm = format.stdout.trim() === 'sha256' ? 'sha256' : 'sha1';
-  const converted = present.find((rel, index) => rawBlobOid(join(root, rel), algorithm) !== oids[index]);
-  return converted ? `Git would store ${converted} as other bytes than the file holds (core.autocrlf or another conversion)` : null;
-}
-
-/** The unit's head, its planned parts and everything in its parts directory on disk, relative to the root. */
+/** The unit's head, its planned parts and everything in its parts directory on disk, relative to the physical root. */
 function unitRels(root: string, unit: { head: string; partsDir: string }, planned: readonly string[]): string[] {
   const dir = lstatSync(unit.partsDir, { throwIfNoEntry: false })?.isDirectory() ? readdirSync(unit.partsDir).map(name => join(unit.partsDir, name)) : [];
-  return [...new Set([unit.head, ...planned, ...dir].map(path => toRel(root, path)))];
+  return [...new Set([unit.head, ...planned.map(physicalPath), ...dir].map(path => toRel(root, path)))];
 }
 
 /**
@@ -234,26 +279,28 @@ function unitRels(root: string, unit: { head: string; partsDir: string }, planne
  * A route outside the door, a non-strict source and a recovery that is not the strict door's own refuse as soon as the
  * path is in a split unit (splitUnitPresent) or would lay one out (`planned`). The door of a strict source checks a unit
  * it publishes: no index flag on the head or its parts directory, no conversion attribute; before it writes
- * (`publish`, the default) Git HEAD, the index and the disk hold the same unit; when it commits (`commit`) every file
- * hashes to its raw bytes. A path that is not in a unit and lays none out passes on every route.
+ * (`publish`, the default) Git HEAD, the index and the disk hold the same unit. A path that is not in a unit and lays none
+ * out passes on every route.
  */
 export async function assertSplitUnitMutable(input: SplitUnitGuardInput): Promise<void> {
-  const unit = splitUnitOf(input.root, input.path);
+  const unit = splitUnitOf(input.path);
   if (!unit) return;
   const planned = input.planned ?? [];
   if (input.route !== 'door' || !input.strict) {
-    if (planned.length || await splitUnitPresent(input.root, input.path)) throw splitPageUnsupported(routeReason(input), input, unit);
+    if (planned.length || await splitUnitPresent(input.path)) throw splitPageUnsupported(routeReason(input), input, unit);
     return;
   }
-  if (!planned.length && !await splitUnitPresent(input.root, input.path)) return;
-  await withSession(input.root, undefined, undefined, false, async session => {
-    const rels = unitRels(input.root, unit, planned);
-    const flagged = await flaggedIndexEntry(session, [toRel(input.root, unit.head), toRel(input.root, unit.partsDir)]);
+  if (!planned.length && !await splitUnitPresent(input.path)) return;
+  const root = physicalRoot(input.root);
+  if (toRel(root, unit.head).startsWith('../')) throw splitPageUnsupported('outside_door', input, unit, `${unit.head} resolves outside the source root`);
+  await withSession(root, undefined, undefined, false, async session => {
+    const rels = unitRels(root, unit, planned);
+    const flagged = await flaggedIndexEntry(session, [toRel(root, unit.head), toRel(root, unit.partsDir)]);
     if (flagged) throw splitPageUnsupported('index_flag', input, unit, flagged);
-    const attribute = await convertingAttribute(session, rels) ?? (input.phase === 'commit' ? await convertedOnCommit(session, input.root, rels) : null);
+    const attribute = await convertingAttribute(session, rels);
     if (attribute) throw splitPageUnsupported('git_attribute', input, unit, attribute);
     if (input.phase === 'commit') return;
-    const diverged = splitUnitDivergence(await readSplitUnitLayers(session, input.root, unit.head));
+    const diverged = splitUnitDivergence(await readSplitUnitLayers(session, root, unit.head));
     if (diverged) throw splitPageUnsupported('unit_diverged', input, unit, diverged);
   });
 }
@@ -273,20 +320,62 @@ export async function splitUnitRefusals(input: Omit<SplitUnitGuardInput, 'path' 
   pages?: ReadonlyMap<string, Pick<SplitUnitGuardInput, 'sourceId' | 'slug'>> }): Promise<Map<string, OperationError>> {
   if (input.route === 'door' && input.strict) throw new Error('splitUnitRefusals is for routes other than the strict door');
   const refusals = new Map<string, OperationError>();
-  for (const path of await splitUnitMembers(input.root, input.paths)) {
-    refusals.set(path, splitPageUnsupported(routeReason(input), { ...input, ...input.pages?.get(path) }, splitUnitOf(input.root, path)!));
+  for (const path of await splitUnitMembers(input.paths)) {
+    refusals.set(path, splitPageUnsupported(routeReason(input), { ...input, ...input.pages?.get(path) }, splitUnitOf(path)!));
   }
   return refusals;
 }
 
 /**
  * assertSplitUnitMutable for a route outside the door that must stay synchronous (skill tooling, the generic write
- * helpers, writers with no brain): refuses `outside_door` as soon as the disk shows `path` in a split unit. It reads no
- * Git state, which a route outside the door does not need: any unit present is a refusal for it.
+ * helpers, writers with no brain, local storage): refuses `outside_door` when `path` is in a split unit on disk, in the
+ * index or in HEAD, read with the same single read-only Git step as the async form (gitReadOnlySync, no session).
  */
 export function assertSplitUnitMutableSync(input: Omit<SplitUnitGuardInput, 'route' | 'strict' | 'planned' | 'phase'> & { route: Exclude<SplitUnitRoute, 'door' | 'git_effect' | 'recovery'> }): void {
-  const unit = splitUnitOf(input.root, input.path);
-  if (unit && splitUnitOnDisk(unit, input.path)) throw splitPageUnsupported('outside_door', input, unit);
+  const unit = splitUnitOf(input.path);
+  if (unit && runSync(membersSteps([input.path])).size) throw splitPageUnsupported('outside_door', input, unit);
+}
+
+/**
+ * The check of gbrain git commit-push (git/commit-push.ts commitPaths), a route outside the door that commits what is on
+ * disk, after `git add` and before the commit of `specs` (pathspecs relative to the checkout root `root`, which commit
+ * --only takes from the working tree). A spec that reaches a split unit commits only a whole unit, every changed file of
+ * it named: no unit file differs between the index and the disk, every unit file that differs from HEAD is under a spec,
+ * and the unit on disk is whole (a head whose manifest parts verify and are exactly the files Git holds under its parts
+ * directory, or a one-file head with nothing under it). Anything else refuses `outside_door` before the commit, so no
+ * commit holds a head and parts that do not reassemble.
+ */
+export function assertStagedSplitUnitsWhole(root: string, specs: readonly string[]): void {
+  const real = physicalRoot(root), units = new Map<string, { head: string; partsDir: string }>();
+  const staged = gitReadOnlySync(real, ['diff', '--cached', '--no-renames', '--name-only', '-z', '--', ...specs]);
+  if (staged.code !== 0) throw gitFailure('Cannot inspect the canonical Git target.', 'git diff --cached failed for the paths to commit.');
+  for (const path of runSync(membersSteps(staged.stdout.split('\0').filter(Boolean).map(rel => join(real, rel))))) {
+    const unit = splitUnitOf(path)!;
+    units.set(unit.head, unit);
+  }
+  const named = (rel: string) => specs.some(spec => rel === spec || rel.startsWith(`${spec.replace(/\/+$/, '')}/`));
+  for (const unit of units.values()) {
+    const head = toRel(real, unit.head), dir = toRel(real, unit.partsDir);
+    const reads = [['diff', '--name-only', '-z'], ['diff', '--cached', '--no-renames', '--name-only', '-z'], ['ls-files', '-z']]
+      .map(args => gitReadOnlySync(real, [...args, '--', head, dir]));
+    if (reads.some(read => read.code !== 0)) throw gitFailure('Cannot inspect the canonical Git target.', `git diff or git ls-files failed for the split unit of ${head}.`);
+    const [unstaged, changed, listed] = reads.map(read => read.stdout.split('\0').filter(Boolean)) as [string[], string[], string[]];
+    const held = listed.filter(rel => rel.startsWith(`${dir}/`));
+    const left = unstaged[0] ?? changed.find(rel => !named(rel));
+    const why = left ? `${left} would not be committed as the disk holds it; name the head and its parts directory together` : wholeUnitGap(real, unit, held);
+    if (why) throw splitPageUnsupported('outside_door', { root: real }, unit, why);
+  }
+}
+
+/** Why the unit on disk is not whole, given the paths Git holds under its parts directory, or null. */
+function wholeUnitGap(root: string, unit: { head: string; partsDir: string }, held: string[]): string | null {
+  const parsed = existsSync(unit.head) ? parseHead(readFileSync(unit.head, 'utf8')) : null;
+  if (!parsed) return held.length || existsSync(unit.partsDir) ? `${toRel(root, unit.head)} is one file but its parts directory still holds files` : null;
+  if ('error' in parsed) return `${toRel(root, unit.head)} is not a valid split head (${parsed.error.reason})`;
+  const verified = verifyParts(unit.head, parsed);
+  if (!verified.ok) return `${toRel(root, unit.head)}'s parts do not verify (${verified.reason})`;
+  const listed = parsed.manifest.parts.map(part => toRel(root, partFilePath(unit.head, part.path))).sort();
+  return listed.join('\0') === [...held].sort().join('\0') ? null : `Git would hold other files under ${toRel(root, unit.partsDir)} than the manifest of ${toRel(root, unit.head)} lists`;
 }
 
 const DOCS = 'docs/guides/write-refusals.md#split_page_unsupported';
@@ -317,7 +406,7 @@ export function splitPageUnsupportedAdvice(reason: SplitUnsupportedReason, ctx: 
       fix: userFix('A flagged index entry makes Git commit or skip other bytes than the disk holds; clearing it changes the user\'s checkout.',
         `A file of ${page}'s split unit is flagged in the Git index (skip-worktree, assume-unchanged or intent-to-add). May the flag be cleared with git update-index --no-skip-worktree --no-assume-unchanged on ${where}?`) };
     case 'git_attribute': return { docs: DOCS,
-      suggestion: `Git would convert the bytes of ${page}'s split files${because}, so nothing was written or committed. A split page's head and parts are stored byte for byte (the head's manifest hashes them), so a text, eol, crlf, ident, filter or working-tree-encoding attribute, a diff textconv or core.autocrlf on them would commit a page no checkout reassembles. Ask the user to narrow the rule so the head and its .gbparts directory get none of them (for example a later .gitattributes line giving those paths -text -eol -crlf -ident -filter -diff), commit it, then submit the write again with a new request_id.`,
+      suggestion: `Git would convert the bytes of ${page}'s split files${because}, so nothing was written or committed. A split page's head and parts are stored byte for byte (the head's manifest hashes them), so a text, eol, crlf, ident, filter or working-tree-encoding attribute, a diff textconv, core.autocrlf=true or core.eol=crlf on them would commit a page no checkout reassembles. Ask the user to narrow the rule so the head and its .gbparts directory get none of them (for example a later .gitattributes line giving those paths -text -eol -crlf -ident -filter -diff), commit it, then submit the write again with a new request_id.`,
       fix: statusFix('Shows the source\'s canonical owner with its pending, failed and parked writes, read-only.') };
     case 'unit_diverged': return { docs: DOCS,
       suggestion: `The split page files of ${page} were changed outside gbrain and not committed${because}, so Git HEAD, the index and the disk hold different versions of the page and nothing was written. Ask the user which version is right: commit the hand edit with gbrain git commit-push -m "Commit the split page edit" -- ${where}, or restore the head and its parts from HEAD (git restore --staged --worktree --source=HEAD -- ${where}); then run gbrain sync${ctx.sourceId ? ` --source ${ctx.sourceId}` : ''} --no-pull and submit the write again with a new request_id.`,
@@ -332,9 +421,10 @@ export function splitPageUnsupportedAdvice(reason: SplitUnsupportedReason, ctx: 
 export function splitPageUnsupported(reason: SplitUnsupportedReason, input: Pick<SplitUnitGuardInput, 'root' | 'slug' | 'sourceId' | 'remote'>,
   unit: { head: string; partsDir: string }, why?: string): OperationError {
   const local = !input.remote;
-  const paths = local ? [toRel(input.root, unit.head), toRel(input.root, unit.partsDir)] : undefined;
+  const root = physicalRoot(input.root);
+  const paths = local ? [toRel(root, unit.head), toRel(root, unit.partsDir)] : undefined;
   const advice = splitPageUnsupportedAdvice(reason, { slug: input.slug, sourceId: input.sourceId, paths, why: local ? why : undefined });
-  const subject = input.slug ? `page ${input.slug}` : local ? toRel(input.root, unit.head) : 'the page';
+  const subject = input.slug ? `page ${input.slug}` : local ? toRel(root, unit.head) : 'the page';
   return opError('split_page_unsupported', `split_page_unsupported (${reason}): the split page files of ${subject} cannot be changed by this route, so nothing was written.`,
     advice.suggestion, { reason, fix: advice.fix, docs: advice.docs });
 }

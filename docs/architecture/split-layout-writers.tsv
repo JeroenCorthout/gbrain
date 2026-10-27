@@ -208,9 +208,11 @@ src/core/persistence/effect-git.ts	1	not_page_path	reclaimIndexLock moves an aba
 src/core/persistence/effect-recovery.ts	2	door	Recovery re-reads the split mirror state inside withFilesystemPublication and throws unexpectedMirrorBytes before it republishes; every file write is the door's recovery record replay.
 src/core/persistence/engine-graduation.ts	8	not_page_path	Writes the graduation manifest and the mounts.json record via writeFileDurably and renames the PGLite data dir aside; never a page file.
 src/core/persistence/file-repair.ts	0	door	submitManagedFileRepair publishes a repaired page through the coordinator; checkFile refuses changed_since_preview when a prepared part differs from the one prepared at preview, before anything is written.
+src/core/persistence/git-conversion.ts	2	refuse_before_write	sources canonical adoption runs assertSplitUnitMutable (route raw_writer) on every target of a group before writeAtomically writes any of them, so a page in a split unit refuses split_page_unsupported (outside_door) and nothing is written; the files it writes are one-file pages, committed through commitThroughDoor before any database change.
 src/core/persistence/git-door.ts	1	door	Git door: writeFileSync only writes tree object bytes into its scratch dir before hash-object; pages reach git as objects, not checkout files.
 src/core/persistence/git-durability-administration.ts	2	not_page_path	Writes only join(resolveGbrainHome(),'git-credentials') at mode 0600.
 src/core/persistence/graduation-custody.ts	5	not_page_path	writeFileDurably and O_EXCL opens create the graduation intent marker and tombstone files under the data dir, not pages.
+src/core/persistence/hosted-repo.ts	3	not_page_path	sources host-repo creates the --dir that holds the bare repository and its linked worktree, and writes the bare repository's hook script (hooks/, a fixed non-.md name inside the bare repository, outside any work tree); Git creates every other file; no page path.
 src/core/persistence/identity.ts	5	not_page_path	Writes writer identity and credential JSON under persistenceHome() = <configDir>/persistence via O_EXCL temp and rename.
 src/core/persistence/index-lock-reclaim.ts	3	not_page_path	Renames a stale git index.lock aside and appends index-lock-reclaims.jsonl under persistenceHome(); no page file.
 src/core/persistence/large-file.ts	4	door	Door primitive: streams or copies bytes into the staging path with openSync 'wx', copyFileSync and renameSync, for the coordinator's large-file publication.
@@ -219,6 +221,8 @@ src/core/persistence/ownership.ts	1	not_page_path	noteWaiting writes a worktree 
 src/core/persistence/physical-root-record.ts	4	not_page_path	Writes physical-root reservation and record JSON documents (O_EXCL then fsync and rename) in the persistence home, not pages.
 src/core/persistence/physical-root-recovery.ts	1	not_page_path	adoptTransferredRootStamp writes the physical root stamp record; no page path.
 src/core/persistence/physical-root.ts	1	not_page_path	adoptTransferredRootStamp writes the physical root stamp record; no page path.
+src/core/persistence/push-preflight.ts	2	not_page_path	writePushProgress writes the push progress JSON (a fixed name) under the Git directory through a .tmp rename; no page path.
+src/core/persistence/push-scan.ts	2	not_page_path	md: it names .md only to map a head to its parts directory when it classifies pushed blobs. The push secret scan writes its cleared-blob ledger and private blob spool files (0600, gbrain-scan/) under the Git common directory; no page path.
 src/core/persistence/reconcile-backup.ts	2	not_page_path	Writes retained reconciliation backup files in the private reconciliation-previews dir under the gbrain config directory.
 src/core/persistence/reconcile.ts	1	not_page_path	retainReconcileBackup writes the reconcile preview backup under configDir()/reconciliation-previews, inside gbrain home.
 src/core/persistence/recovery-resolve.ts	6	not_page_path	writePrivateFile and copyPrivateFile write stuck-recovery backups into privateBackupDir, which refuses any dir inside a source checkout.

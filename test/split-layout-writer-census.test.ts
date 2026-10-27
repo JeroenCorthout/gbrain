@@ -203,6 +203,24 @@ test('a planted removal bypass fails the census: a new page remover, an extra re
   expect([...'readFileSync(a); this.rm(a); x.unlink(a); confirm(a)'.matchAll(REMOVAL)].length).toBe(0);
 });
 
+test('a planted bypass fails the census: source adoption or local storage without the split-unit predicate', () => {
+  const census = loadCensus();
+  // test-reads-source-ok[structural]: the census is a source-text tripwire by design; the planted copies prove it flags a bypass.
+  const [, conversion] = source('src/core/persistence/git-conversion.ts');
+  const [, local] = source('src/core/storage/local.ts');
+  expect(census.inventory.get('src/core/persistence/git-conversion.ts')?.klass).toBe('refuse_before_write');
+  expect(census.removers.get('src/core/storage/local.ts')?.klass).toBe('refuse_before_write');
+  expect(gapsFor([['src/core/persistence/git-conversion.ts', conversion], ['src/core/storage/local.ts', local]], census)).toEqual([]);
+  expect(gapsFor([
+    ['src/core/persistence/git-conversion.ts', conversion.replace(/assertSplitUnitMutable/g, 'checkAdoptionTarget')],
+    ['src/core/storage/local.ts', local.replace(/assertOneFileWritable|assertSplitUnitMutableSync/g, 'checkStoragePath')],
+  ], census)).toEqual([
+    'src/core/persistence/git-conversion.ts: refuse_before_write without the split-unit predicate',
+    'src/core/storage/local.ts: refuse_before_write remover without the split-unit predicate',
+    'src/core/storage/local.ts: refuse_before_write without the split-unit predicate',
+  ]);
+});
+
 test('every canonical database writer that also writes files has a row', () => {
   const census = loadCensus();
   const canonical = rowsOf('canonical-writers.tsv').map(([path]) => path!);

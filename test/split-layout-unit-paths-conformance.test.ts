@@ -144,7 +144,7 @@ describe('split git layout: every door, effect and recovery route runs the one s
       }
       async function restoreWithoutDoorSearch(record) { await assertSplitUnitMutable({ root: record.root, path: record.path, route: 'recovery', strict: false }); restoreBeforeStage(record); }
       async function checked(prepared) { await assertSplitUnitMutable({ root: prepared.file.root, path: prepared.file.path, route: 'door', strict: true }); publishFile(prepared.file); }
-      async function deferred(root, files) { if ((await splitUnitMembers(root, files)).size) return; publishPersistenceFile(files[0]); }
+      async function deferred(root, files) { if ((await splitUnitMembers(files)).size) return; publishPersistenceFile(files[0]); }
       async function effect(root, paths) { const refused = await splitUnitRefusals({ root, paths, route: 'git_effect', strict: false }); await git(session, ['commit', '--only', '--', ...paths]); }
       async function recovered(record) { await assertSplitUnitMutable({ root: record.root, path: record.path, route: 'recovery', strict: false }); await splitLandedCommit(record.root, null, [record]); restoreBeforeStage(record); }`;
     expect(unitGuardBypasses('planted.ts', planted)).toEqual(['planted.ts:publishMutation', 'planted.ts:publishGroup', 'planted.ts:recoverPublication', 'planted.ts:commitGitTargets', 'planted.ts:restoreWithoutDoorSearch']);

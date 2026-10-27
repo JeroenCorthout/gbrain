@@ -2,19 +2,21 @@
  * Wave B PR 5 lane 5b: a page upload over the single-string ceiling (PAGE_MAX_BYTES) on a Git-backed source writes its
  * canonical file before the database row, as every page write does (persistence/upload-streamed.ts).
  *
- * 1. Protects: (a) on a worktree-backed source the upload's canonical file F (the stored page's canonical render,
- *    streamed from the staged upload, never one string) lands as a split head plus parts: on a strict source in the door
- *    commit before the row commits, otherwise as files before the row and then one Git commit by the Git effect; the
- *    reassembled F is byte for byte the stored page's render. (b) A database-only source (sync.write_through false)
+ * 1. Protects: (a) on a git-canonical source (canonical: git) bound to a worktree the upload's canonical file F (the
+ *    stored page's canonical render, streamed from the staged upload, never one string) lands as a split head plus parts
+ *    in the door commit before the row commits; the reassembled F is byte for byte the stored page's render. A bound
+ *    source that is not git-canonical publishes the upload database-only (db_only) as master does (Wave B PR 5 option B:
+ *    only the strict door writes a split page): no file, no parts, no publication step, no commit. (b) A database-only source (sync.write_through false)
  *    publishes database-only as today: no file, no Git effect; so does, on a strict source, a page under a declared
  *    storage.db_only dir. (An unbound source is test/large-pages/upload-over-ceiling.test.ts.) (c) On a strict source G7a classes the upload from its own
  *    frontmatter (the streamed file carries the page it renders): a private upload publishes database-only as the
  *    declared class `private`, with no file and no commit. The undeclared refusal itself is G7a's suite
  *    (test/git-canonical-declared-g7a.test.ts), which this lane runs unchanged.
- * 2. Fails when: the upload publishes database-only on a bound source (no file, Git is not the parent), F differs from
+ * 2. Fails when: the upload publishes database-only on a git-canonical bound source (no file, Git is not the parent), a
+ *    source that is not git-canonical writes any file or commit for it, F differs from
  *    the render the page reads back as, the files are not in place when publication ends (before the row is applied), or a declared or private upload writes
  *    a file (or a private one is refused instead of classed).
- *    (d) The file is built from the upload's own outputs, never a database apply: the prepared page applies exactly once
+ *    (d) On a git-canonical source the file is built from the upload's own outputs, never a database apply: the prepared page applies exactly once
  *    (one segmented:flipped), and the file matches the stored page's render byte for byte for a remote writer whose
  *    frontmatter the gate strips and stamps, with a timeline region, and for a replace that keeps a tag frontmatter did
  *    not set, and for a bare ## Timeline section with truth on both sides of it (the regions are not in upload order).
@@ -89,31 +91,31 @@ for (const backend of testBackends()) describe(`[${backend}] uploads over the ce
   const databaseUrl = backend === 'postgres' ? requirePostgresTestDatabase() : undefined;
   afterEach(() => installFaultHook(undefined));
 
-  test('(a) a bound source writes F as head + parts before the row; the Git effect commits them together', () => managedBrain(async ({ engine, ctx, root }) => {
-    const text = bigPage(25 * MiB);
+  test('(a) a bound source that is not git-canonical publishes the upload database-only as master does: no file, no parts, no commit', () => managedBrain(async ({ engine, ctx, root }) => {
     const path = join(root, 'notes/field-log.md');
-    const seen: Record<string, { head: boolean; parts: number }> = {};
+    const before = git(root, 'rev-parse', 'HEAD').trim();
+    const points = new Set<string>();
+    let atCommit: { head: boolean; parts: boolean } | undefined;
     installFaultHook(async point => {
-      if ((point !== 'publication:before_publication' && point !== 'publication:after_publication') || seen[point]) return;
-      const parsed = existsSync(path) ? parseHead(readFileSync(path, 'utf8')) as { manifest: { parts: unknown[] } } | null : null;
-      seen[point] = { head: existsSync(path), parts: parsed?.manifest?.parts.length ?? 0 };
+      points.add(point);
+      if (point === 'publication:before_commit' && !atCommit) atCommit = { head: existsSync(path), parts: existsSync(partsDirFor(path)) };
     });
-    expect(await upload(ctx, 'notes/field-log', text)).toMatchObject({ state: 'committed' });
-    expect(seen['publication:before_publication']).toEqual({ head: false, parts: 0 });
-    expect(seen['publication:after_publication']!.head).toBe(true);
-    expect(seen['publication:after_publication']!.parts).toBeGreaterThan(1);
-    const partCount = seen['publication:after_publication']!.parts;
-    expect(headFileSha(path)).toBe(await renderSha(engine, 'notes/field-log'));
-    expect(await pageRow(engine, 'notes/field-log')).toMatchObject({ reason: null });
+    const receipt = await upload(ctx, 'notes/field-log', bigPage(25 * MiB));
+    expect(receipt).toMatchObject({ state: 'committed', persistence: { mode: 'database' }, write_through: { skipped: 'db_only', written: false } });
+    expect(atCommit).toEqual({ head: false, parts: false });
+    expect(points.has('publication:before_commit')).toBe(true);
+    expect([...points].filter(point => ['publication:prepared', 'publication:before_publication', 'publication:after_publication'].includes(point))).toEqual([]);
+    expect((await engine.readPageSnapshot('notes/field-log', { sourceId: 'default' }))!.page.body_storage).toBe('segmented');
+    expect(await pageRow(engine, 'notes/field-log')).toEqual({ reason: null, source_path: null });
     await settleManagedGitEffects(engine);
-    const commits = git(root, 'log', '--format=%H', '--', 'notes/field-log.md', 'notes/.field-log.gbparts').split('\n').filter(Boolean);
-    expect(commits).toHaveLength(1);
-    expect(committedPaths(root, commits[0]!)).toContain('notes/field-log.md');
-    expect(committedPaths(root, commits[0]!).filter(rel => rel.startsWith('notes/.field-log.gbparts/'))).toHaveLength(partCount);
+    expect(existsSync(path)).toBe(false);
+    expect(existsSync(partsDirFor(path))).toBe(false);
+    expect(git(root, 'rev-parse', 'HEAD').trim()).toBe(before);
     expect(git(root, 'status', '--porcelain')).toBe('');
   }, { databaseUrl, setup }), 600_000);
 
-  test('(a) not strict: at publication:before_commit, before the row commits, the head and every part are on disk with their planned hashes', () => managedBrain(async ({ engine, ctx, root }) => {
+  test('(a) strict: at publication:before_commit, before the row commits, the head and every part are on disk with their planned hashes', () => managedBrain(async ({ engine, ctx, root }) => {
+    await strict(engine);
     const text = bigPage(25 * MiB);
     let planned: Array<{ path: string; afterHash: string | null }> = [];
     let atCommit: Array<{ path: string; hash: string | null }> | undefined;
@@ -153,7 +155,8 @@ for (const backend of testBackends()) describe(`[${backend}] uploads over the ce
     expect(git(root, 'status', '--porcelain')).toBe('');
   }, { databaseUrl, setup }), 600_000);
 
-  test('(d) F is built from the upload, not a database apply: a remote writer\'s stamped page with a timeline region renders byte for byte as the stored page; the apply runs once', () => managedBrain(async ({ engine, ctx, root }) => {
+  test('(d) strict: F is built from the upload, not a database apply: a remote writer\'s stamped page with a timeline region renders byte for byte as the stored page; the apply runs once', () => managedBrain(async ({ engine, ctx, root }) => {
+    await strict(engine);
     await engine.setConfig('write_gate.agent_mode', 'off');
     await engine.executeRaw(`INSERT INTO oauth_clients(client_id,client_secret_hash,client_name,scope,source_id) VALUES('upload-remote','fixture-hash','example-client','read write','default')`);
     const remote = { ...ctx, remote: true, transport: 'http', inboundFrameBytes: 4 * MiB,
@@ -175,9 +178,10 @@ for (const backend of testBackends()) describe(`[${backend}] uploads over the ce
     expect(tail).toContain('Met alice-example at acme-example.');
   }, { databaseUrl, setup }), 600_000);
 
-  test('(d) a middle bare ## Timeline section (truth on both sides of it) renders byte for byte as the stored page', () => managedBrain(async ({ engine, root }) => {
+  test('(d) strict: a middle bare ## Timeline section (truth on both sides of it) renders byte for byte as the stored page', () => managedBrain(async ({ engine, root }) => {
     const lines = (n: number, what: string) => Array.from({ length: n }, (_, i) => `${what} line ${i} of the acme-example field log kept by alice-example, long enough to fill it.`).join('\n');
     const text = `---\ntype: note\ntitle: Field log\n---\n\n# Notes\n\n${lines(200, 'Opening')}\n\n## Timeline\n\n- **2026-01-01** | Met alice-example at acme-example.\n\n## Later material\n\n${lines(Math.ceil(25 * MiB / 90), 'Later')}\n`;
+    await strict(engine);
     const ctx = { engine, config: { engine: engine.kind, embedding_disabled: true }, sourceId: 'default', remote: false, dryRun: false, logger: { info() {}, warn() {}, error() {} } } as OperationContext;
     expect(await upload(ctx, 'notes/middle-timeline', text)).toMatchObject({ state: 'committed' });
     const path = join(root, 'notes/middle-timeline.md');
@@ -189,7 +193,8 @@ for (const backend of testBackends()) describe(`[${backend}] uploads over the ce
     expect(file).toContain('Later line 0 of');
   }, { databaseUrl, setup }), 600_000);
 
-  test('(d) a replace keeps the tags frontmatter did not set: F renders byte for byte as the stored page; the apply runs once', () => managedBrain(async ({ engine, ctx, root }) => {
+  test('(d) strict: a replace keeps the tags frontmatter did not set: F renders byte for byte as the stored page; the apply runs once', () => managedBrain(async ({ engine, ctx, root }) => {
+    await strict(engine);
     expect(await upload(ctx, 'notes/tagged-log', bigPage(25 * MiB, 'tags: [field]\n'))).toMatchObject({ state: 'committed' });
     const revision = async () => (await engine.readPageSnapshot('notes/tagged-log', { sourceId: 'default' }))!.revision;
     expect(await op('add_tag').handler(ctx, { slug: 'notes/tagged-log', tag: 'manual', request_id: randomUUID(), wait_ms: 30_000 })).toMatchObject({ state: 'committed' });

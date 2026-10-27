@@ -300,7 +300,7 @@ export async function publishGroup(engine: BrainEngine, rows: WriteRequest[], pr
     // Wave B PR 5 (option B): a member on a path of a split unit publishes alone through publishMutation, whose split-unit check decides.
     const memberFiles = prepared.flatMap(member => member.file && !member.noop ? [member.file] : []);
     for (const root of new Set(memberFiles.map(file => file.root))) {
-      if ((await splitUnitMembers(root, memberFiles.filter(file => file.root === root).map(file => file.path))).size) return none;
+      if ((await splitUnitMembers(memberFiles.filter(file => file.root === root).map(file => file.path))).size) return none;
     }
     const files = new Map<number, { row: WriteRequest; record: FileRecoveryRecord; bytes: number }>();
     for (let i = 0; i < rows.length; i++) {

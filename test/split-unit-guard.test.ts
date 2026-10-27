@@ -61,7 +61,7 @@ describe('routes outside the strict door', () => {
     const { root } = unit();
     rmSync(join(root, DIR), { recursive: true });
     writeFileSync(join(root, HEAD), 'Plain now.\n');
-    expect(await splitUnitPresent(root, join(root, HEAD))).toBe(true);
+    expect(await splitUnitPresent(join(root, HEAD))).toBe(true);
     expect((await refusal({ root, route: 'mirror' }))?.reason).toBe('outside_door');
     fixture!.cleanup(); fixture = gitFixture();
     const fresh = fixture.root;
