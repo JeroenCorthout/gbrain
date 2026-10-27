@@ -92,9 +92,9 @@ export interface DoorFile {
  * Commits the published files of one publication under the caller's writer lock and returns the commit HEAD then
  * names (the commit that holds these bytes, also when every path was already committed). Each path is committed in
  * its planned state or not at all. A target Git refuses, a file that no longer holds its plan, or a target with a
- * staged change throws, so the publication rolls back.
+ * staged change throws, so the publication rolls back. Under each of `exactDirs` the commit holds the targets only.
  */
-export async function commitThroughDoor(root: string, files: DoorFile[], writerLock?: NativeLockHandle, onIndexRestored?: (paths: string[]) => void): Promise<string | null> {
+export async function commitThroughDoor(root: string, files: DoorFile[], writerLock?: NativeLockHandle, onIndexRestored?: (paths: string[]) => void, exactDirs?: string[]): Promise<string | null> {
   let key = resolve(root);
   try { key = realpathSync(root); } catch { /* the session reports a missing checkout */ }
   const prior = doorTurns.get(key) ?? Promise.resolve();
@@ -103,7 +103,7 @@ export async function commitThroughDoor(root: string, files: DoorFile[], writerL
   doorTurns.set(key, turn);
   await prior;
   try {
-    return await withSession(root, undefined, writerLock ? { writerLock } : undefined, false, session => doorCommit(session, root, files, onIndexRestored));
+    return await withSession(root, undefined, writerLock ? { writerLock } : undefined, false, session => doorCommit(session, root, files, onIndexRestored, exactDirs));
   } catch (error) {
     if (!(error instanceof OperationError) || TYPED.has(error.code) || landedFailures.has(error)) throw error;
     const paths = files.map(file => relative(root, file.path).split(sep).join('/'));
@@ -190,7 +190,7 @@ function stripspace(paragraph: string): string {
   return lines.join('\n');
 }
 
-async function doorCommit(session: GitSession, root: string, files: DoorFile[], onIndexRestored?: (paths: string[]) => void): Promise<string> {
+async function doorCommit(session: GitSession, root: string, files: DoorFile[], onIndexRestored?: (paths: string[]) => void, exactDirs: string[] = []): Promise<string> {
   const symbolic = await git(session, ['symbolic-ref', '-q', 'HEAD']);
   if (symbolic.code !== 0) throw opError('git_detached_head', `${root} is on a detached HEAD, so the strict source's write has no branch to commit to; nothing was published.`,
     'Check out the branch the source tracks (git switch <branch>) on the brain host, then retry the write with a new request_id.');
@@ -269,6 +269,14 @@ async function doorCommit(session: GitSession, root: string, files: DoorFile[], 
           const entry = parent.found.get(name);
           return read(dir, entry?.mode === TREE_MODE ? entry.oid.toString('hex') : null);
         }));
+      }
+      // `exactDirs` (a split page's parts directory): the commit's tree holds nothing there but the targets.
+      for (const dir of exactDirs.map(path => relative(root, path).split(sep).join('/'))) {
+        const held = await git(session, ['ls-tree', '-r', '-z', '--name-only', head, '--', dir]);
+        if (held.code !== 0) throw gitFailure('Cannot read the canonical Git tree.', `git ls-tree failed for ${dir}.`);
+        const stray = held.stdout.split('\0').find(path => path && !targets.has(path));
+        if (stray) throw opError('git_target_changed', `${stray} in ${root} was committed during the write and is not part of it, so nothing was committed and the write was not published.`,
+          'Another commit added a file to the split page\'s parts directory during the write. Remove or move that file in a commit, then retry the write with a new request_id.', { detail: stray });
       }
 
       const changed: Target[] = [];
