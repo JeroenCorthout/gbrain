@@ -1007,6 +1007,10 @@
       },
       {
         "category": "brain",
+        "name": "large_pages"
+      },
+      {
+        "category": "brain",
         "name": "inline_timeline_chunks"
       },
       {

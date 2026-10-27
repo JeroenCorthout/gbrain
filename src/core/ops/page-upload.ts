@@ -165,11 +165,12 @@ const begin_page_upload: Operation = {
     if (typeof total !== 'number' || !Number.isSafeInteger(total) || total < 1) {
       throw invalidParam('total_bytes must be a positive whole number of bytes.', 'Pass the UTF-8 byte length of the complete content.');
     }
-    // Wave C 1H-a: the git-first path takes unsplit pages only; over PAGE_MAX_BYTES a strict source keeps refusing (split pages are PR 5's).
+    // Wave C 1H-a: the git-first path takes unsplit pages only; over PAGE_MAX_BYTES a strict source keeps refusing (split pages are PR 5's),
+    // with reason switch_off (spec §2.1): this build has no git-backed tier. Doctor large_pages reports the ceiling.
     if (total > PAGE_MAX_BYTES && await gitFirstStrictActive(ctx.engine, pageMutationSource(ctx, p, 'begin_page_upload'))) {
       throw opError('file_too_large', `This upload is ${total} bytes, over the ${PAGE_MAX_BYTES}-byte page limit of a git-canonical source, so nothing was staged.`,
         'Split the content into pages under the limit, or write it to a source that is not git-canonical; then upload each page again with a new request_id.',
-        { legacy_error: 'request_too_large' });
+        { legacy_error: 'request_too_large', reason: 'switch_off' });
     }
     if (total > PAGE_MAX_BYTES) await assertLargeUploadAdmissible(ctx, mode, total);
     if (typeof p.sha256 !== 'string' || !SHA256_HEX.test(p.sha256)) throw invalidParam('sha256 must be 64 hex characters.', 'Pass the hex SHA-256 of the complete content\'s UTF-8 bytes.');
