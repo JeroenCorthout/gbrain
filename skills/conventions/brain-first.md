@@ -201,4 +201,3 @@ have them ("Client asked for the 30-day window."). Edit the existing page with
 its `expected_revision`; don't create a second page for a new edition.
 `get_versions` shows each version's `replaced_because`. Never put a credential
 in a reason: it can be pushed in a Git commit message, and gbrain refuses it.
-Details: [page history](../../docs/guides/page-history.md#reasons).
