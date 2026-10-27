@@ -611,8 +611,12 @@ function parseBaseTableColumns(sql: string): Map<string, Set<string>> {
  * to their inner identifier; literal-only expressions like `(slug, NULLS LAST)`
  * keep the bare column.
  *
- * Out of scope: WHERE-clause columns in partial indexes (rare in our schema;
- * those columns are always also referenced in the index column list itself).
+ * Partial-index WHERE predicates and INCLUDE lists count too: replaying
+ * `CREATE INDEX ... WHERE pending` on a brain whose table predates the
+ * `pending` column fails exactly like an indexed column does (#7645, the
+ * v266 `derived_generation_items_pending` wedge). Predicate identifiers are
+ * every bare word that is not a SQL keyword, a function name, a string
+ * literal or a cast's type.
  * Trigger function bodies are out of scope (they reference NEW.col / OLD.col
  * which the existing test file's strip-list handles separately).
  */
@@ -677,6 +681,19 @@ function parseIndexColumnReferences(sql: string): Array<{ table: string; column:
         result.push({ table, column: col.toLowerCase() });
       }
     }
+
+    const statementEnd = sql.indexOf(';', i);
+    const tail = sql.slice(i, statementEnd < 0 ? undefined : statementEnd);
+    const predicate = tail.match(/\bWHERE\b([\s\S]*)$/i)?.[1];
+    const include = tail.match(/\bINCLUDE\s*\(([^)]*)\)/i)?.[1];
+    for (const expr of [predicate, include]) {
+      if (!expr) continue;
+      const bare = expr.replace(/'(?:[^']|'')*'/g, ' ').replace(/::\s*\w+(?:\s*\[\])?/g, ' ');
+      for (const word of bare.matchAll(/\b([a-z_]\w*)\b(?!\s*\()/gi)) {
+        if (/^(and|or|not|is|null|true|false|in|like|ilike|between|any|all|distinct|from|case|when|then|else|end|interval|array|current_date|current_timestamp|localtimestamp)$/i.test(word[1])) continue;
+        result.push({ table, column: word[1].toLowerCase() });
+      }
+    }
   }
   return result;
 }
@@ -712,6 +729,16 @@ test('parseBaseTableColumns + parseIndexColumnReferences extract structural refe
   expect(refs).toContainEqual({ table: 'pages', column: 'id' });
   // USING hnsw with operator class.
   expect(refs).toContainEqual({ table: 'pages', column: 'embedding' });
+});
+
+test('parseIndexColumnReferences extracts partial-index WHERE and INCLUDE identifiers (#7645)', () => {
+  const refs = parseIndexColumnReferences(`
+    CREATE INDEX IF NOT EXISTS derived_generation_items_pending ON derived_generation_items (generation_id) WHERE pending;
+    CREATE INDEX i ON t (a) INCLUDE (b) WHERE kind = 'x'::text AND lower(c) IS NOT NULL AND CASE WHEN d THEN true ELSE false END;
+  `);
+  expect(refs).toContainEqual({ table: 'derived_generation_items', column: 'pending' });
+  for (const column of ['a', 'b', 'kind', 'c', 'd']) expect(refs).toContainEqual({ table: 't', column });
+  expect(refs.filter(r => ['x', 'text', 'lower', 'case', 'when', 'then', 'else', 'end'].includes(r.column))).toEqual([]);
 });
 
 test('parseIndexColumnReferences catches v0.27 composite second-column case', () => {
@@ -1157,6 +1184,10 @@ const COLUMN_EXEMPTIONS = new Set<string>([
   // index or function in either blob references it, and the doctor reader
   // probes for the column on older brains.
   'pages.links_extract_failure',
+  // GBRA-95 G7a follow-up (migration v274) - the file path a strict page's private transition withheld. Same posture as
+  // v258: absent from both schema blobs, so fresh and upgraded brains share its ordinal; column-only and nullable, no
+  // index or function in either blob references it, and only strict-source publications (v272+) write it.
+  'pages.withheld_source_path',
   // Wave B segmented page storage (migration v248). Deliberately absent from
   // both schema blobs so fresh and upgraded brains share their ordinals; no
   // index in either blob references them (content_chunks_occurrence_idx is
