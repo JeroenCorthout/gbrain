@@ -3,6 +3,7 @@ import { expect } from 'bun:test';
 import { createHash, randomUUID } from 'node:crypto';
 import type { BrainEngine } from '../../src/core/engine.ts';
 import { operations, type OperationContext } from '../../src/core/operations.ts';
+import { testWaitMs } from '../helpers/wait-for.ts';
 
 const op = (name: string) => operations.find(o => o.name === name)!;
 const hex = (text: string) => createHash('sha256').update(Buffer.from(text, 'utf8')).digest('hex');
@@ -31,9 +32,13 @@ export async function write(engine: BrainEngine, ctx: OperationContext, slug: st
       await op('commit_page_upload').handler(ctx, { upload_id: begun.upload_id, wait_ms: 3_000 });
     }
   } catch (caught) { error = caught; }
-  const [row] = await engine.executeRaw<{ state: string; outcome: Record<string, any> | null; id: string }>(
-    `SELECT state, outcome, id::text AS id FROM persistence_requests WHERE slug = $1 AND operation IN ('put_page')
-      ORDER BY (request_id::text = $2) DESC, (intent->>'kind' IS DISTINCT FROM 'managed_file_import') DESC, created_at DESC LIMIT 1`, [slug, requestId]);
-  return { ...row!, error };
+  const deadline = performance.now() + testWaitMs(60_000);
+  for (;;) {
+    const [row] = await engine.executeRaw<{ state: string; outcome: Record<string, any> | null; id: string }>(
+      `SELECT state, outcome, id::text AS id FROM persistence_requests WHERE slug = $1 AND operation IN ('put_page')
+        ORDER BY (request_id::text = $2) DESC, (intent->>'kind' IS DISTINCT FROM 'managed_file_import') DESC, created_at DESC LIMIT 1`, [slug, requestId]);
+    if (!['queued', 'running'].includes(row!.state) || performance.now() > deadline) return { ...row!, error };
+    await Bun.sleep(100);
+  }
 }
 
