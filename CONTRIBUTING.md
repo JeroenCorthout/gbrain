@@ -640,8 +640,7 @@ before cutting shows agents do at least as well. Then set its row's
 **Verify** by rerunning the case that prompted the change in a fresh session,
 plus any test that asserts the skill's text.
 
-The ladder and the diet are adapted from
-[skill-diet](https://github.com/nicobailon/skill-diet) (MIT).
+The ladder and the diet are adapted from the open-source skill-diet skill (MIT).
 
 ## Adding a new engine
 
