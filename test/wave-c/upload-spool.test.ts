@@ -1,12 +1,13 @@
 /**
  * Wave C 1H-a, ceo-r3-native-4: an upload session of a strict source spools its parts to a 0600 file. Abort deletes the
  * file; a lapsed session's file is deleted by the owner sweep and only then is its reservation released (expiry skips a
- * session whose spool is still present); a spool file no session names is deleted at the sweep (owner start-up); a resumed
+ * session whose spool is still present); a spool file no session names is deleted at the sweep (owner start-up) once it is
+ * older than a grace period (a session opening right now has its file before its row commits); a resumed
  * part re-sent with the same bytes is accepted from the spool's part record.
  */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { createHash, randomUUID } from 'node:crypto';
-import { existsSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { BrainEngine } from '../../src/core/engine.ts';
 import { operations } from '../../src/core/operations.ts';
@@ -58,9 +59,19 @@ for (const backend of testBackends()) describe(`[${backend}] upload spool lifecy
     expect(existsSync(uploadSpoolPath(id))).toBe(true);
     const orphan = join(uploadSpoolDir(), `${randomUUID()}.spool`);
     writeFileSync(orphan, 'left by a crash', { mode: 0o600 });
+    // A file no record names yet may be a session opening right now (its row commits after the file exists): it is kept
+    // through the grace period and removed once it is older.
+    const opening = join(uploadSpoolDir(), `${randomUUID()}.spool`);
+    writeFileSync(opening, '', { mode: 0o600 });
+    const old = new Date(Date.now() - 2 * 60 * 60 * 1000);
+    utimesSync(orphan, old, old);
     await sweepSegmentStorage(engine);
     expect(existsSync(uploadSpoolPath(id))).toBe(false);
     expect(existsSync(orphan)).toBe(false);
+    expect(existsSync(opening)).toBe(true);
+    utimesSync(opening, old, old);
+    await sweepSegmentStorage(engine);
+    expect(existsSync(opening)).toBe(false);
     expect(await reserved(engine, id)).toBe('expired');
   }, { databaseUrl, setup }), 120_000);
 
