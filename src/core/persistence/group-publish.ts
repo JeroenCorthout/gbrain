@@ -33,6 +33,7 @@
  * marker, so its request identity and replay are unchanged; when the group
  * does not commit it takes `publishMutation` like any other member.
  */
+import { isPublishedRequestState } from './request-states.ts';
 import { relative, sep } from 'node:path';
 import type { BrainEngine } from '../engine.ts';
 import { OperationError } from '../ops/contract.ts';
@@ -865,7 +866,7 @@ export async function executeClaimedGroup(engine: BrainEngine, rows: WriteReques
         if (reclaimed) { row = reclaimed; current = reclaimed; }
       }
       if (!current || current.execution_token !== row.execution_token || current.state !== 'running') {
-        if (current && ['committed', 'conflict', 'failed', 'cancelled'].includes(current.state)) { run.settled(current); progressed = true; }
+        if (current && isPublishedRequestState(current.state)) { run.settled(current); progressed = true; }
         else if (!ordered) release = true;
         continue;
       }
@@ -875,7 +876,7 @@ export async function executeClaimedGroup(engine: BrainEngine, rows: WriteReques
       if ('released' in p) { await releaseUnpublishedClaim(engine, row, p.released === 'claim_lost' ? 'claim_lost' : 'group_member_waiting'); if (ordered) release = true; continue; }
       const done = await bounded(() => publishMutation(engine, row, (p as { ok: PreparedMutation }).ok, run.hostId));
       run.settled(done);
-      if (['committed', 'conflict', 'failed', 'cancelled'].includes(done.state)) progressed = true;
+      if (isPublishedRequestState(done.state)) progressed = true;
       else release = true;
     }
     return progressed;
