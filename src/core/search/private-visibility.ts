@@ -72,10 +72,18 @@ export function accessAllowedSql(pageAlias: string, identity: readonly string[])
   return `(${readersAllowedSql(pageAlias, identity)} AND NOT ${originRestrictedSql(pageAlias)})`;
 }
 
-/** The readers test alone on any row with a `frontmatter` column (a page or a version snapshot), without lineage. */
-export function readersAllowedSql(alias: string, identity: readonly string[]): string {
+/**
+ * The readers test alone, without lineage. On a pages row it reads the
+ * derived `page_readers` column (a trigger keeps it equal to
+ * gbrain_access_readers(frontmatter)); a row that names readers but has no
+ * derived value yet (written before the migration, not yet repaired by
+ * `gbrain repair access`) reads as nobody. `row: 'snapshot'` evaluates a
+ * version snapshot's own frontmatter directly (bounded to one page's versions).
+ */
+export function readersAllowedSql(alias: string, identity: readonly string[], row: 'page' | 'snapshot' = 'page'): string {
   const ids = identity.length && validIdentity(identity) ? identity : [];
-  const listed = ids.length ? ` OR gbrain_access_readers(${alias}.frontmatter) && ARRAY[${ids.map(id => `'${id}'`).join(', ')}]::text[]` : '';
+  const readers = row === 'page' ? `${alias}.page_readers` : `gbrain_access_readers(${alias}.frontmatter)`;
+  const listed = ids.length ? ` OR ${readers} && ARRAY[${ids.map(id => `'${id}'`).join(', ')}]::text[]` : '';
   return `(${alias}.frontmatter->'readable_by' IS NULL${listed})`;
 }
 

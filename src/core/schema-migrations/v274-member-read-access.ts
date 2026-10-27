@@ -38,6 +38,8 @@ CREATE TABLE IF NOT EXISTS access_group_members (
   PRIMARY KEY (group_id, member_id)
 );
 CREATE INDEX IF NOT EXISTS access_group_members_member_idx ON access_group_members (member_id);
+ALTER TABLE pages ADD COLUMN IF NOT EXISTS page_readers TEXT[];
+CREATE INDEX IF NOT EXISTS pages_page_readers_gin ON pages USING gin (page_readers) WHERE page_readers IS NOT NULL;
 ALTER TABLE access_tokens ADD COLUMN IF NOT EXISTS member_id TEXT;
 ALTER TABLE access_tokens ADD COLUMN IF NOT EXISTS may_act_for TEXT[];
 ALTER TABLE oauth_clients ADD COLUMN IF NOT EXISTS member_id TEXT;
@@ -74,6 +76,16 @@ BEGIN
   RETURN NULL;
 END
 $fn$;
+CREATE OR REPLACE FUNCTION gbrain_access_derive_page_readers() RETURNS trigger
+  LANGUAGE plpgsql SET search_path = pg_catalog, public AS $fn$
+BEGIN
+  NEW.page_readers := CASE WHEN NEW.frontmatter ? 'readable_by' THEN gbrain_access_readers(NEW.frontmatter) ELSE NULL END;
+  RETURN NEW;
+END
+$fn$;
+DROP TRIGGER IF EXISTS pages_access_derive_readers ON pages;
+CREATE TRIGGER pages_access_derive_readers BEFORE INSERT OR UPDATE OF frontmatter, page_readers ON pages
+  FOR EACH ROW EXECUTE FUNCTION gbrain_access_derive_page_readers();
 DROP TRIGGER IF EXISTS pages_access_mark_restricted ON pages;
 CREATE TRIGGER pages_access_mark_restricted AFTER INSERT OR UPDATE OF frontmatter ON pages
   FOR EACH ROW WHEN (NEW.frontmatter ? 'readable_by') EXECUTE FUNCTION gbrain_access_mark_restricted();

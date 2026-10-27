@@ -58,6 +58,21 @@ describe('gbrain_access_readers parity', () => {
   });
 });
 
+describe('derived page_readers', () => {
+  test('a trigger keeps pages.page_readers equal to the normalization on insert, frontmatter change and direct writes', async () => {
+    await engine.executeRaw('INSERT INTO sources (id, name) VALUES ($1, $1) ON CONFLICT (id) DO NOTHING', ['ap-src']);
+    await engine.putPage('notes/ap-readers', { type: 'note', title: 'A', compiled_truth: 'x', timeline: '', frontmatter: { readable_by: ['Bob-Example', 'group:team-a'] } }, { sourceId: 'ap-src' } as never);
+    const read = async () => (await engine.executeRaw<{ r: string[] | null }>("SELECT page_readers AS r FROM pages WHERE slug = 'notes/ap-readers' AND source_id = 'ap-src'"))[0].r;
+    expect(await read()).toEqual(['group:team-a', 'member:bob-example']);
+    await engine.executeRaw("UPDATE pages SET frontmatter = frontmatter || '{\"readable_by\": \"not valid\"}'::jsonb WHERE slug = 'notes/ap-readers'");
+    expect(await read()).toEqual([NOBODY]);
+    await engine.executeRaw("UPDATE pages SET page_readers = ARRAY['member:mallory-example'] WHERE slug = 'notes/ap-readers'");
+    expect(await read()).toEqual([NOBODY]);
+    await engine.executeRaw("UPDATE pages SET frontmatter = frontmatter - 'readable_by' WHERE slug = 'notes/ap-readers'");
+    expect(await read()).toBeNull();
+  });
+});
+
 describe('principal rules', () => {
   test('bare ids are members; prefixes and ASCII case fold; anything else is invalid', () => {
     expect(normalizePrincipal('Alice-Example')).toBe('member:alice-example');
