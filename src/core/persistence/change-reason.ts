@@ -13,8 +13,9 @@ import { scanTextSpans } from '../secret-scan.ts';
 import { privatePagesFilterFragment } from '../search/private-visibility.ts';
 import type { GitCommitNote } from './effect-model.ts';
 import { sourceCanonicalGit } from './git-door.ts';
-import type { WriteRequest } from './model.ts';
+import type { SqlEngine, WriteRequest } from './model.ts';
 import type { PreparedMutation } from './coordinator.ts';
+import type { Notice } from '../agent-output.ts';
 
 export const CHANGE_REASON_MAX = 500;
 export const CHANGE_REASON_OPERATIONS: readonly string[] = ['put_page', 'edit_page', 'revert_version'];
@@ -95,3 +96,19 @@ export function withChangeReason(row: WriteRequest, prepared: PreparedMutation):
   return prepared;
 }
 
+
+/**
+ * A receipt's `reason_recorded` once its Git effect settled. A non-strict write's Git effect is superseded when a newer
+ * write to the same file commits first: that commit carries only the newer write's note, so this reason is in page
+ * history but in no commit. The receipt then says `git: 'superseded'` with a degraded `reason_not_committed` notice.
+ * Nothing needs fixing, and retrying the write would be wrong.
+ */
+export async function settledReasonRecorded(engine: SqlEngine, row: Pick<WriteRequest, 'id' | 'outcome'>): Promise<{ recorded: ReasonRecorded; notice: Notice } | null> {
+  const recorded = row.outcome?.reason_recorded as ReasonRecorded | undefined;
+  if (recorded?.git !== 'queued') return null;
+  const [git] = await engine.executeRaw<{ outcome: Record<string, unknown> | null }>(
+    "SELECT outcome FROM persistence_effects WHERE request_id = $1::uuid AND kind = 'git' AND state = 'committed'", [row.id]);
+  if (git?.outcome?.git !== 'superseded') return null;
+  return { recorded: { ...recorded, git: 'superseded' }, notice: { code: 'reason_not_committed', kind: 'degraded',
+    why: 'This write\'s reason is kept in gbrain\'s page history (get_versions replaced_because), but not in a Git commit: a newer write to the same file committed first, carrying only its own reason. Nothing needs fixing; do not retry the write.' } };
+}
