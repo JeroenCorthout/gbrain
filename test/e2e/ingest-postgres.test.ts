@@ -71,6 +71,13 @@ d('ingest and ingest_undo (live Postgres)', () => {
     test('validation (' + label + ')', async () => { fx = await fixture(storage); await S.validationScenario(engine); }, 60_000);
     test('two-entity claim (' + label + ')', async () => { fx = await fixture(storage); await S.twoEntityScenario(engine); }, 60_000);
     test('reserved report namespace (' + label + ')', async () => { fx = await fixture(storage); await S.namespaceScenario(engine); }, 60_000);
+    test('private ingest (' + label + ')', async () => { fx = await fixture(storage); await S.privacyScenario(engine); }, 60_000);
+    test('held natural slug (' + label + ')', async () => { fx = await fixture(storage); await S.heldSlugScenario(engine); }, 60_000);
+    test('grants (' + label + ')', async () => { fx = await fixture(storage); await S.grantScenario(engine); }, 60_000);
+    test('create conflict re-plan (' + label + ')', async () => { fx = await fixture(storage); await S.createConflictScenario(engine); }, 60_000);
+    test('undo keeps changed pages (' + label + ')', async () => { fx = await fixture(storage); await S.undoKeepsChangedPagesScenario(engine); }, 90_000);
+    test('undo keeps relied-on claims (' + label + ')', async () => { fx = await fixture(storage); await S.undoKeepsReliedOnScenario(engine); }, 90_000);
+    test('undo unverifiable (' + label + ')', async () => { fx = await fixture(storage); await S.undoUnverifiableScenario(engine); }, 60_000);
   }
   test('Git target unavailable refuses before writes', async () => { fx = await fixture('git'); await S.storageUnavailableScenario(engine); }, 60_000);
 });

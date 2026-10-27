@@ -80,6 +80,34 @@ for (const storage of ['git', 'database'] as ReviewStorage[]) {
       fx = await reviewDoorFixture(engine, storage);
       await S.namespaceScenario(engine);
     }, 60_000);
+    test('a private ingest derives only private pages and claims, unreadable remotely', async () => {
+      fx = await reviewDoorFixture(engine, storage);
+      await S.privacyScenario(engine);
+    }, 60_000);
+    test('a natural slug held by an unreadable page takes the hash-tagged slug, proposed', async () => {
+      fx = await reviewDoorFixture(engine, storage);
+      await S.heldSlugScenario(engine);
+    }, 60_000);
+    test('grants: refused before any provider call without the child capabilities; bound prefixes skip outside_grant', async () => {
+      fx = await reviewDoorFixture(engine, storage);
+      await S.grantScenario(engine);
+    }, 60_000);
+    test('a slug created by another writer after planning is planned again once', async () => {
+      fx = await reviewDoorFixture(engine, storage);
+      await S.createConflictScenario(engine);
+    }, 60_000);
+    test('undo keeps promoted and edited pages', async () => {
+      fx = await reviewDoorFixture(engine, storage);
+      await S.undoKeepsChangedPagesScenario(engine);
+    }, 90_000);
+    test('undo keeps a claim another attempt relies on, with its pages', async () => {
+      fx = await reviewDoorFixture(engine, storage);
+      await S.undoKeepsReliedOnScenario(engine);
+    }, 90_000);
+    test('undo refuses ingest_undo_unverifiable without the attempt journal', async () => {
+      fx = await reviewDoorFixture(engine, storage);
+      await S.undoUnverifiableScenario(engine);
+    }, 60_000);
   });
 }
 

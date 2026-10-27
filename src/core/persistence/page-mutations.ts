@@ -363,12 +363,10 @@ export async function preparePageAdmission(ctx: OperationContext,
     if (typeof intent.capture_path === 'string') intent.capture_file_hash = sha256(p.content);
   }
   await validateMutationSlug(ctx, input.operation, slug, sourceId);
-  // GBRA-215: an attempt's own report keeps the original principal but not its slug fence (a bound client's ingest writes it).
+  enforceClientSlugFence(ctx, slug, input.operation);
+  enforceSubagentSlugFence(ctx, slug, input.operation);
+  // GBRA-215: an attempt's own report page (ingest/<attempt_id>) passes the reserved-namespace check; every grant still applies.
   const ingestReport = input.internalIngestReport === true && input.operation === 'put_page' && slug.startsWith('ingest/');
-  if (!ingestReport) {
-    enforceClientSlugFence(ctx, slug, input.operation);
-    enforceSubagentSlugFence(ctx, slug, input.operation);
-  }
   // Preserve same-source diagnostics for new timeline writes without making
   // terminal replay depend on a page that may have since been purged.
   if (input.operation === 'add_timeline_entry') await requireWritablePage({ ...ctx, sourceId }, slug, input.operation, 'page');
@@ -383,7 +381,7 @@ export async function preparePageAdmission(ctx: OperationContext,
     async () => !source.local_path && sourceId === 'default' ? ctx.engine.getConfig('sync.repo_path') : null,
   ]) as [Awaited<ReturnType<typeof submissionAuthority>>, unknown, Awaited<ReturnType<BrainEngine['readPageSnapshot']>>, Awaited<ReturnType<typeof getWorktreeBinding>>, string | null, string | null];
   if (!ingestReport && input.managedFileImport !== true) {
-    await (await import('../ingest/namespace.ts')).assertIngestNamespaceWritable(ctx.engine, { operation: input.operation, slug, existingType: snapshot?.page.type, params: p });
+    await (await import('../ingest/namespace.ts')).assertIngestNamespaceWritable(ctx.engine, { operation: input.operation, slug, existing: snapshot, params: p });
   }
   if (typeof intent.content === 'string' && (typeof p.expected_revision !== 'string' || p.expected_revision === snapshot?.revision)) {
     await assertTimelineNotOmitted(ctx.engine, { intent, remote: ctx.remote !== false, writer: typeof p.expected_revision === 'string' ? 'editing' : 'preserving',

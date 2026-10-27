@@ -31,9 +31,9 @@ import {
   INGEST_ENTITY_CAP, INGEST_MAX_CHARS, IngestProviderFailure, extractWindow, extractionKillSwitchOn, ingestModel, keylessCandidates,
   mergeWindows, windowDocument, type ExtractedWindow,
 } from '../ingest/extract.ts';
-import { planIngest, type IngestPlan } from '../ingest/plan.ts';
+import { planIngest, type IngestPlan, type PlannedPage } from '../ingest/plan.ts';
 import {
-  INGEST_REPORT_TYPE, filterReportForCaller, reportActions, reportPageContent, reportSlugFor, resolveStatus, summarize,
+  INGEST_REPORT_PREFIX, INGEST_REPORT_TYPE, filterReportForCaller, reportActions, reportPageContent, reportSlugFor, resolveStatus, summarize,
   type IngestReport, type ReportEvidence, type ReportFact, type ReportPage,
 } from '../ingest/report.ts';
 
@@ -195,6 +195,26 @@ async function principalOf(ctx: OperationContext) {
   return requestPrincipalForContext(ctx);
 }
 
+/**
+ * Plan step 1: before any provider call or write, the caller's grant must cover what ingest commits: the source page,
+ * the report page under ingest/ and, when facts are extracted, remember. The door's own authorization answers it.
+ */
+async function assertCallerCanCommit(ctx: OperationContext, sourceId: string, incarnation: string, sourceSlug: string, facts: boolean): Promise<void> {
+  const { submissionAuthority } = await import('../persistence/authority.ts');
+  const needs: Array<[string, string, string]> = [['put_page', sourceSlug, 'the source page ' + sourceSlug], ['put_page', reportSlugFor('a' + '0'.repeat(16)), 'the report page under ' + INGEST_REPORT_PREFIX],
+    ...(facts ? [['remember', sourceSlug, 'facts (remember)'] as [string, string, string]] : [])];
+  for (const [operation, slug, what] of needs) {
+    try {
+      await submissionAuthority(ctx, operation, sourceId, incarnation, slug);
+    } catch (error) {
+      if (!(error instanceof OperationError)) throw error;
+      throw opError('permission_denied', 'This caller cannot write ' + what + ', which ingest commits: ' + error.message,
+        'Nothing was extracted or written. The grant must cover the source page slug, ' + INGEST_REPORT_PREFIX + ', put_page and remember; ask the brain owner to widen it, or pass a slug inside it.',
+        { docs: DOCS + '#remote-callers' });
+    }
+  }
+}
+
 /** Status, resume and undo by attempt id: the local owner reads every attempt, any other caller only its own. */
 async function callerMayRead(ctx: OperationContext, state: IngestAttemptState): Promise<boolean> {
   return ctx.remote === false || principalKey(await principalOf(ctx)) === principalKey(state.principal);
@@ -302,17 +322,30 @@ async function commitPlan(ctx: OperationContext, state: IngestAttemptState, plan
     const base: ReportPage = { name: page.name, slug: page.slug, type: page.type, status: 'skipped', ...(page.near_names ? { near_names: page.near_names } : {}) };
     if (page.status === 'skipped') { report.pages.push({ ...base, reason: page.reason }); continue; }
     if (page.status === 'existing') { const row = { ...base, status: 'existing' as const }; report.pages.push(row); written.set(page.slug, row); continue; }
-    const proposed = page.status === 'propose';
-    const row = await withEntityCreateLock(ctx, sourceId, async (): Promise<ReportPage> => {
-      const snap = await ctx.engine.readPageSnapshot(page.slug, { sourceId, includeDeleted: true });
-      if (snap && !snap.page.deleted_at) return { ...base, status: 'skipped', reason: 'create_conflict' };
-      const r = await publish(ctx, sourceId, { slug: page.slug, content: entityPageContent(page, proposed, state), ...(snap ? { expected_revision: snap.revision } : {}) });
-      if (!r.ok) return { ...base, status: 'failed', reason: r.code };
-      report.write_requests.push({ slug: page.slug, request_id: r.request_id, state: r.pending ? 'pending' : 'committed' });
-      if (r.pending) return { ...base, status: 'pending', request_id: r.request_id };
-      evidence.created_pages.push({ slug: page.slug, request_id: r.request_id, revision: null, proposed });
-      return { ...base, status: proposed ? 'proposed' : 'created', request_id: r.request_id };
+    const create = (target: PlannedPage) => withEntityCreateLock(ctx, sourceId, async (): Promise<ReportPage | null> => {
+      const proposed = target.status === 'propose';
+      const at = { ...base, slug: target.slug };
+      const snap = await ctx.engine.readPageSnapshot(target.slug, { sourceId, includeDeleted: true });
+      if (snap && !snap.page.deleted_at) return null;
+      const r = await publish(ctx, sourceId, { slug: target.slug, content: entityPageContent(target, proposed, state), ...(snap ? { expected_revision: snap.revision } : {}) });
+      if (!r.ok) return { ...at, status: 'failed', reason: r.code };
+      report.write_requests.push({ slug: target.slug, request_id: r.request_id, state: r.pending ? 'pending' : 'committed' });
+      if (r.pending) return { ...at, status: 'pending', request_id: r.request_id };
+      evidence.created_pages.push({ slug: target.slug, request_id: r.request_id, revision: null, proposed });
+      return { ...at, status: proposed ? 'proposed' : 'created', request_id: r.request_id };
     });
+    const conflict: ReportPage = { ...base, status: 'skipped', reason: 'create_conflict' };
+    let row = await create(page);
+    if (!row) {
+      // Another writer took the slug after planning: plan this one entity again against the brain as it is now, once.
+      const [again] = (await planIngest({ ctx, sourceId, text, entities: [{ name: page.name, type: page.type, context: page.context, source: page.source }], facts: [],
+        visibility: state.options.visibility, validFrom: null, trusted: state.options.trusted_extraction, factsSkipped: null })).pages;
+      row = !again ? conflict
+        : again.status === 'existing' ? { ...base, slug: again.slug, status: 'existing' }
+        : again.status === 'skipped' ? { ...base, slug: again.slug || page.slug, status: 'skipped', reason: again.reason }
+        : (await create(again)) ?? conflict;
+      if (row.status === 'existing') { report.pages.push(row); written.set(page.slug, row); continue; }
+    }
     report.pages.push(row);
     if (row.status === 'proposed' || row.status === 'created') written.set(page.slug, row);
   }
@@ -330,27 +363,27 @@ async function commitPlan(ctx: OperationContext, state: IngestAttemptState, plan
         row.copies.push({ entity_slug: c.entity_slug, status: pageRow?.status === 'pending' ? 'pending' : 'skipped', reason: pageRow?.status === 'pending' ? 'page_pending' : 'page_not_written' });
         continue;
       }
-      const check = await checkFactAgainstSaved(ctx.engine, sourceId, { fact: f.fact, kind: f.kind, visibility: state.options.visibility, entity_slug: c.entity_slug }, { excludePrivate });
-      if (check.verdict === 'withdrawn') { row.copies.push({ entity_slug: c.entity_slug, status: 'skipped', reason: 'withdrawn' }); continue; }
+      const check = await checkFactAgainstSaved(ctx.engine, sourceId, { fact: f.fact, kind: f.kind, visibility: state.options.visibility, entity_slug: target.slug }, { excludePrivate });
+      if (check.verdict === 'withdrawn') { row.copies.push({ entity_slug: target.slug, status: 'skipped', reason: 'withdrawn' }); continue; }
       if (check.verdict === 'duplicate') {
-        row.copies.push({ entity_slug: c.entity_slug, status: 'support', fact_id: check.id });
+        row.copies.push({ entity_slug: target.slug, status: 'support', fact_id: check.id });
         if (!evidence.support_fact_ids.includes(check.id)) evidence.support_fact_ids.push(check.id);
         continue;
       }
       const request_id = randomUUID();
       try {
         const res = asRecord(await remember.handler(ctx, {
-          fact: f.fact, entity: c.entity_slug, provenance: 'ingest:' + state.source_slug, kind: f.kind, request_id,
+          fact: f.fact, entity: target.slug, provenance: 'ingest:' + state.source_slug, kind: f.kind, request_id,
           visibility: state.options.visibility, ...(f.valid_from ? { valid_from: f.valid_from } : {}), infer_entity: false,
         }));
         const id = Number(res.fact_id ?? res.id ?? asRecord((res.facts as unknown[] | undefined)?.[0]).id);
         const pending = pendingOf(res);
-        row.copies.push({ entity_slug: c.entity_slug, status: pending ? 'pending' : 'created', ...(Number.isFinite(id) ? { fact_id: id } : {}), request_id });
-        report.write_requests.push({ slug: c.entity_slug, request_id, state: pending ? 'pending' : 'committed' });
-        if (!pending && Number.isFinite(id)) evidence.created_facts.push({ id, entity_slug: c.entity_slug, request_id });
+        row.copies.push({ entity_slug: target.slug, status: pending ? 'pending' : 'created', ...(Number.isFinite(id) ? { fact_id: id } : {}), request_id });
+        report.write_requests.push({ slug: target.slug, request_id, state: pending ? 'pending' : 'committed' });
+        if (!pending && Number.isFinite(id)) evidence.created_facts.push({ id, entity_slug: target.slug, request_id });
       } catch (error) {
         if (!(error instanceof OperationError)) throw error;
-        row.copies.push({ entity_slug: c.entity_slug, status: 'failed', reason: error.code, request_id });
+        row.copies.push({ entity_slug: target.slug, status: 'failed', reason: error.code, request_id });
       }
     }
     // D3 and round-4 item 11: the links effect derives no mentions edge from fence rows on either storage (checked in
@@ -409,6 +442,7 @@ async function runIngest(ctx: OperationContext, p: Params): Promise<Record<strin
   }
   if (state && state.phase === 'complete') return storedReport(ctx, state, { repeated: true });
   if (state && state.phase !== 'undone' && p.resume !== true) return storedReport(ctx, state, { repeated: true, resumable: true });
+  await assertCallerCanCommit(ctx, sourceId, topology.source_incarnation, state?.source_slug ?? v.slug ?? 'inbox/ingest-' + documentHash.slice(0, 12), v.options.keyed && !v.options.no_facts);
   if (!state || state.phase === 'undone') {
     const now = new Date().toISOString();
     const attempt_id = newAttemptId();
@@ -515,6 +549,7 @@ async function planUndo(ctx: OperationContext, state: IngestAttemptState, ev: Re
   const sourceId = state.source_id;
   const out: UndoPlan = { retract: [], delete: [], skipped: [] };
   const ids = ev.created_facts.map(f => f.id);
+  const supportedOn = new Set<string>();
   const rows = ids.length ? await ctx.engine.executeRaw<{ id: number; entity_slug: string | null; row_num: number | null; expired_at: unknown; valid_until: unknown; source: string | null }>(
     'SELECT id, entity_slug, row_num, expired_at, valid_until, source FROM facts WHERE source_id=$1 AND id = ANY($2::int[])', [sourceId, ids]) : [];
   const byId = new Map(rows.map(r => [Number(r.id), r]));
@@ -523,7 +558,7 @@ async function planUndo(ctx: OperationContext, state: IngestAttemptState, ev: Re
     const row = byId.get(f.id);
     if (!row || row.entity_slug !== f.entity_slug || row.source !== 'ingest:' + ev.source_slug) { out.skipped.push({ kind: 'fact', ref: String(f.id), reason: 'not_found' }); continue; }
     if (row.expired_at || row.valid_until) { out.skipped.push({ kind: 'fact', ref: String(f.id), reason: 'already_retracted' }); continue; }
-    if ((await supportingAttempts(ctx.engine, f.id, state.attempt_id)).length) { out.skipped.push({ kind: 'fact', ref: String(f.id), reason: 'supported' }); continue; }
+    if ((await supportingAttempts(ctx.engine, f.id, state.attempt_id)).length) { out.skipped.push({ kind: 'fact', ref: String(f.id), reason: 'supported' }); supportedOn.add(f.entity_slug); continue; }
     if (row.row_num == null) { out.skipped.push({ kind: 'fact', ref: String(f.id), reason: 'not_fenced' }); continue; }
     out.retract.push({ fact_id: f.id, entity_slug: f.entity_slug, row_num: Number(row.row_num) });
   }
@@ -537,13 +572,14 @@ async function planUndo(ctx: OperationContext, state: IngestAttemptState, ev: Re
     if (!snap || snap.page.deleted_at) { out.skipped.push({ kind: 'page', ref: pg.slug, reason: 'not_found' }); continue; }
     if (pg.proposed && !isUnverifiedExtraction(asRecord(snap.page.frontmatter))) { out.skipped.push({ kind: 'page', ref: pg.slug, reason: 'promoted' }); continue; }
     if (pg.revision && snap.revision !== pg.revision) { out.skipped.push({ kind: 'page', ref: pg.slug, reason: 'edited' }); continue; }
-    if ((await referencedFrom(pg.slug)).length) { out.skipped.push({ kind: 'page', ref: pg.slug, reason: 'referenced' }); continue; }
+    // A claim another attempt relies on keeps its page, and the source page it cites.
+    if (supportedOn.has(pg.slug) || (await referencedFrom(pg.slug)).length) { out.skipped.push({ kind: 'page', ref: pg.slug, reason: 'referenced' }); continue; }
     out.delete.push({ slug: pg.slug });
   }
   if (ev.source_created) {
     const others = await attemptsOfDocument(ctx.engine, sourceId, state.document_hash, state.attempt_id);
     if (others.length) out.skipped.push({ kind: 'page', ref: ev.source_slug, reason: 'used_by_other_attempt' });
-    else if ((await referencedFrom(ev.source_slug)).length) out.skipped.push({ kind: 'page', ref: ev.source_slug, reason: 'referenced' });
+    else if (supportedOn.size || (await referencedFrom(ev.source_slug)).length) out.skipped.push({ kind: 'page', ref: ev.source_slug, reason: 'referenced' });
     else out.delete.push({ slug: ev.source_slug });
   }
   return out;

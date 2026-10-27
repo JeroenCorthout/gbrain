@@ -11,6 +11,8 @@ import { localHostId } from '../../src/core/persistence/identity.ts';
 import { parseMarkdown } from '../../src/core/markdown.ts';
 import { __setChatTransportForTests, configureGateway, resetGateway } from '../../src/core/ai/gateway.ts';
 import { reviewCtx, committedFile, type ReviewDoorFixture } from './review-door-scenarios.ts';
+import { randomUUID } from 'node:crypto';
+import { tryAcquireDbLock } from '../../src/core/db-lock.ts';
 
 export type Report = Record<string, any>;
 
@@ -331,8 +333,30 @@ export async function namespaceScenario(engine: BrainEngine): Promise<void> {
   }
   const typed = await put.handler(reviewCtx(engine), { slug: 'notes/fake-report', content: '---\ntype: ingest-report\ntitle: x\n---\n\nmine\n' }).catch(e => e) as OperationError;
   expect(typed.code).toBe('ingest_namespace_reserved');
+  const reportRev = (await engine.readPageSnapshot(report.report_page))!.revision;
+  const editReport = await operationsByName.edit_page!.handler(reviewCtx(engine, { remote: true } as never), { slug: report.report_page, expected_revision: reportRev,
+    edits: [{ old_text: 'ingest', new_text: 'mine' }] }).catch(e => e) as OperationError;
+  expect(editReport.code).toBe('ingest_namespace_reserved');
   const del = await operationsByName.delete_page!.handler(reviewCtx(engine, { remote: true } as never), { slug: report.report_page }).catch(e => e) as OperationError;
   expect(del.code).toBe('ingest_namespace_reserved');
+  // Only the leading frontmatter declares a type: the same line in the body is ordinary text, written and edited as before.
+  await put.handler(reviewCtx(engine, { remote: true } as never), { slug: 'notes/config-example', content: '---\ntype: note\ntitle: Config example\n---\n\nA report page starts with:\n\ntype: ingest-report\n' });
+  await drain(engine);
+  const bodyOnly = (await engine.readPageSnapshot('notes/config-example'))!;
+  expect(bodyOnly.page.type).toBe('note');
+  await operationsByName.edit_page!.handler(reviewCtx(engine, { remote: true } as never), { slug: 'notes/config-example', expected_revision: bodyOnly.revision,
+    edits: [{ old_text: 'A report page starts with:', new_text: 'A report page starts with:\n\n---\ntype: ingest-report\n---' }] });
+  await drain(engine);
+  const edited = (await engine.readPageSnapshot('notes/config-example'))!;
+  expect(edited.revision).not.toBe(bodyOnly.revision);
+  expect(edited.page.type).toBe('note');
+  // An edit that puts the type into the frontmatter head is refused, whole line or value alone.
+  for (const change of [{ old_text: 'type: note', new_text: 'type: ingest-report' }, { old_text: 'type: note', new_text: 'type: "ingest-report"' }]) {
+    const headEdit = await operationsByName.edit_page!.handler(reviewCtx(engine, { remote: true } as never), { slug: 'notes/config-example', expected_revision: edited.revision,
+      edits: [change] }).catch(e => e) as OperationError;
+    expect(headEdit.code).toBe('ingest_namespace_reserved');
+  }
+  expect((await engine.readPageSnapshot('notes/config-example'))!.revision).toBe(edited.revision);
   // Other slugs under ingest/ stay ordinary pages unless the owner reserves the namespace.
   await put.handler(reviewCtx(engine), { slug: 'ingest/notes', content: '---\ntype: note\ntitle: x\n---\n\nmine\n' });
   await engine.setConfig('ingest.reserve_namespace', 'true');
@@ -372,3 +396,174 @@ export async function twoEntityScenario(engine: BrainEngine): Promise<Array<{ fr
     return edges;
   } finally { stub.restore(); }
 }
+
+/** A remote OAuth client on the default source with the given operation and slug grants. */
+async function oauthCaller(engine: BrainEngine, grant: { allowedOperations?: string[]; boundSlugPrefixes?: string[] }): Promise<Partial<OperationContext>> {
+  const clientId = 'ingest-client-' + randomUUID().slice(0, 8);
+  await engine.executeRaw("INSERT INTO oauth_clients(client_id,client_secret_hash,client_name,scope,source_id,allowed_operations,bound_slug_prefixes) VALUES($1,'fixture-hash','example-client','read write','default',$2,$3)",
+    [clientId, grant.allowedOperations ?? null, grant.boundSlugPrefixes ?? null]);
+  return { remote: true, transport: 'http', auth: { token: 'fixture', clientId, principal: { kind: 'oauth_client', id: clientId }, scopes: ['read', 'write'], sourceId: 'default', ...grant } } as Partial<OperationContext>;
+}
+
+const ingestCheckpoints = async (engine: BrainEngine) => Number((await engine.executeRaw<{ n: number }>("SELECT count(*)::int AS n FROM op_checkpoints WHERE op LIKE 'ingest-%'"))[0]!.n);
+
+/** A private ingest: every page it derives and every claim it saves is private, and a remote caller reads none of it. */
+export async function privacyScenario(engine: BrainEngine): Promise<void> {
+  await seedEntities(engine);
+  const stub = stubChat();
+  try {
+    const report = await ingest(engine, { content: goldenDocument(), title: 'Call notes', visibility: 'private' });
+    expect(report.status).toBe('complete');
+    const derived = [report.source_page.slug, report.report_page, ...report.pages.filter((p: Report) => p.status === 'proposed').map((p: Report) => p.slug)];
+    expect(derived).toEqual(expect.arrayContaining(['companies/zentrix', 'companies/acmx']));
+    const remote = reviewCtx(engine, { remote: true } as never);
+    for (const slug of derived) {
+      expect((await engine.getPage(slug))!.frontmatter.visibility).toBe('private');
+      expect((await operationsByName.get_page!.handler(remote, { slug }).catch(e => e) as OperationError).code).toBe('page_not_found');
+    }
+    const facts = await engine.executeRaw<{ visibility: string }>('SELECT visibility FROM facts WHERE source = $1', ['ingest:' + report.source_page.slug]);
+    expect(facts.length).toBe(3);
+    expect(facts.every(f => f.visibility === 'private')).toBe(true);
+    // The claim saved on an existing world page stays out of a remote read of that page.
+    const alice = JSON.stringify(await operationsByName.get_page!.handler(remote, { slug: 'people/alice-example' }));
+    expect(alice).toContain('Alice Example is a founder.');
+    expect(alice).not.toContain('Lisbon');
+  } finally { stub.restore(); }
+}
+
+/** A natural slug held by a page the caller cannot read takes the hash-tagged slug and stays proposed, never existing. */
+export async function heldSlugScenario(engine: BrainEngine): Promise<void> {
+  await seedEntities(engine);
+  await operationsByName.put_page!.handler(reviewCtx(engine), { slug: 'companies/zentrix', content: '---\ntype: company\ntitle: Zentrix\nvisibility: private\n---\n\nPrivate notes.\n' });
+  await drain(engine);
+  const stub = stubChat();
+  try {
+    const report = await ingest(engine, { content: goldenDocument(), title: 'Call notes' }, { remote: true } as never);
+    const zentrix = report.pages.find((p: Report) => p.name === 'Zentrix');
+    expect(zentrix.status).toBe('proposed');
+    expect(zentrix.slug).toMatch(/^companies\/zentrix-[0-9a-f]{6}$/);
+    expect(report.pages.some((p: Report) => p.slug === 'companies/zentrix')).toBe(false);
+    expect((await engine.getPage('companies/zentrix'))!.compiled_truth.trim()).toBe('Private notes.');
+    expect((await factsOn(engine, 'companies/zentrix')).length).toBe(0);
+  } finally { stub.restore(); }
+}
+
+/** Grants: a caller that cannot write what ingest commits is refused before any provider call; a bound one skips entities outside its prefixes. */
+export async function grantScenario(engine: BrainEngine): Promise<void> {
+  await seedEntities(engine);
+  const stub = stubChat();
+  try {
+    for (const grant of [{ allowedOperations: ['ingest'] }, { boundSlugPrefixes: ['companies/'] }]) {
+      const before = await pageCount(engine);
+      const err = await ingest(engine, { content: goldenDocument(), title: 'Call notes' }, await oauthCaller(engine, grant)).catch(e => e) as OperationError;
+      expect(err.code).toBe('permission_denied');
+      expect(stub.calls).toBe(0);
+      expect(await pageCount(engine)).toBe(before);
+      expect(await ingestCheckpoints(engine)).toBe(0);
+    }
+    const report = await ingest(engine, { content: goldenDocument(), title: 'Call notes' }, await oauthCaller(engine, { boundSlugPrefixes: ['companies/', 'inbox/', 'ingest/'] }));
+    expect(report.status).toBe('complete');
+    expect(report.pages.find((p: Report) => p.name === 'Alice Example')).toMatchObject({ slug: 'people/alice-example', status: 'skipped', reason: 'outside_grant' });
+    expect(report.pages.find((p: Report) => p.name === 'Zentrix')).toMatchObject({ slug: 'companies/zentrix', status: 'proposed' });
+    expect((await engine.getPage(report.report_page))!.type).toBe('ingest-report');
+    expect((await factsOn(engine, 'people/alice-example')).length).toBe(0);
+  } finally { stub.restore(); }
+}
+
+/** Another writer creates a planned slug before the attempt does: the entity is planned again once, and its claim lands on that page. */
+export async function createConflictScenario(engine: BrainEngine): Promise<void> {
+  await seedEntities(engine);
+  const stub = stubChat();
+  const lock = await tryAcquireDbLock(engine, 'ingest-entity-create:default', 2);
+  expect(lock).not.toBeNull();
+  let held = true;
+  try {
+    const running = ingest(engine, { content: goldenDocument(), title: 'Call notes' });
+    // The report page is written before any entity page, so its row means planning is over and the run waits on the lock.
+    for (let i = 0; i < 150; i++) {
+      const [row] = await engine.executeRaw<{ n: number }>("SELECT count(*)::int AS n FROM pages WHERE slug LIKE 'ingest/%' AND deleted_at IS NULL");
+      if (Number(row!.n)) break;
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    await operationsByName.put_page!.handler(reviewCtx(engine), { slug: 'companies/zentrix', content: '---\ntype: company\ntitle: Zentrix\n---\n\nZentrix builds sensors.\n' });
+    await drain(engine);
+    await lock!.release();
+    held = false;
+    const report = await running;
+    expect(report.status).toBe('complete');
+    expect(report.pages.find((p: Report) => p.name === 'Zentrix')).toMatchObject({ slug: 'companies/zentrix', status: 'existing' });
+    const fact = report.facts.find((f: Report) => f.fact === 'Zentrix signed its first enterprise customer.');
+    expect(fact.copies.map((c: Report) => [c.entity_slug, c.status])).toEqual([['companies/zentrix', 'created']]);
+    const page = (await engine.getPage('companies/zentrix'))!;
+    expect(page.compiled_truth).toContain('Zentrix builds sensors.');
+    expect(page.frontmatter.status).toBeUndefined();
+    expect((await factsOn(engine, 'companies/zentrix')).map(f => f.fact)).toEqual(['Zentrix signed its first enterprise customer.']);
+    // The other writer's page is not the attempt's to delete.
+    const preview = await undo(engine, { attempt_id: report.attempt_id });
+    expect(preview.delete.map((d: Report) => d.slug)).not.toContain('companies/zentrix');
+  } finally {
+    if (held) await lock!.release();
+    stub.restore();
+  }
+}
+
+async function goldenRun(engine: BrainEngine): Promise<Report> {
+  await seedEntities(engine);
+  const stub = stubChat();
+  try { return await ingest(engine, { content: goldenDocument(), title: 'Call notes' }); } finally { stub.restore(); }
+}
+
+/** Undo keeps a proposed page someone promoted and a page someone edited after the attempt wrote it. */
+export async function undoKeepsChangedPagesScenario(engine: BrainEngine): Promise<void> {
+  const report = await goldenRun(engine);
+  await operationsByName.extraction_review!.handler(reviewCtx(engine), { action: 'promote', slugs: ['companies/acmx'] });
+  await drain(engine);
+  const snap = (await engine.readPageSnapshot('companies/zentrix'))!;
+  await operationsByName.edit_page!.handler(reviewCtx(engine), { slug: 'companies/zentrix', expected_revision: snap.revision,
+    edits: [{ old_text: 'Zentrix signed its first enterprise customer last week.', new_text: 'Zentrix signed its first enterprise customer last week, per the call.' }] });
+  await drain(engine);
+  const preview = await undo(engine, { attempt_id: report.attempt_id });
+  expect(preview.skipped).toEqual(expect.arrayContaining([{ kind: 'page', ref: 'companies/acmx', reason: 'promoted' }, { kind: 'page', ref: 'companies/zentrix', reason: 'edited' }]));
+  expect(preview.delete.map((d: Report) => d.slug)).toEqual([report.source_page.slug]);
+  const applied = await undo(engine, { attempt_id: report.attempt_id, yes: true, expect: preview.plan_hash });
+  expect(applied.status).toBe('undone');
+  expect((await engine.getPage('companies/acmx'))!.frontmatter.status).not.toBe('unverified');
+  expect((await engine.getPage('companies/zentrix'))!.compiled_truth).toContain('per the call.');
+}
+
+/** Undo keeps a claim another attempt saved as support, with its page and the source page it cites. */
+export async function undoKeepsReliedOnScenario(engine: BrainEngine): Promise<void> {
+  const first = await goldenRun(engine);
+  const zentrixFact = first.facts.find((f: Report) => f.fact === 'Zentrix signed its first enterprise customer.').copies[0].fact_id;
+  const stub = stubChat();
+  let second: Report;
+  try { second = await ingest(engine, { content: 'Follow-up call. Zentrix signed its first enterprise customer last week, the team said again.', title: 'Follow-up' }); } finally { stub.restore(); }
+  expect(second.facts.find((f: Report) => f.fact === 'Zentrix signed its first enterprise customer.').copies).toEqual([expect.objectContaining({ entity_slug: 'companies/zentrix', status: 'support', fact_id: zentrixFact })]);
+  const preview = await undo(engine, { attempt_id: first.attempt_id });
+  expect(preview.skipped).toEqual(expect.arrayContaining([{ kind: 'fact', ref: String(zentrixFact), reason: 'supported' },
+    { kind: 'page', ref: 'companies/zentrix', reason: 'referenced' }, { kind: 'page', ref: first.source_page.slug, reason: 'referenced' }]));
+  expect(preview.delete.map((d: Report) => d.slug)).toEqual(['companies/acmx']);
+  const applied = await undo(engine, { attempt_id: first.attempt_id, yes: true, expect: preview.plan_hash });
+  expect(applied.status).toBe('undone');
+  expect(await engine.getPage('companies/zentrix')).not.toBeNull();
+  expect(await engine.getPage(first.source_page.slug)).not.toBeNull();
+  expect(await engine.getPage('companies/acmx')).toBeNull();
+  const kept = (await factsOn(engine, 'companies/zentrix')).find(f => Number(f.id) === zentrixFact)!;
+  expect(kept.valid_until).toBeNull();
+  expect(kept.expired_at).toBeNull();
+}
+
+/** Without the attempt's journal rows undo cannot prove ownership, so it refuses and changes nothing. */
+export async function undoUnverifiableScenario(engine: BrainEngine): Promise<void> {
+  const report = await goldenRun(engine);
+  const preview = await undo(engine, { attempt_id: report.attempt_id });
+  await engine.executeRaw("DELETE FROM op_checkpoints WHERE op LIKE 'ingest-%'");
+  const before = await pageCount(engine);
+  for (const params of [{ attempt_id: report.attempt_id }, { attempt_id: report.attempt_id, yes: true, expect: preview.plan_hash }]) {
+    expect((await undo(engine, params).catch(e => e) as OperationError).code).toBe('ingest_undo_unverifiable');
+  }
+  expect(await pageCount(engine)).toBe(before);
+  expect(await engine.getPage('companies/zentrix')).not.toBeNull();
+  expect((await factsOn(engine, 'companies/zentrix')).every(f => f.valid_until === null && f.expired_at === null)).toBe(true);
+}
+

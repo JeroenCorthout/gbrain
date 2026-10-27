@@ -318,6 +318,7 @@ src/core/import-identity.ts	decideImportIdentity	field	META
 src/core/import-screen.ts	assessImportSanity	field	STREAM	
 src/core/import-screen.ts	screenImportContent	call:contentHash	META	
 src/core/import-screen.ts	screenImportContent	field	STREAM	
+src/core/ingest/namespace.ts	editedHead	call:serializePageToMarkdown	NONE	serializes the frontmatter head with an empty body to apply edit_page edits that reach it; the body is never read
 src/core/line-grammar-report.ts	grammarDiagnosticsForPage	field	INLINE	grammar_diagnostics parses inline bodies only; a segmented page gets the skip (segmentedGrammarSkip)
 src/core/link-reconciliation.ts	reconcileSourceLinks	field	INLINE	inline arm; a segmented page streams through extractSegmentedPageLinks (page-body/segment-links.ts)
 src/core/link-temporal-apply.ts	applyTemporalEvidence	field	STREAM	

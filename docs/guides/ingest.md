@@ -148,24 +148,28 @@ receipts' `persistence.receipt_retention_days` window, default 30) and cross-che
   no other attempt uses it.
 
 It keeps anything edited, promoted or linked from another page since, support it counted for a claim that already
-existed, and claims another attempt counts as support. Apply runs under the source's publication guard and refuses
+existed, and claims another attempt counts as support, with their page and the source page they cite. Apply runs under the source's publication guard and refuses
 `preview_changed` when the plan moved since the preview. A repeat is a no-op. After a rebuild that renumbered the
-facts, undo refuses `ingest_undo_unverifiable` rather than guess. A page whose body is segmented keeps its rows
+facts, or without the attempt record, undo refuses `ingest_undo_unverifiable` rather than guess. A page whose body is segmented keeps its rows
 (reported `segmented`).
 
 ## Reserved namespace
 
 Report pages (type `ingest-report`, slugs `ingest/<attempt_id>`) are written only by the attempt that owns them.
 Every generic page write (put, edit, append, delete, restore, revert, batch, upload) that names one, or declares the
-type, is refused `ingest_namespace_reserved`. Other slugs under `ingest/` stay ordinary pages; an owner who wants
+type in a page's leading frontmatter, is refused `ingest_namespace_reserved`; the same line in a page body is ordinary text. Other slugs under `ingest/` stay ordinary pages; an owner who wants
 the whole prefix reserved sets `gbrain config set ingest.reserve_namespace true`.
 
 ## Remote callers
 
 `ingest` and `ingest_undo` are on the full and starter MCP surfaces. A remote ingest always proposes new pages,
 cannot set `visibility: private` or `trusted_extraction`, and sees only its own attempts; pages it cannot read are
-withheld from reports by slug. A bound-slug client writes entities only inside its prefixes (others are
-`skipped: outside_grant`), while its report page is still written.
+withheld from reports by slug. Before any provider call, ingest checks that the caller's grant covers what it
+commits: `put_page` on the source page slug and on `ingest/` (the report page), and `remember` when it extracts
+facts. Otherwise it refuses `permission_denied` with nothing extracted or written. A bound-slug client writes
+entities only inside its prefixes (others are `skipped: outside_grant`). When another writer creates a planned slug
+first, ingest plans that entity once more and reports what it found (`existing`, a hash-tagged slug, or
+`skipped: create_conflict`).
 
 ## Errors
 
