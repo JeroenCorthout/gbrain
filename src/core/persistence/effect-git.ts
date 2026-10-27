@@ -151,12 +151,15 @@ export async function git(session: GitSession, args: string[], literal = true): 
   }
 }
 
+/** Pathspecs taken literally, or literally and ignoring case (git refuses --literal-pathspecs with --icase-pathspecs). */
+export const PATHSPEC_FLAGS = { literal: ['--literal-pathspecs'], icase: ['--noglob-pathspecs', '--icase-pathspecs'] } as const;
+
 /**
  * A read-only git step outside a session (ls-files, rev-parse: steps that run no hook, so no hooks directory): the
  * session's environment, config and deadline. GIT_OPTIONAL_LOCKS=0 keeps it off the index lock.
  */
-export async function gitReadOnly(root: string, args: string[]): Promise<{ stdout: string; stderr: string; code: number }> {
-  const { error, stdout, stderr } = await execFileBounded('git', ['--literal-pathspecs', '-C', root, '-c', 'commit.gpgsign=false', ...args],
+export async function gitReadOnly(root: string, args: string[], pathspecs: keyof typeof PATHSPEC_FLAGS = 'literal'): Promise<{ stdout: string; stderr: string; code: number }> {
+  const { error, stdout, stderr } = await execFileBounded('git', [...PATHSPEC_FLAGS[pathspecs], '-C', root, '-c', 'commit.gpgsign=false', ...args],
     { timeout: GIT_STEP_TIMEOUT_MS, termGraceMs: GIT_TERM_GRACE_MS, maxBuffer: 1024 * 1024, env: gitChildEnv(GIT_ENV) });
   if (error && (error.killed || typeof error.code !== 'number')) throw gitFailure('Git execution did not finish within its bounded attempt.',
     `A git command in the canonical checkout did not finish within ${Math.round(GIT_STEP_TIMEOUT_MS / 1000)} seconds or could not start.`);

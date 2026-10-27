@@ -304,10 +304,11 @@ export function readSplitHead(path: string, before: Buffer | FileBytes): SplitHe
   const invalid = (reason: string, parsed?: ParsedHead): SplitHeadReading => ({ kind: 'split_invalid', code: 'split_page_incomplete', reason, headHash: headHash(),
     parts: parsed ? Object.fromEntries(parsed.manifest.parts.map(part => [partFilePath(path, part.path), part.sha256])) : {}, modified: null });
   const declared = () => declaresPartsKey(before.subarray(0, Math.min(before.length, FRONTMATTER_PREFIX_BYTES)));
-  if (before.length > HEAD_READ_MAX_BYTES) return declared() ? invalid(`the head is ${before.length} bytes, larger than any split page head`) : { kind: 'plain' };
+  if (!declared()) return { kind: 'plain' };
+  if (before.length > HEAD_READ_MAX_BYTES) return invalid(`the head is ${before.length} bytes, larger than any split page head`);
   const bytes = before instanceof FileBytes ? before.subarray() : before;
   let parsed;
-  try { parsed = parseHead(utf8.decode(bytes)); } catch { return declared() ? invalid('the head is not valid UTF-8') : { kind: 'plain' }; }
+  try { parsed = parseHead(utf8.decode(bytes)); } catch { return invalid('the head is not valid UTF-8'); }
   if (!parsed) return { kind: 'plain' };
   if ('error' in parsed) return invalid(parsed.error.reason);
   const scratch = splitScratchPath();
@@ -458,10 +459,11 @@ export async function splitLandedCommit(root: string, doorHead: string | null, f
     }
     // The planned unit (the door's DoorFiles): the head the record planned, each part its manifest lists in its planned
     // state (the record's, or the manifest's sha256 for a part kept unwritten), and nothing else in its parts directory.
-    const committedHead = await gitBytes(session, ['cat-file', 'blob', `${commit}:./${rels[0]}`]);
+    // A head the write made one file again, or removed, plans no part.
+    const committedHead = files[0]!.afterHash === null ? null : await gitBytes(session, ['cat-file', 'blob', `${commit}:./${rels[0]}`]);
     const parsed = committedHead ? parseHead(committedHead.toString('utf8')) : null;
-    if (!parsed || 'error' in parsed) throw unlike();
-    const planned = new Map(parsed.manifest.parts.map(part => [toRel(partFilePath(files[0]!.path, part.path)), part.sha256] as const));
+    if (parsed && 'error' in parsed) throw unlike();
+    const planned = new Map(parsed ? parsed.manifest.parts.map(part => [toRel(partFilePath(files[0]!.path, part.path)), part.sha256] as const) : []);
     for (const [index, file] of files.entries()) if (index && file.afterHash !== null && planned.get(rels[index]!) !== file.afterHash) throw unlike();
     const held = await git(session, ['ls-tree', '-r', '-z', '--name-only', commit, '--', partsDir], false);
     if (held.code !== 0) throw gitFailed('git ls-tree');

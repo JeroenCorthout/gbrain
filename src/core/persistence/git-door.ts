@@ -227,7 +227,7 @@ async function doorCommit(session: GitSession, root: string, files: DoorFile[], 
     const expected = scanned.get(target.rel);
     if (expected && expected !== target.oid) await refuseUnscannedStage(session, target.rel, expected);
   }
-  let fileModeTrusted: boolean | undefined;
+  let fileModeTrusted: boolean | undefined, ignoreCase: boolean | undefined;
   refuseChanged(root, targets.values());
 
   const temp = join(persistenceHome(), 'door');
@@ -276,6 +276,17 @@ async function doorCommit(session: GitSession, root: string, files: DoorFile[], 
         const stray = held.stdout.split('\0').find(path => path && !targets.has(path));
         if (stray) throw opError('git_target_changed', `${stray} in ${root} was committed during the write and is not part of it, so nothing was committed and the write was not published.`,
           'Another commit added a file to the split page\'s parts directory during the write. Remove or move that file in a commit, then retry the write with a new request_id.', { detail: stray });
+        if (!(ignoreCase ??= (await git(session, ['config', '--type=bool', '--default=false', 'core.ignorecase'])).stdout.trim() === 'true')) continue;
+        let parent = '';
+        for (const name of `${prefix}${dir}`.split('/')) {
+          const raw = dirs.get(parent)?.raw, named = latin1(name).toLowerCase();
+          if (raw) eachEntry(raw, oidBytes, (_start, space, nul) => {
+            const entry = raw.toString('latin1', space + 1, nul), variant = `${parent ? `${parent}/` : ''}${raw.toString('utf8', space + 1, nul)}`;
+            if (entry !== latin1(name) && entry.toLowerCase() === named) throw opError('git_target_changed', `${variant} in ${root} names the split page's parts directory in another case under core.ignorecase, so nothing was committed and the write was not published.`,
+              'A commit holds a directory that differs from the split page\'s parts directory only in case, which a case-insensitive checkout would merge with it. Remove or rename it in a commit, then retry the write with a new request_id.', { detail: variant });
+          });
+          parent = parent ? `${parent}/${name}` : name;
+        }
       }
 
       const changed: Target[] = [];

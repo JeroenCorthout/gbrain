@@ -1,7 +1,7 @@
 import { closeSync, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { splitPartsHeld } from './effect-git.ts';
-import { assertSplitUnitMutable, isSplitUnsupportedReason } from './split-unit-guard.ts';
+import { assertSplitUnitMutable, isSplitUnsupportedReason, splitAttributePins } from './split-unit-guard.ts';
 import type { BrainEngine } from '../engine.ts';
 import type { PageSnapshot } from '../page-state/types.ts';
 import { OperationError, opError } from '../ops/contract.ts';
@@ -465,6 +465,7 @@ export async function publishMutation(engine: BrainEngine, row: WriteRequest, pr
   let releaseCapacity: (() => void) | null = null;
   let binding: WorktreeBinding | null = null;
   let recovery: RecoveryRecord | null = null;
+  let attributePins = new Map<string, string | null>();
   let published = false;
   let transactionBodyCompleted = false;
   let afterCommitDue: WriteRequest | null = null;
@@ -544,6 +545,7 @@ export async function publishMutation(engine: BrainEngine, row: WriteRequest, pr
       const fileRepair = (row.intent as { kind?: unknown } | null)?.kind === 'managed_file_repair';
       const split = strict && !fileRepair && await splitPublicationTargets(engine, prepared.file)
         ? splitRecoveryRecord(row, prepared.file, binding, (r, file, b) => largeRecoveryRecord(r, file, b, 0) ?? pageRecoveryRecord(r, file, b)) : null;
+      if (split) attributePins = await splitAttributePins({ root: prepared.file.root, path: prepared.file.path, sourceId: row.source_id, slug: row.slug, remote: row.authority?.remote === true });
       await assertSplitUnitMutable({ root: prepared.file.root, path: prepared.file.path, route: fileRepair ? 'file_repair' : 'door', strict, sourceId: row.source_id, slug: row.slug,
         planned: prepared.file.split?.manifest, remote: row.authority?.remote === true });
       if (split) files.push(...prepared.file.parts!);
@@ -655,11 +657,13 @@ export async function publishMutation(engine: BrainEngine, row: WriteRequest, pr
         paths => Object.assign(outcome.persistence as object, { git_index_restored: paths })) });
       // Wave B PR 5: a split page lands as its whole planned unit in one door commit: the head and every manifest part in
       // the state the record (or, for a kept part, the manifest) plans, each other path Git holds in its parts directory
-      // removed, and nothing else left there (exactDirs).
+      // removed, and nothing else left there (exactDirs); each .gitattributes above it stays as it was when the write
+      // began (splitAttributePins), so a rule committed meanwhile fails the door's compare-and-swap.
       if (splitDoor && isSplitRecoveryRecord(recovery)) {
         const planned = new Map<string, string | null>([...recovery.files.map(file => [file.path, file.afterHash] as const), ...Object.entries(prepared.file?.split?.kept ?? {})]);
         const { partsDir, held } = await splitPartsHeld(splitDoor.root, recovery.files[0]!.path);
         for (const rel of held) if (!planned.has(join(splitDoor.root, rel))) planned.set(join(splitDoor.root, rel), null);
+        for (const [path, hash] of attributePins) if (!planned.has(path)) planned.set(path, hash);
         Object.assign(outcome.persistence as object, { git_state: 'committed', git_commit: await commitThroughDoor(splitDoor.root,
           [...planned].map(([path, hash], index) => ({ path, planned: hash, ...(index ? {} : { note: prepared.file?.commit }) })), lock ?? undefined,
           paths => Object.assign(outcome.persistence as object, { git_index_restored: paths }), [partsDir]) });

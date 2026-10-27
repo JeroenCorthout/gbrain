@@ -11,8 +11,10 @@
  *      an unattended publisher that finds the publish lock busy leaves a request
  *      the holder honors after it releases (so no commit is stranded);
  *   2. commits carry only the caller's paths (`commit --only -- <paths>`), and
- *      paths that reach a split page carry its whole, verified unit
- *      (persistence/split-unit-guard.ts assertStagedSplitUnitsWhole);
+ *      paths that reach a split page carry its whole, verified unit, checked
+ *      before the commit and in the commit itself, which is taken back when
+ *      it does not hold the unit whole (persistence/split-unit-guard.ts
+ *      assertStagedSplitUnitsWhole, committedSplitUnitGap);
  *   3. a rejected push is integrated IN MEMORY (`merge-tree --write-tree`, or a
  *      3-way `read-tree` into a temporary index on git < 2.38) into a merge
  *      commit built with `commit-tree`; no working tree is touched;
@@ -38,7 +40,7 @@ import { acquireNativeLock, acquireNativeLockSync, type NativeLockSyncHandle } f
 import { OperationError, opError } from '../ops/contract.ts';
 import { shellQuote } from '../agent-output.ts';
 import { envPushCap, filePushCap, pushCap, pushRange, type PushIO } from '../persistence/push-preflight.ts';
-import { assertStagedSplitUnitsWhole } from '../persistence/split-unit-guard.ts';
+import { assertStagedSplitUnitsWhole, committedSplitUnitGap, splitPageUnsupported } from '../persistence/split-unit-guard.ts';
 import { backstopScanSync, cleanFilterRefused, coveredFile, scanCommitFilesSync, splitHeadOnDisk } from '../persistence/push-scan.ts';
 
 export const COMMIT_LOCK_NAME = 'brain-commit.lock';
@@ -454,7 +456,7 @@ function commitPaths(root: string, rel: string[], message: string, scope: Commit
     const partners = paths.filter(p => !insideSourceRoots(p, scope.roots));
     if (partners.length) throw outsideRootError(root, scope.roots, partners, 'A staged rename would commit');
     if (git(root, ['--literal-pathspecs', 'diff', '--cached', '--quiet', '--', ...paths]).code === 0) return null;
-    assertStagedSplitUnitsWhole(root, paths);
+    const units = assertStagedSplitUnitsWhole(root, paths);
     const scanned = scope.allowSecret ? null : scanStaged(root, paths);
     const parent = git(root, ['rev-parse', '--quiet', '--verify', 'HEAD^{commit}']).stdout.trim();
     const env = { [COMMIT_VIA_ENV]: scope.lockPath, ...(scope.markHeld ? { [COMMIT_LOCK_ENV]: scope.lockPath } : {}) };
@@ -464,6 +466,11 @@ function commitPaths(root: string, rel: string[], message: string, scope: Commit
         `${commit.stderr.trim().slice(0, 300)} A missing git identity (user.name, user.email) or a refusing pre-commit hook are common causes.`);
     }
     const head = gitOk(root, ['rev-parse', 'HEAD'], 'rev-parse HEAD');
+    const gap = units.length ? committedSplitUnitGap(root, units, head) : null;
+    if (gap) {
+      const undo = git(root, parent ? ['update-ref', '-m', 'gbrain: take back a commit of a split page that is not whole', 'HEAD', parent, head] : ['update-ref', '-d', 'HEAD', head]);
+      throw splitPageUnsupported('outside_door', { root }, gap.unit, `${gap.why}; ${undo.code === 0 ? 'the commit was taken back and nothing is committed' : `commit ${head.slice(0, 12)} could not be taken back`}`);
+    }
     if (scanned) assertCommittedScanned(root, paths, scanned, parent, head);
     return head;
   } catch (e) {

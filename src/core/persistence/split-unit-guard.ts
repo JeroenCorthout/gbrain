@@ -13,14 +13,15 @@
  * - `unit_diverged`: Git HEAD, the index and the disk hold different versions of the unit.
  * - `recovery_unit_changed`: recovery of a record that is not the strict door's own would change a unit.
  */
-import { closeSync, existsSync, lstatSync, openSync, readdirSync, readFileSync, readSync, realpathSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { closeSync, existsSync, lstatSync, openSync, readdirSync, readFileSync, readlinkSync, readSync, realpathSync } from 'node:fs';
 import { basename, dirname, join, parse, relative, resolve, sep } from 'node:path';
 import type { Action } from '../agent-output.ts';
 import { opError, type OperationError } from '../ops/contract.ts';
 import { readFix } from '../ops/op-fix.ts';
 import { FRONTMATTER_HEAD_MAX_BYTES } from '../page-body/limits.ts';
 import { assertNoPartsKey, isSplitHeadPath, parseHead, partFilePath, partsDirFor, splitPartOf, SplitLayoutError, verifyParts } from '../split-layout/index.ts';
-import { git, gitFailure, gitReadOnly, rawBlobOid, withSession, type GitSession } from './effect-git.ts';
+import { git, gitFailure, gitReadOnly, PATHSPEC_FLAGS, rawBlobOid, withSession, type GitSession } from './effect-git.ts';
 import { gitChildEnv } from '../git-env.ts';
 import { spawnSync } from '../spawn.ts';
 
@@ -68,14 +69,19 @@ function headDeclaresParts(path: string): boolean {
   try { return declaresPartsKey(prefix.subarray(0, readSync(fd, prefix, 0, prefix.length, 0))); } finally { closeSync(fd); }
 }
 
-/** `path` with its parent directory resolved through symlinks (the nearest existing ancestor; the rest as named). */
-function physicalPath(path: string): string {
+/**
+ * `path` resolved through symlinks: its parent directory (the nearest existing ancestor; the rest as named) and a leaf that
+ * is itself a symlink, followed to what a write through it would reach, so an alias of a part names the part.
+ */
+function physicalPath(path: string, hops = 0): string {
   const abs = resolve(path), tail = [basename(abs)];
+  let physical = abs;
   for (let dir = dirname(abs); ; dir = dirname(dir)) {
-    try { return join(realpathSync(dir), ...tail); } catch { /* not on disk yet: resolve its parent */ }
-    if (dirname(dir) === dir) return abs;
+    try { physical = join(realpathSync(dir), ...tail); break; } catch { /* not on disk yet: resolve its parent */ }
+    if (dirname(dir) === dir) break;
     tail.unshift(basename(dir));
   }
+  return hops < 40 && lstatSync(physical, { throwIfNoEntry: false })?.isSymbolicLink() ? physicalPath(resolve(dirname(physical), readlinkSync(physical)), hops + 1) : physical;
 }
 
 /**
@@ -95,16 +101,16 @@ const READ_ONLY_GIT_ENV = { GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'Never', 
   GIT_ICASE_PATHSPECS: '0', GIT_OPTIONAL_LOCKS: '0', LC_ALL: 'C' };
 
 /** gitReadOnly for a caller that cannot await: the same arguments, environment and 20 s deadline, with no session or hooks. */
-function gitReadOnlySync(root: string, args: string[]): { stdout: string; stderr: string; code: number } {
-  const out = spawnSync('git', ['--literal-pathspecs', '-C', root, '-c', 'commit.gpgsign=false', ...args],
+function gitReadOnlySync(root: string, args: string[], pathspecs: 'literal' | 'icase' = 'literal'): { stdout: string; stderr: string; code: number } {
+  const out = spawnSync('git', [...PATHSPEC_FLAGS[pathspecs], '-C', root, '-c', 'commit.gpgsign=false', ...args],
     { timeout: 20_000, maxBuffer: 1024 * 1024, env: gitChildEnv(READ_ONLY_GIT_ENV), encoding: 'utf8' });
   if (out.error || out.status === null) throw gitFailure('Git execution did not finish within its bounded attempt.',
     'A git command in the canonical checkout did not finish within 20 seconds or could not start.');
   return { stdout: out.stdout, stderr: out.stderr, code: out.status };
 }
 
-/** A read-only Git step: run at `cwd` by gitReadOnly or gitReadOnlySync. */
-type GitRead = { cwd: string; args: string[] };
+/** A read-only Git step: run at `cwd` by gitReadOnly or gitReadOnlySync; `icase` matches its pathspecs ignoring case, still without globs. */
+type GitRead = { cwd: string; args: string[]; icase?: true };
 type GitReadResult = { stdout: string; stderr: string; code: number };
 
 /**
@@ -136,14 +142,21 @@ function* membersSteps(paths: readonly string[]): Generator<GitRead, Set<string>
     byTop.set(top, dirs.set(dir, [...dirs.get(dir) ?? [], path]));
   }
   for (const [top, dirs] of byTop) {
-    let listed = yield { cwd: top, args: ['ls-files', '-z', '--with-tree=HEAD', '--', ...dirs.keys()] };
-    if (listed.code !== 0 && listed.stderr.includes('tree-ish HEAD not found')) listed = yield { cwd: top, args: ['ls-files', '-z', '--', ...dirs.keys()] };
+    let listed = yield { cwd: top, args: ['ls-files', '-z', '--with-tree=HEAD', '--', ...dirs.keys()], icase: true };
+    if (listed.code !== 0 && listed.stderr.includes('tree-ish HEAD not found')) listed = yield { cwd: top, args: ['ls-files', '-z', '--', ...dirs.keys()], icase: true };
     if (listed.code !== 0) {
       if ((yield { cwd: top, args: ['rev-parse', '--is-inside-work-tree'] }).stdout.trim() !== 'true') continue;
       throw gitFailure('Cannot inspect the canonical Git target.', `git ls-files failed for ${[...dirs.keys()][0]}.`);
     }
+    const folded: string[][] = [];
     for (const held of listed.stdout.split('\0').filter(Boolean)) {
-      for (const [dir, heads] of dirs) if (held.startsWith(`${dir}/`)) for (const path of heads) present.add(path);
+      for (const [dir, heads] of dirs) {
+        if (held.startsWith(`${dir}/`)) for (const path of heads) present.add(path);
+        else if (held.toLowerCase().startsWith(`${dir.toLowerCase()}/`)) folded.push(heads);
+      }
+    }
+    if (folded.length && (yield { cwd: top, args: ['config', '--type=bool', '--default=false', 'core.ignorecase'] }).stdout.trim() === 'true') {
+      for (const path of folded.flat()) present.add(path);
     }
   }
   return present;
@@ -152,14 +165,14 @@ function* membersSteps(paths: readonly string[]): Generator<GitRead, Set<string>
 async function runAsync<T>(steps: Generator<GitRead, T, GitReadResult>): Promise<T> {
   for (let step = steps.next(); ; ) {
     if (step.done) return step.value;
-    step = steps.next(await gitReadOnly(step.value.cwd, step.value.args));
+    step = steps.next(await gitReadOnly(step.value.cwd, step.value.args, step.value.icase ? 'icase' : 'literal'));
   }
 }
 
 function runSync<T>(steps: Generator<GitRead, T, GitReadResult>): T {
   for (let step = steps.next(); ; ) {
     if (step.done) return step.value;
-    step = steps.next(gitReadOnlySync(step.value.cwd, step.value.args));
+    step = steps.next(gitReadOnlySync(step.value.cwd, step.value.args, step.value.icase ? 'icase' : 'literal'));
   }
 }
 
@@ -327,6 +340,28 @@ export async function splitUnitRefusals(input: Omit<SplitUnitGuardInput, 'path' 
 }
 
 /**
+ * The strict door's pin on every `.gitattributes` from `root` down to the parts directory of the split unit at `path`:
+ * each path (absolute) to the SHA-256 of the bytes Git HEAD and the disk hold, or null when neither holds one. The split
+ * commit names each as a DoorFile in that state, so a rule committed during the write fails the door's compare-and-swap
+ * (git_target_changed). Taken before assertSplitUnitMutable reads the attributes; one that differs between HEAD and the
+ * disk refuses `git_attribute` before anything is written.
+ */
+export async function splitAttributePins(input: Pick<SplitUnitGuardInput, 'root' | 'path' | 'slug' | 'sourceId' | 'remote'>): Promise<Map<string, string | null>> {
+  const root = physicalRoot(input.root), unit = splitUnitOf(input.path)!, dirs = toRel(root, unit.partsDir).split('/');
+  const rels = Array.from({ length: dirs.length + 1 }, (_, depth) => [...dirs.slice(0, depth), '.gitattributes'].join('/'));
+  const [format, tree] = await Promise.all([gitReadOnly(root, ['rev-parse', '--show-object-format']), gitReadOnly(root, ['ls-tree', '-z', 'HEAD', '--', ...rels])]);
+  if (format.code !== 0 || (tree.code !== 0 && !tree.stderr.includes('Not a valid object name'))) throw gitFailure('Cannot inspect the canonical Git target.', `git ls-tree failed for the .gitattributes files above ${toRel(root, unit.head)}.`);
+  const committed = new Map(tree.stdout.split('\0').filter(Boolean).map(record => [record.slice(record.indexOf('\t') + 1), record.slice(0, record.indexOf('\t')).split(' ')[2]!] as const));
+  const pins = new Map<string, string | null>();
+  for (const rel of rels) {
+    const abs = join(input.root, rel), disk = lstatSync(abs, { throwIfNoEntry: false }) ? rawBlobOid(abs, format.stdout.trim() === 'sha256' ? 'sha256' : 'sha1') ?? 'not_a_file' : null;
+    if ((committed.get(rel) ?? null) !== disk) throw splitPageUnsupported('git_attribute', input, unit, `${rel} differs between Git HEAD and the disk`);
+    pins.set(abs, disk ? createHash('sha256').update(readFileSync(abs)).digest('hex') : null);
+  }
+  return pins;
+}
+
+/**
  * assertSplitUnitMutable for a route outside the door that must stay synchronous (skill tooling, the generic write
  * helpers, writers with no brain, local storage): refuses `outside_door` when `path` is in a split unit on disk, in the
  * index or in HEAD, read with the same single read-only Git step as the async form (gitReadOnlySync, no session).
@@ -345,7 +380,7 @@ export function assertSplitUnitMutableSync(input: Omit<SplitUnitGuardInput, 'rou
  * directory, or a one-file head with nothing under it). Anything else refuses `outside_door` before the commit, so no
  * commit holds a head and parts that do not reassemble.
  */
-export function assertStagedSplitUnitsWhole(root: string, specs: readonly string[]): void {
+export function assertStagedSplitUnitsWhole(root: string, specs: readonly string[]): Array<{ head: string; partsDir: string }> {
   const real = physicalRoot(root), units = new Map<string, { head: string; partsDir: string }>();
   const staged = gitReadOnlySync(real, ['diff', '--cached', '--no-renames', '--name-only', '-z', '--', ...specs]);
   if (staged.code !== 0) throw gitFailure('Cannot inspect the canonical Git target.', 'git diff --cached failed for the paths to commit.');
@@ -365,6 +400,44 @@ export function assertStagedSplitUnitsWhole(root: string, specs: readonly string
     const why = left ? `${left} would not be committed as the disk holds it; name the head and its parts directory together` : wholeUnitGap(real, unit, held);
     if (why) throw splitPageUnsupported('outside_door', { root: real }, unit, why);
   }
+  return [...units.values()];
+}
+
+/**
+ * Why `commit` does not hold each of `units` (from assertStagedSplitUnitsWhole) whole, or null: a split head with exactly
+ * its manifest's parts under the parts directory, each blob of the manifest's length and SHA-256, or a one-file or
+ * removed head with nothing there. git commit --only stages the paths again from the disk, and a pre-commit hook or a
+ * conversion attribute can change what it stores after the check before the commit, so commit-push reads the commit.
+ */
+export function committedSplitUnitGap(root: string, units: ReadonlyArray<{ head: string; partsDir: string }>, commit: string): { unit: { head: string; partsDir: string }; why: string } | null {
+  const real = physicalRoot(root);
+  const blob = (oid: string, bytes: number) => {
+    const out = spawnSync('git', ['-C', real, 'cat-file', 'blob', oid], { timeout: 120_000, maxBuffer: bytes + 1, env: gitChildEnv(READ_ONLY_GIT_ENV) });
+    if (out.error || out.status !== 0) throw gitFailure('Cannot inspect the canonical Git target.', `git cat-file failed for blob ${oid} of a split unit in commit ${commit}.`);
+    return out.stdout;
+  };
+  for (const unit of units) {
+    const head = toRel(real, unit.head), dir = toRel(real, unit.partsDir);
+    const tree = gitReadOnlySync(real, ['ls-tree', '-r', '-z', '-l', commit, '--', head, dir]);
+    if (tree.code !== 0) throw gitFailure('Cannot inspect the canonical Git target.', `git ls-tree failed for the split unit of ${head} in commit ${commit}.`);
+    const entries = new Map(tree.stdout.split('\0').filter(Boolean).map(record => {
+      const [, type, oid, size] = record.slice(0, record.indexOf('\t')).trim().split(/\s+/);
+      return [record.slice(record.indexOf('\t') + 1), { type: type!, oid: oid!, bytes: Number(size) }] as const;
+    }));
+    const committedHead = entries.get(head);
+    entries.delete(head);
+    const parsed = committedHead?.type === 'blob' ? parseHead(blob(committedHead.oid, committedHead.bytes).toString('utf8')) : null;
+    if (parsed && 'error' in parsed) return { unit, why: `${head} in commit ${commit.slice(0, 12)} is not a valid split head (${parsed.error.reason})` };
+    const parts = parsed?.manifest.parts ?? [];
+    if (entries.size !== parts.length) return { unit, why: `commit ${commit.slice(0, 12)} holds other files under ${dir} than ${head} lists` };
+    for (const part of parts) {
+      const rel = toRel(real, partFilePath(unit.head, part.path)), entry = entries.get(rel);
+      if (entry?.type !== 'blob' || entry.bytes !== part.bytes || createHash('sha256').update(blob(entry.oid, entry.bytes)).digest('hex') !== part.sha256) {
+        return { unit, why: `${rel} in commit ${commit.slice(0, 12)} does not hold the bytes the manifest of ${head} lists` };
+      }
+    }
+  }
+  return null;
 }
 
 /** Why the unit on disk is not whole, given the paths Git holds under its parts directory, or null. */
