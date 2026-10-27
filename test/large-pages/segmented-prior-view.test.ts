@@ -11,10 +11,10 @@
  *    keeps every entry of the prior body (key, summary, detail and slug copies: 12.8x the body for a 6 MiB page).
  * Seams: segmentedPassWork.bytes (segment-blocks.ts) counts bytes read; the heap is sampled once it has settled (full
  * collections until two readings agree) when classification first reads the new body, with the prior view built and
- * alive, against a baseline taken the same way after a warm-up call on another snapshot and one small statement on every pooled connection. The pool hands statements out in
- * turn, so the warm-up and the measured call end on different connections: a connection that kept its last segment
- * read (its receive buffer, or the statement and its rows) held up to 3 MiB of the prior body that the baseline did not,
- * so the driver keeps neither (vendor/postgres connection.js). The warm-up's new body is small: an in-flight concurrent
+ * alive, against a baseline taken the same way after a warm-up call on another snapshot and one small statement on
+ * every pooled connection. The pool hands statements out in turn, so the warm-up and the measured call end on different
+ * connections: a connection that kept its last segment read (its receive buffer, or the statement and its rows) held up
+ * to 3 MiB of the prior body that the baseline did not, so the driver keeps neither (vendor/postgres connection.js). The warm-up's new body is small: an in-flight concurrent
  * JIT compilation keeps the values its profiles saw alive as a GC root outside the heap graph, so a sliced line of the
  * warm-up's text could pin that whole text at the sample and not at the baseline (with the 6 MiB new body, its
  * sanitized copy: 8.4 MiB held in about one run in ten). One full collection does not settle the reading: JSC releases
