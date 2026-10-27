@@ -16,7 +16,7 @@
 import { afterAll, afterEach, beforeAll, describe, expect, test } from 'bun:test';
 import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { BrainEngine } from '../src/core/engine.ts';
@@ -65,6 +65,8 @@ function newRepo(files: Record<string, string>): string {
   const root = join(home, `repo-${++serial}`);
   mkdirSync(root);
   git(root, 'init', '-q', '-b', 'main');
+  git(root, 'config', 'user.name', 'Example');
+  git(root, 'config', 'user.email', 'example@example.invalid');
   write(root, files);
   commit(root, 'initial content');
   return root;
@@ -205,12 +207,13 @@ describe('A6: sync mirrors gbrain-reason trailers', () => {
       write(s.root, { 'notes/m.md': page('Side m.'), 'notes/d.md': page('Side d.'), 'notes/n.md': page('Side n.') });
       commit(s.root, 'side edits', ['notes/m.md: Side reason for m.', 'notes/d.md: Side reason for d.', 'notes/n.md: Side reason for n.']);
       git(s.root, 'checkout', '-q', 'main');
-      try { git(s.root, 'merge', '--no-ff', '--no-commit', 'side'); } catch { /* the conflicts are resolved below */ }
+      try { git(s.root, 'merge', '--no-ff', '--no-commit', 'side'); } catch (error) { if (!existsSync(join(s.root, '.git', 'MERGE_HEAD'))) throw error; }
       write(s.root, { 'notes/m.md': page('Resolved m.') });
       git(s.root, 'checkout', '--ours', 'notes/d.md');
       git(s.root, 'checkout', '--theirs', 'notes/n.md');
       git(s.root, 'add', '-A');
       git(s.root, '-c', 'user.name=Example', '-c', 'user.email=example@example.invalid', 'commit', '-q', '-m', 'merge side', '-m', 'gbrain-reason: notes/m.md: Merged both drafts.');
+      expect(git(s.root, 'rev-list', '--parents', '-n', '1', 'HEAD').split(' ')).toHaveLength(3);
       await sync(engine, s);
 
       expect((await reasonsOf(engine, s.id, 'notes/m')).reasons).toEqual(['Merged both drafts.']);
