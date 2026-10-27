@@ -197,7 +197,7 @@ describe('extraction_pending review lists', () => {
   });
 
   test('an unknown include is refused with the valid names', async () => {
-    const err = await pending.handler(ctx(), { include: ['everything'] }).catch(e => e);
+    const err = await pending.handler(ctx(), { include: ['everything'] }).catch((e: unknown) => e) as OperationError;
     expect(err).toBeInstanceOf(OperationError);
     expect(String(err.message)).toContain('everything');
   });
