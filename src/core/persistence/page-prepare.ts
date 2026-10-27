@@ -747,10 +747,12 @@ async function segmentedContentHash(engine: BrainEngine, snapshot: PageSnapshot,
 /**
  * `options.clock` (#6278): the claim's phase clock; each await boundary names its step through `enterClaimStep`, and the
  * preparation's raw reads run bounded by its remaining budget (`boundedReads`; a statement carrying the foreground `signal` keeps it).
+ * `unprojected` (GBRA-190 G4): the caller writes the rows this page write would project (a fence fact append,
+ * facts/fence-fact-append.ts), so the page publishes without canonical projection, as remember and takes writes do.
  */
 export async function preparePageMutation(unbounded: BrainEngine, row: WriteRequest, _config: GBrainConfig,
   preparedIntent?: { content: string; expectedRevision: string; tags?: string[] }, signal?: AbortSignal,
-  options: { allowMissingFile?: boolean; coordinated?: boolean; clock?: ClaimPhaseClock; boundedChunkWrites?: true; gitFirstIndex?: false } = {}): Promise<PreparedMutation> {
+  options: { allowMissingFile?: boolean; coordinated?: boolean; clock?: ClaimPhaseClock; boundedChunkWrites?: true; unprojected?: true; gitFirstIndex?: false } = {}): Promise<PreparedMutation> {
   // Wave B (spec 6.2): a committed upload session prepares the put_page its staged parts hold.
   if (row.operation === 'put_page' && isStagingBodyRef(row.intent?.body_ref)) {
     signal?.throwIfAborted();
@@ -849,7 +851,7 @@ async function prepareInlineOrSegmentedMutation(unbounded: BrainEngine, row: Wri
       content = serializePageToMarkdown({ ...snapshot.page, ...parsed, frontmatter: carried }, parsed.tags);
     }
   }
-  const projected = !(row.operation === 'remember' || row.operation.startsWith('takes_') || (row.operation === 'extract_facts' && p.kind === 'managed_facts_entity'));
+  const projected = !(options.unprojected || row.operation === 'remember' || row.operation.startsWith('takes_') || (row.operation === 'extract_facts' && p.kind === 'managed_facts_entity'));
   const writer = (row.operation === 'put_page' || row.operation === 'edit_page') && p.kind !== 'managed_maintenance_page'
     && (preparedIntent !== undefined || typeof p.expected_revision === 'string') ? 'editing' : 'preserving';
   // #5969 (D3): only an ordinary put_page intent carries a timeline section; every other writer keeps the shared policy.

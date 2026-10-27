@@ -38,11 +38,12 @@ import { assertRecoveryStagingAbsent, cleanupRecoveryStaging, recoveryStagingFil
 import { assertManagedFilesystemWrite } from './filesystem-guard.ts';
 import { beforeStagePath, fileContentBytes, fileContentHash, hashDescriptor, hashFile, isStreamedContent, LARGE_FILE_MIN_BYTES, stageBeforeCopy, stageStreamedContent, type StreamedFileContent } from './large-file.ts';
 import { declarePublication, publicationTransaction } from './publication-deadline.ts';
+import { PAGE_CHANGED_DURING_PREPARATION_MESSAGE } from './verb-errors.ts';
 import { assertMutationProtocol, assertSharedSkillPersistence, declareDurablePersistence, isPersistenceDeclaration, PERSISTENCE_PROTOCOL_PREDICATE } from './protocol.ts';
 import { assertBundleRecoveryBinding, bundleFileHash, prepareBundleRecovery, publishStagedBundleFile, stageBundleFile, type MutationFile } from './bundle-files.ts';
 import { assertKnowledgePublicationAllowed } from '../shared-skills/knowledge-guard.ts';
 import { classifyMirrorPage, sourceMirrorReadOnly } from './mirror-read-only.ts';
-import { PENDING_IMPORT, SYNC_HELD } from './pending-import.ts';
+import { landedCommit, PENDING_IMPORT, SYNC_HELD } from './pending-import.ts';
 import { CANONICAL_FILE_MISSING, databaseRefusal, ownerExceptionFailure, withAttempt, type PublicationFailure, type PublicationFailureDetail, type PublicationStage } from './publication-failure.ts';
 import { SYNC_CURSOR_REPLACED, SYNC_PASS_SUPERSEDED } from './sync-checkpoint-replaced.ts';
 import { fenceFailureDetail } from '../fence-repair/refusal.ts';
@@ -544,7 +545,7 @@ export async function publishMutation(engine: BrainEngine, row: WriteRequest, pr
         // uncoordinated edit.
         const current = await engine.readPageSnapshot(row.slug, { sourceId: row.source_id, includeDeleted: true });
         if ((current?.revision ?? null) !== prepared.observedRevision) {
-          throw new OperationError('revision_conflict', 'The page changed during preparation.', 'Read its current revision and submit the updated intent with a new request_id.');
+          throw new OperationError('revision_conflict', PAGE_CHANGED_DURING_PREPARATION_MESSAGE, 'Read its current revision and submit the updated intent with a new request_id.');
         }
         throw localEditRefusal('The canonical file changed after preparation.', row, skill, 'after the write was prepared, at an unchanged page revision');
       }
@@ -583,7 +584,7 @@ export async function publishMutation(engine: BrainEngine, row: WriteRequest, pr
         await authorizePageVisibility(tx, row.authority, row.slug);
         if ((snapshot?.page.id ?? null) !== row.page_id) throw pageIdentityError(snapshot != null || row.page_id === null, 'The accepted page was deleted or recreated.');
         await assertUnboundPublication(tx, row, snapshot?.page.source_path);
-        if ((snapshot?.revision ?? null) !== prepared.observedRevision) throw new OperationError('revision_conflict', 'The page changed during preparation.', 'Read its current revision and submit the updated intent with a new request_id.');
+        if ((snapshot?.revision ?? null) !== prepared.observedRevision) throw new OperationError('revision_conflict', PAGE_CHANGED_DURING_PREPARATION_MESSAGE, 'Read its current revision and submit the updated intent with a new request_id.');
       }
       await prepared.validate?.(tx);
       // #5409: a file target prepared before the source became a read-only mirror is never published.
@@ -624,6 +625,7 @@ export async function publishMutation(engine: BrainEngine, row: WriteRequest, pr
       const gitFirst = !skill && !!door?.door && !!prepared.file && prepared.file.content !== null
         && await gitFirstStrictActive(tx, row.source_id, { strict: true });
       let gitCommit: string | null | undefined;
+      let gitIndexRestored: string[] | undefined;
       if (prepared.indexFromGit && !gitFirst) throw strictChanged(row.source_id);
       // Wave C (ceo-r3-outside-1): while another write's committed head waits for its index, the page's rows describe the
       // generation before it, so a write prepared from them would drop the committed write from Git. It refuses (retryable)
@@ -635,7 +637,7 @@ export async function publishMutation(engine: BrainEngine, row: WriteRequest, pr
       if (gitFirst) {
         await assertStrictFileTarget(tx, row, prepared, snapshot, binding);
         await doorProbe?.(tx, row);
-        gitCommit = await commitThroughDoor(door!.door!.root, [{ path: door!.path, note: prepared.file?.commit }], lock ?? undefined);
+        gitCommit = await commitThroughDoor(door!.door!.root, [{ path: door!.path, planned: door!.afterHash, note: prepared.file?.commit }], lock ?? undefined, paths => { gitIndexRestored = paths; });
       }
       // A door publication that is not itself indexed (an inline write, a delete, a private transition, a rename) replaces
       // or removes the page's pending head, so an older index job finds its token gone and ends superseded (git-first.ts).
@@ -644,7 +646,7 @@ export async function publishMutation(engine: BrainEngine, row: WriteRequest, pr
         // Wave C (spec §3.1 step 7): no page metadata changes before the index flip; the request is indexing.
         const outcome: Record<string, unknown> = { status: 'created_or_updated', slug: row.slug, source_id: row.source_id, searchable: 'pending' };
         decoratePublicationOutcome(row, prepared, outcome, null, files.length, false);
-        Object.assign(outcome.persistence as object, { git_state: 'committed', git_commit: gitCommit });
+        Object.assign(outcome.persistence as object, { git_state: 'committed', git_commit: gitCommit, ...(gitIndexRestored ? { git_index_restored: gitIndexRestored } : {}) });
         outcome.index = await queueIndexFromGit(tx, row, prepared.indexFromGit, String(prepared.file!.content), snapshot, gitCommit, door!.door!.root, door!.path);
         await queuePublicationEffects(tx, row, null, outcome, prepared, { pushOnly: true });
         await hooks.boundary?.('before_commit', row);
@@ -667,7 +669,8 @@ export async function publishMutation(engine: BrainEngine, row: WriteRequest, pr
       // G2: a strict source's file is committed before its row; its Git effect only pushes.
       if (door?.door && !gitFirst) await doorProbe?.(tx, row);
       if (door?.door) Object.assign(outcome.persistence as object, { git_state: 'committed', git_commit: gitFirst ? gitCommit
-        : await commitThroughDoor(door.door.root, [{ path: door.path, note: prepared.file?.commit }], lock ?? undefined) });
+        : await commitThroughDoor(door.door.root, [{ path: door.path, planned: door.afterHash, note: prepared.file?.commit }], lock ?? undefined, paths => { gitIndexRestored = paths; }),
+        ...(gitIndexRestored ? { git_index_restored: gitIndexRestored } : {}) });
       await timePublicationStep('effects', row.slug, () => queuePublicationEffects(tx, row, final, outcome, prepared, { pushOnly: !!door?.door }));
       if (prepared.afterEffects) await withCoordinatedWrite(tx, [row.source_id], () => prepared.afterEffects!(tx, outcome), publicationAttribution(row, prepared.trust));
       await hooks.boundary?.('before_commit', row);
@@ -751,6 +754,7 @@ export async function recoverPublication(engine: BrainEngine, id: string, hostId
       const [current] = await tx.executeRaw<WriteRequest>('SELECT * FROM persistence_requests WHERE id=$1::uuid FOR UPDATE', [id]);
       if (!current.recovery) return current;
       const records = recoveryFiles(current.recovery);
+      let landed: string | null = null;
       if (current.recovery.version === 2) {
         const owner = await guardOwnership(tx, current, hostId);
         if (!owner) throw opError('owner_unavailable', 'Skill recovery requires its canonical owner.',
@@ -779,6 +783,7 @@ export async function recoverPublication(engine: BrainEngine, id: string, hostId
           if (actual !== record.beforeHash && actual !== record.afterHash) throw unexpectedRecoveryBytes('Canonical recovery bytes changed during restoration.', current, 'changed while recovery was restoring it and');
           // G2: a strict publication whose commit landed keeps the committed file; Git holds it.
           if (current.recovery.version === 1 && await doorCommitLanded(record)) {
+            landed = await landedCommit(record.door!.root, record.door!.head, record.path);
             if (record.staging?.before) await withFilesystemPublication([record.root], async () => cleanupRecoveryStaging(record, { priorIntact: true }));
           } else if (record.staging?.before) {
             await withFilesystemPublication([record.root], async () => {
@@ -817,11 +822,13 @@ export async function recoverPublication(engine: BrainEngine, id: string, hostId
       // Withdrawal is authoritative DB state and is never rolled back here.
       const failure: PublicationFailure | undefined = terminalError ?? (current.error_code ? {code:current.error_code,message:current.error_message ?? 'Publication failed before database completion.',
         ...(current.error_detail ? { detail: current.error_detail as unknown as PublicationFailureDetail } : {})} : undefined);
-      if (failure) return completeWrite(tx, current, failureState(failure.code), {}, failure);
+      // G7b: a door commit that landed before its row is named on the receipt, whatever the replay's outcome.
+      const kept = landed ? { persistence: { git_state: 'committed', git_commit: landed, landed_before_row: true } } : null;
+      if (failure) return completeWrite(tx, current, failureState(failure.code), kept ?? {}, failure);
       for (const key of ['brain', `worktree:${current.worktree_id}`]) await tx.executeRaw('UPDATE persistence_counters SET recovery_bytes=recovery_bytes-$2 WHERE key=$1', [key, Number(current.recovery_bytes)]);
       const [queued] = await tx.executeRaw<WriteRequest>(`UPDATE persistence_requests SET state='queued',execution_token=NULL,
-        claim_expires_at=NULL,recovery=NULL,recovery_bytes=0,publication_started=false,blocked_reason=NULL,updated_at=now()
-        WHERE id=$1::uuid RETURNING *`, [id]);
+        claim_expires_at=NULL,recovery=NULL,recovery_bytes=0,publication_started=false,blocked_reason=NULL,outcome=COALESCE($2::text::jsonb,outcome),updated_at=now()
+        WHERE id=$1::uuid RETURNING *`, [id, kept ? JSON.stringify(kept) : null]);
       return queued;
     });
     if (isPublished(row) && row.blocked_reason !== 'unexpected_staging_bytes') {

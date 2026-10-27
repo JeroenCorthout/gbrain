@@ -275,7 +275,10 @@ import { v271 } from './v271-facts-superseded-by-index.ts';
 import { v272 } from './v272-git-canonical-declared.ts';
 import { v273 } from './v273-segment-derivations.ts';
 import { v274 } from './v274-pages-withheld-source-path.ts';
-import { v275 } from './v275-git-first-strict-path.ts';
+import { v275 } from './v275-rls-backfill-unguarded-tables.ts';
+import { v276 } from './v276-persistence-foreground-committed-index.ts';
+import { v277 } from './v277-function-search-path-pg-temp.ts';
+import { v278 } from './v278-git-first-strict-path.ts';
 
 // Array order is historical (see HISTORICAL_ARRAY_ORDER in the generator); the
 // runner sorts by version before applying.
@@ -550,4 +553,7 @@ export const MIGRATIONS: Migration[] = [
   v273,
   v274,
   v275,
+  v276,
+  v277,
+  v278,
 ];
