@@ -12,7 +12,7 @@
  *   - the record names every prior file it replaces or removes (the head and each part) by its staged before-copy, path
  *     and sha256, and never embeds a part's bytes;
  *   - a write whose target is a part file is refused;
- *   - the request protocol guard accepts the page_split recovery record on a page request (v275) and still refuses a
+ *   - the request protocol guard accepts the page_split recovery record on a page request (v278, provisional) and still refuses a
  *     skill bundle record there.
  * Runs on PGLite and, with DATABASE_URL, on Postgres.
  */
