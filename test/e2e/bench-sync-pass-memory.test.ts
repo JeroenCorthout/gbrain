@@ -10,12 +10,14 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import postgres from '#postgres';
+import { assertSafeE2eDatabaseUrl } from '../helpers/db-guard.ts';
 
 const url = process.env.DATABASE_URL;
 const BENCH = join(resolve(import.meta.dir, '../..'), 'scripts/bench/sync-pass-memory.ts');
 
 describe.skipIf(!url)('sync-pass memory probe', () => {
   test('seeds a template brain and its conversion apply adopts every database-ahead page while sampling memory', async () => {
+    assertSafeE2eDatabaseUrl(url!);
     const work = mkdtempSync(join(tmpdir(), 'sync-pass-memory-smoke-'));
     const tag = `smoke_${process.pid}`;
     const probe = (...argv: string[]) => spawnSync(process.execPath, [BENCH, ...argv, '--url', url!, '--dir', work, '--tag', tag],
