@@ -131,8 +131,8 @@ export function importsCommittedFile(row: { intent?: Record<string, unknown> | n
  * (`supersedes`, page-prepare.ts supersedesPending).
  */
 export async function assertNoPendingIndex(tx: Pick<BrainEngine, 'executeRaw'>, row: Pick<WriteRequest, 'id' | 'source_id' | 'slug' | 'operation' | 'intent'>,
-  supersedes?: string): Promise<void> {
-  if (row.operation === 'delete_page' || importsCommittedFile(row)) return;
+  supersedes?: string, removesFile = false): Promise<void> {
+  if (row.operation === 'delete_page' || removesFile || importsCommittedFile(row)) return;
   const pending = await readPendingHead(tx, row.source_id, row.slug);
   if (pending && pending.request_id !== row.id && pending.request_id !== supersedes) throw indexPendingError(row.slug, pending);
 }

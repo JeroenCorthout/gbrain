@@ -424,8 +424,15 @@ export async function prepareAppendMutation(engine: BrainEngine, row: WriteReque
   // Wave C (eng-r3-outside-1): on a strict git-first source an append to an unsplit segmented page composes the whole
   // file and takes put_page's deferred path below, so its bytes reach Git before any row; the splice would stage the
   // appended segments in the publication transaction, before the door.
-  const gitFirst = isSegmentedPage(stored.page) && Number((stored.page as { body_bytes?: number | null }).body_bytes ?? 0) + Buffer.byteLength(text, 'utf8') + 1 <= PAGE_MAX_BYTES
-    && await gitFirstStrictActive(engine, row.source_id);
+  const strictGitFirst = isSegmentedPage(stored.page) && await gitFirstStrictActive(engine, row.source_id);
+  const composedBytes = Number((stored.page as { body_bytes?: number | null }).body_bytes ?? 0) + Buffer.byteLength(text, 'utf8') + 1;
+  const gitFirst = strictGitFirst && composedBytes <= PAGE_MAX_BYTES;
+  // Over the unsplit ceiling a strict source keeps refusing (split pages are PR 5's), as begin_page_upload does (spec §2.1).
+  if (strictGitFirst && !gitFirst) {
+    throw opError('file_too_large', `Page ${row.slug} would be about ${composedBytes} bytes after this append, over the ${PAGE_MAX_BYTES}-byte page limit of a git-canonical source, so nothing was appended.`,
+      'Append to a new page under the limit, or write to a source that is not git-canonical; then submit again with a new request_id.',
+      { legacy_error: 'request_too_large', reason: 'switch_off', fix: pageFix(row.source_id, row.slug) });
+  }
   if (isSegmentedPage(stored.page) && !gitFirst) {
     let mentionRange: PreparedMutation['mentionRange'];
     const prepared = await prepareSegmentedSpliceMutation(engine, row, stored, { full: appendProbe.fullRewrite, replacements: async page => {

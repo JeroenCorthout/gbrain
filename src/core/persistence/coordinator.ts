@@ -108,6 +108,8 @@ interface PreparedMutationBase {
    * Git effect (a writeback import's folded pass stamp, sync-pass-fold.ts); it may add to the outcome. Absent for every other write.
    */
   afterEffects?(tx: BrainEngine, outcome: Record<string, unknown>): Promise<void>;
+  /** The upload session this publication consumes (page-upload.ts withStagedUpload); a git-first publication settles it around its door commit. */
+  stagedBody?: import('./page-upload.ts').StagedBodySettlement;
   /** #5575: the tier and origin of the rows apply writes; absent: the request's channel tier (trust/channel.ts). */
   trust?: WriteTrust;
   /**
@@ -650,9 +652,10 @@ export async function publishMutation(engine: BrainEngine, row: WriteRequest, pr
       let gitIndexRestored: string[] | undefined;
       if (prepared.indexFromGit && !gitFirst) throw strictChanged(row.source_id);
       // Wave C (ceo-r3-outside-1): preparation refuses the same way when it sees the file ahead of the rows (page-prepare.ts).
-      if (door?.door) await assertNoPendingIndex(tx, row, prepared.supersedesPending);
+      if (door?.door) await assertNoPendingIndex(tx, row, prepared.supersedesPending, prepared.file?.content === null);
       if (gitFirst) {
         await assertStrictFileTarget(tx, row, prepared, snapshot, binding);
+        await prepared.stagedBody?.hold(tx);
         await doorProbe?.(tx, row);
         gitCommit = await commitThroughDoor(door!.door!.root, [{ path: door!.path, planned: door!.afterHash, note: prepared.file?.commit, prehashed }], lock ?? undefined, paths => { gitIndexRestored = paths; }, doorBy);
       }
@@ -665,6 +668,7 @@ export async function publishMutation(engine: BrainEngine, row: WriteRequest, pr
         decoratePublicationOutcome(row, prepared, outcome, null, files.length, false);
         Object.assign(outcome.persistence as object, { git_state: 'committed', git_commit: gitCommit, ...(gitIndexRestored ? { git_index_restored: gitIndexRestored } : {}) });
         outcome.index = await queueIndexFromGit(tx, row, prepared.indexFromGit, String(prepared.file!.content), snapshot, gitCommit, door!.door!.root, door!.path);
+        await prepared.stagedBody?.commit(tx);
         await queuePublicationEffects(tx, row, null, outcome, prepared, { pushOnly: true });
         await hooks.boundary?.('before_commit', row);
         const indexing = await completeWrite(tx, current, 'indexing', outcome, undefined, current);

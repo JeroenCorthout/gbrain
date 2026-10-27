@@ -313,7 +313,10 @@ export async function prepareFileTarget(engine: BrainEngine, row: Pick<WriteRequ
     const declared = await strictPageClass(engine, row.source_id, root, renderedPageForClass(row.slug, content, snapshot), snapshot?.page ?? null)
       ?? (await waitingOnWhile(options.clock, 'git', () => ignoredTarget(root, path)) ? 'git_ignored' : null);
     if (declared) {
-      if (!isPrivacyClass(declared) || !snapshot || snapshot.page.deleted_at) return undefined;
+      if (!isPrivacyClass(declared) || snapshot?.page.deleted_at) return undefined;
+      // Wave C: a page whose first version is committed but not yet indexed has no rows; its file is in Git all the same,
+      // so its private transition removes that file too (the index step would otherwise import it over the private page).
+      if (!snapshot && !await readPendingHead(engine, row.source_id, row.slug)) return undefined;
       if (!existsSync(path) && await headBlob(root, path) === null) return undefined;
       content = null;
       options = { ...options, deleting: true };
@@ -385,7 +388,7 @@ async function compareFileTarget(engine: BrainEngine, row: Pick<WriteRequest, 's
     const landed = !matches && !staleCache && content !== null && beforeHash() === fileContentHash(content)
       && await sourceCanonicalGit(engine, row.source_id) && await committedBlob(root, path) !== null;
     if (landed) return { path, root, content, expectedBeforeHash: beforeHash() };
-    if (!matches && !staleCache && await refuseWhileIndexPending(engine, row, options.supersedesPending, beforeHash)) return { path, root, content, expectedBeforeHash: beforeHash() };
+    if (!matches && !staleCache && await refuseWhileIndexPending(engine, row, options.supersedesPending, beforeHash, content === null)) return { path, root, content, expectedBeforeHash: beforeHash() };
     if (!matches && !staleCache) {
       const held = await heldFileRefusal(engine, row, root, path, 'drift', options.remote === true);
       if (held) throw held;
@@ -400,7 +403,7 @@ async function compareFileTarget(engine: BrainEngine, row: Pick<WriteRequest, 's
     }
   } else if (before && !snapshot && content !== null && beforeHash() !== fileContentHash(content)
     && !(options.capture && beforeHash() === options.capture.hash)) {
-    if (await refuseWhileIndexPending(engine, row, options.supersedesPending, beforeHash)) return { path, root, content, expectedBeforeHash: beforeHash() };
+    if (await refuseWhileIndexPending(engine, row, options.supersedesPending, beforeHash, content === null)) return { path, root, content, expectedBeforeHash: beforeHash() };
     throw await heldFileRefusal(engine, row, root, path, 'occupied', options.remote === true)
       ?? new OperationError('source_changed', 'An unindexed file already occupies the canonical page path.', 'Import the file before replacing it.');
   }
@@ -409,22 +412,23 @@ async function compareFileTarget(engine: BrainEngine, row: Pick<WriteRequest, 's
 
 /**
  * Wave C (ceo-r3-outside-1): the file differs from the rows because another write's committed head waits for its index.
- * True when the write may replace it anyway: a delete, or a whole-page write prepared against that head while the file is
+ * True when the write may replace it anyway: a delete or a private transition (the file is removed), or a whole-page write prepared against that head while the file is
  * still the committed head; throws index_pending for any other write.
  */
 async function refuseWhileIndexPending(engine: BrainEngine, row: Pick<WriteRequest, 'source_id' | 'slug'> & { id?: string; intent?: WriteRequest['intent']; operation?: string },
-  supersedes?: string, fileHash?: () => string): Promise<boolean> {
+  supersedes?: string, fileHash?: () => string, removesFile = false): Promise<boolean> {
   const pending = await readPendingHead(engine, row.source_id, row.slug);
   if (!pending || pending.request_id === row.id || importsCommittedFile(row)) return false;
-  // A delete removes access rather than adding content (spec §3.1 step 7): it replaces the committed head and the flip aborts.
-  if (row.operation === 'delete_page') return true;
+  // A delete or a private transition removes the file rather than adding content (spec §3.1 step 7): it replaces the
+  // committed head, the door publication clears the head, and the flip aborts.
+  if (row.operation === 'delete_page' || removesFile) return true;
   if (supersedes === pending.request_id && fileHash?.() === pending.body_sha256) return true;
   throw indexPendingError(row.slug, pending);
 }
 
 /** Wave C (spec §3.1): whether a put (or an append composed as one, page-append.ts) stages its segmented body or defers it to the index step (strict git-first, git-first-gate.ts). */
 async function deferSegmentedBody(engine: BrainEngine, row: WriteRequest, options: { gitFirstIndex?: false }, notPlain: boolean): Promise<boolean> {
-  return options.gitFirstIndex !== false && (row.operation === 'put_page' || row.operation === 'capture' || row.operation === 'append_page') && !notPlain
+  return options.gitFirstIndex !== false && (row.operation === 'put_page' || row.operation === 'capture' || row.operation === 'append_page' || row.operation === 'edit_page') && !notPlain
     && await gitFirstStrictActive(engine, row.source_id);
 }
 
@@ -811,8 +815,10 @@ async function prepareInlineOrSegmentedMutation(unbounded: BrainEngine, row: Wri
     () => loadActivePackForEngine(engine, { remote: row.authority.remote, sourceId: row.source_id }).catch(() => null),
   ]) as [unknown, PageSnapshot | null, Awaited<ReturnType<typeof loadActivePackForEngine>> | null];
   // Wave B (spec 6.3): edit_page on a segmented page splices the touched segments; a declined edit takes the string path.
+  // Wave C (eng-r3-outside-1): on a strict git-first source the splice would stage segment text before the door, so an
+  // unsplit page's edit is composed whole and takes the deferred path (deferSegmentedBody), as an append does.
   const segmented = row.operation === 'edit_page' && stored && !stored.page.deleted_at && isSegmentedPage(stored.page) && stored.page.id === row.page_id
-    ? await prepareSegmentedEditMutation(engine, row, stored) : null;
+    && !await gitFirstStrictActive(engine, row.source_id) ? await prepareSegmentedEditMutation(engine, row, stored) : null;
   if (segmented) return segmented;
   // Wave B: a segmented page within the single-string ceiling is compared and merged as strings.
   const snapshot = await materializedSnapshot(unbounded, stored);
