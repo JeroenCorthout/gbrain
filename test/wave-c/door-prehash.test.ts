@@ -8,11 +8,14 @@
  * The recheck is batched (one check-attr per door turn, however many files), covers the checkout's line-ending config
  * (core.autocrlf / core.eol / core.safecrlf, which convert bytes as attributes do), and confirms the blobs are still
  * stored (one cat-file --batch-check): a blob pruned meanwhile (gc --prune=now) is hashed again, never committed missing.
+ * A recheck that cannot answer (a step that is killed or overflows, exits non-zero, or answers incompletely) drops every
+ * pre-hash and the door hashes under the lock as before; it never refuses the publication. A git shim on PATH forces
+ * each failure.
  */
 import { afterEach, describe, expect, test } from 'bun:test';
 import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import type { BrainEngine } from '../../src/core/engine.ts';
@@ -145,6 +148,86 @@ describe('door pre-hash: rechecks under the lock', () => {
     writeFileSync(join(root, '.gitattributes'), '*.md filter=example\n');
     expect(await prehashDoorFile(root, join(root, 'notes/e.md'), 'body\n')).toBeNull();
   });
+});
+
+/** A PATH whose git answers one recheck step (check-attr, the line-ending config read, cat-file --batch-check) as the mode says. */
+function shim(mode: string): Record<string, string> {
+  const dir = scratch('gbrain-git-shim-');
+  const real = execFileSync('which', ['git'], { encoding: 'utf8' }).trim();
+  writeFileSync(join(dir, 'git'), [
+    '#!/bin/bash',
+    'step=',
+    'for a in "$@"; do case "$a" in check-attr) step=check-attr;; --get-regexp) step=config;; --batch-check) step=cat-file;; esac; done',
+    'drain() { [ "$step" = config ] || cat >/dev/null; }',
+    'case "$GBRAIN_TEST_GIT_SHIM:$step" in',
+    '  *-killed:"${GBRAIN_TEST_GIT_SHIM%-killed}") drain; kill -KILL $$;;',
+    '  *-exit:"${GBRAIN_TEST_GIT_SHIM%-exit}") drain; exit 128;;',
+    '  check-attr-truncated:check-attr) "' + real + '" "$@" | head -c 7; exit 0;;',
+    '  cat-file-short:cat-file) "' + real + '" "$@" | head -n 1; exit 0;;',
+    'esac',
+    'exec "' + real + '" "$@"',
+    '',
+  ].join('\n'));
+  chmodSync(join(dir, 'git'), 0o755);
+  return { PATH: dir + ':' + process.env.PATH, GBRAIN_TEST_GIT_SHIM: mode };
+}
+
+describe('door pre-hash: a recheck that cannot answer never refuses', () => {
+  /** Three pre-hashed files (one with an attribute), committed under the shim; returns the paths and the in-lock hash-object calls. */
+  async function publish(mode: string) {
+    const root = repo(), trace = join(scratch('gbrain-trace-'), 'trace');
+    writeFileSync(join(root, '.gitattributes'), 'notes/attr-*.md diff=markdown\n');
+    git(root, 'add', '.gitattributes'); git(root, 'commit', '-qm', 'attributes');
+    const paths = ['notes/plain-1.md', 'notes/plain-2.md', 'notes/attr-3.md'];
+    const door: DoorFile[] = [];
+    for (const path of paths) {
+      const body = path + ' body\n';
+      door.push({ path: join(root, path), planned: sha256(body), prehashed: await prehashDoorFile(root, join(root, path), body) });
+      put(root, path, body);
+    }
+    expect(door.every(file => file.prehashed)).toBe(true);
+    await withEnv({ ...shim(mode), GIT_TRACE: trace }, () => commitThroughDoor(root, door));
+    for (const path of paths) expect(git(root, 'rev-parse', 'HEAD:' + path)).toBe(git(root, 'hash-object', '--', path));
+    expect(git(root, 'status', '--porcelain')).toBe('');
+    return { paths, inLock: hashCalls(trace).filter(call => !call.includes('-t tree') && !call.includes('--path')) };
+  }
+
+  for (const step of ['check-attr', 'config', 'cat-file']) {
+    test(step + ' killed under the lock (a throw from git()): every file is hashed in place and the commit lands', async () => {
+      const { paths, inLock } = await publish(step + '-killed');
+      for (const path of paths) expect(inLock.some(call => call.includes(path))).toBe(true);
+    });
+    test(step + ' exiting non-zero: every file is hashed in place and the commit lands', async () => {
+      const { paths, inLock } = await publish(step + '-exit');
+      for (const path of paths) expect(inLock.some(call => call.includes(path))).toBe(true);
+    });
+  }
+
+  for (const mode of ['check-attr-truncated', 'cat-file-short']) test(mode + ': an incomplete answer drops every pre-hash, not just the unanswered ones', async () => {
+    const { paths, inLock } = await publish(mode);
+    for (const path of paths) expect(inLock.some(call => call.includes(path))).toBe(true);
+  });
+
+  test('a check-attr answer over 1 MiB (hundreds of long paths, several attributes each) is read whole: the pre-hashed blobs commit', async () => {
+    const root = repo(), trace = join(scratch('gbrain-trace-'), 'trace');
+    writeFileSync(join(root, '.gitattributes'), '*.md text diff=markdown merge=union linguist-generated linguist-vendored review-a review-b review-c\n');
+    git(root, 'add', '.gitattributes'); git(root, 'commit', '-qm', 'attributes');
+    const dir = 'notes/' + 'd'.repeat(200) + '/' + 'e'.repeat(200);
+    const door: DoorFile[] = [];
+    for (let start = 0; start < 400; start += 50) {
+      door.push(...await Promise.all(Array.from({ length: 50 }, async (_, k) => {
+        const path = dir + '/file-' + (start + k) + '.md', body = 'body ' + (start + k) + '\n';
+        const prehashed = await prehashDoorFile(root, join(root, path), body);
+        put(root, path, body);
+        return { path: join(root, path), planned: sha256(body), prehashed };
+      })));
+    }
+    expect(door.every(file => file.prehashed)).toBe(true);
+    expect(door.reduce((sum, file) => sum + file.prehashed!.attributes.length, 0)).toBeGreaterThan(1024 * 1024);
+    await withEnv({ GIT_TRACE: trace }, () => commitThroughDoor(root, door));
+    for (const file of door.slice(0, 5)) expect(git(root, 'rev-parse', 'HEAD:' + file.path.slice(root.length + 1))).toBe(file.prehashed!.oid);
+    expect(hashCalls(trace).filter(call => !call.includes('-t tree'))).toEqual([]);
+  }, 120_000);
 });
 
 const strict = (engine: BrainEngine) => engine.executeRaw("UPDATE sources SET config = config || '{\"canonical\":\"git\"}'::jsonb WHERE id='default'");
