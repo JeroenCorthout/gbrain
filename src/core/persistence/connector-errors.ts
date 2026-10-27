@@ -7,6 +7,7 @@
  * deterministically, from the code, the message and the receipt's own fields.
  */
 import { OperationError } from '../ops/contract.ts';
+import { assertNever } from '../types.ts';
 import { describeConnectorAccount, type ConnectorAccount } from './connector-state.ts';
 import type { ConnectorConfig, ConnectorKind } from './connector-identity.ts';
 import type { GitHubSourceConfig } from '../github-source.ts';
@@ -23,14 +24,17 @@ export function connectorAccountChanged(sourceId: string, kind: ConnectorKind, c
   const show = (value: ConnectorAccount | string | null) => value === null ? 'no resolvable account' : typeof value === 'string' ? value : describeConnectorAccount(value);
   let restore: string;
   let replace: string;
-  if (kind === 'google') {
+  switch (kind) {
+  case 'google': {
     const google = config as GoogleSourceConfig;
     const where = google.access === 'command' ? `the command configured as g_token_command (${google.tokenCommand ?? 'unset'})`
       : google.access === 'env' ? `the environment variable configured as g_token_env (${google.tokenEnv ?? 'unset'})` : `the vault credential (gbrain google connect --account ${google.account})`;
     restore = `restore ${where} so it yields a token for ${show(recorded)}, then retry: gbrain sync --source ${sourceId}`;
     replace = `add a new source for the new account (gbrain google setup --account ${typeof resolved === 'object' && resolved?.kind === 'google' ? resolved.email : '<email>'}), `
       + `then archive this one: gbrain sources archive ${sourceId}`;
-  } else {
+    break;
+  }
+  case 'github': {
     const github = config as GitHubSourceConfig;
     const installation = typeof resolved === 'object' && resolved?.kind === 'github' && resolved.installationId !== null ? resolved.installationId : '<installation-id>';
     restore = github.app ? `restore the GitHub App credential (gh_app_id ${github.app.appId}, key at gh_app_pem_path) for ${show(recorded)}, then retry: gbrain sync --source ${sourceId}`
@@ -38,6 +42,9 @@ export function connectorAccountChanged(sourceId: string, kind: ConnectorKind, c
     replace = `add a new source pinned to the intended installation (gbrain sources add <new-id> --kind github --scope ${github.scope}`
       + `${github.scope === 'repos' ? ` --repos ${github.repos.join(',')}` : ''}${github.app ? ` --app-id ${github.app.appId} --app-pem <path>` : ''} --app-install ${installation}), `
       + `then archive this one: gbrain sources archive ${sourceId}`;
+    break;
+  }
+  default: return assertNever(kind);
   }
   // Account emails and installation ids stay in the local suggestion: job records persist and serve the message remotely.
   const error = new OperationError('connector_account_changed',

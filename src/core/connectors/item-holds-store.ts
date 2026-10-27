@@ -21,7 +21,7 @@ import { atomicWriteFileSync } from '../atomic-write.ts';
 import { withFilesystemPublication } from '../persistence/filesystem-guard.ts';
 import type { BrainEngine } from '../engine.ts';
 import { digest } from '../persistence/digest.ts';
-import { connectorCheckpointKey, connectorIdentity, isConnectorSourceKind, type ConnectorKind } from '../persistence/connector-identity.ts';
+import { CONNECTOR_KINDS_SQL, connectorCheckpointKey, connectorIdentity, isConnectorSourceKind, type ConnectorKind } from '../persistence/connector-identity.ts';
 import { connectorStateKey } from '../persistence/connector-state.ts';
 import { readManagedMode } from '../persistence/managed-mode.ts';
 import { heldItems, type ItemHoldRecord } from './item-holds.ts';
@@ -42,7 +42,7 @@ export function classicConnectorStateFile(source: ConnectorSourceRow): string | 
   const kind = source.config.kind;
   if (!isConnectorSourceKind(kind)) return null;
   const dir = (connectorIdentity(kind, source.config, source.local_path).config as { dir?: string }).dir;
-  return dir ? join(dir, kind === 'google' ? '.google-source.json' : '.github-source.json') : null;
+  return dir ? join(dir, `.${kind}-source.json`) : null;
 }
 
 /** The connector's cursor state, wherever this brain keeps it. */
@@ -67,7 +67,7 @@ export interface SourceHolds { sourceId: string; kind: ConnectorKind; held: Item
 /** Held items per connector source (sources with none are omitted). */
 export async function readAllSourceHolds(engine: Exec, opts: { sourceIds?: string[] } = {}): Promise<SourceHolds[]> {
   const sources = await engine.executeRaw<ConnectorSourceRow>(
-    "SELECT id,incarnation::text AS incarnation,local_path,config FROM sources WHERE archived IS NOT TRUE AND config->>'kind' IN ('google','github') ORDER BY id");
+    `SELECT id,incarnation::text AS incarnation,local_path,config FROM sources WHERE archived IS NOT TRUE AND config->>'kind' IN (${CONNECTOR_KINDS_SQL}) ORDER BY id`);
   const managed = await managedBrain(engine);
   const out: SourceHolds[] = [];
   for (const source of sources) {
@@ -90,7 +90,7 @@ export interface HoldCarry {
   owner_host?: string;
 }
 
-const CONNECTOR_SOURCES_SQL = "SELECT id,incarnation::text AS incarnation,local_path,config FROM sources WHERE archived IS NOT TRUE AND config->>'kind' IN ('google','github') ORDER BY id";
+const CONNECTOR_SOURCES_SQL = `SELECT id,incarnation::text AS incarnation,local_path,config FROM sources WHERE archived IS NOT TRUE AND config->>'kind' IN (${CONNECTOR_KINDS_SQL}) ORDER BY id`;
 
 /** True when the hold cannot be carried from this host: deactivation keeps refusing for it. */
 export function holdCarryBlocked(carry: HoldCarry): boolean {

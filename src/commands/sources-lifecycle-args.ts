@@ -6,6 +6,7 @@ import { readFix } from '../core/ops/op-fix.ts';
 import { isValidSourceId } from '../core/source-id.ts';
 import { msysToNativePath } from '../core/path-confine.ts';
 import { isWriteRequestId } from '../core/persistence/types.ts';
+import { isConnectorSourceKind } from '../core/persistence/connector-kinds.ts';
 import { defaultCloneDir, type AddSourceOpts } from '../core/sources-ops.ts';
 import { isValidRepoName } from '../core/github-source.ts';
 import { ALL_GOOGLE_SERVICES, DEFAULT_CALENDAR_ID } from '../core/google/types.ts';
@@ -102,7 +103,7 @@ export function parseSourceLifecycleArgs(args: string[], generatedId = randomUUI
 
   if (flags.has('federated') && flags.has('no-federated')) throw invalid('Choose one federation setting.', 'Pass either --federated or --no-federated, not both.');
   const kind = values.get('kind');
-  if (kind !== undefined && !['google', 'github'].includes(kind)) throw invalid('Source kind must be github or google.',
+  if (kind !== undefined && !isConnectorSourceKind(kind)) throw invalid('Source kind must be github or google.',
     'Pass --kind github or --kind google; a directory or Git remote source uses --path or --url instead of --kind.');
   if ([values.has('path'), values.has('url'), kind !== undefined].filter(Boolean).length > 1) throw invalid('--path, --url and --kind are mutually exclusive.',
     'Give exactly one of --path (a local directory), --url (an https Git remote) or --kind (github or google).');

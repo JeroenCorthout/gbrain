@@ -25,12 +25,11 @@ import { parseGoogleSourceConfig } from '../google/source-config.ts';
 import { parseGitHubSourceConfig } from '../github-source-config.ts';
 import type { GitHubSourceConfig } from '../github-source.ts';
 import { DEFAULT_CONTACTS_DIR, type GoogleSourceConfig } from '../google/types.ts';
+import { assertNever } from '../types.ts';
 
-export type ConnectorKind = 'google' | 'github';
+import type { ConnectorKind } from './connector-kinds.ts';
 
-export const CONNECTOR_SOURCE_KINDS: readonly ConnectorKind[] = ['google', 'github'];
-/** A managed Google or GitHub connector source (`sources.config.kind`). */
-export function isConnectorSourceKind(kind: unknown): kind is ConnectorKind { return CONNECTOR_SOURCE_KINDS.includes(kind as ConnectorKind); }
+export { CONNECTOR_KINDS_SQL, CONNECTOR_SOURCE_KINDS, isConnectorSourceKind, type ConnectorKind } from './connector-kinds.ts';
 export type ConnectorConfig = GoogleSourceConfig | GitHubSourceConfig;
 type LeafClass = 'identity' | 'excluded';
 /** An identity leaf left out of the digest while it holds the default it was introduced with (#6561). */
@@ -100,7 +99,11 @@ export function connectorIdentityLeaves(kind: ConnectorKind, config: ConnectorCo
 export interface ConnectorIdentity { kind: ConnectorKind; config: ConnectorConfig; digest: string; aliasDigests: string[] }
 
 export function parseConnectorConfig(kind: ConnectorKind, raw: Record<string, unknown>, localPath: string | null): ConnectorConfig {
-  return kind === 'google' ? parseGoogleSourceConfig(raw, localPath ?? '') : parseGitHubSourceConfig(raw, localPath ?? '');
+  switch (kind) {
+    case 'google': return parseGoogleSourceConfig(raw, localPath ?? '');
+    case 'github': return parseGitHubSourceConfig(raw, localPath ?? '');
+    default: return assertNever(kind);
+  }
 }
 
 /** The parsed connector config plus its identity digest. The raw config is never an identity. */

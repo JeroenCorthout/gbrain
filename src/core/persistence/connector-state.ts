@@ -16,6 +16,8 @@
 import type { BrainEngine } from '../engine.ts';
 import { digest } from './digest.ts';
 import { parseSourceConfig } from '../sources-load.ts';
+import { assertNever } from '../types.ts';
+import { isConnectorSourceKind } from './connector-kinds.ts';
 
 export const CONNECTOR_STATE_OP = 'managed-connector-state';
 
@@ -168,7 +170,7 @@ export async function seedConnectorDispatchAttempts(engine: Pick<BrainEngine, 'e
     // parseSourceConfig, as the dispatch loops read it (string-wrapped configs included). The syncEnabled test is
     // isSyncDisabledConfig's (sync-policy.ts), inlined so the schema-migration closure stays small.
     const config = parseSourceConfig(row.config);
-    if (config.kind !== 'google' && config.kind !== 'github') continue;
+    if (!isConnectorSourceKind(config.kind)) continue;
     if (config.syncEnabled === false) continue;
     await recordConnectorSyncAttempt(engine, row.id, at);
     seeded++;
@@ -191,14 +193,22 @@ export async function attemptedConnectorSourceIds(engine: Pick<BrainEngine, 'exe
 /** Account pins compare the resolved identity only; the recorded display never includes credentials. */
 export function sameConnectorAccount(a: ConnectorAccount, b: ConnectorAccount): boolean {
   if (a.kind !== b.kind) return false;
-  if (a.kind === 'google') return a.email === (b as typeof a).email;
-  const other = b as typeof a;
-  return (a.installationId ?? null) === (other.installationId ?? null) && (a.login ?? null)?.toLowerCase() === (other.login ?? null)?.toLowerCase();
+  switch (a.kind) {
+    case 'google': return a.email === (b as typeof a).email;
+    case 'github': {
+      const other = b as typeof a;
+      return (a.installationId ?? null) === (other.installationId ?? null) && (a.login ?? null)?.toLowerCase() === (other.login ?? null)?.toLowerCase();
+    }
+    default: return assertNever(a);
+  }
 }
 
 export function describeConnectorAccount(account: ConnectorAccount): string {
-  if (account.kind === 'google') return account.email;
-  return [account.installationId !== null ? `installation ${account.installationId}` : null, account.login ? `login ${account.login}` : null]
-    .filter(Boolean).join(', ') || 'no installation or login';
+  switch (account.kind) {
+    case 'google': return account.email;
+    case 'github': return [account.installationId !== null ? `installation ${account.installationId}` : null, account.login ? `login ${account.login}` : null]
+      .filter(Boolean).join(', ') || 'no installation or login';
+    default: return assertNever(account);
+  }
 }
 
