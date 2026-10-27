@@ -13,8 +13,8 @@ import { runMigrationStatement } from './helpers.ts';
 //   derived it yet. The constraint is replaced NOT VALID and validated in its own statement, so no scan of the
 //   journal runs under the ALTER's lock.
 // Additive: no row is read or rewritten. Provisional number: renumbered at the merge slot.
-export const v275: Migration = {
-  version: 275,
+export const v278: Migration = {
+  version: 278,
   name: 'git_first_strict_path',
   idempotent: true,
   transaction: false,
@@ -31,6 +31,6 @@ export const v275: Migration = {
     END $do$;
   `,
   handler: async engine => {
-    await runMigrationStatement(engine, 275, 'ALTER TABLE persistence_requests VALIDATE CONSTRAINT persistence_requests_state_check;');
+    await runMigrationStatement(engine, 278, 'ALTER TABLE persistence_requests VALIDATE CONSTRAINT persistence_requests_state_check;');
   },
 };

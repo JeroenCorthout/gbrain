@@ -33,6 +33,7 @@
  * marker, so its request identity and replay are unchanged; when the group
  * does not commit it takes `publishMutation` like any other member.
  */
+import { relative, sep } from 'node:path';
 import type { BrainEngine } from '../engine.ts';
 import { OperationError } from '../ops/contract.ts';
 import { authorizeStoredRequest, storedAuthorizationReads } from './authority.ts';
@@ -83,6 +84,7 @@ import { importGroupReads, type ImportGroupReads } from './import-reads.ts';
 import { withScreeningPaths } from './screening-paths.ts';
 import { publicationBeliefOptions, withBeliefBatch } from '../belief/ledger.ts';
 import { markBeliefCommits } from '../belief/append.ts';
+import { PAGE_CHANGED_DURING_PREPARATION_MESSAGE } from './verb-errors.ts';
 
 /** A `put_pages` or managed import group publishes at most this many pages per transaction, so one commit stays a few seconds long. */
 export const PAGE_BATCH_GROUP_MAX = 8;
@@ -366,6 +368,7 @@ export async function publishGroup(engine: BrainEngine, rows: WriteRequest[], pr
       first.catch(() => undefined);
       // One coordinated write for the group; each member is the attributed actor of what it writes.
       let doorCommit: string | null | undefined;
+      let indexRestored: string[] | undefined;
       await withCoordinatedWrite(tx, [head.source_id], async () => {
         await ready;
         if (gitFirst && recorded.size) {
@@ -385,7 +388,8 @@ export async function publishGroup(engine: BrainEngine, rows: WriteRequest[], pr
             } catch (error) { throw tag(error, i); }
           }
           for (const member of recorded.values()) await runDoorProbe(tx, member.row);
-          doorCommit = await commitThroughDoor(binding.local_path!, [...recorded].map(([i, member]) => ({ path: member.record.path, note: prepared[i]!.file?.commit })), lane || joined ? undefined : lock);
+          doorCommit = await commitThroughDoor(binding.local_path!, [...recorded].map(([i, member]) => ({ path: member.record.path, planned: member.record.afterHash, note: prepared[i]!.file?.commit })), lane || joined ? undefined : lock,
+            paths => { indexRestored = paths; });
         }
         // The previous member's effects (rows no attribution or page check depends on) go out with the next member's checks.
         let effects: (() => Promise<void>) | null = null;
@@ -403,7 +407,7 @@ export async function publishGroup(engine: BrainEngine, rows: WriteRequest[], pr
                 await authorizePageVisibility(tx, row.authority, row.slug);
                 if ((snapshot?.page.id ?? null) !== row.page_id) throw new OperationError('page_identity_changed', 'The accepted page was deleted or recreated.', 'Read the page again and submit a new intent with a new request_id.');
                 await assertUnboundPublication(tx, row, snapshot?.page.source_path);
-                if ((snapshot?.revision ?? null) !== member.observedRevision) throw new OperationError('revision_conflict', 'The page changed during preparation.', 'Read its current revision and submit the updated intent with a new request_id.');
+                if ((snapshot?.revision ?? null) !== member.observedRevision) throw new OperationError('revision_conflict', PAGE_CHANGED_DURING_PREPARATION_MESSAGE, 'Read its current revision and submit the updated intent with a new request_id.');
                 return snapshot;
               },
               async () => { if (sync && !(gitFirst && file)) await member.validate?.(tx); },
@@ -445,8 +449,13 @@ export async function publishGroup(engine: BrainEngine, rows: WriteRequest[], pr
       // G2: one path-only commit for every member's file, in commit order, before the rows commit; a shared lease never reclaims an index lock.
       if (strict && recorded.size) {
         if (!gitFirst) for (const member of recorded.values()) await runDoorProbe(tx, member.row);
-        const commit = gitFirst ? doorCommit! : await commitThroughDoor(binding.local_path!, [...recorded].map(([i, member]) => ({ path: member.record.path, note: prepared[i]!.file?.commit })), lane || joined ? undefined : lock);
+        const commit = gitFirst ? doorCommit! : await commitThroughDoor(binding.local_path!, [...recorded].map(([i, member]) => ({ path: member.record.path, planned: member.record.afterHash, note: prepared[i]!.file?.commit })), lane || joined ? undefined : lock,
+          paths => { indexRestored = paths; });
         for (const i of recorded.keys()) Object.assign(outcomes[i]!.persistence as object, { git_state: 'committed', git_commit: commit });
+        if (indexRestored) for (const [i, member] of recorded) {
+          const rel = relative(binding.local_path!, member.record.path).split(sep).join('/');
+          if (indexRestored.includes(rel)) Object.assign(outcomes[i]!.persistence as object, { git_index_restored: [rel] });
+        }
       }
       const done = await completeGroup(tx, rows, outcomes);
       // Every member is complete in this transaction: the batch's last page re-arms the batch's mention links once.
