@@ -22,9 +22,10 @@ export async function createPageVersion(engine: BrainEngine, slug: string, sourc
       VALUES ($1,$2,$3::text::jsonb,$4::uuid,$5,$6,$7,$8::text::jsonb,$9,$10) RETURNING *`,
     [page.id, page.compiled_truth, JSON.stringify(page.frontmatter), revision, page.timeline, page.title, page.type, JSON.stringify(tags), page.deleted_at != null, page.source_path ?? null]);
     if (isLargePageBytes(Buffer.byteLength(page.compiled_truth ?? '', 'utf-8') + Buffer.byteLength(page.timeline ?? '', 'utf-8'))) {
-      await tx.executeRaw(`DELETE FROM page_versions WHERE page_id = $1 AND id IN (SELECT id FROM page_versions WHERE page_id = $1
-        AND octet_length(compiled_truth) + octet_length(COALESCE(timeline, '')) > $2 ORDER BY id DESC OFFSET $3)`,
+      const pruned = await tx.executeRaw<{ id: number }>(`DELETE FROM page_versions WHERE page_id = $1 AND id IN (SELECT id FROM page_versions WHERE page_id = $1
+        AND octet_length(compiled_truth) + octet_length(COALESCE(timeline, '')) > $2 ORDER BY id DESC OFFSET $3) RETURNING id`,
       [page.id, PAGE_INLINE_MAX_BYTES, LARGE_PAGE_VERSIONS_KEPT]);
+      await markPrunedHistory(tx, page.id, pruned.map(row => Number(row.id)));
     }
     return { ...rows[0], snapshot_at: new Date(rows[0].snapshot_at) };
   };
@@ -84,7 +85,20 @@ export async function pruneSegmentedVersions(tx: BrainEngine, pageId: number): P
     cap AS (SELECT GREATEST($3::bigint, COALESCE(body_bytes, 0)) AS bytes FROM pages WHERE id = $1)
     DELETE FROM page_versions WHERE id IN (SELECT kept.id FROM kept, cap WHERE kept.rk > $2 OR kept.bytes > cap.bytes)
     RETURNING id`, [pageId, policy.versionsMaxPerPage, policy.versionsMaxPinnedBytes]);
+  await markPrunedHistory(tx, pageId, deleted.map(row => Number((row as { id: number }).id)));
   return deleted.length;
+}
+
+/**
+ * GBRA-217: after a prune, the retained snapshot just before each pruned one has lost its successor (`successor_pruned`,
+ * so a remote reader is never shown its reason: the successor's visibility can no longer be checked), and the page has
+ * lost history (`version_history_gap_at`, read by valid-time answers).
+ */
+async function markPrunedHistory(tx: BrainEngine, pageId: number, pruned: number[]): Promise<void> {
+  if (!pruned.length) return;
+  await tx.executeRaw(`UPDATE page_versions SET successor_pruned = true WHERE page_id = $1 AND id IN (
+      SELECT (SELECT max(k.id) FROM page_versions k WHERE k.page_id = $1 AND k.id < d.id) FROM unnest($2::int[]) AS d(id))`, [pageId, pruned]);
+  await tx.executeRaw('UPDATE pages SET version_history_gap_at = now() WHERE id = $1', [pageId]);
 }
 
 /**
