@@ -21,6 +21,8 @@
  * PR 4's incremental derivation.
  */
 import { createHash } from 'node:crypto';
+import { existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import type { BrainEngine } from '../engine.ts';
 import type { GBrainConfig } from '../config.ts';
 import type { OperationContext } from '../operations.ts';
@@ -61,7 +63,8 @@ import { isWriteRequestId } from './types.ts';
 import type { PreparedMutation } from './coordinator.ts';
 import type { WriteRequest } from './model.ts';
 import type { ClaimPhaseClock } from './claim-phase.ts';
-import { indexPendingError, readPendingHead } from './git-first.ts';
+import { indexPendingError, readPendingHead, type PendingHead } from './git-first.ts';
+import { getWorktreeBinding } from './ownership.ts';
 import { gitFirstStrictActive } from './git-first-gate.ts';
 
 /** The most text one append_page call carries; a larger append goes through an upload session (mode 'append'). */
@@ -368,6 +371,34 @@ export async function prepareSegmentedSpliceMutation(engine: BrainEngine, row: W
   }
 }
 
+/**
+ * Wave C (ceo-r3-outside-3, unsplit pages): during the index lag the page is its committed head, not its rows. An append
+ * reads its tail from the committed file (the working tree, which must still be that head) and composes the whole file,
+ * which takes put_page's deferred path against the head's revision, so it supersedes the head and reaches Git first. An
+ * append into the truth while a timeline follows it would land mid-page, so it refuses index_pending until the flip, as
+ * does a head whose file moved or a source no longer on the git-first path.
+ */
+async function prepareAppendOverPendingHead(engine: BrainEngine, row: WriteRequest, config: GBrainConfig, intent: AppendIntent, pending: PendingHead,
+  stored: PageSnapshot | null, signal?: AbortSignal, clock?: ClaimPhaseClock): Promise<PreparedMutation> {
+  if ((stored && !stored.page.deleted_at ? stored.page.id ?? null : null) !== row.page_id) throw pageIdentityError(true, 'The accepted page was deleted or recreated.');
+  const expected = intent.preconditions?.expected_revision;
+  if (expected && expected !== pending.revision) throw revisionRefusal(row, pending.revision);
+  const binding = await getWorktreeBinding(engine, row.source_id);
+  const file = binding?.local_path ? join(binding.local_path, pending.path) : null;
+  const raw = file && existsSync(file) && await gitFirstStrictActive(engine, row.source_id) ? readFileSync(file) : null;
+  if (!raw || raw.length !== Number(pending.body_bytes) || sha256Hex(raw) !== pending.body_sha256) throw indexPendingError(row.slug, pending.request_id);
+  const content = raw.toString('utf8');
+  const parsed = parseMarkdown(content, row.slug);
+  const region = targetRegion(intent.region, !!parsed.timeline);
+  if (region === 'truth' && parsed.timeline) throw indexPendingError(row.slug, pending.request_id);
+  const tail = inlineRegionTail(region === 'timeline' ? parsed.timeline : parsed.compiled_truth, region);
+  const expectedTail = intent.preconditions?.expected_tail_sha256;
+  if (expectedTail && ((row.authority.remote && tail.guarded) || sha256Hex(tail.bytes) !== expectedTail)) throw tailRefusal(row, region);
+  const text = await appendedText(engine, intent);
+  const separator = intent.separator === 'auto' && raw.length > 0 && raw[raw.length - 1] !== 0x0a ? '\n' : '';
+  return preparePageMutation(engine, row, config, { content: content + separator + text, expectedRevision: pending.revision }, signal, { clock });
+}
+
 /** The preparer of an append_page request (service.ts dispatch). */
 export async function prepareAppendMutation(engine: BrainEngine, row: WriteRequest, config: GBrainConfig, signal?: AbortSignal, clock?: ClaimPhaseClock): Promise<PreparedMutation> {
   signal?.throwIfAborted();
@@ -375,7 +406,7 @@ export async function prepareAppendMutation(engine: BrainEngine, row: WriteReque
   const stored = await engine.readPageSnapshot(row.slug, { sourceId: row.source_id, includeDeleted: true });
   // Wave C (ceo-r3-outside-1): a committed head whose index is pending is the page's tail; its rows are the generation before it.
   const pending = await readPendingHead(engine, row.source_id, row.slug);
-  if (pending && pending.request_id !== row.id) throw indexPendingError(row.slug, pending.request_id);
+  if (pending && pending.request_id !== row.id) return prepareAppendOverPendingHead(engine, row, config, intent, pending, stored, signal, clock);
   if (!stored || stored.page.deleted_at) throw pageRefusal('page_not_found', 'Page not found.', row,
     `Page ${row.slug} does not exist in source ${row.source_id} or is deleted, so nothing was appended. Create it with put_page; restore a deleted page with restore_page.`,
     pageFix(row.source_id, row.slug));

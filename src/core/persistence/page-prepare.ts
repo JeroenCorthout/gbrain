@@ -779,13 +779,15 @@ export async function preparePageMutation(unbounded: BrainEngine, row: WriteRequ
 /**
  * Wave C (ceo-r3-outside-1): the write's revision check. A whole-page write may replace a committed head whose index is
  * pending; its precondition is checked against that head (git-first.ts pendingPrecondition), and the file it replaces is
- * the committed one. Returns the head it supersedes, or null.
+ * the committed one. An append composed over that head (page-append.ts, ceo-r3-outside-3) names its revision. Returns the
+ * head it supersedes, or null.
  */
 async function checkWriteRevision(engine: BrainEngine, row: WriteRequest, snapshot: PageSnapshot | null,
   preparedIntent: Parameters<typeof preparePageMutation>[3]): Promise<PendingHead | null> {
-  const pending = !preparedIntent && (row.operation === 'put_page' || row.operation === 'capture') ? await readPendingHead(engine, row.source_id, row.slug) : null;
-  const supersedes = pending && pending.request_id !== row.id ? pending : null;
-  assertPageRevision(supersedes ? { revision: pendingPrecondition(row.slug, supersedes, snapshot?.revision, row.intent!.expected_revision) } : snapshot,
+  const pending = (preparedIntent ? row.operation === 'append_page' : row.operation === 'put_page' || row.operation === 'capture')
+    ? await readPendingHead(engine, row.source_id, row.slug) : null;
+  const supersedes = pending && pending.request_id !== row.id && (!preparedIntent || preparedIntent.expectedRevision === pending.revision) ? pending : null;
+  assertPageRevision(supersedes ? { revision: pendingPrecondition(row.slug, supersedes, snapshot?.revision, preparedIntent?.expectedRevision ?? row.intent!.expected_revision) } : snapshot,
     preparedIntent ? { expectedRevision: preparedIntent.expectedRevision } : engineMutationPrecondition(parseMutationPrecondition(row.intent!)));
   return supersedes;
 }

@@ -145,14 +145,14 @@ export interface PageReindexPreview {
   apply: string[];
 }
 
-async function strictSource(engine: BrainEngine, sourceId: string): Promise<void> {
+async function strictSource(engine: BrainEngine, sourceId: string, slug: string): Promise<void> {
   const [source] = await engine.executeRaw<{ strict: boolean }>(`SELECT COALESCE(config->>'canonical','')='git' AS strict FROM sources WHERE id=$1`, [sourceId]);
   if (!source?.strict) throw opError('invalid_params', `Source ${sourceId} is not strict (git-canonical), so Git does not win there and nothing was read.`,
-    `Only a source with config.canonical = "git" re-derives a page from Git. gbrain pages verify <slug> --source ${sourceId} compares it read-only.`);
+    `Only a source with config.canonical = "git" re-derives a page from Git. gbrain pages verify ${slug} --source ${sourceId} compares it read-only.`);
 }
 
 async function previewWithFile(engine: BrainEngine, sourceId: string, slug: string): Promise<{ preview: PageReindexPreview; file: string; located: Located }> {
-  await strictSource(engine, sourceId);
+  await strictSource(engine, sourceId, slug);
   const located = await locate(engine, sourceId, slug);
   const { verification, pending } = located;
   const binding = await getWorktreeBinding(engine, sourceId);
@@ -192,7 +192,7 @@ export async function applyPageReindex(engine: BrainEngine, sourceId: string, sl
     await tx.executeRaw('DELETE FROM page_pending_heads WHERE source_id = $1 AND slug = $2 AND request_id = $3::uuid', [sourceId, slug, current.request_id]);
     await tx.executeRaw(`UPDATE persistence_requests SET state = 'committed', updated_at = now(),
         outcome = COALESCE(outcome, '{}'::jsonb) || jsonb_build_object('index', jsonb_build_object('state', 'indexed', 'commit', $2::text, 'reindexed', true))
-      WHERE id = $1::uuid AND state IN ('indexing', 'committed')`, [current.request_id, preview.head]);
+      WHERE id = $1::uuid AND (state = 'indexing' OR state = 'committed')`, [current.request_id, preview.head]);
   });
   return { status: 'applied' as const, source_id: sourceId, slug, head: preview.head, blob: preview.blob, import: { status: imported.status, chunks: imported.chunks },
     verify: await verifyPage(engine, sourceId, slug) };
