@@ -49,7 +49,7 @@ for (const backend of testBackends()) describe(`[${backend}] index from the comm
     const slug = 'notes/indexed';
     const text = pageBody(2 * MiB, 'MARKERINDEXED');
     const row = await write(engine, ctx, slug, text, 'put');
-    expect(row.state).toBe('indexing');
+    expect(await indexEffect(engine, row.id)).toBeDefined();
     await settleIndex(engine, row.id);
     const done = await request(engine, row.id);
     const commit = done.outcome.persistence.git_commit;
