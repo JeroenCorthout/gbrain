@@ -4,6 +4,7 @@
  * - a page turning private while its committed head waits for the index step commits the removal and clears the head;
  * - edit_page on an unsplit segmented page composes the whole page and takes the deferred path: no table holds the new
  *   bytes before the door, and the index step flips it;
+ * - (1I review M3) a deferred write that lowers a page's trust tier files its lower_page proposal when the index step flips it;
  * - an append that would take an unsplit page over PAGE_MAX_BYTES refuses file_too_large (switch_off) instead of staging
  *   segments before the door.
  */
@@ -22,6 +23,9 @@ import { managedBrain } from '../helpers/managed-brain.ts';
 import { testWaitMs } from '../helpers/wait-for.ts';
 import { requirePostgresTestDatabase, testBackends } from '../helpers/test-backends.ts';
 import { MiB, pageBody, write } from './helpers.ts';
+import { withCoordinatedWrite, withTrustBackfill } from '../../src/core/persistence/context.ts';
+import { listTrustProposals } from '../../src/core/trust/proposals.ts';
+import { TEST_WRITE_ATTRIBUTION } from '../helpers/write-attribution.ts';
 import { probeHooks } from './payload-probe.ts';
 
 const op = (name: string) => operations.find(o => o.name === name)!;
@@ -131,6 +135,26 @@ for (const backend of testBackends()) describe(`[${backend}] git-first writes af
     expect(git(root, 'show', `HEAD:${slug}.md`)).toContain('MARKEREDITEDNOW');
     await settle(engine, slug);
     expect((await requestState(engine, requestId))?.state).toBe('committed');
+  }, { databaseUrl, setup }), 300_000);
+
+  test('a deferred write that lowers an operator_curated page files its lower_page proposal at the flip', () => managedBrain(async ({ engine, ctx }) => {
+    await strict(engine);
+    const slug = 'notes/curated';
+    expect(['indexing', 'committed']).toContain((await write(engine, ctx, slug, pageBody(2 * MiB, 'MARKERCURATED'), 'put')).state);
+    await settle(engine, slug);
+    // Lowering to unknown is always allowed; the backfill may then raise unknown to operator_curated (CEO-10).
+    await engine.transaction(tx => withCoordinatedWrite(tx, ['default'], async () => {
+      await tx.executeRaw("UPDATE pages SET trust_tier = 'unknown' WHERE source_id = 'default' AND slug = $1", [slug]);
+      await withTrustBackfill(tx, () => tx.executeRaw("UPDATE pages SET trust_tier = 'operator_curated' WHERE source_id = 'default' AND slug = $1", [slug]));
+    }, TEST_WRITE_ATTRIBUTION));
+    const revision = (await engine.readPageSnapshot(slug, { sourceId: 'default' }))!.revision;
+    expect((await write(engine, ctx, slug, pageBody(2 * MiB, 'MARKERAGENTREWRITE'), 'put', { expectedRevision: revision })).state).toBe('indexing');
+    await settle(engine, slug);
+    const [page] = await engine.executeRaw<{ trust_tier: string }>("SELECT trust_tier FROM pages WHERE source_id = 'default' AND slug = $1", [slug]);
+    expect(page?.trust_tier).toBe('agent_written');
+    const proposals = await listTrustProposals(engine, { sourceId: 'default', action: 'lower_page' });
+    expect(proposals).toHaveLength(1);
+    expect(proposals[0]).toMatchObject({ status: 'pending' });
   }, { databaseUrl, setup }), 300_000);
 
   test('an append that would take an unsplit page over PAGE_MAX_BYTES refuses at the git-canonical page limit (file_too_large, wire request_too_large), nothing committed', () => managedBrain(async ({ engine, ctx, root }) => {

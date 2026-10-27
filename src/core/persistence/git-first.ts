@@ -15,6 +15,7 @@ import { relative, sep } from 'node:path';
 import type { BrainEngine } from '../engine.ts';
 import { opError, type OperationError } from '../ops/contract.ts';
 import type { PageSnapshot } from '../page-state/types.ts';
+import { storedPageTier } from '../trust/page-write.ts';
 import { INDEX_SPLIT_PAGE_EFFECT } from './git-first-gate.ts';
 import type { WriteRequest } from './model.ts';
 import { headBlob } from './pending-import.ts';
@@ -69,9 +70,13 @@ export async function queueIndexFromGit(tx: BrainEngine, row: WriteRequest, inde
       hold_code = NULL, queued_at = now()`,
   [row.source_id, row.slug, snapshot?.page.id ?? null, row.id, commit, headOid, rel, revision, bytes.byteLength,
     createHash('sha256').update(bytes).digest('hex'), index.title, index.type, JSON.stringify(index.frontmatter), pendingLead(content)]);
+  // 1I review M3: the page's tier and revision before this write, so the flip files the lower_page proposal the write's own
+  // apply would have filed (recordAgentPageLowering, CEO-12) when the committed head lowers the page.
+  const priorTier = snapshot && !snapshot.page.deleted_at ? await storedPageTier(tx, row.source_id, row.slug) : null;
+  const lowering = priorTier ? { operation: row.operation, tier: priorTier, revision: snapshot!.revision } : undefined;
   await tx.executeRaw(`INSERT INTO persistence_effects (request_id, kind, revision, data, source_id, source_incarnation, worktree_id)
     VALUES ($1::uuid, $2, NULL, $3::text::jsonb, $4, $5::uuid, $6::uuid) ON CONFLICT (request_id, kind) DO NOTHING`,
-  [row.id, INDEX_SPLIT_PAGE_EFFECT, JSON.stringify({ slug: row.slug, commit, head_oid: headOid, path: rel, pending_revision: revision }),
+  [row.id, INDEX_SPLIT_PAGE_EFFECT, JSON.stringify({ slug: row.slug, commit, head_oid: headOid, path: rel, pending_revision: revision, ...(lowering ? { lowering } : {}) }),
     row.source_id, row.source_incarnation, row.worktree_id]);
   return { state: 'pending', commit, revision };
 }

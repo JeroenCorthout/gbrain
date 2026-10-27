@@ -32,13 +32,20 @@ import { acquireWorktreeWaiting, getWorktreeBinding, type WorktreeBinding } from
 import { headBlob, isAncestor, landedCommit } from './pending-import.ts';
 import { opError } from '../ops/contract.ts';
 import { declarePersistenceProtocol } from './protocol.ts';
+import type { WriteRequest } from './model.ts';
+import { recordAgentPageLowering } from '../trust/page-write.ts';
+import type { TrustTier } from '../trust/tier.ts';
 
 /** @internal How often a running index job renews its claim (the lease); tests shorten it, and `afterChecks` runs between the committed-file checks and the import. */
 export const _indexLeaseTiming: { renewMs: number; afterChecks?: (file: string) => void } = { renewMs: 30_000 };
 /** How long the index step waits for the source writer lock before it retries later. */
 const INDEX_LOCK_WAIT_MS = 30_000;
 
-interface IndexEffectData { slug: string; commit: string; head_oid: string; path: string; pending_revision: string }
+interface IndexEffectData {
+  slug: string; commit: string; head_oid: string; path: string; pending_revision: string;
+  /** The writing request's operation and the page's tier and revision before it (git-first.ts queueIndexFromGit). */
+  lowering?: { operation: WriteRequest['operation']; tier: TrustTier; revision: string | null };
+}
 
 async function fileSha256(path: string): Promise<{ sha256: string; bytes: number }> {
   const hash = createHash('sha256');
@@ -145,6 +152,9 @@ async function indexCommitted(engine: BrainEngine, effect: PersistenceEffect, ho
     }
     await tx.executeRaw('DELETE FROM page_pending_heads WHERE source_id = $1 AND slug = $2 AND request_id = $3::uuid', [effect.source_id, data.slug, effect.request_id]);
     await tx.executeRaw('UPDATE pages SET indexed_commit = $3 WHERE source_id = $1 AND slug = $2', [effect.source_id, data.slug, data.commit]);
+    // 1I review M3 (CEO-12): the deferred write's apply never ran, so a lowering is filed here, against the derived rows.
+    if (data.lowering) await recordAgentPageLowering(tx, { operation: data.lowering.operation, source_id: effect.source_id, slug: data.slug },
+      { tier: data.lowering.tier, revision: data.lowering.revision });
     await finishIndex(tx, effect, { state: 'indexed', commit: data.commit }, imported.searchable ?? true);
   });
 }
