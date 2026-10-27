@@ -156,9 +156,15 @@ const INDEX_LEASE_FREE_SQL = (e: string) => `(${e}.kind<>'${INDEX_SPLIT_PAGE_EFF
 export async function claimPersistenceEffect(engine: BrainEngine, hostId: string, deadOwners: readonly string[] = []): Promise<PersistenceEffect | null> {
   return engine.transactionDirect(async tx => {
     await declarePersistenceProtocol(tx);
+    const kinds = claimableEffectKinds(BUILT_IN_EFFECT_KINDS);
+    // eng-r3-outside-4: an index effect keeps next_attempt_at at 'infinity' and its due time in data.due_at
+    // (git-first-schema.ts), so a released binary's claim never selects it; only a claim that knows the kind reads due_at.
+    const due = kinds.includes(INDEX_SPLIT_PAGE_EFFECT)
+      ? `(CASE WHEN e.kind='${INDEX_SPLIT_PAGE_EFFECT}' THEN COALESCE((e.data->>'due_at')::timestamptz,'-infinity'::timestamptz) ELSE e.next_attempt_at END)`
+      : 'e.next_attempt_at';
     const [candidate] = await tx.executeRaw<PersistenceEffect>(`SELECT e.* FROM persistence_effects e
       LEFT JOIN persistence_worktrees w ON w.id=e.worktree_id
-      WHERE (e.state='queued' OR e.state='running' AND e.claim_expires_at<now() OR ${DEAD_OWNER_EFFECT_SQL('e', '$2')}) AND e.next_attempt_at<=now()
+      WHERE (e.state='queued' OR e.state='running' AND e.claim_expires_at<now() OR ${DEAD_OWNER_EFFECT_SQL('e', '$2')}) AND ${due}<=now()
       AND (e.worktree_id IS NULL OR w.owner_host_id=$1::uuid) AND (e.worktree_id IS NULL OR ${refreshFenceClear('e')})
       AND e.recovery IS NULL AND NOT EXISTS (SELECT 1 FROM persistence_effects blocked
         WHERE blocked.worktree_id=e.worktree_id AND blocked.recovery IS NOT NULL)
@@ -167,7 +173,7 @@ export async function claimPersistenceEffect(engine: BrainEngine, hostId: string
       AND (e.kind='withdrawal-mirror' OR NOT EXISTS (SELECT 1 FROM persistence_effects mirror
         WHERE mirror.request_id=e.request_id AND mirror.kind='withdrawal-mirror' AND mirror.state IN ('queued','running')))
       AND e.kind=ANY($3::text[]) AND ${INDEX_LEASE_FREE_SQL('e')}
-      ORDER BY e.next_attempt_at,e.id LIMIT 1 FOR UPDATE OF e SKIP LOCKED`, [hostId, [...deadOwners], claimableEffectKinds(BUILT_IN_EFFECT_KINDS)]);
+      ORDER BY ${due},e.id LIMIT 1 FOR UPDATE OF e SKIP LOCKED`, [hostId, [...deadOwners], kinds]);
     if (!candidate) return null;
     if (candidate.kind === INDEX_SPLIT_PAGE_EFFECT) {
       // Two claimers can pick two queued jobs of one page at once: serialize them on the page and read the lease again.
