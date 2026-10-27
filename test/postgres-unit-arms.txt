@@ -531,6 +531,8 @@ test/wave-c/index-pending.test.ts
 test/wave-c/indexing-receipt.test.ts
 test/wave-c/mixed-group-door.test.ts
 test/wave-c/no-bytes-before-door.test.ts
+test/wave-c/pages-status-indexing.test.ts
+test/wave-c/pages-verify-reindex.test.ts
 test/wave-c/pending-head-admission.test.ts
 test/wave-c/strict-segmented-git-first.test.ts
 test/wave-c/upload-spool.test.ts
