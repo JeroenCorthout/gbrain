@@ -1,0 +1,11 @@
+{
+  "setup": "scripts/ubicloud/setup-ci-vm.sh",
+  "command": "export PATH=\"$HOME/.bun/bin:$PATH\" DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:15433/gbrain_test GBRAIN_TEST_ALLOW_DATABASE_URL=1 GBRAIN_HEAVY_LOG_DIR=\"$HOME/heavy-logs\" && bun run test:heavy",
+  "size": "standard-30",
+  "env": [
+    "SLOTS=1"
+  ],
+  "pull": [
+    "heavy-logs:.context/ubicloud-verify"
+  ]
+}

@@ -458,10 +458,11 @@ too; build the admin app on the host when updating its committed bundle.
 from one heaviest-first work queue; every VM is destroyed on exit. VM setup, scheduling, weights, quota
 and flags are in [scripts/ubicloud/README.md](../scripts/ubicloud/README.md).
 
-VMs are named `ubirun-<owner>-<epoch>-<suffix>`; set `UBI_OWNER` to your thread
+VMs are named `ubirun-<owner>-<epoch>-<suffix>-t<hours>` (gstack's TTL form); set `UBI_OWNER` to your thread
 code. Teardown destroys every VM the run asked for, including creates still in
-flight, and stale-VM sweeps run only with `UBI_GC_HOURS` set and only on your
-own VMs. `scripts/ubicloud/ubi-runner.sh usage` shows vCPUs by owner.
+flight; every `up` first reaps any owner's VMs whose TTL ended, and stale-VM sweeps run only with `UBI_GC_HOURS` set and only on your
+own VMs. `scripts/ubicloud/ubi-runner.sh usage` shows vCPUs by owner. The single-VM heavy suite runs from the
+committed `.gstack/ubicloud.json` (`ubi-runner.sh verify` or `gstack-ubi verify`).
 A sleeping machine kills the run with no signal, so teardown never runs: on Capy, run
 `ci:ubicloud` as a watched background operation. After any interrupted run, check
 `ubi-runner.sh list --mine` and reap leftovers with `down NAME` (or `gc HOURS`, own VMs only).
