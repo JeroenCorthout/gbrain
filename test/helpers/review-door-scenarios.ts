@@ -52,8 +52,19 @@ export async function reviewDoorFixture(engine: BrainEngine, storage: ReviewStor
   return { storage, repo, cleanup: () => rmSync(repo, { recursive: true, force: true }) };
 }
 
+/**
+ * Runs persistence effects until no Git effect is queued or running. One pass is not enough when two decisions race:
+ * a concurrent pass may hold an effect (or the checkout's commit lock) when this one runs, so the commit lands later.
+ */
 async function drain(engine: BrainEngine): Promise<void> {
-  await runPersistenceEffects(engine, { engine: engine.kind, embedding_disabled: true } as never, { hostId: localHostId(), limit: 16 });
+  const deadline = Date.now() + 15_000;
+  for (;;) {
+    await runPersistenceEffects(engine, { engine: engine.kind, embedding_disabled: true } as never, { hostId: localHostId(), limit: 16 });
+    const [pending] = await engine.executeRaw<{ n: number }>("SELECT count(*)::int AS n FROM persistence_effects WHERE kind = 'git' AND state IN ('queued','running')");
+    if (!pending || Number(pending.n) === 0) return;
+    if (Date.now() >= deadline) throw new Error(`${pending.n} Git effect(s) still queued or running after 15 s`);
+    await new Promise(resolve => setTimeout(resolve, 50));
+  }
 }
 
 /** The file Git's HEAD holds for a slug, or null when HEAD has none. */
@@ -147,6 +158,7 @@ export async function racedDecisionsScenario(engine: BrainEngine, fx: ReviewDoor
     review(engine, { action: 'promote', slugs: [slug] }),
     review(engine, { action: 'reject', slugs: [slug] }),
   ]);
+  await drain(engine);
   const statuses = [a.results[0]!.status, b.results[0]!.status].sort();
   expect([['not_found', 'rejected'], ['not_unverified', 'promoted']]).toContainEqual(statuses);
   const page = await engine.getPage(slug);
