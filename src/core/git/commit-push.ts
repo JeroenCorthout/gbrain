@@ -10,7 +10,9 @@
  *      the network push; a publisher takes the commit lock only to advance, and
  *      an unattended publisher that finds the publish lock busy leaves a request
  *      the holder honors after it releases (so no commit is stranded);
- *   2. commits carry only the caller's paths (`commit --only -- <paths>`);
+ *   2. commits carry only the caller's paths (`commit --only -- <paths>`), and
+ *      paths that reach a split page carry its whole, verified unit
+ *      (persistence/split-unit-guard.ts assertStagedSplitUnitsWhole);
  *   3. a rejected push is integrated IN MEMORY (`merge-tree --write-tree`, or a
  *      3-way `read-tree` into a temporary index on git < 2.38) into a merge
  *      commit built with `commit-tree`; no working tree is touched;
@@ -36,6 +38,7 @@ import { acquireNativeLock, acquireNativeLockSync, type NativeLockSyncHandle } f
 import { OperationError, opError } from '../ops/contract.ts';
 import { shellQuote } from '../agent-output.ts';
 import { envPushCap, filePushCap, pushCap, pushRange, type PushIO } from '../persistence/push-preflight.ts';
+import { assertStagedSplitUnitsWhole } from '../persistence/split-unit-guard.ts';
 import { backstopScanSync, cleanFilterRefused, coveredFile, scanCommitFilesSync, splitHeadOnDisk } from '../persistence/push-scan.ts';
 
 export const COMMIT_LOCK_NAME = 'brain-commit.lock';
@@ -451,6 +454,7 @@ function commitPaths(root: string, rel: string[], message: string, scope: Commit
     const partners = paths.filter(p => !insideSourceRoots(p, scope.roots));
     if (partners.length) throw outsideRootError(root, scope.roots, partners, 'A staged rename would commit');
     if (git(root, ['--literal-pathspecs', 'diff', '--cached', '--quiet', '--', ...paths]).code === 0) return null;
+    assertStagedSplitUnitsWhole(root, paths);
     const scanned = scope.allowSecret ? null : scanStaged(root, paths);
     const parent = git(root, ['rev-parse', '--quiet', '--verify', 'HEAD^{commit}']).stdout.trim();
     const env = { [COMMIT_VIA_ENV]: scope.lockPath, ...(scope.markHeld ? { [COMMIT_LOCK_ENV]: scope.lockPath } : {}) };

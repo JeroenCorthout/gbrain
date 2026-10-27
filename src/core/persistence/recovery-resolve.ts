@@ -79,6 +79,7 @@ import { rebaseStaleEffectRecovery } from './effect-recovery.ts';
 import { trueUpRequests } from './receipt-true-up.ts';
 import { bundleFileHash } from './bundle-files.ts';
 import { isSplitRecoveryRecord } from './split-files.ts';
+import { assertSplitUnitMutable } from './split-unit-guard.ts';
 import { mayReprepare } from './semantic.ts';
 import { cleanupRecoveryStaging, restoreBeforeStage, upgradeRecoveryStaging } from './staging.ts';
 import { FileBytes, hashDescriptor, hashFile, LARGE_FILE_MIN_BYTES, largeFileWork, validateBeforeStagePath } from './large-file.ts';
@@ -731,6 +732,7 @@ Promise<ResolutionResult & { replayed: boolean }> {
         if (!allowed.includes(now)) throw changedAgain(item, journal.backup_dir, command);
       }
       if (opts.keep === 'prior') {
+        for (const { record } of unexpected) await assertSplitUnitMutable({ root: record.root, path: record.path, route: 'recovery', strict: binding.canonical_git === true, sourceId: item.source_id, slug: item.slug });
         await upgradeRecoveryStaging(engine, 'persistence_requests', item.id, item.worktree_id, 'restore');
         const staged = recoveryFiles((await getWriteRequestById(engine, item.id))!.recovery!);
         await withFilesystemPublication([...new Set(staged.map(record => record.root))], async () => {
@@ -823,6 +825,7 @@ Promise<ResolutionResult & { replayed: boolean }> {
       const after = record.version === 1 ? record.after : null;
       if (after === null) throw catalogueError('recovery_effect_unsupported', effectReason('withdrawal-mirror'),
         `Nothing was written; the edited bytes are backed up under ${started.backup_dir}. ${effectFix(item.source_id, item.request_id || null).user_message}`);
+      await assertSplitUnitMutable({ root: record.root, path: record.path, route: 'recovery', strict: binding.canonical_git === true, sourceId: item.source_id, slug: item.slug });
       await withFilesystemPublication([record.root], async () => {
         cleanupRecoveryStaging(record);
         publishPersistenceFile({ path: record.path, root: record.root, content: Buffer.from(after, 'base64') }, record.staging?.publication?.path);

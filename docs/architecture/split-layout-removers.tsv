@@ -30,6 +30,7 @@ src/core/harness/install.ts	2	not_page_path	removes its install receipt and the 
 src/core/harness/native-router.ts	1	not_page_path	removes a native router SKILL.md it owns, only when its bytes match the recorded hash of the one file it wrote, so never a split head.
 src/core/persistence/bundle-files.ts	1	door	the publication door: removes a unit file under its recovery record (record.path).
 src/core/persistence/coordinator.ts	1	door	the publication door coordinator: removes a planned unit file (file.path) under the door lock.
+src/core/persistence/git-conversion.ts	1	not_page_path	writeAtomically removes only its own temporary copy (.gbrain-convert-<pid>-<ms>.tmp) after the rename or a failed write; never a page path.
 src/core/persistence/git-door.ts	1	door	the Git door: removes its scratch directory after a publication.
 src/core/persistence/large-file.ts	1	door	the door large-file helper: removes its staged path after use.
 src/core/persistence/recovery-resolve.ts	3	door	repair stuck-recovery resolves a publication recovery record: removes its temporary copies and a stage file under the persistence home; page files change only by rename under the record.
@@ -48,7 +49,7 @@ src/core/skillpack/tarball.ts	3	not_page_path	removes its tarball stage file; ne
 src/core/sources-ops.ts	9	door	removes its clone temp directories and, on sources remove, a whole clone gbrain owns (head and parts go together with the checkout); never a single page file.
 src/core/split-layout/plan.ts	3	door	the split planner: removes its staged plan files under the split staging directory.
 src/core/split-write-through.ts	1	not_page_path	writePageTemp removes a stale temporary copy (tmpPath) before creating it; the page file is never removed here.
-src/core/storage/local.ts	1	not_page_path	removes a binary blob from the local file storage backend; never a page path.
+src/core/storage/local.ts	1	refuse_before_write	delete runs assertSplitUnitMutableSync (route remover) on the confined path before it unlinks it, so a head or part of a split unit (on disk, in the index or in HEAD) refuses split_page_unsupported (outside_door) and nothing is removed.
 src/core/timeline-write-through.ts	1	not_page_path	removes only its temporary copy (tmpPath) after a refusal; the page file is replaced by a rename after outsideDoorRefusal.
 src/core/transcripts/hermes.ts	1	not_page_path	removes its temporary extraction directory (tmp); never a page path.
 src/core/write-through.ts	1	refuse_before_write	deletePageThrough removes the page file only after assertSplitUnitMutable (route remover); a page in a split unit is kept (skipped: split_page_unsupported).
