@@ -174,6 +174,7 @@ function stateWhy(slug: string, state: PageStatusState, ctx: { row?: EmbeddingSt
     case 'empty': return `Page ${slug} has no body text, so there is nothing to search.`;
     case 'page_deleted': return `Page ${slug} is soft-deleted, so search never returns it. If it should come back, restore it with gbrain restore ${slug} --force.`;
     case 'missing': return `No page with slug ${slug} exists in this source, live or deleted.`;
+    case 'indexing': case 'index_held': return `Page ${slug} has a committed head in Git that its index step has not flipped into the database.`;
   }
 }
 

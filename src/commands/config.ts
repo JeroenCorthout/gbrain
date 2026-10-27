@@ -66,6 +66,7 @@ const FILE_PLANE_DOTTED_KEYS: ReadonlySet<string> = new Set([
   'mcp.instructions',
   // #5232: the CLI resolves its write wait before choosing a transport, engine-free.
   'persistence.write_wait_ms',
+  'persistence.wait_indexed_ms',
   // Engine graduation opt-out: the pre-connect migrate router reads it engine-free.
   'migrate.graduation', 'doctor.default_budget_ms', // #6803: the CLI doctor reads it pre-connect (commands/doctor/default-budget.ts)
   'minions.terminal_hook', // #7242: a command the worker runs; local file plane only, never the shared DB plane (minions/terminal-hook.ts)
@@ -472,6 +473,19 @@ async function setFileWriteWait(cfg: GBrainConfig, value: string, saveConfig: (c
   console.log(`Set ${WRITE_WAIT_CONFIG_KEY} = ${n} (file plane: ~/.gbrain/config.json; --wait and ${WRITE_WAIT_ENV} override it)`);
 }
 
+/** Wave C 1I-a: `--wait-indexed`'s default, file plane like the write wait. */
+async function setFileWaitIndexed(cfg: GBrainConfig, value: string, saveConfig: (cfg: GBrainConfig) => void): Promise<void> {
+  const { MAX_WAIT_INDEXED_MS, WAIT_INDEXED_CONFIG_KEY, WAIT_INDEXED_ENV } = await import('../core/persistence/write-wait.ts');
+  const n = /^\d+$/.test(value.trim()) ? Number(value) : NaN;
+  if (!Number.isSafeInteger(n) || n > MAX_WAIT_INDEXED_MS) {
+    console.error(`[config] ${WAIT_INDEXED_CONFIG_KEY} must be a whole number of milliseconds from 0 to ${MAX_WAIT_INDEXED_MS}`);
+    process.exit(1);
+  }
+  cfg.persistence = { ...(cfg.persistence ?? {}), wait_indexed_ms: n };
+  saveConfig(cfg);
+  console.log(`Set ${WAIT_INDEXED_CONFIG_KEY} = ${n} (file plane: ~/.gbrain/config.json; --wait-indexed and ${WAIT_INDEXED_ENV} override it)`);
+}
+
 /** `config set` for the FILE_PLANE_DOTTED_KEYS and the memorable consent
  * gate: every one of these is read from ~/.gbrain/config.json by an
  * engine-free reader, so the write never touches the engine. */
@@ -559,6 +573,7 @@ async function setFilePlaneKey(key: string, value: string, tail: string[]): Prom
     saveConfig(cfg);
     console.log(`Set ${key} = ${on} (file plane: ~/.gbrain/config.json)`);
   } else if (key === 'persistence.write_wait_ms') { await setFileWriteWait(cfg, value, saveConfig);
+  } else if (key === 'persistence.wait_indexed_ms') { await setFileWaitIndexed(cfg, value, saveConfig);
   } else if (key === 'minions.terminal_hook') { (await import('../core/minions/terminal-hook.ts')).setTerminalHookConfig(cfg, value, saveConfig);
   } else if (key === 'doctor.default_budget_ms') { (await import('./doctor/default-budget.ts')).setDoctorDefaultBudget(cfg, value, saveConfig);
   } else if (key === 'migrate.graduation') {

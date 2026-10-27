@@ -129,7 +129,7 @@ for (const backend of testBackends()) describe('[' + backend + '] admission read
     expect(git(root, 'rev-parse', 'HEAD').trim()).toBe(head);
     const stale = await refusal(op('append_page').handler(ctx, { slug, text: '- 2026-01-02: stale\n', expected_revision: (await engine.executeRaw<{ r: string }>(
       "SELECT gen_random_uuid()::text AS r"))[0]!.r, request_id: randomUUID(), wait_ms: 3_000 }));
-    expect(['revision_changed', 'conflict', 'revision_required']).toContain(stale?.code);
+    expect(['revision_changed', 'conflict', 'revision_required']).toContain(stale?.code ?? 'none');
     await refusal(op('append_page').handler(ctx, { slug, text: '- 2026-01-02: second event\n', expected_revision: large.outcome?.index?.revision, request_id: randomUUID(), wait_ms: 3_000 }));
     const file = committed(root, slug);
     expect(file.indexOf('first event')).toBeLessThan(file.indexOf('second event'));
