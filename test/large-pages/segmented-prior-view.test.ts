@@ -10,8 +10,8 @@
  * 2. Fails when: each call rebuilds the view and each view reads the body twice (six reads per write), or the view
  *    keeps every entry of the prior body (key, summary, detail and slug copies: 12.8x the body for a 6 MiB page).
  * Seams: segmentedPassWork.bytes (segment-blocks.ts) counts bytes read; the heap is sampled once it has settled (full
- * collections until two readings agree) when classification first reads the new body, with the prior view built and alive, against a baseline taken after a
- * warm-up call on another snapshot and one small statement on every pooled connection. The pool hands statements out in
+ * collections until two readings agree) when classification first reads the new body, with the prior view built and
+ * alive, against a baseline taken the same way after a warm-up call on another snapshot and one small statement on every pooled connection. The pool hands statements out in
  * turn, so the warm-up and the measured call end on different connections: a connection that kept its last segment
  * read (its receive buffer, or the statement and its rows) held up to 3 MiB of the prior body that the baseline did not,
  * so the driver keeps neither (vendor/postgres connection.js). The warm-up's new body is small: an in-flight concurrent
