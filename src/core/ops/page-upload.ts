@@ -38,6 +38,7 @@ import {
 import { gitFirstStrictActive } from '../persistence/git-first-gate.ts';
 import { removeSpool } from '../persistence/upload-spool.ts';
 import { localHostId } from '../persistence/identity.ts';
+import { pendingPrecondition, readPendingHead } from '../persistence/git-first.ts';
 
 const MODES: readonly UploadMode[] = ['create', 'replace', 'append'];
 const SHA256_HEX = /^[0-9a-f]{64}$/i;
@@ -200,15 +201,19 @@ const begin_page_upload: Operation = {
     // put_page's grant and visibility checks first: a page this caller may not see answers as put_page does, before any read of it.
     await submissionAuthority(ctx, mode === 'append' ? 'append_page' : 'put_page', sourceId, source.incarnation, slug);
     const snapshot = await ctx.engine.readPageSnapshot(slug, { sourceId, includeDeleted: true });
-    if (mode === 'create' && snapshot) {
+    // Wave C (ceo-r3-outside-1): a committed head whose index is pending is the page (a create may have no rows yet), and
+    // a base revision is checked against it (git-first.ts pendingPrecondition).
+    const pending = await readPendingHead(ctx.engine, sourceId, slug);
+    if (mode === 'create' && (snapshot || pending)) {
       throw opError('revision_required', `Page ${slug} already exists, so an upload with mode create cannot write it; nothing was staged.`,
         "Read the page with get_page body: 'none', then begin with mode replace and its revision as expected_revision.", { fix: pageFix(slug, sourceId) });
     }
-    if (mode !== 'create' && (!snapshot || snapshot.page.deleted_at)) {
+    if (mode !== 'create' && (!snapshot || snapshot.page.deleted_at) && !pending) {
       if (ctx.remote !== false) throw pageNotVisibleError();
       throw opError('page_not_found', `Page not found: ${slug}`, `An upload with mode ${mode} writes an existing page; begin with mode create to make it.`);
     }
-    if (mode !== 'create' && want.baseRevision !== null && snapshot!.revision !== want.baseRevision) throw revisionChanged(slug, sourceId);
+    if (mode !== 'create' && want.baseRevision !== null
+      && (pending ? pendingPrecondition(slug, pending, snapshot?.revision, want.baseRevision) : snapshot!.revision) !== want.baseRevision) throw revisionChanged(slug, sourceId);
     const id = randomUUID();
     try {
       await reserveUpload(ctx.engine, { id, principal, clientRequestId, sourceId, sourceIncarnation: source.incarnation, slug,
@@ -388,7 +393,8 @@ const commit_page_upload: Operation = {
       ...(p.wait_ms !== undefined ? { wait_ms: p.wait_ms } : {}) };
     if (!submitted && row.mode === 'replace') {
       const current = await ctx.engine.readPageSnapshot(row.slug, { sourceId: row.source_id, includeDeleted: true });
-      if (current?.revision !== row.base_revision) {
+      const pending = await readPendingHead(ctx.engine, row.source_id, row.slug);
+      if ((pending ? pendingPrecondition(row.slug, pending, current?.revision, row.base_revision) : current?.revision) !== row.base_revision) {
         await abortUpload(ctx.engine, row.id);
         throw revisionChanged(row.slug, row.source_id);
       }

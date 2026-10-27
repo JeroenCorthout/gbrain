@@ -45,7 +45,7 @@ import { getWorktreeBinding } from './ownership.ts';
 import type { PreparedContentImport } from './prepared-import.ts';
 import type { PreparedMutation } from './coordinator.ts';
 import type { SqlEngine, WriteRequest } from './model.ts';
-import { indexPendingError, readPendingHead } from './git-first.ts';
+import { indexPendingError, pendingPrecondition, readPendingHead } from './git-first.ts';
 import { isUnboundSourcePage } from './unbound-source.ts';
 import { isOriginTwinPage } from './origin-twins.ts';
 import { sealImportedPage, sealPageTextProjection } from '../page-state/projections.ts';
@@ -258,7 +258,9 @@ export async function prepareFileTarget(engine: BrainEngine, row: Pick<WriteRequ
     /** Runs between the pieces of a segmented page's file comparison (an effect's claim renewal). */
     between?: () => Promise<void>;
     /** #7436: the preparation's clock, so its stamp says `waiting_on=git` while a Git check runs. */
-    clock?: ClaimPhaseClock } = {}): Promise<PreparedMutation['file']> {
+    clock?: ClaimPhaseClock;
+    /** Wave C (ceo-r3-outside-1): the request whose pending head this whole-page write replaces; its committed file is the expected one. */
+    supersedesPending?: string } = {}): Promise<PreparedMutation['file']> {
   if (!row.worktree_id) return undefined;
   // An in-memory canonical file over the 25 MiB push-scan cap is refused (only a page over the 24 MiB single-string
   // ceiling renders one). That page's file is streamed instead (restore_page of a page whose body was not read back,
@@ -383,8 +385,8 @@ async function compareFileTarget(engine: BrainEngine, row: Pick<WriteRequest, 's
     const landed = !matches && !staleCache && content !== null && beforeHash() === fileContentHash(content)
       && await sourceCanonicalGit(engine, row.source_id) && await committedBlob(root, path) !== null;
     if (landed) return { path, root, content, expectedBeforeHash: beforeHash() };
+    if (!matches && !staleCache && await refuseWhileIndexPending(engine, row, options.supersedesPending, beforeHash)) return { path, root, content, expectedBeforeHash: beforeHash() };
     if (!matches && !staleCache) {
-      await refuseWhileIndexPending(engine, row);
       const held = await heldFileRefusal(engine, row, root, path, 'drift', options.remote === true);
       if (held) throw held;
       // #6394: a page that never recorded its file reconciles against the file at its slug path only when adopted explicitly.
@@ -398,17 +400,24 @@ async function compareFileTarget(engine: BrainEngine, row: Pick<WriteRequest, 's
     }
   } else if (before && !snapshot && content !== null && beforeHash() !== fileContentHash(content)
     && !(options.capture && beforeHash() === options.capture.hash)) {
-    await refuseWhileIndexPending(engine, row);
+    if (await refuseWhileIndexPending(engine, row, options.supersedesPending, beforeHash)) return { path, root, content, expectedBeforeHash: beforeHash() };
     throw await heldFileRefusal(engine, row, root, path, 'occupied', options.remote === true)
       ?? new OperationError('source_changed', 'An unindexed file already occupies the canonical page path.', 'Import the file before replacing it.');
   }
   return { path, root, content, expectedBeforeHash: before ? beforeHash() : null };
 }
 
-/** Wave C (ceo-r3-outside-1): the file differs from the rows because another write's committed head waits for its index. */
-async function refuseWhileIndexPending(engine: BrainEngine, row: Pick<WriteRequest, 'source_id' | 'slug'> & { id?: string }): Promise<void> {
+/**
+ * Wave C (ceo-r3-outside-1): the file differs from the rows because another write's committed head waits for its index.
+ * True when this write replaces that head (a whole-page write prepared against it, and the file is still the committed
+ * head); throws index_pending for any other write.
+ */
+async function refuseWhileIndexPending(engine: BrainEngine, row: Pick<WriteRequest, 'source_id' | 'slug'> & { id?: string },
+  supersedes?: string, fileHash?: () => string): Promise<boolean> {
   const pending = await readPendingHead(engine, row.source_id, row.slug);
-  if (pending && pending.request_id !== row.id) throw indexPendingError(row.slug, pending.request_id);
+  if (!pending || pending.request_id === row.id) return false;
+  if (supersedes === pending.request_id && fileHash?.() === pending.body_sha256) return true;
+  throw indexPendingError(row.slug, pending.request_id);
 }
 
 /** Wave C (spec §3.1): whether a put stages its segmented body or defers it to the index step (strict git-first, git-first-gate.ts). */
@@ -787,7 +796,12 @@ async function prepareInlineOrSegmentedMutation(unbounded: BrainEngine, row: Wri
   const snapshot = await materializedSnapshot(unbounded, stored);
   signal?.throwIfAborted();
   enterClaimStep(clock, 'revision_check');
-  assertPageRevision(snapshot, preparedIntent ? { expectedRevision: preparedIntent.expectedRevision } : engineMutationPrecondition(parseMutationPrecondition(p)));
+  // Wave C (ceo-r3-outside-1): a whole-page write may replace a committed head whose index is pending; its precondition
+  // is checked against that head (git-first.ts pendingPrecondition), and the file it replaces is the committed one.
+  const pending = !preparedIntent && (row.operation === 'put_page' || row.operation === 'capture') ? await readPendingHead(engine, row.source_id, row.slug) : null;
+  const supersedes = pending && pending.request_id !== row.id ? pending : null;
+  assertPageRevision(supersedes ? { revision: pendingPrecondition(row.slug, supersedes, snapshot?.revision, p.expected_revision) } : snapshot,
+    preparedIntent ? { expectedRevision: preparedIntent.expectedRevision } : engineMutationPrecondition(parseMutationPrecondition(p)));
   if ((snapshot?.page.id ?? null) !== row.page_id) throw pageIdentityError(snapshot != null || row.page_id === null, 'The accepted page identity changed.');
   const observedRevision = snapshot?.revision ?? null;
   const activePack = pack?.manifest;
@@ -966,7 +980,8 @@ async function prepareInlineOrSegmentedMutation(unbounded: BrainEngine, row: Wri
     async () => noop || targetDeleted ? pageNoopAdvisories(row) : !ordinaryPage ? remoteLinkHint(row) : preparePageAdvisories(engine,row,ready.parsedPage,snapshot),
     async () => !noop && !targetDeleted && autoLinkedPage && (row.authority.autoLinkTrusted ?? !row.authority.remote) && await isAutoLinkEnabled(engine)
       ? prepareAutomaticLinks(engine,row.slug,ready.parsedPage,row.source_id,options.coordinated === true) : undefined,
-    () => prepareFileTarget(engine, row, snapshot, targetDeleted ? null : rendered, undefined, { capture, allowMissing: options.allowMissingFile, activePack, remote: row.authority.remote, newPageIgnoredDatabaseOnly: true, clock }),
+    () => prepareFileTarget(engine, row, snapshot, targetDeleted ? null : rendered, undefined, { capture, allowMissing: options.allowMissingFile, activePack, remote: row.authority.remote, newPageIgnoredDatabaseOnly: true, clock,
+      ...(supersedes ? { supersedesPending: supersedes.request_id } : {}) }),
     // Always-loaded core tier: owner-only marking, brain-wide budget, remote-edit policy (core-guard.ts).
     async () => noop ? null : prepareCoreGuard(engine, { row, snapshot, incoming: targetDeleted ? null : ready.parsedPage }),
   ]) as [Awaited<ReturnType<typeof prepareCanonicalProjections>> | undefined, Record<string, unknown>,
@@ -983,7 +998,7 @@ async function prepareInlineOrSegmentedMutation(unbounded: BrainEngine, row: Wri
   // An inferred mode is pinned with the first origin it mints, so later pages cannot flip the inference (#5610).
   const pinMode = sourcePath && mintMode && scannerSourcePath(file!.root, file!.root) && !await readSlugRootMode(engine, row.source_id) ? mintMode : undefined;
   const publication: PreparedMutation = { observedRevision, noop, additionalPageKeys:links?.pageKeys, file, ...databaseOnly,
-    ...indexFromGitOf(ready), ...(core ? { exclusiveSources: core.exclusiveSources } : {}), ...(trust ? { trust } : {}), ...(ready.afterCommit ? { afterCommit: ready.afterCommit } : {}),
+    ...indexFromGitOf(ready), ...(supersedes ? { supersedesPending: supersedes.request_id } : {}), ...(core ? { exclusiveSources: core.exclusiveSources } : {}), ...(trust ? { trust } : {}), ...(ready.afterCommit ? { afterCommit: ready.afterCommit } : {}),
     validate: async tx => { await ready.validate(tx); await core?.validate(tx); }, apply: async (tx, preimage) => {
     let autoLinks: Awaited<ReturnType<NonNullable<typeof links>['apply']>> | undefined;
     let removedTimeline: TimelineRowsRemoved | null = null;

@@ -39,6 +39,8 @@ export function pendingLead(file: string): string {
 export interface IndexReceipt {
   state: 'pending' | 'indexed' | 'held' | 'superseded';
   commit: string;
+  /** While pending: the revision a write's precondition names to replace the committed head before the flip (pendingPrecondition). */
+  revision?: string;
   hold_code?: string;
   superseded_by?: string;
 }
@@ -67,19 +69,19 @@ export async function queueIndexFromGit(tx: BrainEngine, row: WriteRequest, inde
     VALUES ($1::uuid, $2, NULL, $3::text::jsonb, $4, $5::uuid, $6::uuid) ON CONFLICT (request_id, kind) DO NOTHING`,
   [row.id, INDEX_SPLIT_PAGE_EFFECT, JSON.stringify({ slug: row.slug, commit, head_oid: headOid, path: rel, pending_revision: revision }),
     row.source_id, row.source_incarnation, row.worktree_id]);
-  return { state: 'pending', commit };
+  return { state: 'pending', commit, revision };
 }
 
 /** The page's pending head, or null when the page has none (indexed, or never written through the git-first path). */
 export interface PendingHead {
   source_id: string; slug: string; page_id: number | null; request_id: string; commit_oid: string; head_oid: string; path: string;
-  revision: string; body_bytes: number; title: string | null; type: string | null; frontmatter: Record<string, unknown> | null;
+  revision: string; body_bytes: number; body_sha256: string; title: string | null; type: string | null; frontmatter: Record<string, unknown> | null;
   lead_text: string | null; access_state: 'world' | 'private'; hold_code: string | null; queued_at: string;
 }
 
 export async function readPendingHead(exec: Pick<BrainEngine, 'executeRaw'>, sourceId: string, slug: string, opts: { lock?: boolean } = {}): Promise<PendingHead | null> {
   const [row] = await exec.executeRaw<PendingHead>(`SELECT source_id, slug, page_id, request_id::text AS request_id, commit_oid, head_oid, path,
-      revision::text AS revision, body_bytes, title, type, frontmatter, lead_text, access_state, hold_code, queued_at
+      revision::text AS revision, body_bytes, encode(body_sha256, 'hex') AS body_sha256, title, type, frontmatter, lead_text, access_state, hold_code, queued_at
     FROM page_pending_heads WHERE source_id = $1 AND slug = $2${opts.lock ? ' FOR UPDATE' : ''}`, [sourceId, slug]);
   return row ? { ...row, body_bytes: Number(row.body_bytes), page_id: row.page_id == null ? null : Number(row.page_id) } : null;
 }
@@ -98,4 +100,16 @@ export function indexPendingError(slug: string, requestId: string): OperationErr
     'Wait a few seconds for the index step, then read the page again and submit the write with a new request_id.',
     { fix: { argv: ['gbrain', 'write-request', '--', requestId], consent: [], actor: 'agent', requires_exclusive: false,
       why: 'Read-only: the committed write\'s receipt says when its index step has flipped the page.' } });
+}
+
+/**
+ * Wave C (ceo-r3-outside-1, read side): the revision a write's precondition is checked against while the page has a
+ * pending head. The rows still describe the generation before the committed head, so the head's revision (the indexing
+ * receipt's `index.revision`) is the current one; a precondition naming the rows' revision read stale content and
+ * refuses index_pending (retryable) until the flip.
+ */
+export function pendingPrecondition(slug: string, pending: PendingHead, rowsRevision: string | null | undefined, expected: unknown): string {
+  const named = typeof expected === 'string' ? expected.toLowerCase() : null;
+  if (named !== null && named === rowsRevision && named !== pending.revision) throw indexPendingError(slug, pending.request_id);
+  return pending.revision;
 }

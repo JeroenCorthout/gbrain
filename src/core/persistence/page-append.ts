@@ -61,6 +61,7 @@ import { isWriteRequestId } from './types.ts';
 import type { PreparedMutation } from './coordinator.ts';
 import type { WriteRequest } from './model.ts';
 import type { ClaimPhaseClock } from './claim-phase.ts';
+import { indexPendingError, readPendingHead } from './git-first.ts';
 
 /** The most text one append_page call carries; a larger append goes through an upload session (mode 'append'). */
 export const APPEND_TEXT_MAX_BYTES = 4 * 1024 * 1024;
@@ -371,6 +372,9 @@ export async function prepareAppendMutation(engine: BrainEngine, row: WriteReque
   signal?.throwIfAborted();
   const intent = row.intent as unknown as AppendIntent;
   const stored = await engine.readPageSnapshot(row.slug, { sourceId: row.source_id, includeDeleted: true });
+  // Wave C (ceo-r3-outside-1): a committed head whose index is pending is the page's tail; its rows are the generation before it.
+  const pending = await readPendingHead(engine, row.source_id, row.slug);
+  if (pending && pending.request_id !== row.id) throw indexPendingError(row.slug, pending.request_id);
   if (!stored || stored.page.deleted_at) throw pageRefusal('page_not_found', 'Page not found.', row,
     `Page ${row.slug} does not exist in source ${row.source_id} or is deleted, so nothing was appended. Create it with put_page; restore a deleted page with restore_page.`,
     pageFix(row.source_id, row.slug));

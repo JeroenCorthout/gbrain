@@ -71,6 +71,8 @@ interface PreparedMutationBase {
   deferEmbedding?: boolean;
   /** Wave C (git-first.ts): a strict segmented write whose rows the index step derives from the committed blob; apply never runs. */
   indexFromGit?: IndexFromGit;
+  /** Wave C (ceo-r3-outside-1): the request whose pending head this whole-page write was prepared to replace (page-prepare.ts). */
+  supersedesPending?: string;
   /** Why a page write bound to a worktree publishes no file (receipt `write_through.skipped`). */
   databaseOnlyReason?: 'db_only' | 'unbound_source' | 'mirror_read_only' | 'sync_excluded' | 'shared_origin' | 'origin_twin' | 'detached';
   /** #6517: the receipt's `write_through.warning` for a database-only publication, set by `validate` under the publication guards. */
@@ -632,7 +634,7 @@ export async function publishMutation(engine: BrainEngine, row: WriteRequest, pr
       // until the flip; preparation refuses the same way when it sees the file ahead of the rows (page-prepare.ts).
       if (door?.door) {
         const pending = await readPendingHead(tx, row.source_id, row.slug);
-        if (pending && pending.request_id !== row.id) throw indexPendingError(row.slug, pending.request_id);
+        if (pending && pending.request_id !== row.id && pending.request_id !== prepared.supersedesPending) throw indexPendingError(row.slug, pending.request_id);
       }
       if (gitFirst) {
         await assertStrictFileTarget(tx, row, prepared, snapshot, binding);
