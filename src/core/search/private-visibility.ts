@@ -23,6 +23,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { BrainEngine } from '../engine.ts';
 import { isValidSourceId } from '../source-id.ts';
+import { hasReaders, readersAllow, validIdentity } from '../access/principals.ts';
 
 export const REMOTE_PRIVATE_PAGES_KEY = 'search.remote_private_pages';
 
@@ -46,9 +47,69 @@ function derivedPageSql(pageAlias: string): string {
  * is a code-provided literal, never user input.
  */
 export function privatePagesFilterFragment(pageAlias: string): string {
+  return `(${accessAllowedSql(pageAlias, [])} AND ${privacyPartSql(pageAlias)})`;
+}
+
+/** The privacy rules alone (visibility, aliases, pinned questions, lineage): what the escape hatches and granted_sources may relax. */
+function privacyPartSql(pageAlias: string): string {
   return `(${privateSnapshotFilterFragment(pageAlias)}
     AND NOT ${derivedOriginPrivateSql(pageAlias)}
     AND NOT ${declaredLineagePrivateSql(pageAlias)})`;
+}
+
+/**
+ * GBRA-218: the mandatory member-access predicate. A page that names readers
+ * in frontmatter `readable_by` passes only for a caller whose identity
+ * (`member:<id>` and its `group:<g>` entries) meets them, through the one SQL
+ * normalization gbrain_access_readers() (malformed values read as nobody). A
+ * page derived from a page that names readers is readable by no remote caller
+ * (originRestrictedSql). No escape hatch, operator opt-out or granted source
+ * relaxes this part; with an empty identity it hides every restricted page.
+ * `identity` must pass validIdentity (its alphabet has no quote), so it is
+ * embedded as literals; anything else empties it (fail closed).
+ */
+export function accessAllowedSql(pageAlias: string, identity: readonly string[]): string {
+  return `(${readersAllowedSql(pageAlias, identity)} AND NOT ${originRestrictedSql(pageAlias)})`;
+}
+
+/** The readers test alone on any row with a `frontmatter` column (a page or a version snapshot), without lineage. */
+export function readersAllowedSql(alias: string, identity: readonly string[]): string {
+  const ids = identity.length && validIdentity(identity) ? identity : [];
+  const listed = ids.length ? ` OR gbrain_access_readers(${alias}.frontmatter) && ARRAY[${ids.map(id => `'${id}'`).join(', ')}]::text[]` : '';
+  return `(${alias}.frontmatter->'readable_by' IS NULL${listed})`;
+}
+
+/** A page names readers (valid or not); SQL twin of hasReaders. */
+function namesReadersSql(alias: string): string {
+  return `(${alias}.frontmatter->'readable_by' IS NOT NULL)`;
+}
+
+/**
+ * GBRA-218 (plan D4): a derived page whose origin names readers is readable
+ * by no remote caller, members included, whatever its own fields say: an atom
+ * of such a page, a synthesized concept with such an input (or an input
+ * atom's origin), a Life Chronicle event extracted from one, or a page whose
+ * declared `derived_from` names one. Read-time, so derivatives written before
+ * the origin gained readers are covered; new derivations are stamped private
+ * by isDerivationPrivate.
+ */
+function originRestrictedSql(p: string): string {
+  const restrictedOrigin = (atom: string, alias: string) => `EXISTS (SELECT 1 FROM pages ${alias} WHERE ${alias}.source_id = ${atom}.source_id
+      AND ${alias}.slug = ${atom}.frontmatter->>'source_slug' AND ${namesReadersSql(alias)})`;
+  return `((CASE WHEN ${p}.type = 'atom' THEN ${restrictedOrigin(p, 'acl_origin')}
+    WHEN ${derivedPageSql(p)} THEN EXISTS (SELECT 1 FROM links acl_input_link
+      JOIN pages acl_input ON acl_input.id = acl_input_link.to_page_id
+      WHERE acl_input_link.from_page_id = ${p}.id AND acl_input_link.link_source = 'concept-provenance'
+        AND acl_input_link.link_type = 'synthesized_from'
+        AND (${namesReadersSql('acl_input')} OR ${restrictedOrigin('acl_input', 'acl_input_origin')}))
+    WHEN ${p}.type = 'event' AND ${p}.frontmatter->>'captured_via' LIKE 'life-chronicle:%' THEN EXISTS (SELECT 1 FROM pages acl_chronicle
+      WHERE acl_chronicle.source_id = ${p}.source_id AND acl_chronicle.slug = ${p}.frontmatter->'event'->>'depth' AND ${namesReadersSql('acl_chronicle')})
+    ELSE false END)
+    OR (CASE WHEN jsonb_typeof(${p}.frontmatter->'derived_from') IN ('array', 'string') THEN EXISTS (
+      SELECT 1 FROM pages acl_declared WHERE acl_declared.source_id = ${p}.source_id AND ${namesReadersSql('acl_declared')}
+        AND acl_declared.slug = ANY(ARRAY(SELECT regexp_replace(declared.slug, '\\.md$', '') FROM jsonb_array_elements_text(
+          CASE WHEN jsonb_typeof(${p}.frontmatter->'derived_from') = 'array' THEN ${p}.frontmatter->'derived_from'
+            ELSE jsonb_build_array(${p}.frontmatter->'derived_from') END) AS declared(slug)))) ELSE false END))`;
 }
 
 /**
@@ -61,36 +122,79 @@ export function privatePagesFilterFragment(pageAlias: string): string {
 export function privatePagesFilterFragmentFast(pageAlias: string): string {
   return `((${pageAlias}.frontmatter->'visibility' IS NULL AND ${pageAlias}.frontmatter->'derived_from' IS NULL${honorAliases()
       ? `\n      AND ${pageAlias}.frontmatter->'access' IS NULL AND ${pageAlias}.frontmatter->'confidentiality' IS NULL` : ''}
+      AND ${pageAlias}.frontmatter->'readable_by' IS NULL
       AND ${pageAlias}.type NOT IN ('atom', 'concept', 'event'))
     OR ${privatePagesFilterFragment(pageAlias)})`;
 }
 
 /**
- * GBRA-156: the sources whose private pages the current remote read may see,
- * from its grant's `private_pages: granted_sources` axis (the sources the
- * grant names explicitly; never the no-grant floor, federation, an OAuth
- * client's bound source or a request's `source_ids`). Set only by MCP
- * dispatch around a non-mutating operation; empty everywhere else (local
- * CLI, writes, jobs, cycles), so every other path keeps the rule above.
+ * The current caller's access record. MCP dispatch sets it around every remote
+ * operation (src/mcp/dispatch.ts), and a local `--as <member>` read sets it
+ * with applyRemoteReadPolicy. Fields:
+ *  - identity: GBRA-218, the caller's member and group principals (empty when
+ *    the credential is bound to no member);
+ *  - privateReadableSources: GBRA-156, the sources whose private pages the read
+ *    may see, from its grant's `private_pages: granted_sources` axis (never the
+ *    no-grant floor, federation, an OAuth client's bound source or a request's
+ *    `source_ids`); empty for writes;
+ *  - hidePrivate: false only when an operator relaxed privacy for remote reads
+ *    (GBRAIN_REMOTE_PRIVATE_PAGES=1 or search.remote_private_pages=visible).
+ * Outside any record (local CLI, jobs, cycles) the identity is empty, no
+ * source is private-readable and hidePrivate follows the process's hatch
+ * state, so caller-aware fragments still fail closed on restricted pages.
  */
-const privateReadable = new AsyncLocalStorage<readonly string[]>();
+export interface CallerAccess {
+  identity: readonly string[];
+  privateReadableSources: readonly string[];
+  hidePrivate: boolean;
+  applyRemoteReadPolicy: boolean;
+}
+const callerAccessStore = new AsyncLocalStorage<CallerAccess>();
+
+/** The current read's caller-access record (see CallerAccess). */
+export function currentCallerAccess(): CallerAccess {
+  return callerAccessStore.getStore() ?? { identity: [], privateReadableSources: [], hidePrivate: !processPrivacyRelaxed(), applyRemoteReadPolicy: false };
+}
+
+/** Runs `fn` under `access` merged over the current record; an invalid identity or source id empties that set (fail closed). */
+export function withCallerAccess<T>(access: Partial<CallerAccess>, fn: () => T): T {
+  const base = currentCallerAccess();
+  const identity = access.identity ?? base.identity;
+  const sources = access.privateReadableSources ?? base.privateReadableSources;
+  return callerAccessStore.run(Object.freeze({
+    identity: identity.length && validIdentity(identity) ? Object.freeze([...new Set(identity)].sort()) : Object.freeze([]),
+    privateReadableSources: sources.length && sources.every(isValidSourceId) ? Object.freeze([...new Set(sources)]) : Object.freeze([]),
+    hidePrivate: access.hidePrivate ?? base.hidePrivate,
+    applyRemoteReadPolicy: access.applyRemoteReadPolicy ?? base.applyRemoteReadPolicy,
+  }), fn);
+}
+
+/** Runs `fn` outside any caller's record, for work a request spawns that must not inherit its view. */
+export function withoutCallerAccess<T>(fn: () => T): T {
+  return callerAccessStore.exit(fn);
+}
 
 /** Runs `fn` with `sourceIds` as the private-readable set; an invalid id empties the whole set (fail closed). */
 export function withPrivateReadableSources<T>(sourceIds: readonly string[] | undefined, fn: () => T): T {
-  const ids = sourceIds?.length && sourceIds.every(isValidSourceId) ? Object.freeze([...new Set(sourceIds)]) : Object.freeze([]);
-  return privateReadable.run(ids, fn);
+  return withCallerAccess({ privateReadableSources: sourceIds ?? [] }, fn);
 }
 
 /** The private-readable set of the current read; empty outside a granted remote read. */
 export function privateReadableSources(): readonly string[] {
-  return privateReadable.getStore() ?? [];
+  return currentCallerAccess().privateReadableSources;
+}
+
+/** The current caller's member identity; empty outside a bound remote read or a local --as. */
+export function callerIdentity(): readonly string[] {
+  return currentCallerAccess().identity;
 }
 
 /**
- * `visiblePredicate`, widened to rows whose source (`sourceIdSql`, a
- * code-provided column reference) is in the current private-readable set.
- * The ids are embedded as literals: each passed isValidSourceId, whose
- * alphabet has no quote or backslash.
+ * `visiblePredicate` (a privacy-only predicate), widened to rows whose source
+ * (`sourceIdSql`, a code-provided column reference) is in the current
+ * private-readable set. Never pass a predicate that contains accessAllowedSql:
+ * the widening would reach it. The ids are embedded as literals: each passed
+ * isValidSourceId, whose alphabet has no quote or backslash.
  */
 export function orPrivateReadableSource(sourceIdSql: string, visiblePredicate: string): string {
   const ids = privateReadableSources();
@@ -98,20 +202,48 @@ export function orPrivateReadableSource(sourceIdSql: string, visiblePredicate: s
   return `(${sourceIdSql} IN (${ids.map(id => `'${id}'`).join(', ')}) OR ${visiblePredicate})`;
 }
 
-/** privatePagesFilterFragment for a remote read: a page in a private-readable source passes. Read sites only; derived-visibility decisions keep the plain fragment. */
+/**
+ * A privacy-only predicate for the current caller: TRUE when an operator
+ * relaxed privacy, else widened only to private-readable sources. Never pass
+ * a predicate that contains accessAllowedSql or readersAllowedSql.
+ */
+export function privacyForCaller(sourceIdSql: string, privacyPredicate: string): string {
+  return currentCallerAccess().hidePrivate ? orPrivateReadableSource(sourceIdSql, privacyPredicate) : 'TRUE';
+}
+
+function callerPrivacySql(pageAlias: string, privacyPredicate: string): string {
+  return privacyForCaller(`${pageAlias}.source_id`, privacyPredicate);
+}
+
+/** privatePagesFilterFragment for a remote read: the caller's member access, then the privacy part with its grant and hatch. Read sites only; derived-visibility decisions keep the plain fragment. */
 export function privatePagesFilterForCaller(pageAlias: string): string {
-  return orPrivateReadableSource(`${pageAlias}.source_id`, privatePagesFilterFragment(pageAlias));
+  return `(${accessAllowedSql(pageAlias, callerIdentity())} AND ${callerPrivacySql(pageAlias, privacyPartSql(pageAlias))})`;
 }
 
 /** privatePagesFilterFragmentFast for a remote read. */
 export function privatePagesFilterFastForCaller(pageAlias: string): string {
-  return orPrivateReadableSource(`${pageAlias}.source_id`, privatePagesFilterFragmentFast(pageAlias));
+  return `(${accessAllowedSql(pageAlias, callerIdentity())} AND ${callerPrivacySql(pageAlias, privacyPartFastSql(pageAlias))})`;
 }
 
-/** isPrivatePage for a remote read: false for a page whose `source_id` is private-readable; a row without `source_id` keeps the plain rule. */
+/** The fast form of privacyPartSql (see privatePagesFilterFragmentFast). */
+function privacyPartFastSql(pageAlias: string): string {
+  return `((${pageAlias}.frontmatter->'visibility' IS NULL AND ${pageAlias}.frontmatter->'derived_from' IS NULL${honorAliases()
+      ? `\n      AND ${pageAlias}.frontmatter->'access' IS NULL AND ${pageAlias}.frontmatter->'confidentiality' IS NULL` : ''}
+      AND ${pageAlias}.type NOT IN ('atom', 'concept', 'event'))
+    OR ${privacyPartSql(pageAlias)})`;
+}
+
+/**
+ * isPrivatePage for a remote read: true when the page names readers the
+ * caller does not meet; otherwise the privacy rule, false for a page whose
+ * `source_id` is private-readable or when an operator relaxed privacy. A row
+ * without `source_id` keeps the plain privacy rule.
+ */
 export function isPrivatePageForCaller(page: { type?: string | null; frontmatter?: unknown; source_id?: string | null }): boolean {
-  if (!isPrivatePage(page)) return false;
-  return !(typeof page.source_id === 'string' && privateReadableSources().includes(page.source_id));
+  const access = currentCallerAccess();
+  if (!readersAllow(page.frontmatter, access.identity)) return true;
+  if (!access.hidePrivate || !isPrivacyPrivatePage(page)) return false;
+  return !(typeof page.source_id === 'string' && access.privateReadableSources.includes(page.source_id));
 }
 
 /**
@@ -246,7 +378,7 @@ export function isDerivationPrivate(page: { type?: string | null; frontmatter?: 
 
 /** SQL twin of isDerivationPrivate. */
 export function derivationPrivateSql(alias: string): string {
-  return `(NOT ${privateSnapshotFilterFragment(alias)} OR ${privacyAliasSql(alias)})`;
+  return `(NOT ${privateSnapshotFilterFragment(alias)} OR ${privacyAliasSql(alias)} OR ${namesReadersSql(alias)})`;
 }
 
 /**
@@ -322,6 +454,11 @@ export function privateProvenanceFilterFragment(factAlias: string): string {
  * page, and an absent value hides only derived atoms and concepts.
  */
 export function isPrivatePage(page: { type?: string | null; frontmatter?: unknown }): boolean {
+  return hasReaders(page.frontmatter) || isPrivacyPrivatePage(page);
+}
+
+/** isPrivatePage without the member-access rule: visibility, aliases and pinned questions only. */
+function isPrivacyPrivatePage(page: { type?: string | null; frontmatter?: unknown }): boolean {
   const frontmatter = typeof page.frontmatter === 'object' && page.frontmatter !== null
     ? page.frontmatter as Record<string, unknown> : {};
   if (frontmatter.pinned_question != null) return true;
@@ -371,39 +508,80 @@ export async function findPrivateOnlySlugs(
 
 const CACHE_TTL_MS = 30_000;
 let cache = new WeakMap<BrainEngine, { at: number; expose: boolean }>();
+const exposeEngines = new Set<BrainEngine>();
+const strictEngines = new Set<BrainEngine>();
+
+/** GBRA-218: set once a page names readers or a member exists (sticky; a trigger and `gbrain access` write it). */
+export const ACCESS_RESTRICTIONS_KEY = 'access.restrictions_present';
 
 /** Test helper: drop the per-engine config cache. */
 export function __resetPrivateVisibilityCacheForTests(): void {
   cache = new WeakMap();
   honorAliasEngines.clear();
   aliasOptOutEngines.clear();
+  exposeEngines.clear();
+  strictEngines.clear();
 }
 
 /**
- * Should this caller's page reads exclude `visibility: private` pages?
- * `remote` follows the repo trust convention: anything that is not strictly
- * `false` is untrusted. Config lookups are cached 30s per engine; a failed
- * lookup counts as "not opted out" (fail-closed).
+ * The process-wide privacy relaxation used when no caller record exists:
+ * the env hatch, or a brain that opted out while none in this process stayed
+ * strict (the same lean-private rule as visibility.honor_aliases).
+ */
+function processPrivacyRelaxed(): boolean {
+  return process.env.GBRAIN_REMOTE_PRIVATE_PAGES === '1' || (exposeEngines.size > 0 && strictEngines.size === 0);
+}
+
+/**
+ * Has an operator relaxed privacy for remote reads on this brain
+ * (GBRAIN_REMOTE_PRIVATE_PAGES=1 or search.remote_private_pages=visible)?
+ * The only reader of either switch: every privacy decision comes through here
+ * or through resolveExcludePrivatePages. Config lookups are cached 30s per
+ * engine; a failed lookup counts as "not relaxed" (fail-closed).
+ */
+export async function remotePrivacyRelaxed(engine: BrainEngine): Promise<boolean> {
+  if (process.env.GBRAIN_REMOTE_PRIVATE_PAGES === '1') return true; // incident escape hatch
+  const hit = cache.get(engine);
+  if (hit && Date.now() - hit.at < CACHE_TTL_MS) return hit.expose;
+  let expose: boolean;
+  try {
+    const v = await engine.getConfig(REMOTE_PRIVATE_PAGES_KEY);
+    expose = v === 'visible' || v === 'true' || v === '1';
+  } catch {
+    expose = false; // config unreadable → enforce (fail-closed)
+  }
+  await readHonorAliases(engine);
+  cache.set(engine, { at: Date.now(), expose });
+  (expose ? exposeEngines : strictEngines).add(engine);
+  (expose ? strictEngines : exposeEngines).delete(engine);
+  return expose;
+}
+
+/** GBRA-218: does this brain hold member-access restrictions? Read live (the request snapshot answers it inside a read); unreadable counts as yes. */
+export async function accessRestrictionsPresent(engine: BrainEngine): Promise<boolean> {
+  try {
+    return (await engine.getConfig(ACCESS_RESTRICTIONS_KEY)) === '1';
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * Should this caller's page reads apply the read-policy fragment
+ * (`excludePrivate`)? `remote` follows the repo trust convention: anything
+ * that is not strictly `false` is untrusted. A trusted local caller applies
+ * it only under a local `--as <member>` record. A remote caller always
+ * applies it, except when an operator relaxed privacy and the brain holds no
+ * member-access restriction, where the hatches keep their pre-GBRA-218
+ * meaning. With restrictions present the fragment still applies under a
+ * hatch: caller-aware fragments relax only their privacy part, and the
+ * member-access part (accessAllowedSql) stays mandatory.
  */
 export async function resolveExcludePrivatePages(
   engine: BrainEngine,
   remote: boolean | undefined,
 ): Promise<boolean> {
-  if (remote === false) return false; // trusted local CLI sees everything
-  if (process.env.GBRAIN_REMOTE_PRIVATE_PAGES === '1') return false; // incident escape hatch
-  const hit = cache.get(engine);
-  let expose: boolean;
-  if (hit && Date.now() - hit.at < CACHE_TTL_MS) {
-    expose = hit.expose;
-  } else {
-    try {
-      const v = await engine.getConfig(REMOTE_PRIVATE_PAGES_KEY);
-      expose = v === 'visible' || v === 'true' || v === '1';
-    } catch {
-      expose = false; // config unreadable → enforce (fail-closed)
-    }
-    await readHonorAliases(engine);
-    cache.set(engine, { at: Date.now(), expose });
-  }
-  return !expose;
+  if (remote === false) return currentCallerAccess().applyRemoteReadPolicy;
+  if (!await remotePrivacyRelaxed(engine)) return true;
+  return accessRestrictionsPresent(engine);
 }
