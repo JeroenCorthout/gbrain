@@ -24,6 +24,8 @@ export interface IndexFromGit {
   title: string;
   type: string;
   frontmatter: Record<string, unknown>;
+  /** Receipt fields the preparation decided before the door (the write gate's outcome, a quarantine). */
+  outcome?: Record<string, unknown>;
 }
 
 /** Lead text kept on a pending head: what a partial read during the lag shows. */
@@ -39,6 +41,8 @@ export function pendingLead(file: string): string {
 export interface IndexReceipt {
   state: 'pending' | 'indexed' | 'held' | 'superseded';
   commit: string;
+  /** While pending: the revision a write's precondition names to replace the committed head before the flip (pendingPrecondition). */
+  revision?: string;
   hold_code?: string;
   superseded_by?: string;
 }
@@ -67,7 +71,7 @@ export async function queueIndexFromGit(tx: BrainEngine, row: WriteRequest, inde
     VALUES ($1::uuid, $2, NULL, $3::text::jsonb, $4, $5::uuid, $6::uuid) ON CONFLICT (request_id, kind) DO NOTHING`,
   [row.id, INDEX_SPLIT_PAGE_EFFECT, JSON.stringify({ slug: row.slug, commit, head_oid: headOid, path: rel, pending_revision: revision }),
     row.source_id, row.source_incarnation, row.worktree_id]);
-  return { state: 'pending', commit };
+  return { state: 'pending', commit, revision };
 }
 
 /** The page's pending head, or null when the page has none (indexed, or never written through the git-first path). */
@@ -112,13 +116,15 @@ export function importsCommittedFile(row: { intent?: Record<string, unknown> | n
 /**
  * Wave C (ceo-r3-outside-1): while another write's committed head waits for its index, the page's rows describe the
  * generation before it, so a write prepared from them would drop the committed write from Git; it refuses index_pending
- * (retryable) until the flip. A delete removes access rather than adding content (spec §3.1 step 7) and applies, and the
- * index step's own import of the committed file is never refused.
+ * (retryable) until the flip. A delete removes access rather than adding content (spec §3.1 step 7) and applies, the
+ * index step's own import of the committed file is never refused, and neither is a write prepared against that head
+ * (`supersedes`, page-prepare.ts supersedesPending).
  */
-export async function assertNoPendingIndex(tx: Pick<BrainEngine, 'executeRaw'>, row: Pick<WriteRequest, 'id' | 'source_id' | 'slug' | 'operation' | 'intent'>): Promise<void> {
+export async function assertNoPendingIndex(tx: Pick<BrainEngine, 'executeRaw'>, row: Pick<WriteRequest, 'id' | 'source_id' | 'slug' | 'operation' | 'intent'>,
+  supersedes?: string): Promise<void> {
   if (row.operation === 'delete_page' || importsCommittedFile(row)) return;
   const pending = await readPendingHead(tx, row.source_id, row.slug);
-  if (pending && pending.request_id !== row.id) throw indexPendingError(row.slug, pending.request_id);
+  if (pending && pending.request_id !== row.id && pending.request_id !== supersedes) throw indexPendingError(row.slug, pending.request_id);
 }
 
 /** After a door publication that is not itself indexed: the pages it replaced or removed lose their pending heads. */
@@ -126,4 +132,16 @@ export async function clearPublishedPendingHeads(tx: Pick<BrainEngine, 'executeR
   additional: readonly { sourceId: string; slug: string }[] = []): Promise<void> {
   if (importsCommittedFile(row)) return;
   await clearPendingHeads(tx, row.source_id, [row.slug, ...additional.filter(key => key.sourceId === row.source_id).map(key => key.slug)]);
+}
+
+/**
+ * Wave C (ceo-r3-outside-1, read side): the revision a write's precondition is checked against while the page has a
+ * pending head. The rows still describe the generation before the committed head, so the head's revision (the indexing
+ * receipt's `index.revision`) is the current one; a precondition naming the rows' revision read stale content and
+ * refuses index_pending (retryable) until the flip.
+ */
+export function pendingPrecondition(slug: string, pending: PendingHead, rowsRevision: string | null | undefined, expected: unknown): string {
+  const named = typeof expected === 'string' ? expected.toLowerCase() : null;
+  if (named !== null && named === rowsRevision && named !== pending.revision) throw indexPendingError(slug, pending.request_id);
+  return pending.revision;
 }

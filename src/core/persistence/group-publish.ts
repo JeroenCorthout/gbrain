@@ -56,7 +56,7 @@ import { timePublicationStep } from './publication-timing.ts';
 import { assertUnboundPublication, classifyUnboundPage } from './unbound-source.ts';
 import { boundPublication, declarePublication, publicationLeaseMs, publicationTransaction, type PublicationBound } from './publication-deadline.ts';
 import { classifyMirrorPage, sourceMirrorReadOnly } from './mirror-read-only.ts';
-import { commitThroughDoor, doorMarker, sourceCanonicalGit, strictChanged } from './git-door.ts';
+import { commitThroughDoor, doorMarker, prehashDoorFile, sourceCanonicalGit, strictChanged, type PrehashedBlob } from './git-door.ts';
 import { assertNoPrivateCommit, declareStrictPublication } from './git-declared.ts';
 import { gitFirstStrictActive } from './git-first-gate.ts';
 import { assertNoPendingIndex, clearPublishedPendingHeads } from './git-first.ts';
@@ -265,6 +265,12 @@ export async function publishGroup(engine: BrainEngine, rows: WriteRequest[], pr
   // lease and publishes beside them; everything else takes it exclusively.
   // With this process's lanes open on the worktree but none publishing, it opens the lease for them to join.
   const beside = !lane && rows.length === 1 && singleWrite(head) && await foregroundPriority(engine);
+  // Wave C (spec §3.5): a strict group stores its members' blobs before it takes the writer lock (git-door.ts rechecks them).
+  const prehashed: Array<PrehashedBlob | null> = [];
+  if (binding.canonical_git === true) for (const member of prepared) {
+    const content = member.noop ? null : member.file?.content;
+    prehashed.push(typeof content === 'string' || content instanceof Uint8Array ? await prehashDoorFile(binding.local_path, member.file!.path, content) : null);
+  }
   let joined: NativeLockHandle | null, lock: NativeLockHandle | null;
   try {
     joined = beside ? joinWorktreeLease(binding) ?? ((lanePolicy(head.worktree_id)?.effective ?? 1) > 1 ? await acquireWorktreeShared(binding, engine) : null) : null;
@@ -392,7 +398,7 @@ export async function publishGroup(engine: BrainEngine, rows: WriteRequest[], pr
             } catch (error) { throw tag(error, i); }
           }
           for (const member of recorded.values()) await runDoorProbe(tx, member.row);
-          doorCommit = await commitThroughDoor(binding.local_path!, [...recorded].map(([i, member]) => ({ path: member.record.path, planned: member.record.afterHash, note: prepared[i]!.file?.commit })), lane || joined ? undefined : lock,
+          doorCommit = await commitThroughDoor(binding.local_path!, [...recorded].map(([i, member]) => ({ path: member.record.path, planned: member.record.afterHash, note: prepared[i]!.file?.commit, prehashed: prehashed[i] })), lane || joined ? undefined : lock,
             paths => { indexRestored = paths; }, doorBy);
         }
         // The previous member's effects (rows no attribution or page check depends on) go out with the next member's checks.
@@ -453,7 +459,7 @@ export async function publishGroup(engine: BrainEngine, rows: WriteRequest[], pr
       // G2: one path-only commit for every member's file, in commit order, before the rows commit; a shared lease never reclaims an index lock.
       if (strict && recorded.size) {
         if (!gitFirst) for (const member of recorded.values()) await runDoorProbe(tx, member.row);
-        const commit = gitFirst ? doorCommit! : await commitThroughDoor(binding.local_path!, [...recorded].map(([i, member]) => ({ path: member.record.path, planned: member.record.afterHash, note: prepared[i]!.file?.commit })), lane || joined ? undefined : lock,
+        const commit = gitFirst ? doorCommit! : await commitThroughDoor(binding.local_path!, [...recorded].map(([i, member]) => ({ path: member.record.path, planned: member.record.afterHash, note: prepared[i]!.file?.commit, prehashed: prehashed[i] })), lane || joined ? undefined : lock,
           paths => { indexRestored = paths; }, doorBy);
         for (const i of recorded.keys()) Object.assign(outcomes[i]!.persistence as object, { git_state: 'committed', git_commit: commit });
         if (indexRestored) for (const [i, member] of recorded) {

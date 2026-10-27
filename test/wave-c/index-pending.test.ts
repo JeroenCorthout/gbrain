@@ -2,7 +2,8 @@
  * Wave C 1H-a (ceo-r3-outside-1, write side): while a strict git-first write's committed head waits for its index step, the
  * page's rows describe the generation before it. An append, or a put bound to a revision read from those rows, would build
  * on stale content and drop the committed write from Git, so it refuses with the retryable index_pending before anything is
- * written, as does a put over a never-indexed create (which used to read as an unindexed file in the way).
+ * written. A put over a never-indexed create sees the page through its pending head (it used to read as an unindexed file
+ * in the way); pending-head-admission.test.ts covers writes bound to the head itself.
  */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { randomUUID } from 'node:crypto';
@@ -48,13 +49,13 @@ for (const backend of testBackends()) describe(`[${backend}] writes during a pen
     expect((await pendingHead(engine, slug))?.request_id).toBe(large.id);
   }, { databaseUrl, setup }), 180_000);
 
-  test('a put over a never-indexed create refuses with index_pending, not as an unindexed file', () => managedBrain(async ({ engine, ctx, root }) => {
+  test('a put over a never-indexed create sees the page through its pending head (revision_required), not as an unindexed file', () => managedBrain(async ({ engine, ctx, root }) => {
     await strict(engine);
     const slug = 'notes/pending-create';
     const large = await write(engine, ctx, slug, pageBody(2 * MiB, 'MARKERLARGECREATE'), 'put');
     expect(large.state).toBe('indexing');
     const again = await write(engine, ctx, slug, pageBody(4 * 1024, 'MARKERSECOND'), 'put');
-    expect((again.error as { code?: string })?.code).toBe('index_pending');
+    expect((again.error as { code?: string })?.code).toBe('revision_required');
     expect(CODES.index_pending.class).toBe('retryable');
     expect((await pendingHead(engine, slug))?.request_id).toBe(large.id);
     expect(git(root, 'show', `HEAD:${slug}.md`)).toContain('MARKERLARGECREATE');
