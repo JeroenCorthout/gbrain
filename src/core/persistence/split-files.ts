@@ -32,7 +32,7 @@ import { FRONTMATTER_HEAD_MAX_BYTES, SEGMENT_MAX_BYTES } from '../page-body/limi
 import { headBodyFor, parseHead, partFilePath, partsDirFor, planSplit, PART_FILE_RE, reassemble, splitLimits, SplitLayoutError, splitNotice, splitScratchPath, splitThresholdBytes, type ParsedHead, type SplitPlan } from '../split-layout/index.ts';
 import type { MutationFile } from './bundle-files.ts';
 import type { PageMutationFile } from './coordinator.ts';
-import { git, rawBlobOid, splitUnitPaths, withSession } from './effect-git.ts';
+import { git, gitBytes, rawBlobOid, withSession } from './effect-git.ts';
 import { declaresPartsKey } from './split-unit-guard.ts';
 import { SPLIT_GIT_EFFECT_VERSION } from './effect-model.ts';
 import { fileContentBytes, FileBytes, hashFile, isStreamedContent, type StreamedFileContent } from './large-file.ts';
@@ -435,7 +435,8 @@ export async function splitLandedCommit(root: string, doorHead: string | null, f
     `${what} failed in ${root} while recovery checked whether the door commit of a split page landed, so recovery restored nothing and the request stays recovering; it retries. If it keeps failing, inspect the checkout with git status on the brain host. Never delete the files or the record to force progress.`,
     { fix: ownersFix() });
   return withSession(root, undefined, undefined, false, async session => {
-    const unitSpec = [rels[0]!, toRel(partsDirFor(files[0]!.path))].map(rel => `:(literal)${rel}`);
+    const partsDir = toRel(partsDirFor(files[0]!.path));
+    const unitSpec = [rels[0]!, partsDir].map(rel => `:(literal)${rel}`);
     const [listed, format] = await Promise.all([git(session, ['rev-list', '--reverse', doorHead ? `${doorHead}..HEAD` : 'HEAD', '--', ...unitSpec], false),
       git(session, ['rev-parse', '--show-object-format'])]);
     if (listed.code !== 0 || format.code !== 0) throw gitFailed('git rev-list');
@@ -455,13 +456,21 @@ export async function splitLandedCommit(root: string, doorHead: string | null, f
       const blob = await blobAt(rels[index]!);
       if (file.afterHash === null ? blob !== null || existsSync(file.path) : blob === null || hashFile(file.path) !== file.afterHash || rawBlobOid(file.path, algorithm) !== blob) throw unlike();
     }
-    // The whole unit (splitUnitPaths): the commit holds every part the published head lists, kept parts included, as on disk, and nothing else in its parts directory.
-    const unit = await splitUnitPaths(session, root, files[0]!.path, () => unlike(), { staged: true });
-    const held = await git(session, ['ls-tree', '-r', '-z', '--name-only', commit, '--', unit.partsDir], false);
+    // The planned unit (the door's DoorFiles): the head the record planned, each part its manifest lists in its planned
+    // state (the record's, or the manifest's sha256 for a part kept unwritten), and nothing else in its parts directory.
+    const committedHead = await gitBytes(session, ['cat-file', 'blob', `${commit}:./${rels[0]}`]);
+    const parsed = committedHead ? parseHead(committedHead.toString('utf8')) : null;
+    if (!parsed || 'error' in parsed) throw unlike();
+    const planned = new Map(parsed.manifest.parts.map(part => [toRel(partFilePath(files[0]!.path, part.path)), part.sha256] as const));
+    for (const [index, file] of files.entries()) if (index && file.afterHash !== null && planned.get(rels[index]!) !== file.afterHash) throw unlike();
+    const held = await git(session, ['ls-tree', '-r', '-z', '--name-only', commit, '--', partsDir], false);
     if (held.code !== 0) throw gitFailed('git ls-tree');
     const inCommit = held.stdout.split('\0').filter(Boolean);
-    if (inCommit.length !== unit.parts.length || inCommit.some(path => !unit.parts.includes(path))) throw unlike();
-    for (const part of unit.parts) if (await blobAt(part) !== rawBlobOid(join(root, part), algorithm)) throw unlike();
+    if (inCommit.length !== planned.size || inCommit.some(path => !planned.has(path))) throw unlike();
+    for (const [rel, sha256] of planned) {
+      const bytes = await gitBytes(session, ['cat-file', 'blob', `${commit}:./${rel}`]);
+      if (!bytes || createHash('sha256').update(bytes).digest('hex') !== sha256) throw unlike();
+    }
     if (commits.length > 1) throw opError('unexpected_file_bytes', 'The split page files changed in Git after their door commit; recovery left every file as it is.',
       `Commit ${commits[1]} in ${root} changed the head or a part of an interrupted split page publication after its door commit ${commit}, so keeping the files (and replaying the write over that change) or restoring them would both overwrite it. Recovery left every file as it is and the request stays recovering. Show the user the owner status and both commits, and ask which version is right; never delete the files or the record to force progress.`,
       { fix: ownersFix() });

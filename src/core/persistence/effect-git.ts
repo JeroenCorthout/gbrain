@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { closeSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readSync, realpathSync, rmSync, statSync } from 'node:fs';
+import { closeSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readSync, realpathSync, rmSync, statSync } from 'node:fs';
 import { basename, dirname, join, relative, resolve as resolvePath, sep } from 'node:path';
 import { execFileBounded } from '../brain-repo-durability.ts';
 import { gitDurabilityPolicy } from './git-durability-policy.ts';
@@ -13,7 +13,7 @@ import { gitChildEnv } from '../git-env.ts';
 import type { Action } from '../agent-output.ts';
 import type { NativeLockHandle } from './native-lock.ts';
 import { proveIndexLockAbandoned, reclaimIndexLock, type IndexLockReclaim } from './index-lock-reclaim.ts';
-import { parseHead, partFilePath, partsDirFor, verifyParts } from '../split-layout/index.ts';
+import { partsDirFor } from '../split-layout/index.ts';
 import { splitUnitRefusals } from './split-unit-guard.ts';
 import { acquireNativeLock } from './native-lock.ts';
 import { PUSH_MAX_PACK_BYTES_ENV, PUSH_TIMEOUT_CAP_MS, pushCap, pushTiming, pushTimeoutMs } from './push-preflight.ts';
@@ -529,54 +529,18 @@ export async function publishGitEffect(root: string, relativePath: string, signa
 /** The source and page a Git target belongs to: a split-unit refusal (split-unit-guard.ts) names them. */
 export interface GitTargetPage { sourceId: string; slug?: string }
 
-/** A split page's Git unit (splitUnitPaths), relative to the root, `/`-separated. */
-export interface SplitUnit { head: string; parts: string[]; stale: string[]; partsDir: string }
-
 /**
- * Wave B PR 5: the one path set every commit of a split page uses: the strict door commit (coordinator.ts) and its
- * landed-commit recovery (split-files.ts `splitLandedCommit`). `head`, then
- * `parts`: every part the head on disk lists (resolved from the current head, verified, each on disk), whether or not
- * the write rewrote it; `stale`: every other path Git holds under the parts directory (in HEAD or the index) that is
- * gone from disk, which the commit removes; so the commit's tree holds the head with every manifest part and nothing else
- * there. A head whose parts do not verify refuses through `refuse` (`split_page_incomplete` by default). `staged`
- * (the door commit and recovery, while the publication's staging and before-copies may still sit in the parts directory)
- * accepts unlisted entries there once every listed part matches; they are never committed.
+ * Wave B PR 5: the parts directory of the split page `head` (absolute) and what HEAD or the index hold under it (relative
+ * to the root, `/`-separated): one read-only step. The strict door commit (coordinator.ts) removes each that its manifest
+ * does not list, and leaves nothing else in the directory.
  */
-export async function splitUnitPaths(session: GitSession, root: string, head: string,
-  refuse: (reason: string) => Error = reason => splitUnitIncomplete(head, reason), opts: { staged?: boolean } = {}): Promise<SplitUnit> {
-  const rel = (path: string) => relative(root, path).split(sep).join('/');
-  const headPath = resolvePath(root, head);
-  const partsDir = rel(partsDirFor(headPath));
-  const parts: string[] = [];
-  if (existsSync(headPath)) {
-    const parsed = parseHead(readFileSync(headPath, 'utf8'));
-    if (parsed && 'error' in parsed) throw refuse(parsed.error.reason);
-    if (parsed) {
-      const verdict = verifyParts(headPath, parsed);
-      const extrasOnly = !verdict.ok && verdict.code === 'split_page_incomplete' && !verdict.missing.length && !verdict.mismatched.length && verdict.extra.length > 0;
-      if (!verdict.ok && !(opts.staged && extrasOnly)) throw refuse(verdict.reason);
-      const listed = parsed.manifest.parts.map(part => partFilePath(headPath, part.path));
-      const absent = listed.find(path => !existsSync(path));
-      if (absent) throw refuse(`part ${rel(absent)} the head lists is not on disk`);
-      parts.push(...listed.map(rel));
-    }
-  }
-  const index = await git(session, ['ls-files', '-z', '--', partsDir]);
-  if (index.code !== 0) throw gitFailure('Cannot inspect the canonical Git target.', `git ls-files failed for the part files of ${head}.`);
-  const born = (await git(session, ['rev-parse', '-q', '--verify', 'HEAD^{commit}'])).code === 0;
-  const committed = born ? await git(session, ['ls-tree', '-r', '-z', '--name-only', 'HEAD', '--', partsDir]) : { code: 0, stdout: '' };
-  if (committed.code !== 0) throw gitFailure('Cannot inspect the canonical Git target.', `git ls-tree failed for the part files of ${head}.`);
-  const listed = new Set(parts);
-  const stale = [...new Set([...index.stdout.split('\0'), ...committed.stdout.split('\0')])].filter(path => path && !listed.has(path) && !existsSync(join(root, path)));
-  return { head: rel(headPath), parts, stale, partsDir };
+export async function splitPartsHeld(root: string, head: string): Promise<{ partsDir: string; held: string[] }> {
+  const partsDir = partsDirFor(resolvePath(root, head)), dir = relative(root, partsDir).split(sep).join('/');
+  let listed = await gitReadOnly(root, ['ls-files', '-z', '--with-tree=HEAD', '--', dir]);
+  if (listed.code !== 0 && listed.stderr.includes('tree-ish HEAD not found')) listed = await gitReadOnly(root, ['ls-files', '-z', '--', dir]);
+  if (listed.code !== 0) throw gitFailure('Cannot inspect the canonical Git target.', `git ls-files failed for the part files of ${head}.`);
+  return { partsDir, held: listed.stdout.split('\0').filter(Boolean) };
 }
-
-const splitUnitIncomplete = (head: string, reason: string) => opError('split_page_incomplete', `The split page head ${head} does not match its part files, so neither it nor any part was committed.`,
-  `${reason}. The page write itself is committed in the database; its Git effect parks at once. Restore the part files the head lists (or rewrite the page so its head and parts are written again), then run gbrain sources writer retry-effects with --parked-code split_page_incomplete for the source (gbrain sources writer status names the effect).`,
-  { fix: effectStatusFix });
-
-
-
 
 /** The Git blob id of a worktree file's raw bytes (no clean filter: what cat-file blob would return for it), or null when it is not a regular file. */
 export function rawBlobOid(path: string, format: 'sha1' | 'sha256'): string | null {
