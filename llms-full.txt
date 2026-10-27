@@ -9390,7 +9390,10 @@ code and the rebuild preview (`gbrain pages reindex <slug> --from-git
 --dry-run`); do not resend, the bytes are in Git. Precedence:
 `--wait-indexed` > `GBRAIN_WAIT_INDEXED_MS` > the file-plane
 `persistence.wait_indexed_ms` > off. `--accept-pending` exits 0 on `indexing`.
-Agents poll `get_write_request` instead.
+Agents poll `get_write_request` instead. A strict write whose door commit
+does not reach its ref update within the publication transaction's door bound
+(120 s; `GBRAIN_PUBLICATION_DOOR_BOUND_MS`) fails with `git_door_timeout`
+(exit 1): nothing was committed, so submit it again with a new request_id.
 
 ```bash
 gbrain put notes/example --request-id 7f3c0e9a-0000-4000-8000-000000000001 < page.md
