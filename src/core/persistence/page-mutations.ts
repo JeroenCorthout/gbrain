@@ -386,7 +386,7 @@ export async function preparePageAdmission(ctx: OperationContext,
   // Wave C (ceo-r3-outside-1): a page whose committed head waits for its index exists (a create may have no rows yet), and
   // an edit, which applies to the page's body, refuses index_pending until the flip; an append is admitted and its preparation decides.
   const pending = input.operation === 'edit_page' || input.operation === 'append_page' ? await readPendingHead(ctx.engine, sourceId, slug) : null;
-  if (input.operation === 'edit_page' && pending) throw indexPendingError(slug, pending.request_id);
+  if (input.operation === 'edit_page' && pending) throw indexPendingError(slug, pending);
   // #5616: typed edit refusals before admission; publication repeats them on the locked snapshot.
   if (input.operation === 'edit_page') {
     const { applyPageEdits, assertEditRevision, assertSegmentedEditFences, parseEditWithin, parsePageEdits } = await import('./page-edit.ts');

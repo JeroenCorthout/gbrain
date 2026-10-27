@@ -13,7 +13,7 @@ import { operations } from '../../src/core/operations.ts';
 import { runPersistenceEffects } from '../../src/core/persistence/effects.ts';
 import { _resetGitFirstGateForTests, _resetIndexSplitPageConsumerForTests, registerIndexSplitPageConsumer } from '../../src/core/persistence/git-first-gate.ts';
 import { localHostId } from '../../src/core/persistence/identity.ts';
-import { indexSplitPage } from '../../src/core/persistence/index-split-page.ts';
+import { _indexLeaseTiming, indexSplitPage } from '../../src/core/persistence/index-split-page.ts';
 import type { PersistenceEffect } from '../../src/core/persistence/effect-model.ts';
 import { durableGitRepo, git } from '../helpers/git-publication.ts';
 import { managedBrain } from '../helpers/managed-brain.ts';
@@ -84,6 +84,39 @@ for (const backend of testBackends()) describe(`[${backend}] index from the comm
     expect(await engine.executeRaw("SELECT 1 FROM pages WHERE source_id = 'default' AND slug = $1 AND deleted_at IS NULL", [slug])).toEqual([]);
   }, { databaseUrl, setup }), 300_000);
 
+  test('a later commit of the path that replaced the committed bytes supersedes the request and removes its head, never holds it', () => managedBrain(async ({ engine, ctx, root }) => {
+    await strict(engine);
+    registerIndexSplitPageConsumer({ run: async () => { throw new Error('paused'); } });
+    const slug = 'notes/replaced-in-git';
+    const row = await write(engine, ctx, slug, pageBody(2 * MiB, 'MARKERREPLACED'), 'put');
+    expect(row.state).toBe('indexing');
+    appendFileSync(join(root, `${slug}.md`), '\na later commit of the same path\n');
+    git(root, 'add', '--', `${slug}.md`);
+    git(root, 'commit', '-q', '-m', 'later commit');
+    const later = git(root, 'rev-parse', 'HEAD').trim();
+    await runIndex(engine, row.id);
+    const done = await request(engine, row.id);
+    expect(done.state).toBe('committed');
+    expect(done.outcome.index).toMatchObject({ state: 'superseded', superseded_by_commit: later });
+    expect(await pendingHeads(engine, slug)).toEqual([]);
+  }, { databaseUrl, setup }), 300_000);
+
+  test('a file that changes between the checks and the import is not imported under the index step (M1)', () => managedBrain(async ({ engine, ctx, root }) => {
+    await strict(engine);
+    registerIndexSplitPageConsumer({ run: async () => { throw new Error('paused'); } });
+    const slug = 'notes/changed-mid-index';
+    const row = await write(engine, ctx, slug, pageBody(2 * MiB, 'MARKERMIDINDEX'), 'put');
+    expect(row.state).toBe('indexing');
+    const head = git(root, 'rev-parse', 'HEAD').trim();
+    _indexLeaseTiming.afterChecks = file => appendFileSync(file, '\nan edit that lands mid-index\n');
+    try { await expect(runIndex(engine, row.id)).rejects.toMatchObject({ code: 'source_changed' }); }
+    finally { _indexLeaseTiming.afterChecks = undefined; }
+    expect(git(root, 'rev-parse', 'HEAD').trim()).toBe(head);
+    expect((await request(engine, row.id)).state).toBe('indexing');
+    expect(await pendingHeads(engine, slug)).toHaveLength(1);
+    expect(await engine.executeRaw("SELECT 1 FROM pages WHERE source_id = 'default' AND slug = $1", [slug])).toEqual([]);
+  }, { databaseUrl, setup }), 300_000);
+
   test('a committed file that no longer matches its head is held, not indexed', () => managedBrain(async ({ engine, ctx, root }) => {
     await strict(engine);
     registerIndexSplitPageConsumer({ run: async () => { throw new Error('paused'); } });
@@ -96,5 +129,9 @@ for (const backend of testBackends()) describe(`[${backend}] index from the comm
     expect(done.state).toBe('committed');
     expect(done.outcome.index).toMatchObject({ state: 'held', hold_code: 'hash_mismatch' });
     expect(await engine.executeRaw("SELECT 1 FROM pages WHERE source_id = 'default' AND slug = $1", [slug])).toEqual([]);
+    const refused = await op('edit_page').handler(ctx, { slug, edits: [{ old_text: 'MARKERHELD', new_text: 'MARKEREDITED' }], request_id: crypto.randomUUID(), wait_ms: 3_000 })
+      .then(() => null, (error: { code?: string; retryable?: boolean; fix?: { argv?: string[] } }) => error);
+    expect(refused?.code).toBe('index_held');
+    expect(refused?.fix?.argv?.slice(0, 5)).toEqual(['gbrain', 'pages', 'reindex', slug, '--source']);
   }, { databaseUrl, setup }), 300_000);
 });

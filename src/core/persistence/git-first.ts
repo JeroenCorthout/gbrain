@@ -45,6 +45,8 @@ export interface IndexReceipt {
   revision?: string;
   hold_code?: string;
   superseded_by?: string;
+  /** A later commit of the page's path replaced the committed bytes before they were indexed (index-split-page.ts). */
+  superseded_by_commit?: string;
 }
 
 /**
@@ -95,9 +97,17 @@ export async function clearPendingHeads(tx: Pick<BrainEngine, 'executeRaw'>, sou
 
 /**
  * `index_pending`: the page's newest committed head is not indexed yet, so the database still shows the generation before
- * it. Retryable: the index step flips it shortly, and the committed write's receipt shows when.
+ * it. Retryable: the index step flips it shortly, and the committed write's receipt shows when. A head the index step
+ * held (a content cause) does not flip by waiting: that refusal is `index_held`, not retryable, with the rebuild preview.
  */
-export function indexPendingError(slug: string, requestId: string): OperationError {
+export function indexPendingError(slug: string, pending: Pick<PendingHead, 'request_id' | 'source_id' | 'hold_code'>): OperationError {
+  const requestId = pending.request_id;
+  if (pending.hold_code) {
+    return opError('index_held', `Page ${slug} has a committed write (request ${requestId}) whose index step held on ${pending.hold_code}, so its rows show the generation before it and this write was not applied to them; nothing was written.`,
+      `Rebuild the page from its committed head first: gbrain pages reindex ${slug} --source ${pending.source_id} --from-git --dry-run, then --apply --expect <hash>; then read the page again and submit the write with a new request_id.`,
+      { fix: { argv: ['gbrain', 'pages', 'reindex', slug, '--source', pending.source_id, '--from-git', '--dry-run', '--json'], consent: [], actor: 'agent', requires_exclusive: false,
+        why: 'Read-only: compares the database with the committed head and prints the --expect hash the rebuild binds to.' } });
+  }
   return opError('index_pending', `Page ${slug} has a committed write (request ${requestId}) that is not indexed yet, so this write was not applied to stale rows; nothing was written.`,
     'Wait a few seconds for the index step, then read the page again and submit the write with a new request_id.',
     { fix: { argv: ['gbrain', 'write-request', '--', requestId], consent: [], actor: 'agent', requires_exclusive: false,
@@ -124,7 +134,7 @@ export async function assertNoPendingIndex(tx: Pick<BrainEngine, 'executeRaw'>, 
   supersedes?: string): Promise<void> {
   if (row.operation === 'delete_page' || importsCommittedFile(row)) return;
   const pending = await readPendingHead(tx, row.source_id, row.slug);
-  if (pending && pending.request_id !== row.id && pending.request_id !== supersedes) throw indexPendingError(row.slug, pending.request_id);
+  if (pending && pending.request_id !== row.id && pending.request_id !== supersedes) throw indexPendingError(row.slug, pending);
 }
 
 /** After a door publication that is not itself indexed: the pages it replaced or removed lose their pending heads. */
@@ -142,6 +152,6 @@ export async function clearPublishedPendingHeads(tx: Pick<BrainEngine, 'executeR
  */
 export function pendingPrecondition(slug: string, pending: PendingHead, rowsRevision: string | null | undefined, expected: unknown): string {
   const named = typeof expected === 'string' ? expected.toLowerCase() : null;
-  if (named !== null && named === rowsRevision && named !== pending.revision) throw indexPendingError(slug, pending.request_id);
+  if (named !== null && named === rowsRevision && named !== pending.revision) throw indexPendingError(slug, pending);
   return pending.revision;
 }

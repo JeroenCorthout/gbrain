@@ -386,11 +386,11 @@ async function prepareAppendOverPendingHead(engine: BrainEngine, row: WriteReque
   const binding = await getWorktreeBinding(engine, row.source_id);
   const file = binding?.local_path ? join(binding.local_path, pending.path) : null;
   const raw = file && existsSync(file) && await gitFirstStrictActive(engine, row.source_id) ? readFileSync(file) : null;
-  if (!raw || raw.length !== Number(pending.body_bytes) || sha256Hex(raw) !== pending.body_sha256) throw indexPendingError(row.slug, pending.request_id);
+  if (!raw || raw.length !== Number(pending.body_bytes) || sha256Hex(raw) !== pending.body_sha256) throw indexPendingError(row.slug, pending);
   const content = raw.toString('utf8');
   const parsed = parseMarkdown(content, row.slug);
   const region = targetRegion(intent.region, !!parsed.timeline);
-  if (region === 'truth' && parsed.timeline) throw indexPendingError(row.slug, pending.request_id);
+  if (region === 'truth' && parsed.timeline) throw indexPendingError(row.slug, pending);
   const tail = inlineRegionTail(region === 'timeline' ? parsed.timeline : parsed.compiled_truth, region);
   const expectedTail = intent.preconditions?.expected_tail_sha256;
   if (expectedTail && ((row.authority.remote && tail.guarded) || sha256Hex(tail.bytes) !== expectedTail)) throw tailRefusal(row, region);

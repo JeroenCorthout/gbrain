@@ -419,7 +419,7 @@ async function refuseWhileIndexPending(engine: BrainEngine, row: Pick<WriteReque
   // A delete removes access rather than adding content (spec §3.1 step 7): it replaces the committed head and the flip aborts.
   if (row.operation === 'delete_page') return true;
   if (supersedes === pending.request_id && fileHash?.() === pending.body_sha256) return true;
-  throw indexPendingError(row.slug, pending.request_id);
+  throw indexPendingError(row.slug, pending);
 }
 
 /** Wave C (spec §3.1): whether a put (or an append composed as one, page-append.ts) stages its segmented body or defers it to the index step (strict git-first, git-first-gate.ts). */
