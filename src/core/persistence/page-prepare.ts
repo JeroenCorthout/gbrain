@@ -420,9 +420,9 @@ async function refuseWhileIndexPending(engine: BrainEngine, row: Pick<WriteReque
   throw indexPendingError(row.slug, pending.request_id);
 }
 
-/** Wave C (spec §3.1): whether a put stages its segmented body or defers it to the index step (strict git-first, git-first-gate.ts). */
+/** Wave C (spec §3.1): whether a put (or an append composed as one, page-append.ts) stages its segmented body or defers it to the index step (strict git-first, git-first-gate.ts). */
 async function deferSegmentedBody(engine: BrainEngine, row: WriteRequest, options: { gitFirstIndex?: false }, notPlain: boolean): Promise<boolean> {
-  return options.gitFirstIndex !== false && (row.operation === 'put_page' || row.operation === 'capture') && !notPlain
+  return options.gitFirstIndex !== false && (row.operation === 'put_page' || row.operation === 'capture' || row.operation === 'append_page') && !notPlain
     && await gitFirstStrictActive(engine, row.source_id);
 }
 

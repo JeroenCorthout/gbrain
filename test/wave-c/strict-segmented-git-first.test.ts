@@ -1,7 +1,7 @@
 /**
  * Wave C 1H-a: a strict git-first write of a segmented page (over 1 MiB, up to 24 MiB, unsplit) commits through the door
  * and leaves its rows to the index step. In the door transaction nothing holds the page's bytes (payload probe at 2 MiB put,
- * 20 MiB and 24 MiB uploads, both engines); after it the request is `indexing`, the page has a pending head and an
+ * 20 MiB and 24 MiB uploads, and an append_page or append-mode upload to a 6 MiB page, both engines); after it the request is `indexing`, the page has a pending head and an
  * `index-split-page` effect bound to the worktree, and the page's database rows are unchanged. Over 24 MiB a strict upload
  * keeps `file_too_large`; with no consumer registered (a standalone 1H tree) the same write takes today's path.
  */
@@ -116,3 +116,51 @@ for (const backend of testBackends()) describe(`[${backend}] git-first stays off
     expect(await engine.executeRaw("SELECT body_storage FROM pages WHERE source_id = 'default' AND slug = 'notes/private'")).toEqual([{ body_storage: 'segmented' }]);
   }, { databaseUrl, setup }), 120_000);
 });
+
+for (const backend of testBackends()) describe('[' + backend + '] the 6 MiB append probe (eng-r3-outside-1)', () => {
+  const databaseUrl = backend === 'postgres' ? requirePostgresTestDatabase() : undefined;
+  afterEach(() => { _unregisterIndexSplitPageConsumerForTests(); _resetGitFirstGateForTests(); });
+
+  /** A 6 MiB page written and indexed before the git-first path turned on (no consumer registered then). */
+  const sixMiBPage = async (engine: BrainEngine, ctx: OperationContext, slug: string) => {
+    _unregisterIndexSplitPageConsumerForTests(); _resetGitFirstGateForTests();
+    await strict(engine);
+    expect((await write(engine, ctx, slug, pageBody(6 * MiB, 'MARKERSIXBASE'), 'put')).state).toBe('committed');
+    _resetGitFirstGateForTests(); registerIndexSplitPageConsumer({ run: async () => undefined });
+  };
+  /** The append's request once its publication settled (indexing or terminal). */
+  const appended = async (engine: BrainEngine, slug: string) => {
+    for (const deadline = performance.now() + 60_000; ;) {
+      const [row] = await engine.executeRaw<{ id: string; state: string; outcome: Record<string, any> | null }>(
+        "SELECT id::text AS id, state, outcome FROM persistence_requests WHERE slug = $1 AND operation = 'append_page' ORDER BY created_at DESC LIMIT 1", [slug]);
+      if (row && !['queued', 'running'].includes(row.state) || performance.now() > deadline) return row!;
+      await Bun.sleep(100);
+    }
+  };
+
+  for (const how of ['append_page', 'upload'] as const) {
+    test('a ' + how + ' to a 6 MiB page writes no page bytes before the door, then indexes from Git', () => managedBrain(async ({ engine, ctx, root }) => {
+      const slug = 'notes/six-' + how.replace('_', '-');
+      await sixMiBPage(engine, ctx, slug);
+      const marker = 'MARKER' + randomUUID().replace(/-/g, '');
+      const text = '\n' + marker + ' appended line about the launch plan.\n';
+      const probe = probeAny(marker);
+      try {
+        if (how === 'append_page') await op('append_page').handler(ctx, { slug, text, request_id: randomUUID(), wait_ms: 3_000 });
+        else {
+          const begun = await op('begin_page_upload').handler(ctx, { slug, mode: 'append', total_bytes: Buffer.byteLength(text), sha256: hex(text), request_id: randomUUID() }) as { upload_id: string };
+          await op('upload_page_part').handler(ctx, { upload_id: begun.upload_id, part: 0, text, part_sha256: hex(text) });
+          await op('commit_page_upload').handler(ctx, { upload_id: begun.upload_id, wait_ms: 3_000 });
+        }
+      } catch (error) { if ((error as { code?: string }).code !== 'write_pending') throw error; }
+      const row = await appended(engine, slug);
+      probe.clear();
+      expect(probe.seen()).toEqual({ probed: true, tables: [] });
+      expect(row.state).toBe('indexing');
+      expect(git(root, 'show', 'HEAD:' + slug + '.md')).toContain(marker);
+      expect(git(root, 'show', 'HEAD:' + slug + '.md')).toContain('MARKERSIXBASE');
+      expect(await payloadTables(engine, marker, row.id)).toEqual([]);
+    }, { databaseUrl, setup }), 300_000);
+  }
+});
+
