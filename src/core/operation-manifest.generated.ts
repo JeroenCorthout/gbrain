@@ -479,7 +479,8 @@ export const OPERATION_MANIFEST: OperationMeta[] = [
       },
       "reason": {
         "type": "string",
-        "description": "Why this change, one line (max 500 chars); kept in page history."
+        "description": "Why this change, one line (max 500 chars); kept in page history.",
+        "fullSurfaceOnly": true
       },
       "source_kind": {
         "type": "string",
@@ -910,7 +911,8 @@ export const OPERATION_MANIFEST: OperationMeta[] = [
       },
       "reason": {
         "type": "string",
-        "description": "Why this change, one line (max 500 chars); kept in page history."
+        "description": "Why this change, one line (max 500 chars); kept in page history.",
+        "fullSurfaceOnly": true
       }
     },
     "mutating": true,
@@ -1016,7 +1018,8 @@ export const OPERATION_MANIFEST: OperationMeta[] = [
             },
             "reason": {
               "type": "string",
-              "description": "Why this change, one line (max 500 chars); kept in page history."
+              "description": "Why this change, one line (max 500 chars); kept in page history.",
+              "fullSurfaceOnly": true
             }
           }
         }
@@ -2613,7 +2616,8 @@ export const OPERATION_MANIFEST: OperationMeta[] = [
       },
       "reason": {
         "type": "string",
-        "description": "Why this change, one line (max 500 chars); kept in page history."
+        "description": "Why this change, one line (max 500 chars); kept in page history.",
+        "fullSurfaceOnly": true
       }
     },
     "mutating": true,
