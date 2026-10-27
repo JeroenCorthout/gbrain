@@ -395,9 +395,9 @@ export interface SaveMessage {
  * an edit landing during the save is kept (`skipped: 'file_changed'`).
  */
 /** The split refusal the save's file write would raise (`assertPageThroughWritable`), read before the database import so a refused save stores nothing. */
-async function splitSaveRefusal(engine: BrainEngine, args: { slug: string; content: string; provenanceVia: string }, sourceId: string): Promise<string | undefined> {
+async function splitSaveRefusal(engine: BrainEngine, args: { slug: string; content: string }, sourceId: string): Promise<string | undefined> {
   try {
-    await assertPageThroughWritable(engine, args.slug, sourceId, args.content, { source_kind: args.provenanceVia });
+    await assertPageThroughWritable(engine, args.slug, sourceId, args.content);
     return undefined;
   } catch (error) {
     if ((error as { code?: string } | null)?.code !== 'split_page_unsupported') throw error;
@@ -510,7 +510,7 @@ export function formatSaveOutcome(
   }
   if (dbSaved && writeThrough.skipped === 'repo_not_found') {
     return {
-      stdout: `\n_Saved to DB page \`${ctx.slug}\` (\`sync.repo_path\` is not a directory — skipped file write)._`,
+      stdout: `\n_Saved to DB page \`${ctx.slug}\` (the source directory, \`sources.local_path\` or \`sync.repo_path\`, is relative or not a directory — skipped file write)._`,
       stderr,
       exitCode: 0,
     };

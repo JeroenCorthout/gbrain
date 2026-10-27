@@ -3,7 +3,7 @@
  * primitives every Google sweep (contacts, calendar, Gmail) shares. Peeled
  * from google-source.ts so the sweeps can live in their own modules.
  */
-import { closeSync, existsSync, fchmodSync, lstatSync, openSync, renameSync, rmSync, unlinkSync, writeSync } from 'node:fs';
+import { closeSync, existsSync, fchmodSync, lstatSync, openSync, readFileSync, renameSync, rmSync, unlinkSync, writeSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
 import type { BrainEngine } from '../engine.ts';
@@ -14,7 +14,8 @@ import { connectorRender } from '../connectors/connector-text.ts';
 import { isWriteTargetContained } from '../path-confine.ts';
 import { mkdirPrivate } from '../atomic-write.ts';
 import { replaceableFile } from '../facts/file-body-guard.ts';
-import { PageFileChanged, assertPageFileRemovable, assertSplitWritable, readPageFileText, writeSplitPageFile } from '../split-write-through.ts';
+import { assertOutsideDoorWritable } from '../split-write-through.ts';
+import { assertSplitUnitMutable } from '../persistence/split-unit-guard.ts';
 import { FACTS_FENCE_BEGIN, FACTS_FENCE_END, replaceOrInsertFactsFence } from '../facts-fence.ts';
 import { TAKES_FENCE_BEGIN } from '../takes-fence.ts';
 import { conceptPreservationHold, preserveCanonicalFences } from '../cycle/concept-publication.ts';
@@ -189,12 +190,12 @@ export async function importRendered(
   if (existing) assertInlineBody(existing, 'Google connector materialization');
   markdown = await carryStoredFences(deps.sourceId, slug, relPath, existing, markdown);
   const databaseOnly = await isWriteThroughDisabled(deps.engine) || isSourceDbOnlySlug(deps.cfg.dir, slug, 'refuse');
+  if (!databaseOnly) await assertOutsideDoorWritable({ root: deps.cfg.dir, path: filePath, route: 'connector', sourceId: deps.sourceId, slug }, markdown);
   const guard = databaseOnly ? null : await replaceableFile(deps.engine, deps.sourceId, slug, filePath, existing ? withStoredFactsFence(existing) : undefined);
   const drift = () => new OperationError('file_database_drift',
     `${slug}: the checkout file has an edit not retained in the database, or changed during import. The file was not replaced. If the file is newer, run gbrain sync --source ${deps.sourceId}; if the database is newer, re-save its page with write-through on; if both changed, ask the user which version to keep before retrying.`,
     'Import the newer file with gbrain sync, or ask the user which version to keep; the item is held until then.');
   if (guard && !guard.ok) throw drift();
-  if (guard) await assertSplitWritable(deps.engine, filePath, deps.cfg.dir, markdown);
   const before = databaseOnly ? !!existing : existsSync(filePath);
   // Temp-write → import → rename: a failed import never destroys the
   // previously-good page (github-source pattern).
@@ -217,10 +218,9 @@ export async function importRendered(
       throw new Error(result.error ?? `Import failed for ${relPath}`);
     }
     if (guard?.ok) {
-      const unchanged = () => { const file = readPageFileText(filePath); if (file.hold || file.text !== guard.expectedFileBytes) throw drift(); };
-      unchanged();
-      const split = await writeSplitPageFile(deps.engine, filePath, deps.cfg.dir, markdown, unchanged, 0o600).catch(error => { throw error instanceof PageFileChanged ? drift() : error; });
-      if (!split) renameSync(tmpPath, filePath);
+      const current = existsSync(filePath) ? readFileSync(filePath, 'utf8') : null;
+      if (current !== guard.expectedFileBytes) throw drift();
+      renameSync(tmpPath, filePath);
     }
     if (result.status === 'imported') {
       summary.pagesAffected.push(result.slug);
@@ -251,11 +251,11 @@ export async function deletePageByRelPath(
     return;
   }
   // Same containment guard as the write path: a hostile/corrupt DB path
-  // carrying `../` must never unlink outside the managed dir. A split page
-  // is refused before its rows are deleted, so nothing changes.
+  // carrying `../` must never unlink outside the managed dir. A page in a
+  // split unit is refused before its rows are deleted, so nothing changes.
   const target = join(deps.cfg.dir, relPath);
   const contained = isWriteTargetContained(target, deps.cfg.dir);
-  if (contained) assertPageFileRemovable(target);
+  if (contained) await assertSplitUnitMutable({ root: deps.cfg.dir, path: target, route: 'remover', strict: false, sourceId: deps.sourceId });
   if (rows.length > 0) {
     await deps.engine.deletePages(rows.map((r) => r.slug), { sourceId: deps.sourceId });
     summary.deleted += rows.length;

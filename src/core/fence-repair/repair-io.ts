@@ -25,7 +25,7 @@
  * Every write carries the location-only receipt (actor fence-repair).
  */
 import { copyFileSync, existsSync, lstatSync, readFileSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { isAbsolute, join } from 'node:path';
 import { execFileSync } from '../spawn.ts';
 import type { BrainEngine } from '../engine.ts';
 import { OperationError, type OperationContext } from '../ops/contract.ts';
@@ -43,9 +43,7 @@ import { loadRepairBusySet, type RepairBusySet } from '../persistence/repair-bus
 import { sourceMirrorReadOnly } from '../persistence/mirror-read-only.ts';
 import { isSourceDbOnlySlug } from '../persistence/source-storage.ts';
 import { confinedRepairTarget, prepareRepairPublication, repairScreenConfig, SPLIT_PAGE_UNSUPPORTED, submitManagedFileRepair } from '../persistence/file-repair.ts';
-import { readPageFile, type PageFileHoldCode } from '../split-layout/index.ts';
-import { splitThresholdBytes } from '../split-layout/limits.ts';
-import { assertOneFileWritable } from '../split-write-through.ts';
+import { outsideDoorRefusal } from '../split-write-through.ts';
 import { clearGitHold, readGitHold, type GitHoldRecord } from '../persistence/sync-holds.ts';
 import { submitPageMutation } from '../persistence/page-mutations.ts';
 import type { PageSnapshot } from '../page-state/types.ts';
@@ -101,7 +99,7 @@ export async function loadFenceSource(engine: BrainEngine, sourceId: string, opt
     }
   } else {
     const local = row.local_path ?? (sourceId === 'default' ? await engine.getConfig('sync.repo_path') : null);
-    root = local && existsSync(local) ? local : null;
+    root = local && isAbsolute(local) && existsSync(local) ? local : null;
   }
   const busy: RepairBusySet = managed ? await loadRepairBusySet(engine, sourceId, row.incarnation) : { paths: new Set(), slugs: new Set(), unknown: null };
   const config = await repairScreenConfig(engine, sourceId);
@@ -133,12 +131,12 @@ export function pageSha(page: FencePage): string {
 }
 
 export type TargetRead = { ok: true; target: FenceTarget } | { ok: false; reason: 'gone' | 'not_utf8' | 'unsafe_path' } | { ok: false; reason: 'origin_conflict'; message: string }
-  | { ok: false; reason: PageFileHoldCode | typeof SPLIT_PAGE_UNSUPPORTED; message: string; split: true };
+  | { ok: false; reason: typeof SPLIT_PAGE_UNSUPPORTED; message: string; split: true };
 
 /**
  * Reads a candidate as it is now. A held or walked file is read from the checkout; anything else is read from the page store.
- * A split page head reads as the page file F' its parts reassemble to (`readPageFile`); a head that does not reassemble is
- * its hold code, and a legacy source, which writes the file directly, passes a split head by (`split_page_unsupported`).
+ * A path in a split unit is passed by (`split_page_unsupported`, split-write-through.ts): a fence repair is outside the
+ * publication door, which alone writes a split page.
  */
 export async function readFenceTarget(engine: BrainEngine, src: FenceSource, cand: { key: string; path: string | null }): Promise<TargetRead> {
   const hold = cand.path ? await readGitHold(engine, src.id, src.incarnation, cand.path) : null;
@@ -150,11 +148,9 @@ export async function readFenceTarget(engine: BrainEngine, src: FenceSource, can
         if (error instanceof OperationError) return { ok: false, reason: 'unsafe_path' };
         throw error;
       }
-      const file = readPageFile(abs);
-      if (file.hold) return { ok: false, reason: file.hold.code, message: file.hold.message, split: true };
-      if (file.split && !src.managed && !src.mirror) return { ok: false, reason: SPLIT_PAGE_UNSUPPORTED, split: true,
-        message: `${cand.path} is a split page head (its page continues in part files), and this brain has no canonical owner to write the page back as a head plus parts, so it was passed by. Repair the fence on the host that owns the source with persistence enabled.` };
-      const bytes = file.bytes;
+      const refusal = await outsideDoorRefusal({ root: src.root, path: abs, route: 'file_repair', sourceId: src.id });
+      if (refusal) return { ok: false, reason: SPLIT_PAGE_UNSUPPORTED, message: refusal.message, split: true };
+      const bytes = readFileSync(abs);
       const content = bytes.toString('utf8');
       if (!Buffer.from(content, 'utf8').equals(bytes)) return { ok: false, reason: 'not_utf8' };
       const sourcePath = hold?.source_path ?? cand.path;
@@ -280,10 +276,8 @@ export async function writeFenceRepair(ctx: OperationContext, src: FenceSource, 
       throw error;
     }
     if (sha256(readFileSync(abs)) !== target.before) return { ok: false, reason: 'changed_since_read', message: `${target.path} changed after the repair read it, so nothing was written.` };
-    try { assertOneFileWritable(abs, fileContent!, await splitThresholdBytes(engine)); } catch (error) {
-      if ((error as { code?: string }).code !== SPLIT_PAGE_UNSUPPORTED) throw error;
-      return { ok: false, reason: SPLIT_PAGE_UNSUPPORTED, message: `${target.path} would grow past the split threshold with the repair, and only the publication door writes a head and its part files, so nothing was written.` };
-    }
+    const refusal = await outsideDoorRefusal({ root, path: abs, route: 'file_repair', sourceId: src.id, slug: target.slug }, fileContent!);
+    if (refusal) return { ok: false, reason: refusal.code, message: refusal.message };
     const receipt: FenceRepairReceipt = { ...parts, before_sha256: target.before, after_sha256: sha256(Buffer.from(fileContent!, 'utf8')) };
     const backup = createFrontmatterBackup(abs, { sourcePath: root, backupRoot: gbrainPath('backups', 'fences', makeFrontmatterBackupRunId()) });
     writeFileSync(abs, fileContent!);

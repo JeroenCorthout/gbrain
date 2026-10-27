@@ -20,7 +20,7 @@ export type FaultPoint = `publication:${PublicationBoundary}` | `effect:${Effect
   // A streamed (version 2) withdrawal mirror (effect-recovery.ts): once its record is durable and before its file is
   // streamed into the publication stage, and after that step (the stage written and flushed, or left as it was found),
   // before the recovery transaction renames it.
-  | 'effect_recovery:before_stage' | 'effect_recovery:staged' | 'effect_recovery:split_staged' | 'sync:mid_checkpoint' | 'sync:before_group_admission' | 'sync:mid_waiver_run' | 'sync:prescreened' | 'consumer:prepared'
+  | 'effect_recovery:before_stage' | 'effect_recovery:staged' | 'sync:mid_checkpoint' | 'sync:before_group_admission' | 'sync:mid_waiver_run' | 'sync:prescreened' | 'consumer:prepared'
   | 'consumer:preparing' | 'lane:applied'
   // Flip lane C: after a statement-cancelled (57014) write's attempt is charged, before its claim is released or finished.
   | 'persistence:interruption_charged'
@@ -103,7 +103,9 @@ export type FaultPoint = `publication:${PublicationBoundary}` | `effect:${Effect
   // and after the activation committed, before the producer acknowledges it.
   | 'generation:published' | 'generation:retired' | 'generation:activated'
   // GBRA-161 PR 1b: as a managed generation member (an overwrite or retirement after its activation committed) is prepared.
-  | 'generation:member';
+  | 'generation:member'
+  // G8a (git-conversion.ts): after a conversion group's door commit, and after the strict-equivalent pass, before the flag is set.
+  | 'conversion:group_committed' | 'conversion:before_flip';
 /**
  * `signal` (#6278, `consumer:preparing` only): the preparation's abort signal, so
  * a stalling hook can model both the reporter's cases: a preparer that honours

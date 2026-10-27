@@ -24,8 +24,8 @@
  * less is `partial`, and a partial census never reads as healthy.
  */
 import { execFileSync } from '../spawn.ts';
-import { existsSync, lstatSync, statSync } from 'node:fs';
-import { join, relative, resolve } from 'node:path';
+import { existsSync, lstatSync, readFileSync, statSync } from 'node:fs';
+import { isAbsolute, join, relative, resolve } from 'node:path';
 import type { BrainEngine } from '../engine.ts';
 import { parseMarkdown } from '../markdown.ts';
 import { screenFenceCtx } from '../import-screen.ts';
@@ -96,7 +96,7 @@ async function censusSources(engine: Exec, sourceIds?: readonly string[]): Promi
     WHERE archived IS NOT TRUE AND incarnation IS NOT NULL AND ($1::text[] IS NULL OR id=ANY($1::text[])) ORDER BY id`, [sourceIds ? [...sourceIds] : null]);
 }
 
-const hasCheckout = (source: CensusSource) => !!source.local_path && existsSync(source.local_path) && statSync(source.local_path).isDirectory();
+const hasCheckout = (source: CensusSource) => !!source.local_path && isAbsolute(source.local_path) && existsSync(source.local_path) && statSync(source.local_path).isDirectory();
 
 /** Where the next incremental pass starts: this moment, or the start of the oldest writer transaction still open, minus the grace. */
 async function passHorizon(engine: Exec, graceMs: number): Promise<string> {

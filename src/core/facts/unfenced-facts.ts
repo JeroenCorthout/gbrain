@@ -49,13 +49,13 @@
  * - Unmanaged: under the source filesystem lock and the page lock, the same
  *   `.tmp` + parse + rename write as `fence-write.ts`, then one maintenance
  *   transaction mirrors the file body into `pages` and stamps the rows; a
- *   durability-hardened checkout commits the file. A file that is a split
- *   head (split-layout/) is never fenced here: the page is named in
- *   `failed_pages` with `split_page` or its hold code.
+ *   durability-hardened checkout commits the file. A page in a split unit
+ *   (split-layout/) is never fenced here: the page is named in
+ *   `failed_pages` with `split_page_unsupported` (outside_door).
  * A page that fails is reported in `failed_pages`; the others still fence.
  */
 import { existsSync, readFileSync, renameSync, rmSync } from 'node:fs';
-import { splitWriteRefusal, writePageTemp } from '../split-write-through.ts';
+import { writePageTemp } from '../split-write-through.ts';
 
 import type { BrainEngine } from '../engine.ts';
 import { sanitizeText } from '../batch-rows.ts';
@@ -159,9 +159,23 @@ export interface UnadoptableFactRecord {
   request_id?: string;
 }
 
-function fenceRowOf(row: UnfencedFactRow, rowNum: number, claim: string): ParsedFact {
-  // Full timestamps survive the fence (date-only at midnight UTC), so the
-  // canonical projection writes back the value the row already holds.
+/**
+ * The fact columns a fence row is rendered from. notability and confidence may be NULL as read: a long-lived brain's
+ * columns can lack the NOT NULL a fresh schema declares.
+ */
+export type FenceRowInput = Pick<UnfencedFactRow, 'kind' | 'visibility' | 'context' | 'valid_from' | 'valid_until'
+  | 'source' | 'claim_metric' | 'claim_value' | 'claim_unit' | 'claim_period' | 'attributed_to'>
+  & { notability: UnfencedFactRow['notability'] | null; confidence: number | null };
+
+/**
+ * The one renderer from a `facts` row to its `## Facts` fence row at `rowNum` with `claim` (active). Columns a long-lived
+ * brain may hold as NULL render as their column default, the value a fresh row gets: notability `medium`, confidence 1.
+ * kind and visibility are never defaulted: a NULL renders as is, the fence refuses the row, and `adoptableClaim` reports
+ * it. Timestamps render as `formatFenceDate` writes them (date-only at midnight UTC, else the full instant), so the
+ * projection derives back the value the row holds; optional columns (context, valid_until, the typed claim columns,
+ * attributed_to) render only when present.
+ */
+export function fenceRowOf(row: FenceRowInput, rowNum: number, claim: string): ParsedFact {
   const validFromStr = formatFenceDate(row.valid_from instanceof Date ? row.valid_from : new Date(row.valid_from));
   const validUntilStr = row.valid_until
     ? formatFenceDate(row.valid_until instanceof Date ? row.valid_until : new Date(row.valid_until))
@@ -171,9 +185,9 @@ function fenceRowOf(row: UnfencedFactRow, rowNum: number, claim: string): Parsed
     active: true,
     claim,
     kind:       row.kind,
-    confidence: Number(row.confidence),
+    confidence: row.confidence == null ? 1 : Number(row.confidence),
     visibility: row.visibility,
-    notability: row.notability,
+    notability: row.notability ?? 'medium',
     validFrom:  validFromStr,
     validUntil: validUntilStr,
     source:     row.source,
@@ -195,7 +209,7 @@ function fenceRowOf(row: UnfencedFactRow, rowNum: number, claim: string): Parsed
  */
 export function adoptableClaim(row: Pick<UnfencedFactRow, 'fact' | 'kind' | 'visibility' | 'notability' | 'confidence' | 'context'
   | 'valid_from' | 'valid_until' | 'source' | 'claim_metric' | 'claim_value' | 'claim_unit' | 'claim_period'>): { claim: string } | { rejected: UnrenderableClass } {
-  const desired = fenceRowOf(row as UnfencedFactRow, 1, row.fact);
+  const desired = fenceRowOf(row, 1, row.fact);
   const once = parseFactsFence(renderFactsTable([desired]));
   const back = once.facts[0];
   if (once.warnings.length > 0 || once.facts.length !== 1 || !back) return { rejected: 'parse' };
@@ -570,7 +584,8 @@ async function fenceFilePage(engine: BrainEngine, sourceId: string, entitySlug: 
   if (!target.ok) { outcome.skipped_no_page += group.length; return; }
   const { writeRoot } = target;
   const write = () => withPageLock(entitySlug, async () => {
-    const split = splitPageToken(filePath, entitySlug, 'its rows stay unfenced, active and searchable');
+    const splitInput = { root: writeRoot, path: filePath, route: 'raw_writer' as const, sourceId, slug: entitySlug };
+    const split = await splitPageToken(splitInput, 'its rows stay unfenced, active and searchable');
     if (split) { outcome.failed_pages.push(split); return; }
     const bytes = readFileSync(filePath, 'utf-8');
     const page = await engine.getPage(entitySlug, { sourceId });
@@ -594,8 +609,8 @@ async function fenceFilePage(engine: BrainEngine, sourceId: string, entitySlug: 
     const durable = isDurabilityHardened(writeRoot);
     const prewrite = durable ? gitPathState(writeRoot, filePath) : 'clean';
     const tmpPath = `${filePath}.tmp`;
-    const refusal = await splitWriteRefusal(engine, filePath, writeRoot, fence.body);
-    if (refusal) { outcome.failed_pages.push(`${entitySlug} (${refusal.message} Its rows stay unfenced, active and searchable.)`); return; }
+    const refusal = await splitPageToken(splitInput, 'its rows stay unfenced, active and searchable', fence.body);
+    if (refusal) { outcome.failed_pages.push(refusal); return; }
     assertSourceFilesystemActive();
     writePageTemp(tmpPath, filePath, fence.body);
     const tmpBody = readFileSync(tmpPath, 'utf-8');

@@ -5,8 +5,10 @@
  *    to (readPageFile), never as the head: gbrain extract (incremental, full walk and the per-slug sync hooks) keeps the
  *    links and timeline rows whose text lives in the parts; the v0.32.2 verify reads a facts fence in the parts; capture
  *    --source markdown-greenfield emits F'; gbrain publish renders F'; repair rename-identity sees the new file's facts
- *    fence in the parts; repair url-clone-fences passes a split head by (split_page_unsupported) instead of importing
- *    the head as the page. A head whose parts do not verify is skipped with its hold code and leaves the page stale.
+ *    fence in the parts; repair url-clone-fences, a route outside the publication door, passes a split head by instead
+ *    of importing the head as the page (split_page_unsupported: split-write-through.ts outsideDoorRefusal finds the
+ *    split unit before it checks the HEAD bytes it would restore). A head whose parts do not verify
+ *    is skipped with its hold code and leaves the page stale.
  * 2. Fails when: a reader parses the raw head (lead + notice), so rows whose text is past the lead are dropped, retracted
  *    or reported missing, or the head is emitted or rendered as the page.
  * 3. PGLite always; PostgreSQL when DATABASE_URL is set (test/postgres-unit-arms.txt). KB-sized limits through

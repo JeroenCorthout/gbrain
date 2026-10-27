@@ -264,102 +264,50 @@ would leave one over 24 MiB is refused until the switch is on again.
 <a id="large-pages-in-git"></a>
 ### Large pages in Git: head and part files
 
-**Say to your agent:** *"Which of my pages are too big for one file in Git, and
-what would gbrain write for one of them?"* The agent runs `gbrain doctor --json`
-(check `oversize_canonical_file`), then
-`gbrain pages split-storage <slug> --source <id>` on the brain host, and runs it
-again with `--apply` only after you agree.
+**Say to your agent:** *"Which of my pages are too big for one file in Git?"*
+The agent runs `gbrain doctor --json` (check `oversize_canonical_file`), then
+`gbrain pages split-storage <slug> --source <id>` on the brain host, and adds
+`--apply` only after you agree.
 
-A page's canonical file is the Markdown gbrain writes for it: its frontmatter,
-then its body. A page whose file would be larger than `sync.max_file_bytes`
-(24 MiB, 25,165,824 bytes, by default; `gbrain config set sync.max_file_bytes
-<bytes>` takes 1 MiB to 25 MiB) is stored in Git as two kinds of file:
+**Split pages require a strict source.** On a `canonical: git` source, a page
+whose canonical file would be larger than `sync.max_file_bytes` (24 MiB by
+default; 1 MiB to 25 MiB) is stored as a **head** at the page's usual path
+(`notes/alice-example.md`: its frontmatter plus a `gbrain_parts` manifest, the
+first 64 KiB of the body and a notice line) and **part files** in a hidden
+folder beside it (`notes/.alice-example.gbparts/0001-<hash>.gbpart`, up to
+16 MiB each, cut at line breaks). Joined in order the parts are the body, byte
+for byte; a leading BOM is not kept. The page stays one page (one slug, one
+search entry), the head and every changed part land in one door commit, and an
+append changes only the last part and the head. On every other source a page
+stays one file at any size, as before.
 
-- **The head**, at the page's usual path (`notes/alice-example.md`). It holds
-  the page's frontmatter with one extra key, `gbrain_parts`, the manifest: the
-  body's size and SHA-256 and, for each part file, its path, size and SHA-256.
-  Its body is the first 64 KiB of the page body (cut at a line break), then one
-  notice line saying the page continues in part files.
-- **The part files**, in a hidden folder beside the head
-  (`notes/.alice-example.gbparts/0001-<hash>.gbpart`, `0002-...`). Each holds
-  up to 16 MiB of the body, cut at a line break near 8 MiB. Joined in order they
-  are the body, byte for byte.
+Only the publication door of a `canonical: git` source changes a split page's
+files. Every other writer (write-through, lint and frontmatter `--fix`, facts,
+takes, timeline, dream, the GitHub and Google connectors, file repairs) refuses
+a page in a split unit with `split_page_unsupported` and writes nothing. The
+door itself refuses a unit Git would not store byte for byte (an index flag, a
+converting attribute or `core.autocrlf`) or one edited by hand and not
+committed; each reason names its fix. Sync holds a head whose body or parts
+were edited (`split_head_modified`, `split_page_incomplete`) and keeps the last
+imported content until you resolve it.
 
-A leading byte-order mark (BOM) on the page file is not kept: the head is
-written without one, and a BOM added to a head by hand is ignored when it is
-read, the same way import drops a leading BOM from any page file. Every byte
-after it is kept.
-
-The page stays one page: one slug, one search entry, one set of links. gbrain
-writes the head and every changed part in one publication (one commit on a
-`canonical: git` source), and sync reads them back as the whole page. An append
-changes only the last part and the head. Edit the head's frontmatter (a tag, a
-title) like any page; an edit to the head's body or to a part file is not
-imported: sync holds the page (`split_head_modified` or
-`split_page_incomplete`) and keeps the last imported content until you resolve
-it.
-
-**Writers outside the publication door.** On a brain with a canonical owner,
-every page write goes through its publication door, which writes a head and its
-parts under a recovery record and finishes them after a crash. A writer outside
-that door (an unmanaged brain's takes, facts, timeline and lint fixes, dream
-files, the classic GitHub and Google connectors) has no such record, so it
-writes a split page only when every part stays as it is: a new head, renamed
-into place in one step (a frontmatter edit). A write that would change a part,
-or grow a page into this layout or shrink it out of it, is refused with
-`split_page_unsupported` before any file is written and before the database
-takes it, so the files and the stored page stay as they were. A forget on such a
-page still withdraws the fact; only its strike in the page file waits.
-`gbrain frontmatter validate --fix` fixes a head's frontmatter in place and refuses a
-fix that would change the head's body or its `gbrain_parts` block
-(`split_page_unsupported`; nothing is written).
-
-**What older versions see.** A gbrain from before this layout imports the head
-as a short page: the first 64 KiB, the notice line and a `gbrain_parts`
-frontmatter key. It never reads the part files (they are in a hidden folder and
-are not `.md` files). Upgrade every machine that syncs the brain before a page
-grows past the threshold, or keep large pages on a source only current versions
-sync. A short page an older version stored this way is not lost: the next
-`gbrain sync` by a current version (`gbrain sync --source <id> --no-pull` runs
-it now) re-reads the head and its parts from Git and rebuilds the whole page, with
-no flag, and lists it under `split_pages_rebuilt` in its result. If a part is
-missing, the head is held `split_page_incomplete` and the stored page stays as
-it is until the part is restored. Doctor's `split_layout` check counts such
-pages and names that command; it never rebuilds them itself.
-
-**Git history keeps every part.** Each part file is a normal file in Git, so
-every version of every part stays in the history after the page changes, is
-moved or is deleted, exactly as a single large file would. Removing a page from
-history needs a history rewrite outside gbrain.
-
-**Private pages.** A page that keeps no file in Git (a private page on a
-`canonical: git` source, a `db_only` folder) keeps no head and no parts either.
-When a page turns private, its head and every part are removed together;
-when it returns, they are written again.
+**Older versions** import only the head (64 KiB, the notice and a
+`gbrain_parts` key). The next `gbrain sync` by a current version rebuilds the
+whole page from Git (`split_pages_rebuilt`), or holds it
+`split_page_incomplete` while a part is missing; doctor's `split_layout` names
+the command and never rebuilds. Git history keeps every part, as it would a
+single large file. A private page keeps no head and no parts.
 
 <a id="split-storage"></a>
-**`gbrain pages split-storage <slug> [--source <id>] [--apply] [--json] [--resolve-head keep-edit|discard]`.**
-Run it on the source's owner host. Without `--apply` it writes nothing and
-reports the page's current layout (one file, or a head with its parts and
-whether they check out), the threshold, and what `--apply` would write: the
-head, each part with its name and size, the parts that stay as they are, and
-the files it would remove. `--apply` republishes the page's file through the
-ordinary write path, so a single file over the threshold becomes a head plus
-parts, and a split page now under it becomes one file again; it then reads the
-files back and exits 1 if they are not in the planned layout. It never runs on
-upgrade or migration and is not an MCP operation.
-
-To resolve a head whose body was edited (`split_head_modified`), choose one:
-`--resolve-head keep-edit` publishes the page as an edit made of the head's
-frontmatter, the edited head body without the notice line, and the rest of the
-body from the parts; `--resolve-head discard` rewrites the head from the stored
-page. Preview first, then add `--apply`. A page with missing or changed part
-files (`split_page_incomplete`) is not rewritten: restore its part files from
-Git (`git checkout -- <parts folder>`) and sync.
-
-Doctor reports `split_layout` (stray parts folders no head names, and split
-pages sync holds, with a sample and the fix) and `oversize_canonical_file` (a
-single canonical file over the threshold); both warn, never fail.
+**`gbrain pages split-storage <slug> [--source <id>] [--apply] [--json] [--resolve-head keep-edit|discard]`**
+previews the page's layout, the threshold and what `--apply` would write;
+`--apply` republishes the page through the door (owner host only, never on
+upgrade, not an MCP operation) and exits 1 if the files read back differently.
+For `split_head_modified`, `--resolve-head keep-edit` publishes the edited head
+body with the rest from the parts, and `discard` rewrites the head from the
+stored page. A page with missing parts is not rewritten: restore them from Git
+and sync. Doctor's `split_layout` and `oversize_canonical_file` checks only
+warn.
 
 <a id="large-page-limits"></a>
 ### Limits per entry point
@@ -378,7 +326,8 @@ wrong with the page.
 | `put_pages` batch | 8 MiB per batch | send large pages one per `put_page`, or by file |
 | Persistence journal | 64 MiB of outstanding JSON-escaped write intent per principal (was 32 MiB), 256 MiB per brain | nothing: a second large write waits for the first |
 | Local persistence socket (IPC) | 32 MiB per frame, JSON-escaped | nothing for ordinary text; only a pathological page (mostly quotes or backslashes) reaches it below the ceiling |
-| Pre-push secret scan | 512 MiB per staged file: up to 25 MiB a file is scanned whole, above it in bounded windows streamed from git; gbrain still never writes a canonical file over 25 MiB | split the file, or `git rm --cached` it |
+| Pre-push secret scan (`gbrain sources push`) | 512 MiB per staged file: up to 25 MiB a file is scanned whole, above it in bounded windows streamed from git | split the file, or `git rm --cached` it |
+| Secret scan at the door and before the brain's own pushes | none: files over 24 MiB and split parts are scanned in windows, only the bytes new to Git ([pushing large pages](#pushing-large-pages)) | — |
 | GitHub | warns at 50 MB, rejects at 100 MB | — |
 | Export | streams a page stored in segments, up to the page ceiling; aborts on an inline page whose payload is over 32 MiB, which the 24 MiB ceiling makes unreachable | — |
 | Company-brain inspection | 5 MB per file | unchanged |
@@ -504,6 +453,71 @@ database backups as sensitive. See the [system-of-record contract](../architectu
 and [isolated local backup guide](in-agent-setup.md#6-back-up-the-complete-local-database).
 
 <a id="purge"></a>
+### Pushing large pages
+
+**Say to your agent:** *"My brain's Git backup is stuck after a big page. Find out why and tell me what to do."*
+
+The brain's Git backup (its Git effect, and `gbrain git commit-push`) pushes
+page writes to the checkout's remote. Large pages change four things:
+
+- **The push deadline scales.** A push gets 20 seconds plus 1 second per MiB
+  of what it sends, up to 60 minutes. The first push after a 1 GiB page sends
+  about 0.3-0.5 GB and no longer fails at a fixed 20 seconds. One push runs per
+  checkout at a time; another waits (`git_push_in_progress`), and a push over
+  256 MiB lets page writes continue while it runs.
+- **Big pushes go in batches.** When the unpushed commits add more than
+  `git.push_max_pack_bytes` (default 1.5 GiB, never over 2 GiB toward
+  GitHub, which refuses larger pushes), gbrain pushes them in order, in
+  batches of whole commits under the cap. When the remote moved, the batches
+  go to `refs/gbrain/push-staging/<branch>` first and the merge last; the
+  staging ref is deleted afterwards. A push stopped between batches resumes
+  after the last batch that landed. A single commit over the cap is held
+  `git_push_pack_too_large`: the host owner raises the cap (`gbrain config set
+  git.push_max_pack_bytes 1.8GiB`, kept in this host's `~/.gbrain/config.json`
+  and read by both the Git effect and `gbrain git commit-push`), then `gbrain sources writer retry-effects
+  <source> --parked-pushes` pushes it.
+- **Secrets are refused before the commit.** On a strict source
+  (`canonical: git`) the door scans every file over 24 MiB and every split
+  page (its head and parts) before it commits, and `gbrain git commit-push` does the same before
+  `git commit`. Only bytes new to Git are scanned, so an append never trips
+  over text an earlier commit already holds. A hit refuses the write with
+  `secret_found`, naming the rule and fingerprint, never the text. Such a
+  file is committed byte for byte, so a `.gitattributes` filter, `text` or
+  `eol` rule on it refuses `git_clean_filter_refused`.
+- **Commits gbrain did not write are scanned before they leave.** Before
+  pushing, gbrain scans every file over 24 MiB and every split part that the
+  unpushed commits add, not only the newest commit. A hit holds every push
+  from the checkout with `git_push_secret_found`, naming the commit, path,
+  rule and fingerprint, until the user acts. gbrain never rewrites history.
+  Rotate the credential, add its fingerprint line to `.gbrain-scan-allow` at
+  the checkout root, commit it with `gbrain git commit-push -m "allow rotated
+  credential" -- .gbrain-scan-allow`, then retry the parked pushes and check
+  with `gbrain sources writer status --source <id> --json`. Fingerprint lines
+  are preferred over path globs. `gbrain git commit-push --allow-secret` skips
+  both scans for one run, on the user's say-so.
+
+Files the door or a push already scanned are remembered by blob id (in the
+checkout's Git directory, per scanner rule set), so a later push scans only
+blobs nothing cleared.
+
+**Repository size.**
+
+| What | Size |
+| --- | --- |
+| A 1 GiB page in Git, packed | about 0.3-0.5 GB (real prose and chat compress 2.5-4x) |
+| Each later append to it, after packing | about 100 KB |
+| A full clone of it | the packed size; about 15-20 seconds per GiB of page at 25 MB/s |
+| GitHub | warns from about 1 GB, advises staying under 5 GB, refuses a push over 2 GiB and a file over 100 MB |
+
+So a GitHub-hosted brain fits a few 1 GiB pages, not dozens, and GitHub
+refuses to take any single page file over 100 MB.
+
+```bash
+gbrain sources writer status --source <id> --json      # held pushes with their codes and fixes
+gbrain config set git.push_max_pack_bytes 1.8GiB       # raise the batch cap (host owner's call)
+gbrain sources writer retry-effects <id> --parked-pushes # push again after the fix
+```
+
 ## Expire versus purge
 
 `forget` **expires**: the fact stops being recalled, cannot be saved again in

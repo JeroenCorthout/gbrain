@@ -19,16 +19,13 @@
  * canonical overlay (retained tags, a withdrawal, sanitization) is refused,
  * never written with the overlay bypassed.
  *
- * Wave B PR 5 (split git layout): the file a repair binds, reads and writes
- * is the page file, so at a split page head it is the page file F' the head
- * and its parts reassemble to (`pageFileSha256`): `beforeHash` is the hash
- * of F', the file target's `expectedBeforeHash` is the head's own hash (the
- * bytes the door compares), and the door lays the repaired page out as a head
- * plus parts again. A head that does not reassemble (a missing or changed
- * part, an edited head body) is `changed_since_preview` naming its hold code,
- * and a repair bound to the raw head's hash no longer matches, so neither
- * writes anything. The import provenance records the bytes the publication
- * left on disk: the head, for a page laid out as a head plus parts.
+ * Wave B PR 5 (split git layout, option B): a managed file repair is outside
+ * the publication door, so a path in a split unit (a head plus part files) is
+ * refused `split_page_unsupported` (outside_door) when the repair is
+ * submitted, prepared and validated (split-write-through.ts
+ * assertOutsideDoorWritable, route `file_repair`), and repaired content that
+ * is itself a split head refuses `split_head_content`. The import provenance
+ * records the bytes the publication left on disk.
  *
  * A fence repair (`gbrain repair fences`) carries its `FenceRepairReceipt` in
  * the intent (`fenceRepair`): the preparer refuses a malformed receipt or one
@@ -53,7 +50,6 @@
  * symlinked directory or file is never written through.
  */
 import { existsSync, lstatSync, readFileSync } from 'node:fs';
-import { isDeepStrictEqual } from 'node:util';
 import { basename, isAbsolute, join, resolve, sep } from 'node:path';
 import type { BrainEngine } from '../engine.ts';
 import type { GBrainConfig } from '../config.ts';
@@ -90,8 +86,8 @@ import { contentRepairCommit, fenceRepairCommit } from './effect-model.ts';
 import { recordSlugLineAlias } from '../page-state/rename-alias.ts';
 import type { WriteRequest } from './model.ts';
 import { bindOrigin } from './origin-guard.ts';
-import { preparedParts } from './split-files.ts';
-import { pageFileSha256, partsDirFor } from '../split-layout/index.ts';
+import { assertOutsideDoorWritable } from '../split-write-through.ts';
+import { isSplitHeadPath, partsDirFor } from '../split-layout/index.ts';
 
 export interface ManagedFileRepairIntent extends Record<string, unknown> {
   kind: 'managed_file_repair';
@@ -207,24 +203,20 @@ export function confinedRepairTarget(root: string, path: string, sourceId: strin
   return target;
 }
 
-/** The reason a repair that cannot write a split page back as a head plus parts (a direct write on a brain with no canonical owner, a reconcile of the head) passes the head by. */
+/** The refusal code of a repair whose path is in a split unit (split-write-through.ts), which only the publication door writes. */
 export const SPLIT_PAGE_UNSUPPORTED = 'split_page_unsupported';
 
-/**
- * The raw sha256 the door compares at `target` (the head's own, for a split page), once the page file there (F' for a
- * split head) still hashes to the previewed `beforeHash`; a split head that does not reassemble, or other bytes, is
- * `changed_since_preview`.
- */
+/** The sha256 of the file at `target` once it is still the previewed `beforeHash`; other bytes are `changed_since_preview`. */
 function checkedFileHash(target: string, beforeHash: string, sourceId: string, path: string, kind: FileRepairKind): string {
-  const now = pageFileSha256(target);
-  if (now.hold) throw changedSincePreview(sourceId, path, `it is a split page head whose page file cannot be read (${now.hold.code})`, kind);
-  if (now.sha256 !== beforeHash) throw changedSincePreview(sourceId, path, 'the file bytes differ from the previewed hash', kind);
-  return now.split ? now.headSha256 : now.sha256;
+  const now = sha256(readFileSync(target));
+  if (now !== beforeHash) throw changedSincePreview(sourceId, path, 'the file bytes differ from the previewed hash', kind);
+  return now;
 }
 
-/** The bytes a publication left at `target`: the head when the page is laid out as a head plus parts, else the page file it wrote. */
+
+/** The bytes a publication left at `target`: the head when the door laid the page out as a head plus parts, else the page file it wrote. */
 function diskBytes(target: string, bytes: Buffer): Buffer {
-  return target.endsWith('.md') && existsSync(partsDirFor(target)) ? readFileSync(target) : bytes;
+  return isSplitHeadPath(target) && existsSync(partsDirFor(target)) ? readFileSync(target) : bytes;
 }
 
 /** The canonical page fields a publication stores; what the preview hash binds besides the bytes. */
@@ -332,7 +324,9 @@ export async function submitManagedFileRepair(ctx: OperationContext, input: Mana
   checkedFenceRepair(input, input.sourceId);
   checkedContentRepair(input, input.sourceId);
   const { root, ownerEpoch, incarnation } = await managedRepairRoot(ctx.engine, input.sourceId, kind, { remote: false });
-  checkedFileHash(confinedRepairTarget(root, input.path, input.sourceId, kind), input.beforeHash, input.sourceId, input.path, kind);
+  const target = confinedRepairTarget(root, input.path, input.sourceId, kind);
+  await assertOutsideDoorWritable({ root, path: target, route: 'file_repair', sourceId: input.sourceId, slug: input.slug }, input.content);
+  checkedFileHash(target, input.beforeHash, input.sourceId, input.path, kind);
   const busy = await loadRepairBusySet(ctx.engine, input.sourceId, incarnation);
   if (repairBusy(busy, { path: input.path, sourcePath: input.sourcePath, slug: input.slug }) || (input.renameFrom && repairBusy(busy, { sourcePath: input.renameFrom.sourcePath, slug: input.renameFrom.slug }))) {
     throw repairBusyError(busy, input.sourceId, input.path);
@@ -363,16 +357,12 @@ export async function prepareManagedFileRepairMutation(engine: BrainEngine, row:
   const bytes = Buffer.from(p.content, 'utf8');
   const fileChanges = sha256(bytes) !== p.beforeHash;
   const target = confinedRepairTarget(root, p.path, row.source_id, kind);
-  // The parts directory is read before the page file is compared, so a part edited after the comparison differs from
-  // expectedParts and the door refuses it (source_changed) instead of taking it as the prior bytes it replaces.
-  const expectedParts = preparedParts(target, root);
+  const splitCheck = () => assertOutsideDoorWritable({ root, path: target, route: 'file_repair', sourceId: row.source_id, slug: row.slug }, p.content);
+  await splitCheck();
   const rawHash = checkedFileHash(target, p.beforeHash, row.source_id, p.path, kind);
-  // Once the door has staged a split page's new part files beside the head, the parts no longer reassemble as they are,
-  // so validation compares the raw bytes this preparation bound; the door compares every file it replaces or removes.
-  // An import-only repair publishes no file, so the door never sees expectedParts: its parts are compared here instead.
-  const checkFile = () => {
-    if (sha256(readFileSync(confinedRepairTarget(root, p.path, row.source_id, kind))) !== rawHash) throw changedSincePreview(row.source_id, p.path, 'the file bytes differ from the previewed hash', kind);
-    if (!fileChanges && !isDeepStrictEqual(preparedParts(target, root), expectedParts)) throw changedSincePreview(row.source_id, p.path, 'a part file of the split page changed after the repair compared it', kind);
+  const checkFile = async () => {
+    checkedFileHash(confinedRepairTarget(root, p.path, row.source_id, kind), rawHash, row.source_id, p.path, kind);
+    await splitCheck();
   };
   const source = { sourceId: row.source_id };
   const snapshot = await engine.readPageSnapshot(row.slug, { ...source, includeDeleted: true });
@@ -408,14 +398,14 @@ export async function prepareManagedFileRepairMutation(engine: BrainEngine, row:
   return { observedRevision: snapshot?.revision ?? null, noop: ready.noop && !fileChanges && !moved, contentUnchanged: ready.noop && !fileChanges && !moved,
     trust: await ownerImportTrust(engine, row, ready.parsedPage.frontmatter, p.sourcePath), deferEmbedding: p.noEmbed, ...(moved ? { additionalPageKeys: [{ sourceId: row.source_id, slug: moved.slug }] } : {}),
     ...(ready.afterCommit || moved ? { afterCommit: async (target: BrainEngine) => { await published.afterCommit?.(target); } } : {}),
-    ...(fileChanges ? { file: { root, path: target, content: bytes, expectedBeforeHash: rawHash, expectedParts,
+    ...(fileChanges ? { file: { root, path: target, content: bytes, expectedBeforeHash: rawHash,
       ...(fenceRepair ? { commit: fenceRepairCommit(p.path, fenceRepair.classes, fenceRepair.tier) } : contentRepair ? { commit: contentRepairCommit(p.path, contentRepair) } : {}) } } : {}),
     validate: async tx => {
       const current = await getWorktreeBinding(tx, row.source_id);
       if (!current || current.worktree_id !== row.worktree_id || String(current.owner_epoch) !== p.ownerEpoch) throw opError('owner_unavailable', 'The repair owner changed.',
         `Source ${row.source_id}'s canonical owner changed while repair request ${row.request_id} was prepared, so it published nothing. Check the owner, then preview the repair again.`,
         { fix: ownerStatusFix(row.source_id) });
-      checkFile();
+      await checkFile();
       if (contentRepair?.declared_alias) await assertDeclaredSlugAbsent(tx, row.source_id, root, p, contentRepair.declared_alias, row.slug, kind);
       await assertRenameSource(tx);
       await ready.validate(tx);

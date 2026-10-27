@@ -50,7 +50,7 @@ import { ERROR_CATALOGUE } from '../core/error-catalogue.ts';
 import { cliRenderContext, docsUrl, renderAction, toAgentError, type RenderedAction } from '../core/agent-output.ts';
 import type { ParseOpts } from '../core/markdown.ts';
 import { isSplitHeadPath, parseHead, readPageFile, type PageFileHoldCode } from '../core/split-layout/index.ts';
-import { assertOneFileWritable, writeSplitPageFile } from '../core/split-write-through.ts';
+import { assertOutsideDoorWritable } from '../core/split-write-through.ts';
 
 export interface LintIssue {
   file: string;
@@ -58,7 +58,7 @@ export interface LintIssue {
   rule: string;
   message: string;
   fixable: boolean;
-  /** The stable machine code: a repair that was not applied (`managed_write_pending` from a managed brain's coordinator, `fix_not_writable` when the file refused the write, `split_page_unsupported` for a split page head lint cannot lay out again because it ran without a brain), a listed file removed before lint read it (`file_removed_during_scan`), or a split page head whose parts do not reassemble (its hold code). */
+  /** The stable machine code: a repair that was not applied (`managed_write_pending` from a managed brain's coordinator, `fix_not_writable` when the file refused the write, `split_page_unsupported` for a fix to a page in a split unit, which only the publication door writes), a listed file removed before lint read it (`file_removed_during_scan`), or a split page head whose parts do not reassemble (its hold code). */
   code?: 'managed_write_pending' | 'fix_not_writable' | 'file_removed_during_scan' | 'split_page_unsupported' | PageFileHoldCode;
   /** Why: the coordinator refusal's reason (`file_database_drift`, `held_file`, `canonical_file_missing`, ...), `revision_changed`, `not_indexed`, or the lowercased errno (`eacces`, `eperm`, `erofs`). */
   reason?: string;
@@ -670,39 +670,32 @@ function removedDuringScanIssue(file: string, target: string): LintIssue {
 /**
  * The page text lint checks at `page`: the file itself, or for a split page head (Wave B PR 5; its text carries a
  * `gbrain_parts` manifest, whether or not its parts directory exists) the page its head and part files reassemble to,
- * so a rule sees the whole page and a fix is built from it. A head whose parts do not verify (a missing parts directory
+ * so a rule sees the whole page (a fix to it is refused, writeLintFix). A head whose parts do not verify (a missing parts directory
  * included) is a non-fixable issue carrying the hold's code.
  */
-function readLintPage(page: string, relPath: string): { content: string; split: boolean } | LintIssue {
+function readLintPage(page: string, relPath: string): { content: string } | LintIssue {
   const content = readSourceFileSync(page, 'utf-8');
-  if (!isSplitHeadPath(page) || parseHead(content) === null) return { content, split: false };
+  if (!isSplitHeadPath(page) || parseHead(content) === null) return { content };
   const file = readPageFile(page);
   if (file.hold) return { file: relPath, line: 1, rule: 'split-page-held', fixable: false, code: file.hold.code, message: file.hold.message };
-  return { content: file.bytes.toString('utf8'), split: true };
+  return { content: file.bytes.toString('utf8') };
 }
 
 /**
- * Writes a filesystem lint fix through the split preflight of split-write-through.ts: with a brain engine,
- * writeSplitPageFile plans the fixed bytes (a split head whose parts all stay gets a new head); without one,
- * assertOneFileWritable checks them. A fix that would change a part or grow the page past the split threshold, or a
- * split head linted with no brain to read the threshold from, is a non-fixable `split-page-unsupported` issue and
- * nothing is written. Returns the issue, or the paths written for the durability commit.
+ * Writes a filesystem lint fix after the split check of every route outside the publication door
+ * (split-write-through.ts assertOutsideDoorWritable): a page in a split unit is a non-fixable `split-page-unsupported`
+ * issue and nothing is written; only the publication door of a git-canonical source writes a split page.
  */
-async function writeLintFix(engine: BrainEngine | undefined, page: string, root: string, relPath: string, fixed: string, split: boolean): Promise<{ issue: LintIssue | null; paths: string[] }> {
-  if (!engine && split) {
-    return { issue: { file: relPath, line: 1, rule: 'split-page-unsupported', fixable: false, code: 'split_page_unsupported',
-      message: `fix not applied: ${relPath} is a split page head (its page continues in part files), and lint ran without a brain to read the split threshold from, so the file was left unchanged. On a brain with a canonical owner, gbrain dream --phase lint --once lints with the brain and its door writes the fixed page as a head plus part files.` }, paths: [] };
-  }
-  let paths: string[] | null = null;
+async function writeLintFix(page: string, root: string, relPath: string, fixed: string): Promise<LintIssue | null> {
   try {
-    if (engine) paths = await writeSplitPageFile(engine, page, root, fixed);
-    else assertOneFileWritable(page, fixed);
+    await assertOutsideDoorWritable({ root, path: page, route: 'raw_writer' }, fixed);
   } catch (error) {
-    if ((error as { code?: string }).code !== 'split_page_unsupported') throw error;
-    return { issue: { file: relPath, line: 1, rule: 'split-page-unsupported', fixable: false, code: 'split_page_unsupported',
-      message: `fix not applied: ${relPath} ${split ? 'is a split page head whose part files the fix would change' : 'would grow past the split threshold with the fix'}, and only the publication door of a brain with a canonical owner writes a head and its parts together, so the files were left unchanged.` }, paths: [] };
+    const code = (error as { code?: string }).code;
+    if (code !== 'split_page_unsupported' && code !== 'split_head_content') throw error;
+    return { file: relPath, line: 1, rule: 'split-page-unsupported', fixable: false, code: 'split_page_unsupported',
+      message: `fix not applied: ${(error as Error).message} ${(error as { suggestion?: string }).suggestion ?? ''}`.trim() };
   }
-  return paths ? { issue: null, paths } : { issue: writeLintFixOrRefusal(page, relPath, fixed), paths: [] };
+  return writeLintFixOrRefusal(page, relPath, fixed);
 }
 
 const UNWRITABLE_CODES: ReadonlySet<string> = new Set(['EACCES', 'EPERM', 'EROFS']);
@@ -885,7 +878,7 @@ export async function runLintCore(opts: LintOpts): Promise<LintResult> {
       await new Promise<void>((resolve) => setImmediate(resolve));
     }
     const relPath = isSingleFile ? page : relative(opts.target, page);
-    let read: { content: string; split: boolean } | LintIssue;
+    let read: { content: string } | LintIssue;
     try {
       read = readLintPage(page, relPath);
     } catch (error) {
@@ -910,7 +903,7 @@ export async function runLintCore(opts: LintOpts): Promise<LintResult> {
       opts.onPageIssues?.(relPath, [read], 0);
       continue;
     }
-    const { content, split } = read;
+    const { content } = read;
     const issues = lintContent(content, relPath, lintOpts);
     opts.onPageScanned?.();
     if (issues.length === 0) continue;
@@ -939,14 +932,14 @@ export async function runLintCore(opts: LintOpts): Promise<LintResult> {
           }
         } else {
           assertSourceFilesystemActive();
-          const { issue: unwritable, paths } = await writeLintFix(opts.engine, page, repoProbe, relPath, fixed, split);
+          const unwritable = await writeLintFix(page, repoProbe, relPath, fixed);
           if (unwritable) {
             issues.push(unwritable);
             totalIssues++;
             fixPending++;
             if (pendingIssues.length < MAX_PENDING_ISSUES) pendingIssues.push(unwritable);
           } else {
-            if (commitFixes) commitWriteThroughFile(repoProbe, page, relative(repoProbe, page).replace(/\.md$/u, ''), 'write-through', paths);
+            if (commitFixes) commitWriteThroughFile(repoProbe, page, relative(repoProbe, page).replace(/\.md$/u, ''));
             fixCount = fixable;
           }
         }

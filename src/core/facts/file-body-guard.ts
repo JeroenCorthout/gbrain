@@ -10,8 +10,8 @@
  * never writes them. `mirrorFileBody` re-reads the stored body under a row lock inside the caller's transaction and
  * writes only when it still equals the body the caller compared, keeping the replaced body in page_versions first.
  *
- * A split page's canonical file is a head whose page continues in part files (split-layout/): `replaceableFile` compares
- * its page file F', and a writer that does not rewrite one refuses with `splitPageToken`'s typed reason, nothing changed.
+ * A page in a split unit (split-layout/) is refused by every unmanaged writer with `splitPageToken`'s typed reason
+ * (`split_page_unsupported`, outside_door), nothing changed; only the publication door writes a split page.
  */
 import { existsSync } from 'node:fs';
 import type { BrainEngine } from '../engine.ts';
@@ -20,7 +20,8 @@ import { parseMarkdown, parseMarkdownHead } from '../markdown.ts';
 import { contentHash, contentHashFrontmatterAndTags } from '../utils.ts';
 import { stableJson } from '../persistence/digest.ts';
 import { classifyItemFailure } from '../item-failure.ts';
-import { pageFileSha256, readPageFile } from '../split-layout/page-file.ts';
+import { readPageFile } from '../split-layout/page-file.ts';
+import { outsideDoorRefusal, type OutsideDoorInput } from '../split-write-through.ts';
 
 export interface StoredBody {
   compiled_truth: string | null;
@@ -37,17 +38,13 @@ export function fileDatabaseDriftToken(slug: string, sourceId: string, when: 'be
 }
 
 /**
- * The refusal an unmanaged writer that does not rewrite a split page reports for the page file at `filePath`, or null:
- * `split_page` for a head whose parts verify, else the hold that keeps its page file unreadable (`split_page_incomplete`,
- * `split_head_modified`). `disposition` says what was left unchanged.
+ * The refusal an unmanaged writer reports for page `input.slug` at `input.path` (split-write-through.ts
+ * outsideDoorRefusal: `split_page_unsupported` for a path in a split unit, `split_head_content` for `content` that is a
+ * split head), or null. `disposition` says what was left unchanged.
  */
-export function splitPageToken(filePath: string, slug: string, disposition: string): string | null {
-  if (!existsSync(filePath)) return null;
-  const file = pageFileSha256(filePath);
-  if (!file.split) return null;
-  if (file.hold) return `${slug} (${file.hold.code}: ${file.hold.message} Meanwhile ${disposition})`;
-  return `${slug} (split_page: its canonical file is a split head whose page continues in part files, which this writer does `
-    + `not rewrite, so the file was neither compared nor rewritten and ${disposition})`;
+export async function splitPageToken(input: OutsideDoorInput & { slug: string }, disposition: string, content?: string): Promise<string | null> {
+  const refusal = await outsideDoorRefusal(input, content);
+  return refusal ? `${input.slug} (${refusal.message} Meanwhile ${disposition})` : null;
 }
 
 /** The file's body and timeline as the mirror would store them. */

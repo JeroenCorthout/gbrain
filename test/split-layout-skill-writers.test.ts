@@ -2,16 +2,19 @@
  * Wave B PR 5 lane 5e (split git layout, spec §9 option B): skill writers on a split SKILL.md.
  *
  * 1. Protects: `skills/<name>/SKILL.md` (and the skillopt best.md, proposed.md and version files beside it) are
- *    syncable pages, so an unmanaged brain can hold one as a split head plus parts. The DRY auto-fix and the skillopt
- *    version store write one whole file and have no brain to plan with, so they run the engine-free split preflight
- *    (assertOneFileWritable) on the bytes they would write: a split head (parts directory present or not) or a write
- *    that would grow the page past the split threshold is refused split_page_unsupported and nothing is written.
- * 2. Fails when: either writer rewrites the head of a split page (leaving split_head_modified), writes a page over the
- *    threshold as one file, or writes any of its files before the refusal.
+ *    syncable pages, so a brain can hold one as a split head plus parts, and only the publication door of a
+ *    git-canonical source writes a split page. The DRY auto-fix and the skillopt version store are outside the door and
+ *    run the engine-free check (assertOneFileWritable) before they write: a SKILL.md in a split unit (its parts directory
+ *    present, or a head declaring gbrain_parts whose parts directory is missing) is refused split_page_unsupported
+ *    (outside_door) and none of the writer's files is written. A page in no split unit is written as one file at any
+ *    size, as master writes it: a fix or a candidate that grows a one-file SKILL.md past the split threshold leaves one
+ *    file and no parts directory.
+ * 2. Fails when: either writer rewrites the head of a split page, writes any of its files before the refusal, lays a
+ *    page out as a head plus parts, or refuses a one-file page for its size.
  * 3. No engine; KB-sized limits through __setSplitLimitsForTests.
  */
 import { afterEach, expect, test } from 'bun:test';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { autoFixDryViolations } from '../src/core/dry-fix.ts';
@@ -39,44 +42,69 @@ async function withSkills(run: (root: string, skills: string, head: string) => P
   } finally { rmSync(home, { recursive: true, force: true }); }
 }
 
-const refusalOf = (run: () => unknown) => { try { run(); return null; } catch (error) { return (error as { code?: string }).code; } };
+/** The code (and reason) a writer threw, or null when it wrote. */
+const refusalOf = (run: () => unknown) => { try { run(); return null; } catch (error) {
+  const { code, reason } = error as { code?: string; reason?: string };
+  return reason ? `${code} (${reason})` : code;
+} };
+
+/** The head and every part file, by name, as they are on disk (null when gone). */
+const layout = (head: string) => ({ head: existsSync(head) ? readFileSync(head, 'utf8') : null,
+  parts: existsSync(partsDirFor(head)) ? Object.fromEntries(readdirSync(partsDirFor(head)).sort().map(name => [name, readFileSync(join(partsDirFor(head), name), 'utf8')])) : null });
 
 for (const parts of ['present', 'missing'] as const) {
   test(`the DRY auto-fix leaves a split SKILL.md whose parts directory is ${parts} as it was (split_page_unsupported)`, () => withSkills(async (root, skills, head) => {
     await writeSplitPage(root, 'skills/example/SKILL.md', SKILL);
     if (parts === 'missing') rmSync(partsDirFor(head), { recursive: true });
     durableGitRepo(root, ['skills']);
-    const before = readFileSync(head, 'utf8');
+    const before = layout(head);
     const report = autoFixDryViolations(skills);
     expect(report.fixed).toEqual([]);
     expect(report.skipped.map(outcome => outcome.reason)).toContain('split_page_unsupported');
-    expect(readFileSync(head, 'utf8')).toBe(before);
+    expect(layout(head)).toEqual(before);
     if (parts === 'present') expect(readPageFile(head).hold).toBeUndefined();
   }));
 }
 
-test('the DRY auto-fix refuses a fix that would grow a one-file SKILL.md past the split threshold (split_page_unsupported)', () => withSkills(async (root, skills, head) => {
+test('the DRY auto-fix writes a fix that grows a one-file SKILL.md past the split threshold as one file, as master does', () => withSkills(async (root, skills, head) => {
   mkdirSync(join(skills, 'example'));
   const near = SKILL.slice(0, 2040) + '\n';
   writeFileSync(head, near);
   durableGitRepo(root, ['skills']);
   const report = autoFixDryViolations(skills);
-  expect(report.skipped.map(outcome => outcome.reason)).toContain('split_page_unsupported');
-  expect(readFileSync(head, 'utf8')).toBe(near);
+  expect(report.skipped).toEqual([]);
+  expect(report.fixed.map(outcome => outcome.skill)).toEqual(['example']);
+  const after = readFileSync(head, 'utf8');
+  expect(after).not.toBe(near);
+  expect(Buffer.byteLength(after)).toBeGreaterThan(LIMITS.thresholdDefault);
+  expect(readPageFile(head).split).toBe(false);
   expect(existsSync(partsDirFor(head))).toBe(false);
 }));
 
-test('the skillopt version store refuses a candidate for a split SKILL.md, or one over the split threshold, before it writes any file', () => withSkills(async (root, skills, head) => {
+test('the skillopt version store refuses to accept a candidate for a split SKILL.md before it writes any file (split_page_unsupported); a proposal beside it is one file', () => withSkills(async (root, skills, head) => {
   await writeSplitPage(root, 'skills/example/SKILL.md', SKILL);
-  const before = readFileSync(head, 'utf8');
-  const input = { skillsDir: skills, skillName: 'example', runId: 'synthetic-run', epoch: 1, step: 1, edits: [], candidateText: before.replace('Line 0000', 'Edited line'), selScore: 1, delta: 1 };
-  expect(refusalOf(() => acceptCandidate(input))).toBe('split_page_unsupported');
-  expect(refusalOf(() => writeProposed(skills, 'example', input.candidateText))).toBe('split_page_unsupported');
-  expect(readFileSync(head, 'utf8')).toBe(before);
-  rmSync(head); rmSync(partsDirFor(head), { recursive: true });
+  const before = layout(head);
+  const input = { skillsDir: skills, skillName: 'example', runId: 'synthetic-run', epoch: 1, step: 1, edits: [], candidateText: SKILL.replace('Line 0000', 'Edited line'), selScore: 1, delta: 1 };
+  expect(refusalOf(() => acceptCandidate(input))).toBe('split_page_unsupported (outside_door)');
+  expect(layout(head)).toEqual(before);
+  for (const name of ['history.json', 'best.md', 'proposed.md']) expect(existsSync(join(skilloptDir(skills, 'example'), name))).toBe(false);
+  expect(existsSync(join(skilloptDir(skills, 'example'), 'versions')) ? readdirSync(join(skilloptDir(skills, 'example'), 'versions')) : []).toEqual([]);
+  writeProposed(skills, 'example', input.candidateText);
+  for (const name of ['best.md', 'proposed.md']) {
+    const path = join(skilloptDir(skills, 'example'), name);
+    expect(readFileSync(path, 'utf8')).toBe(input.candidateText);
+    expect(existsSync(partsDirFor(path))).toBe(false);
+  }
+  expect(layout(head)).toEqual(before);
+}));
+
+test('the skillopt version store accepts a candidate that grows a one-file SKILL.md past the split threshold as one file, as master does', () => withSkills(async (_root, skills, head) => {
+  mkdirSync(join(skills, 'example'));
   writeFileSync(head, 'Short skill.\n');
-  expect(refusalOf(() => acceptCandidate({ ...input, candidateText: SKILL }))).toBe('split_page_unsupported');
-  expect(readFileSync(head, 'utf8')).toBe('Short skill.\n');
-  expect(existsSync(join(skilloptDir(skills, 'example'), 'history.json'))).toBe(false);
-  expect(existsSync(join(skilloptDir(skills, 'example'), 'best.md'))).toBe(false);
+  expect(Buffer.byteLength(SKILL)).toBeGreaterThan(LIMITS.thresholdDefault);
+  acceptCandidate({ skillsDir: skills, skillName: 'example', runId: 'synthetic-run', epoch: 1, step: 1, edits: [], candidateText: SKILL, selScore: 1, delta: 1 });
+  expect(readFileSync(head, 'utf8')).toBe(SKILL);
+  expect(readFileSync(join(skilloptDir(skills, 'example'), 'best.md'), 'utf8')).toBe(SKILL);
+  expect(existsSync(join(skilloptDir(skills, 'example'), 'history.json'))).toBe(true);
+  for (const path of [head, join(skilloptDir(skills, 'example'), 'best.md')]) expect(existsSync(partsDirFor(path))).toBe(false);
 }));

@@ -279,6 +279,16 @@ export async function splitUnitRefusals(input: Omit<SplitUnitGuardInput, 'path' 
   return refusals;
 }
 
+/**
+ * assertSplitUnitMutable for a route outside the door that must stay synchronous (skill tooling, the generic write
+ * helpers, writers with no brain): refuses `outside_door` as soon as the disk shows `path` in a split unit. It reads no
+ * Git state, which a route outside the door does not need: any unit present is a refusal for it.
+ */
+export function assertSplitUnitMutableSync(input: Omit<SplitUnitGuardInput, 'route' | 'strict' | 'planned' | 'phase'> & { route: Exclude<SplitUnitRoute, 'door' | 'git_effect' | 'recovery'> }): void {
+  const unit = splitUnitOf(input.root, input.path);
+  if (unit && splitUnitOnDisk(unit, input.path)) throw splitPageUnsupported('outside_door', input, unit);
+}
+
 const DOCS = 'docs/guides/write-refusals.md#split_page_unsupported';
 const statusArgv = (sourceId?: string) => ['gbrain', 'sources', 'writer', 'status', ...(sourceId ? ['--source', sourceId] : []), '--json'];
 

@@ -17,6 +17,7 @@ import { join } from 'node:path';
 import { OperationError } from '../src/core/operations.ts';
 import { assertSplitUnitMutable, splitUnitPresent, splitUnitRefusals, type SplitUnitGuardInput } from '../src/core/persistence/split-unit-guard.ts';
 import { git, gitFixture, type GitFixture } from './helpers/git-publication.ts';
+import { withEnv } from './helpers/with-env.ts';
 
 let fixture: GitFixture | null = null;
 afterEach(() => { fixture?.cleanup(); fixture = null; });
@@ -80,7 +81,7 @@ describe('routes outside the strict door', () => {
 
   test('an unborn HEAD reads the index alone; no work tree spawns no Git, and a work tree takes one read-only Git step per call or batch', async () => {
     const unborn = mkdtempSync(join(tmpdir(), 'split-guard-unborn-')), plain = mkdtempSync(join(tmpdir(), 'split-guard-plain-'));
-    const trace = join(plain, '..', `${plain.split('/').pop()}.trace`), traced = process.env.GIT_TRACE;
+    const trace = join(plain, '..', `${plain.split('/').pop()}.trace`);
     const steps = () => existsSync(trace) ? readFileSync(trace, 'utf8').split('\n').flatMap(line => line.split('built-in: git ').slice(1)).filter(step => !step.startsWith('config ')) : [];
     try {
       git(unborn, 'init', '-q');
@@ -94,15 +95,15 @@ describe('routes outside the strict door', () => {
       const pages = ['Notes/a.md', 'Notes/b.md', 'Notes/c.md'];
       mkdirSync(join(plain, 'Notes')); mkdirSync(join(repo, 'Notes'), { recursive: true });
       for (const page of pages) { writeFileSync(join(plain, page), 'One file.\n'); writeFileSync(join(repo, page), 'One file.\n'); }
-      process.env.GIT_TRACE = trace;
-      expect(await refusal({ root: plain, path: join(plain, pages[0]!), route: 'connector' })).toBeNull();
-      expect((await splitUnitRefusals({ root: plain, paths: pages.map(page => join(plain, page)), route: 'remover', strict: false })).size).toBe(0);
-      expect(steps()).toEqual([]);
-      expect(await refusal({ root: repo, path: join(repo, pages[0]!), route: 'connector' })).toBeNull();
-      expect((await splitUnitRefusals({ root: repo, paths: pages.map(page => join(repo, page)), route: 'remover', strict: false })).size).toBe(0);
-      expect(steps()).toEqual(['ls-files -z --with-tree=HEAD -- Notes/.a.gbparts', 'ls-files -z --with-tree=HEAD -- Notes/.a.gbparts Notes/.b.gbparts Notes/.c.gbparts']);
+      await withEnv({ GIT_TRACE: trace }, async () => {
+        expect(await refusal({ root: plain, path: join(plain, pages[0]!), route: 'connector' })).toBeNull();
+        expect((await splitUnitRefusals({ root: plain, paths: pages.map(page => join(plain, page)), route: 'remover', strict: false })).size).toBe(0);
+        expect(steps()).toEqual([]);
+        expect(await refusal({ root: repo, path: join(repo, pages[0]!), route: 'connector' })).toBeNull();
+        expect((await splitUnitRefusals({ root: repo, paths: pages.map(page => join(repo, page)), route: 'remover', strict: false })).size).toBe(0);
+        expect(steps()).toEqual(['ls-files -z --with-tree=HEAD -- Notes/.a.gbparts', 'ls-files -z --with-tree=HEAD -- Notes/.a.gbparts Notes/.b.gbparts Notes/.c.gbparts']);
+      });
     } finally {
-      if (traced === undefined) delete process.env.GIT_TRACE; else process.env.GIT_TRACE = traced;
       rmSync(trace, { force: true }); rmSync(unborn, { recursive: true, force: true }); rmSync(plain, { recursive: true, force: true });
     }
   });
