@@ -13,8 +13,8 @@ import { REQUEST_PROTOCOL_GUARD_FUNCTION } from '../shared-skills/persistence-sc
 // 1 and 2 only, so it refuses the record recovery_version_unsupported (the
 // upgrade fix) before it reads a field or touches a file. Function DDL only:
 // no row changes.
-export const v275: Migration = {
-  version: 275,
+export const v278: Migration = {
+  version: 278,
   name: 'page_split_recovery',
   idempotent: true,
   sql: `${REQUEST_PROTOCOL_GUARD_FUNCTION};`,
