@@ -17,7 +17,7 @@ import { sqlQueryForEngine } from '../core/sql-query.ts';
 import { grantFromClient, type PrincipalGrant } from '../core/grants/model.ts';
 import { readClientGrant } from '../core/grants/service.ts';
 import { resolveTokenGrant } from '../core/grants/legacy-token.ts';
-import { isPrivatePage } from '../core/search/private-visibility.ts';
+import { isPrivacyPrivatePage } from '../core/search/private-visibility.ts';
 import { identityFor, normalizePrincipal, normalizeReaders, readersAllow } from '../core/access/principals.ts';
 import {
   addGroup, addMember, assertAccessId, disableMember, enableMember, getMember, legacyTokenByName, listGroups, listMembers,
@@ -93,7 +93,7 @@ export async function whoCanRead(engine: BrainEngine, slug: string, sourceId?: s
   return rows.map(row => {
     const fm = typeof row.frontmatter === 'string' ? JSON.parse(row.frontmatter) : row.frontmatter;
     const readers = normalizeReaders(fm);
-    const priv = isPrivatePage({ type: row.type, frontmatter: fm });
+    const priv = isPrivacyPrivatePage({ type: row.type, frontmatter: fm });
     const allowed = readers === null ? 'every_source_reader' as const : members.filter(m => readersAllow(fm, identityFor(m.id, m.groups))).map(m => m.id);
     const notes = [
       readers === null ? 'No readable_by: every caller entitled to the source reads it.'
@@ -242,6 +242,9 @@ export async function runAccess(engine: BrainEngine, args: string[]): Promise<vo
   const json = args.includes('--json');
   const [cmd, ...rest] = args;
   try {
+    if (cmd !== 'check' && rest.some(a => a === '--as' || a.startsWith('--as='))) {
+      throw usageError(`--as is not an option of gbrain access ${cmd}.`, 'gbrain access check --token <name> --as a,b evaluates an audience; operations take --as <member> to preview a member view.');
+    }
     switch (cmd) {
       case 'member': return await memberCmd(engine, rest[0], rest.slice(1), json);
       case 'group': return await groupCmd(engine, rest[0], rest.slice(1), json);

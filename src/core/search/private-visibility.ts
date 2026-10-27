@@ -466,7 +466,7 @@ export function isPrivatePage(page: { type?: string | null; frontmatter?: unknow
 }
 
 /** isPrivatePage without the member-access rule: visibility, aliases and pinned questions only. */
-function isPrivacyPrivatePage(page: { type?: string | null; frontmatter?: unknown }): boolean {
+export function isPrivacyPrivatePage(page: { type?: string | null; frontmatter?: unknown }): boolean {
   const frontmatter = typeof page.frontmatter === 'object' && page.frontmatter !== null
     ? page.frontmatter as Record<string, unknown> : {};
   if (frontmatter.pinned_question != null) return true;
