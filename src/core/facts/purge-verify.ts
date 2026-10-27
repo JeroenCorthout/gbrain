@@ -472,7 +472,9 @@ async function vectorProbe(engine: BrainEngine, target: PurgeTarget): Promise<Re
 
 /** Build the receipt: swept-store verification (or would-remove counts on a dry run), probes, residuals first. */
 export async function verifyFactPurge(engine: BrainEngine, input: { target: PurgeTarget; plan: PurgePlan; dryRun: boolean; removed?: StoreCount;
-  prose?: Array<{ slug: string; version_id: number }>; vacuum?: boolean; ledger?: LedgerPurgeReport | null; sweepVerified?: boolean }): Promise<PurgeReceipt> {
+  prose?: Array<{ slug: string; version_id: number }>; vacuum?: boolean; ledger?: LedgerPurgeReport | null; sweepVerified?: boolean;
+  /** GBRA-217 (A7): the source's commits whose change reason quoted the claim, tombstoned; absent without a Git checkout. */
+  reasonCommits?: { tombstoned: number; commits: number; limited: boolean } }): Promise<PurgeReceipt> {
   const { target, plan, dryRun } = input;
   const deadline = performance.now() + probeLimits.totalMs;
   const claim = target.fact, needle = claim.toLowerCase(), src = target.source_id;
@@ -495,7 +497,7 @@ export async function verifyFactPurge(engine: BrainEngine, input: { target: Purg
   stores[stores.length - 1] = await withSegmentedProse(engine, stores[stores.length - 1]!, src, [claim], deadline);
   await swept('content_chunks', `SELECT 1 FROM content_chunks c JOIN pages p ON p.id=c.page_id WHERE p.source_id=$1 AND strpos(lower(c.chunk_text),$2)>0`,
     [src, needle], plan.pages.length, removed.chunks, prose);
-  await swept('page_versions', `SELECT 1 FROM page_versions v JOIN pages p ON p.id=v.page_id WHERE p.source_id=$1 AND ${carriesClaimSql('v', 2)}`,
+  await swept('page_versions', `SELECT 1 FROM page_versions v JOIN pages p ON p.id=v.page_id WHERE p.source_id=$1 AND (${carriesClaimSql('v', 2)} OR strpos(lower(v.change_reason),$2)>0)`,
     [src, ...claimNeedles(claim)], plan.versions, removed.page_versions, { ...prose, items: (input.prose ?? []).slice(0, 20) });
   stores[stores.length - 1] = await withSegmentedProse(engine, stores[stores.length - 1]!, src, [claim], deadline);
   await swept('persistence_requests', `SELECT 1 FROM persistence_requests WHERE source_id=$1 AND (${['intent', 'outcome', 'error_detail', 'error_message']
@@ -547,6 +549,11 @@ export async function verifyFactPurge(engine: BrainEngine, input: { target: Purg
     const detail = r.store === 'database_physical' ? `${r.detail}${engine.kind === 'pglite' ? (vacuumed === 'ran' ? ' VACUUM ran on the touched tables; filesystem blocks and snapshots may still hold old pages.' : vacuumed ? ` VACUUM of the touched tables ${vacuumed}; rerun with --vacuum.` : ' PGLite has no autovacuum; rerun with --vacuum to compact the touched tables.') : ' On Postgres the operator runs VACUUM; WAL archives, replicas and PITR windows are outside gbrain.'}` : r.detail;
     residuals.push({ store: r.store, status: 'out_of_reach', detail });
   }
+  if (input.reasonCommits?.tombstoned || input.reasonCommits?.limited) residuals.push({ store: 'git_commit_messages', status: 'out_of_reach', remaining: input.reasonCommits.tombstoned,
+    ...(input.reasonCommits.limited ? { reason: 'reason_scan_limit' } : {}),
+    detail: `${input.reasonCommits.tombstoned} commit message reason(s) in this repository quote the claim. Commits already pushed keep their message text, as they keep file history; purge never rewrites them. `
+      + 'Each (commit, path) is tombstoned, so no later sync or re-import stores that reason again.'
+      + (input.reasonCommits.limited ? ` Only the newest ${input.reasonCommits.commits} commits were checked (--reason-scan-limit); a reason in an older commit could be mirrored again by a re-import.` : '') });
   if (Number(other?.n ?? 0)) residuals.push({ store: 'facts_other_scope', status: 'out_of_scope', reason: plan.subject === '*' ? 'other_visibility' : 'other_subject', remaining: Number(other.n),
     detail: `${other.n} fact row(s) state the same claim about another entity or at another visibility; rerun with --all-subjects to purge every entity's copy.` });
   residuals.push(...stores.filter(s => s.reason === 'source_prose' || s.reason === 'probed_reported' || s.store === 'canonical_markdown' && s.status === 'out_of_scope'));

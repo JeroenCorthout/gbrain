@@ -9,18 +9,26 @@ import { isSegmentedPage } from '../page-body/page-shape.ts';
 export { LARGE_PAGE_VERSIONS_KEPT };
 
 /**
+ * GBRA-217: what a sync import knows about the write a snapshot records: the reason Git gives for it
+ * (`page_versions.change_reason`), and whether the import consumed more than one commit for the page's file, or could
+ * not tell (`pages.version_history_gap_at`).
+ */
+export interface VersionHistory { reason?: string | null; historyGap?: boolean }
+
+/**
  * Version the same canonical view an API reader receives, including withdrawals.
  * `preimage` (#5984) is the caller's own read of the page under its page guard
  * in this transaction; it is versioned as read, without a second read.
  */
-export async function createPageVersion(engine: BrainEngine, slug: string, sourceId: string, preimage?: PageSnapshot): Promise<PageVersion> {
+export async function createPageVersion(engine: BrainEngine, slug: string, sourceId: string, preimage?: PageSnapshot, history: VersionHistory = {}): Promise<PageVersion> {
   const insert = async (tx: BrainEngine, snapshot: PageSnapshot) => {
     const { page, tags, revision } = snapshot;
-    if (isSegmentedPage(page)) return insertSegmentedVersion(tx, snapshot);
+    if (history.historyGap) await tx.executeRaw('UPDATE pages SET version_history_gap_at = now() WHERE id = $1', [page.id]);
+    if (isSegmentedPage(page)) return insertSegmentedVersion(tx, snapshot, history.reason ?? null);
     const rows = await tx.executeRaw<PageVersion>(`INSERT INTO page_versions
-      (page_id,compiled_truth,frontmatter,knowledge_revision,timeline,title,type,tags,is_deleted,source_path)
-      VALUES ($1,$2,$3::text::jsonb,$4::uuid,$5,$6,$7,$8::text::jsonb,$9,$10) RETURNING *`,
-    [page.id, page.compiled_truth, JSON.stringify(page.frontmatter), revision, page.timeline, page.title, page.type, JSON.stringify(tags), page.deleted_at != null, page.source_path ?? null]);
+      (page_id,compiled_truth,frontmatter,knowledge_revision,timeline,title,type,tags,is_deleted,source_path,change_reason)
+      VALUES ($1,$2,$3::text::jsonb,$4::uuid,$5,$6,$7,$8::text::jsonb,$9,$10,$11) RETURNING *`,
+    [page.id, page.compiled_truth, JSON.stringify(page.frontmatter), revision, page.timeline, page.title, page.type, JSON.stringify(tags), page.deleted_at != null, page.source_path ?? null, history.reason ?? null]);
     if (isLargePageBytes(Buffer.byteLength(page.compiled_truth ?? '', 'utf-8') + Buffer.byteLength(page.timeline ?? '', 'utf-8'))) {
       const pruned = await tx.executeRaw<{ id: number }>(`DELETE FROM page_versions WHERE page_id = $1 AND id IN (SELECT id FROM page_versions WHERE page_id = $1
         AND octet_length(compiled_truth) + octet_length(COALESCE(timeline, '')) > $2 ORDER BY id DESC OFFSET $3) RETURNING id`,
@@ -46,13 +54,13 @@ export async function createPageVersion(engine: BrainEngine, slug: string, sourc
  * before its generation flip, as every caller versions before its page write.
  * Then the page's segmented history is pruned by `pruneSegmentedVersions`.
  */
-async function insertSegmentedVersion(tx: BrainEngine, snapshot: PageSnapshot): Promise<PageVersion> {
+async function insertSegmentedVersion(tx: BrainEngine, snapshot: PageSnapshot, reason: string | null): Promise<PageVersion> {
   const { page, tags, revision } = snapshot;
   const [row] = await tx.executeRaw<PageVersion>(`INSERT INTO page_versions
-    (page_id,body_storage,body_generation,body_bytes,content_hash,frontmatter,knowledge_revision,title,type,tags,is_deleted,source_path)
-    SELECT p.id,'segmented',p.body_generation,p.body_bytes,p.content_hash,$2::text::jsonb,$3::uuid,$4,$5,$6::text::jsonb,$7,$8
+    (page_id,body_storage,body_generation,body_bytes,content_hash,frontmatter,knowledge_revision,title,type,tags,is_deleted,source_path,change_reason)
+    SELECT p.id,'segmented',p.body_generation,p.body_bytes,p.content_hash,$2::text::jsonb,$3::uuid,$4,$5,$6::text::jsonb,$7,$8,$9
       FROM pages p WHERE p.id = $1 AND p.body_storage = 'segmented' RETURNING *`,
-  [page.id, JSON.stringify(page.frontmatter), revision, page.title, page.type, JSON.stringify(tags), page.deleted_at != null, page.source_path ?? null]);
+  [page.id, JSON.stringify(page.frontmatter), revision, page.title, page.type, JSON.stringify(tags), page.deleted_at != null, page.source_path ?? null, reason]);
   if (!row) throw new Error(`createVersion failed: page id ${page.id} is no longer segmented`);
   if ((await pruneSegmentedVersions(tx, page.id)) > 0) await tx.sweepSegments({ pageId: page.id });
   return { ...row, snapshot_at: new Date(row.snapshot_at) };

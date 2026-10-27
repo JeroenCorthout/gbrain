@@ -63,6 +63,14 @@ export function hardenedGitEnvironment(): NodeJS.ProcessEnv {
 export type HardenedGitResult = { ok: true; stdout: Buffer } | { ok: false; reason: 'exit' | 'timeout' | 'too_large' | 'unavailable'; status?: number };
 
 /**
+ * GBRA-217: the one `git log` gbrain runs in an untrusted checkout, the reason-trailer read (`reason-trailers.ts`). A
+ * name-only listing of the first-parent line with no renames compares tree entries only, so no filter, textconv or
+ * external diff runs; signatures are not verified (no gpg). Every option is required, so no other `log` passes.
+ */
+export const REASON_LOG_OPTIONS: readonly string[] = ['-z', '--first-parent', '--diff-merges=first-parent', '--root', '--name-only', '--no-renames', '--no-relative',
+  '--no-ext-diff', '--no-textconv', '--no-show-signature', '--format=%x00%H%x00%(trailers:key=gbrain-reason,valueonly,unfold)'];
+
+/**
  * The exact options each allowed plumbing subcommand may take; anything not
  * listed here refuses.
  */
@@ -76,6 +84,7 @@ const ALLOWED_OPTIONS: ReadonlyMap<string, ReadonlySet<string>> = new Map([
   ['check-ignore', new Set(['-z', '--stdin'])],
   ['diff-index', new Set(['--cached', '--quiet'])],
   ['diff-tree', new Set(['-r', '-z', '--no-renames'])],
+  ['log', new Set(REASON_LOG_OPTIONS)],
 ]);
 
 /** Options a subcommand must carry, so its output stays raw and machine-readable. */
@@ -83,6 +92,7 @@ const REQUIRED_OPTIONS: ReadonlyMap<string, readonly string[]> = new Map([
   ['hash-object', ['--no-filters']],
   ['diff-index', ['--cached']],
   ['diff-tree', ['-r', '-z', '--no-renames']],
+  ['log', REASON_LOG_OPTIONS],
 ]);
 
 /**
