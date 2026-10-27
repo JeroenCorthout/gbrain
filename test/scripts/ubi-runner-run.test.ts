@@ -133,12 +133,12 @@ describe("watchdog", () => {
     knownVm();
     writeFileSync(join(dir, "command-mode"), 'if [ -f "$UBI_FAKE_ROOT/chatty" ]; then rm -f "$UBI_FAKE_ROOT/chatty"; for i in $(seq 1 16); do echo "chat $i"; sleep 0.5; done; else sleep 12; fi');
     writeFileSync(join(dir, "chatty"), "");
-    const chatty = run(["ssh", "vm-a", "chatty"], { UBI_IDLE_TIMEOUT: "3" });
+    let chattyDone = false;
+    const chatty = run(["ssh", "vm-a", "chatty"], { UBI_IDLE_TIMEOUT: "3" }).then((r) => ((chattyDone = true), r));
     while (existsSync(join(dir, "chatty"))) await Bun.sleep(50);
-    const t0 = Date.now();
     const silent = await run(["ssh", "vm-a", "silent"], { UBI_IDLE_TIMEOUT: "3" });
     expect(silent.code).toBe(124);
-    expect(Date.now() - t0).toBeLessThan(7_000);
+    expect(chattyDone).toBe(false);
     const c = await chatty;
     expect(c.code).toBe(0);
     expect(c.stdout).toContain("chat 16");
@@ -314,7 +314,7 @@ describe("quota preflight", () => {
     const waited = await run(["up"], { UBI_QUOTA_WAIT: "3" });
     expect(waited.code).toBe(1);
     expect(waited.stderr).toMatch(/quota: 16 of 31 vCPUs in use and 16 needed; waiting up to 3s more for room/);
-    expect(Date.now() - t0).toBeGreaterThanOrEqual(3000);
+    expect(Date.now() - t0).toBeGreaterThanOrEqual(3000); // gstack-timing-ok: UBI_QUOTA_WAIT is a wall-clock wait; a lower bound cannot flake
     const fromEnv = await run(["up"], { UBI_QUOTA_VCPUS: "24" });
     expect(fromEnv.stderr).toMatch(/already use 16 of 24 \(ceiling from UBI_QUOTA_VCPUS;/);
     expect(creates()).toEqual([]);
