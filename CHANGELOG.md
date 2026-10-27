@@ -10,6 +10,24 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [Unreleased]
+
+**Agents and settings screens can now read the memory-saving rule, an admin can change it remotely, and a user can say "save everything from here" or "stop saving" for one conversation.**
+
+Before, the rule for what an agent saves lived in the MCP instructions, and only the brain operator could see or change `memory.auto_writeback`, from a shell on the host. Three MCP tools change that. Every one keeps its state in the database, so a brain with no git repository gets all of them.
+
+### What changed
+
+| Tool | Who can call it | What it does |
+|---|---|---|
+| `get_memory_settings` | any connection | the mode agents follow, where it came from, the exact rule text, every mode's rule, background capture state, and why you can or can't change it |
+| `set_memory_writeback` | admin scope, after `gbrain config set mcp.publish_memory_settings true` (off by default) | changes `memory.agent_writeback` (inherit, off, salient, all) for the whole brain, with a dry run, an audit row in the same transaction, and a caution on team brains |
+| `memory_conversation_mode` | any connection that can call `remember` | returns the rule for the rest of this conversation: all, salient, off (only what the user asks to keep) or brain; stores nothing |
+
+The new `memory.agent_writeback` key changes only what agents are told. The host capture lanes (Stop hook, compaction harvest, SessionEnd transcripts) keep following the operator's `memory.auto_writeback`, so a remote "off" can't discard banked session text and a remote "all" can't start capture the operator never enabled. An unreadable or unrecognized override makes agents act as if saving is off and `get_memory_settings` reports `degraded`. The MCP instructions gain one line telling the agent to use the switch, after the governing rule, wherever the tool is served (starter and full surfaces). `gbrain config set|get memory.agent_writeback` works from the CLI.
+
+
+
 ## [0.60.473.0] - 2026-10-27
 
 **A change you stage while a write is finishing is no longer overwritten.**

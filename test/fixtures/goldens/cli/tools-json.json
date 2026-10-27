@@ -2,8 +2,8 @@
   "golden": {
     "exitCode": 0,
     "stderr": "",
-    "stdoutBytes": 264473,
-    "stdoutSha256": "f5647f0a0d45a36ed8685afa000792cef233379d012eeceec6fa2f9366d1b0ee",
+    "stdoutBytes": 266680,
+    "stdoutSha256": "6852cc9ef243f970c7620122d098f07e6b231a8ac6396c7ce3c8fd094e9bf121",
     "toolNames": [
       "remember",
       "entity",
@@ -156,6 +156,9 @@
       "purge_fact",
       "list_page_purges",
       "unpurge_page",
+      "get_memory_settings",
+      "set_memory_writeback",
+      "memory_conversation_mode",
       "find_contradictions",
       "find_experts",
       "find_trajectory",
@@ -7088,6 +7091,86 @@
           "type": "object"
         },
         "scope": "admin"
+      },
+      {
+        "description": "Memory writeback settings: the mode agents follow, the exact rule text, every mode's rule, background capture state, and whether you may change it.",
+        "idempotent": false,
+        "local_only": false,
+        "mutating": false,
+        "name": "get_memory_settings",
+        "parameters": {},
+        "required_scopes": [],
+        "schema": {
+          "properties": {},
+          "required": [],
+          "type": "object"
+        },
+        "scope": "read"
+      },
+      {
+        "description": "Change the brain-wide writeback mode agents are told to follow (inherit uses the operator's setting). Admin scope and the operator's grant required; background capture is not changed.",
+        "idempotent": true,
+        "local_only": false,
+        "mutating": true,
+        "name": "set_memory_writeback",
+        "parameters": {
+          "dry_run": "boolean?",
+          "mode": "string"
+        },
+        "required_scopes": [],
+        "schema": {
+          "properties": {
+            "dry_run": {
+              "description": "Preview the change; writes nothing.",
+              "type": "boolean"
+            },
+            "mode": {
+              "description": "inherit | off | salient | all.",
+              "enum": [
+                "inherit",
+                "off",
+                "salient",
+                "all"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "mode"
+          ],
+          "type": "object"
+        },
+        "scope": "admin"
+      },
+      {
+        "description": "Use when the user says \"save everything from here\" (all) or \"stop saving\" (off: explicit saves only): returns the memory rule for the rest of this conversation. Stores nothing.",
+        "idempotent": false,
+        "local_only": false,
+        "mutating": false,
+        "name": "memory_conversation_mode",
+        "parameters": {
+          "mode": "string"
+        },
+        "required_scopes": [],
+        "schema": {
+          "properties": {
+            "mode": {
+              "description": "all | salient | off (only what the user explicitly asks to keep) | brain (this brain's mode).",
+              "enum": [
+                "brain",
+                "off",
+                "salient",
+                "all"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "mode"
+          ],
+          "type": "object"
+        },
+        "scope": "write"
       },
       {
         "description": "Return suspected-contradiction findings from the most recent `gbrain eval suspected-contradictions` probe run, optionally filtered by slug and/or severity. Use this when the user asks 'what's inconsistent in my brain', 'show me contradictions about Acme', 'high-severity issues only', or wants to act on the probe's findings without re-running it. Returns {contradictions: [{a, b, severity, axis, confidence, resolution_command}]}. Remote, source-scoped or min_trust callers get only findings whose two sides they can read now (each side re-read live, with source_id, trust_tier and origin) and total_visible instead of the run total. Reads the stored run without triggering a new probe; users run `gbrain eval suspected-contradictions` for that.",

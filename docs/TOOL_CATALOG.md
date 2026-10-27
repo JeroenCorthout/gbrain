@@ -4,7 +4,7 @@
 <!-- Regenerate: bun run scripts/generate-tool-catalog.ts -->
 <!-- Freshness-guarded by scripts/check-tool-catalog-fresh.sh (bun run verify). -->
 
-Every non-localOnly operation on the MCP surface: 162 tools across 25 areas. **Starter** marks membership in the ~40-op `starter` surface (`src/mcp/surface.ts`); **Gate** names the config key that must be true before remote callers see/call the op (`gbrain config set <key> true`). What a given token actually sees is further filtered per request by scope, bound-client fence, publish gates, and the per-client surface — see `docs/operations/mcp-surface-runbook.md`. Area names are non-contractual groupings.
+Every non-localOnly operation on the MCP surface: 165 tools across 26 areas. **Starter** marks membership in the ~41-op `starter` surface (`src/mcp/surface.ts`); **Gate** names the config key that must be true before remote callers see/call the op (`gbrain config set <key> true`). What a given token actually sees is further filtered per request by scope, bound-client fence, publish gates, and the per-client surface — see `docs/operations/mcp-surface-runbook.md`. Area names are non-contractual groupings.
 
 ## admin
 
@@ -144,6 +144,14 @@ Every non-localOnly operation on the MCP surface: 162 tools across 25 areas. **S
 | `confirm_memory` | Owner only: mark a fact, take or page as confirmed by the user (trust tier user_confirmed). | write |  |  |
 | `extract_facts` | Extract personal-knowledge facts (events, preferences, commitments, beliefs, ideas, and plain facts) from a conversation turn into the per-source hot memory. | write |  |  |
 | `forget_fact` | Forget a fact by recording a durable withdrawal in its source and visibility. | write |  |  |
+
+## memory-settings
+
+| Tool | Description | Scope | Starter | Gate |
+|---|---|---|---|---|
+| `get_memory_settings` | Memory writeback settings: the mode agents follow, the exact rule text, every mode's rule, background capture state, and whether you may change it. | read |  |  |
+| `memory_conversation_mode` | Use when the user says "save everything from here" (all) or "stop saving" (off: explicit saves only): returns the memory rule for the rest of this conversation. | write | yes |  |
+| `set_memory_writeback` | Change the brain-wide writeback mode agents are told to follow (inherit uses the operator's setting). | admin |  | `mcp.publish_memory_settings` |
 
 ## memory-verbs
 
