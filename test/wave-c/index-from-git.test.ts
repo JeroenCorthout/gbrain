@@ -17,6 +17,7 @@ import { indexSplitPage } from '../../src/core/persistence/index-split-page.ts';
 import type { PersistenceEffect } from '../../src/core/persistence/effect-model.ts';
 import { durableGitRepo, git } from '../helpers/git-publication.ts';
 import { managedBrain } from '../helpers/managed-brain.ts';
+import { testWaitMs } from '../helpers/wait-for.ts';
 import { requirePostgresTestDatabase, testBackends } from '../helpers/test-backends.ts';
 import { MiB, pageBody, write } from './helpers.ts';
 import { payloadTables } from './payload-probe.ts';
@@ -29,6 +30,13 @@ const request = async (engine: BrainEngine, id: string) => (await engine.execute
 const indexEffect = async (engine: BrainEngine, id: string) => (await engine.executeRaw<PersistenceEffect>(
   "SELECT * FROM persistence_effects WHERE request_id = $1::uuid AND kind = 'index-split-page'", [id]))[0]!;
 const runIndex = async (engine: BrainEngine, id: string) => indexSplitPage.run(engine, { engine: engine.kind } as never, await indexEffect(engine, id), localHostId());
+const settleIndex = async (engine: BrainEngine, id: string) => {
+  const deadline = performance.now() + testWaitMs(60_000);
+  while ((await indexEffect(engine, id)).state !== 'committed' && performance.now() < deadline) {
+    await runPersistenceEffects(engine, { engine: engine.kind } as never, { hostId: localHostId(), limit: 10 });
+    await Bun.sleep(50);
+  }
+};
 const pendingHeads = (engine: BrainEngine, slug: string) => engine.executeRaw("SELECT 1 FROM page_pending_heads WHERE source_id = 'default' AND slug = $1", [slug]);
 
 for (const backend of testBackends()) describe(`[${backend}] index from the committed blob (1I-a)`, () => {
@@ -41,9 +49,11 @@ for (const backend of testBackends()) describe(`[${backend}] index from the comm
     const slug = 'notes/indexed';
     const text = pageBody(2 * MiB, 'MARKERINDEXED');
     const row = await write(engine, ctx, slug, text, 'put');
-    if (row.state === 'indexing') await runPersistenceEffects(engine, { engine: engine.kind } as never, { hostId: localHostId(), limit: 10 });
+    expect(row.state).toBe('indexing');
+    await settleIndex(engine, row.id);
     const done = await request(engine, row.id);
     const commit = done.outcome.persistence.git_commit;
+    expect(await indexEffect(engine, row.id)).toMatchObject({ state: 'committed', outcome: { index: { state: 'indexed', commit } } });
     expect(done.state).toBe('committed');
     expect(done.outcome.index).toEqual({ state: 'indexed', commit });
     expect(git(root, 'show', `${commit}:${slug}.md`)).toContain('MARKERINDEXED');
