@@ -231,14 +231,19 @@ async function doorCommit(session: GitSession, root: string, files: DoorFile[], 
   const present = [...targets.values()].filter(target => existsSync(join(root, target.rel)));
   // A blob hashed before the lock stands only for the bytes it was hashed from (the plan, which refuseChanged checks the
   // file against) under the same attributes and line-ending config, and only while Git still stores it (gc --prune=now
-  // may have removed it); any other target is hashed here. One check-attr and one cat-file cover every target.
+  // may have removed it); any other target is hashed here. One check-attr and one cat-file cover every target. The
+  // recheck is an optimization, so a step that throws, exits non-zero or answers incompletely drops every pre-hash.
   const prehashed = present.filter(target => target.prehashed && target.prehashed.planned === target.planned);
   if (prehashed.length) {
-    const [attributes, config, stored] = await Promise.all([pathAttributes(session, prehashed.map(target => target.rel)), lineEndingConfig(session),
-      git(session, ['cat-file', '--batch-check'], true, prehashed.map(target => target.prehashed!.oid + '\n').join(''))]);
-    const blobs = new Set(stored.code === 0 ? stored.stdout.split('\n').map(line => line.split(' ')).filter(([, type]) => type === 'blob').map(([oid]) => oid) : []);
-    for (const target of prehashed) if (target.prehashed!.config === config && attributes?.get(target.rel) === target.prehashed!.attributes
-      && blobs.has(target.prehashed!.oid)) target.oid = target.prehashed!.oid;
+    try {
+      const [attributes, config, stored] = await Promise.all([pathAttributes(session, prehashed.map(target => target.rel)), lineEndingConfig(session),
+        git(session, ['cat-file', '--batch-check'], true, prehashed.map(target => target.prehashed!.oid + '\n').join(''), PREHASH_CHECK_MAX_BUFFER)]);
+      const lines = stored.stdout.split('\n').filter(Boolean).map(line => line.split(' '));
+      if (attributes && config !== null && stored.code === 0 && lines.length === prehashed.length) prehashed.forEach((target, i) => {
+        const [oid, type] = lines[i]!;
+        if (oid === target.prehashed!.oid && type === 'blob' && target.prehashed!.config === config && attributes.get(target.rel) === target.prehashed!.attributes) target.oid = oid;
+      });
+    } catch { /* hashed under the lock below, as without a pre-hash */ }
   }
   const unhashed = present.filter(target => !target.oid);
   if (unhashed.length) {
@@ -393,6 +398,9 @@ export function indexRestoredNotice(paths: string[]): Notice {
     why: `gbrain restored index to HEAD after an interrupted door refresh for ${paths.join(', ')}: the index still held the version before an earlier gbrain commit (its update of the index had failed), so this write replaced that stale entry. Nothing was lost; the earlier version is in Git history.` };
 }
 
+/** The output bound of the pre-hash recheck's git steps: a check-attr of thousands of paths passes 1 MiB, the step default. */
+const PREHASH_CHECK_MAX_BUFFER = 256 * 1024 * 1024;
+
 /** A file's blob stored before the writer lock (spec §3.5): the plan it was hashed from, the path's attributes and the checkout's line-ending config then. */
 export interface PrehashedBlob { oid: string; planned: string; attributes: string; config: string }
 
@@ -401,17 +409,21 @@ export interface PrehashedBlob { oid: string; planned: string; attributes: strin
  * `path\0attr\0value\0` triples check-attr printed for it, the signature a pre-hashed blob is rechecked against.
  */
 async function pathAttributes(session: GitSession, rels: string[]): Promise<Map<string, string> | null> {
-  const attrs = await git(session, ['check-attr', '-a', '-z', '--stdin'], true, rels.map(rel => rel + '\0').join(''));
-  if (attrs.code !== 0) return null;
-  const byPath = new Map(rels.map(rel => [rel, '']));
+  const attrs = await git(session, ['check-attr', '-a', '-z', '--stdin'], true, rels.map(rel => rel + '\0').join(''), PREHASH_CHECK_MAX_BUFFER);
   const fields = attrs.stdout.split('\0');
-  for (let i = 0; i + 2 < fields.length; i += 3) byPath.set(fields[i]!, (byPath.get(fields[i]!) ?? '') + fields.slice(i, i + 3).map(field => field + '\0').join(''));
+  if (attrs.code !== 0 || fields.pop() !== '' || fields.length % 3) return null;
+  const byPath = new Map(rels.map(rel => [rel, '']));
+  for (let i = 0; i < fields.length; i += 3) {
+    const prior = byPath.get(fields[i]!);
+    if (prior === undefined) return null;
+    byPath.set(fields[i]!, prior + fields.slice(i, i + 3).map(field => field + '\0').join(''));
+  }
   return byPath;
 }
 
 /** The checkout's core.autocrlf / core.eol / core.safecrlf settings, which convert a file's bytes as attributes do; null when Git cannot read them. */
 async function lineEndingConfig(session: GitSession): Promise<string | null> {
-  const read = await git(session, ['config', '--get-regexp', '^core\\.(autocrlf|eol|safecrlf)$']);
+  const read = await git(session, ['config', '--get-regexp', '^core\\.(autocrlf|eol|safecrlf)$'], true, undefined, PREHASH_CHECK_MAX_BUFFER);
   return read.code === 0 ? read.stdout : read.code === 1 ? '' : null;
 }
 
