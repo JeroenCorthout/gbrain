@@ -26,6 +26,7 @@ import { exitCodeForCode } from '../src/core/error-catalogue.ts';
 import { asOfExitCode, formatGetPage, validTimeLine } from '../src/cli/page-render.ts';
 import { utcToday } from '../src/core/link-validity.ts';
 import { testBackends, requirePostgresTestDatabase } from './helpers/test-backends.ts';
+import { importSegmented } from './helpers/segmented-privacy-fixture.ts';
 
 type R = Record<string, any>;
 const outcomeOf = (r: R) => (r.outcome ?? r) as R;
@@ -378,6 +379,7 @@ for (const backend of testBackends()) {
       await engine.executeRaw("INSERT INTO page_versions (page_id, compiled_truth, frontmatter, timeline, title, type, tags) SELECT $1, 'Edition ' || g, jsonb_build_object('valid_from', to_char(date '2000-01-01' + g * 7, 'YYYY-MM-DD')), '', 'Policy', 'note', '[]'::jsonb FROM generate_series(1, 500) g", [id]);
       const seen: string[] = [];
       const transaction = engine.transaction.bind(engine);
+      const own = Object.getOwnPropertyDescriptor(engine, 'transaction');
       (engine as { transaction: unknown }).transaction = (fn: (tx: BrainEngine) => Promise<unknown>) => transaction(async tx => {
         const exec = tx.executeRaw.bind(tx);
         (tx as { executeRaw: unknown }).executeRaw = (sql: string, params?: unknown[]) => { seen.push(sql); return exec(sql, params as never); };
@@ -390,11 +392,35 @@ for (const backend of testBackends()) {
         const t0 = performance.now();
         r = await read(slug, '2005-06-01');
         ms = performance.now() - t0;
-      } finally { (engine as { transaction: unknown }).transaction = transaction; }
+      } finally {
+        if (own) Object.defineProperty(engine, 'transaction', own);
+        else delete (engine as { transaction?: unknown }).transaction;
+      }
       expect(seen.filter(s => s.includes('WITH rows AS'))).toHaveLength(1);
       const days = Math.floor((Date.UTC(2005, 5, 1) - Date.UTC(2000, 0, 1)) / 86_400_000 / 7) * 7;
       expect(r.valid_time).toMatchObject({ status: 'in_force', valid_from: new Date(Date.UTC(2000, 0, 1) + days * 86_400_000).toISOString().slice(0, 10) });
       expect(ms).toBeLessThan(2_000);
     }, 60_000);
+
+    test('B-T9: a page stored in segments reads its edition through the segment reader and gets the date fix', async () => {
+      const big = (fm: string[]) => page(Array.from({ length: 12_000 }, (_, i) => `Clause ${i}: refunds follow the policy of acme-example. ${'x'.repeat(40)}`).join('\n'), fm);
+      const dated = fresh('segmented');
+      const undated = fresh('segmented-undated');
+      try {
+        await importSegmented(engine, dated, big(["valid_from: '2026-01-01'"]));
+        await importSegmented(engine, undated, big([]));
+      } finally { await engine.setConfig('pages.segmented_storage', 'off'); }
+
+      const r = await read(dated, '2026-03-01');
+      expect(r.valid_time).toMatchObject({ status: 'in_force', chosen_is_current: true, valid_from: '2026-01-01' });
+      expect(r.body).toBe('window');
+      expect(r.compiled_truth).toBeUndefined();
+      expect(r.window.text).toContain('Clause 0: refunds');
+      expect(r.next.arguments).toMatchObject({ slug: dated, as_of: '2026-03-01' });
+
+      const e = await refusal(read(undated, '2026-03-01'));
+      expect(e?.code).toBe('valid_time_undeclared');
+      expect(JSON.stringify(e?.fix ?? (e as R)?.detail?.fix)).toContain("valid_from: '<DATE>'");
+    }, 300_000);
   });
 }

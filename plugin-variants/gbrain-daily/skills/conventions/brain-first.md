@@ -59,7 +59,7 @@ When you edit a page whose text takes effect on a date, keep its `valid_from`
 for a correction, or set a new quoted `valid_from` for a new edition. Read the
 write result's `valid_time` advisory and ask the user when it asks a question.
 Which record to use for a change in effect (edit in place, amendment record,
-`supersedes` link): [page history](../../docs/guides/page-history.md#valid-time).
+`supersedes` link): the page history guide (`docs/guides/page-history.md`, Valid time).
 
 ## Identity needs an exact match
 

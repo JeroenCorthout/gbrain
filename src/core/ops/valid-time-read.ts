@@ -25,6 +25,7 @@ import { serializePageToMarkdown } from '../markdown.ts';
 import { pageDocument } from '../page-window/document.ts';
 import { DEFAULT_WINDOW_BYTES, MAX_WINDOW_BYTES, decodeCursor, encodeCursor, totalLines, windowFrom, type WindowSlice } from '../page-window/window.ts';
 import { openSegmentedBody } from '../page-body/read-range.ts';
+import { isSegmentedPage } from '../page-body/page-shape.ts';
 import { segmentedReadDocument } from '../page-window/segmented.ts';
 import { PAGE_INLINE_MAX_BYTES } from '../page-size-policy.ts';
 import { LARGE_PAGE_VERSIONS_KEPT } from '../page-body/limits.ts';
@@ -179,7 +180,7 @@ async function amendmentsNotApplied(tx: BrainEngine, pageId: number, editionFrom
 
 /** The serialized frontmatter edit that sets valid_from to the `<DATE>` placeholder: the existing line, or a new first key. */
 function validFromEdit(page: Page, tags: string[]): { old_text: string; new_text: string } | null {
-  const head = serializePageToMarkdown({ ...page, compiled_truth: '', timeline: '' }, tags);
+  const head = serializePageToMarkdown({ slug: page.slug, type: page.type, title: page.title, frontmatter: page.frontmatter, compiled_truth: '', timeline: '' } as Page, tags);
   const close = head.indexOf('\n---', 4);
   const fm = head.slice(0, close < 0 ? head.length : close + 1);
   const line = fm.split('\n').find(l => l.startsWith('valid_from:'));
@@ -226,9 +227,9 @@ async function loadEdition(tx: BrainEngine, identity: Identity, row: PickRow): P
   if (!snap) return null;
   const current = { page: snap.page, tags: snap.tags, revision: snap.revision };
   if (row.version_id === null) {
-    const p = snap.page;
+    const p = snap.page, segmented = isSegmentedPage(p);
     return { current, edition: { versionId: null, title: p.title, type: p.type, tags: snap.tags, frontmatter: (p.frontmatter ?? {}) as Record<string, unknown>,
-      compiled_truth: p.compiled_truth ?? '', timeline: p.timeline ?? '', revision: snap.revision, segmented: row.segmented, generation: snap.bodyGeneration } };
+      compiled_truth: segmented ? '' : p.compiled_truth ?? '', timeline: segmented ? '' : p.timeline ?? '', revision: snap.revision, segmented, generation: snap.bodyGeneration } };
   }
   const [v] = await tx.executeRaw<Record<string, unknown>>(`SELECT id, title, type, tags, frontmatter, compiled_truth, timeline, knowledge_revision::text AS revision,
       body_storage, body_generation FROM page_versions WHERE id = $1 AND page_id = $2`, [row.version_id, identity.id]);
