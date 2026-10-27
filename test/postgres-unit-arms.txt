@@ -527,6 +527,7 @@ test/wave-c/door-prehash.test.ts
 test/wave-c/fenced-upload-git-first.test.ts
 test/wave-c/git-first-gate.test.ts
 test/wave-c/index-from-git.test.ts
+test/wave-c/index-lease.test.ts
 test/wave-c/index-pending.test.ts
 test/wave-c/indexing-receipt.test.ts
 test/wave-c/mixed-group-door.test.ts

@@ -14,7 +14,9 @@
  * 4. Flip: under the pending head's row lock the token is checked again; the head is deleted, `pages.indexed_commit`
  *    records the commit and the request becomes `committed` with `index.state: indexed`.
  *
- * Split pages (over PAGE_MAX_BYTES), incremental re-segmentation and the index lease across parts are PR 5's.
+ * The per-page index lease: a job is claimed only while no other index job of its page holds a live claim
+ * (effect-journal.ts), and it renews its claim while it runs, so a long import keeps the page; a lost claim stops the job
+ * before it holds or flips anything. Split pages (over PAGE_MAX_BYTES) and incremental re-segmentation are PR 5's.
  */
 import { createHash } from 'node:crypto';
 import { createReadStream, existsSync } from 'node:fs';
@@ -22,13 +24,16 @@ import { join } from 'node:path';
 import type { GBrainConfig } from '../config.ts';
 import type { BrainEngine } from '../engine.ts';
 import type { PersistenceEffect } from './effect-model.ts';
-import { completeEffect } from './effect-journal.ts';
+import { completeEffect, effectClaimKeeper } from './effect-journal.ts';
 import { registerBuiltInIndexSplitPageConsumer, type IndexSplitPageConsumer } from './git-first-gate.ts';
 import { readPendingHead, type IndexReceipt } from './git-first.ts';
 import { importManagedFile } from './import-mutations.ts';
 import { getWorktreeBinding } from './ownership.ts';
 import { headBlob } from './pending-import.ts';
 import { declarePersistenceProtocol } from './protocol.ts';
+
+/** @internal How often a running index job renews its claim (the lease); tests shorten it. */
+export const _indexLeaseTiming = { renewMs: 30_000 };
 
 interface IndexEffectData { slug: string; commit: string; head_oid: string; path: string; pending_revision: string }
 
@@ -59,29 +64,42 @@ async function hold(engine: BrainEngine, effect: PersistenceEffect, data: IndexE
 
 export const indexSplitPage: IndexSplitPageConsumer = {
   async run(engine: BrainEngine, _config: GBrainConfig, effect: PersistenceEffect, hostId: string): Promise<void> {
-    const data = effect.data as unknown as IndexEffectData;
-    const superseded = async (tx: BrainEngine, by: string | null) => finishIndex(tx, effect, { state: 'superseded', commit: data.commit, ...(by ? { superseded_by: by } : {}) });
-    const head = await readPendingHead(engine, effect.source_id, data.slug);
-    if (!head || head.request_id !== effect.request_id || head.revision !== data.pending_revision) return engine.transaction(async tx => { await declarePersistenceProtocol(tx); await superseded(tx, head?.request_id ?? null); });
-    const binding = await getWorktreeBinding(engine, effect.source_id, hostId);
-    if (!binding?.local_path) throw new Error(`Source ${effect.source_id} has no canonical checkout on this host; the index effect stays queued for its owner.`);
-    const file = join(binding.local_path, data.path);
-    if (await headBlob(binding.local_path, file) !== data.head_oid) return hold(engine, effect, data, 'git_object_missing');
-    const onDisk = existsSync(file) ? await fileSha256(file) : null;
-    if (!onDisk || onDisk.sha256 !== head.body_sha256 || onDisk.bytes !== head.body_bytes) return hold(engine, effect, data, 'hash_mismatch');
-    const imported = await importManagedFile(engine, file, data.path, { sourceId: effect.source_id });
-    await engine.transaction(async tx => {
-      await declarePersistenceProtocol(tx);
-      const current = await readPendingHead(tx, effect.source_id, data.slug, { lock: true });
-      if (!current || current.request_id !== effect.request_id || current.revision !== data.pending_revision) {
-        await finishIndex(tx, effect, { state: 'superseded', commit: data.commit, ...(current ? { superseded_by: current.request_id } : {}) });
-        return;
-      }
-      await tx.executeRaw('DELETE FROM page_pending_heads WHERE source_id = $1 AND slug = $2 AND request_id = $3::uuid', [effect.source_id, data.slug, effect.request_id]);
-      await tx.executeRaw('UPDATE pages SET indexed_commit = $3 WHERE source_id = $1 AND slug = $2', [effect.source_id, data.slug, data.commit]);
-      await finishIndex(tx, effect, { state: 'indexed', commit: data.commit }, imported.searchable ?? true);
-    });
+    const keep = effectClaimKeeper(engine, effect, _indexLeaseTiming.renewMs);
+    let lost: unknown = null, renewing = false;
+    const timer = setInterval(() => {
+      if (renewing || lost) return;
+      renewing = true;
+      keep().catch(error => { lost = error; }).finally(() => { renewing = false; });
+    }, Math.max(1, _indexLeaseTiming.renewMs));
+    try { await indexCommitted(engine, effect, hostId, () => { if (lost) throw lost; }); }
+    finally { clearInterval(timer); }
   },
 };
+
+async function indexCommitted(engine: BrainEngine, effect: PersistenceEffect, hostId: string, holdsLease: () => void): Promise<void> {
+  const data = effect.data as unknown as IndexEffectData;
+  const superseded = async (tx: BrainEngine, by: string | null) => finishIndex(tx, effect, { state: 'superseded', commit: data.commit, ...(by ? { superseded_by: by } : {}) });
+  const head = await readPendingHead(engine, effect.source_id, data.slug);
+  if (!head || head.request_id !== effect.request_id || head.revision !== data.pending_revision) return engine.transaction(async tx => { await declarePersistenceProtocol(tx); await superseded(tx, head?.request_id ?? null); });
+  const binding = await getWorktreeBinding(engine, effect.source_id, hostId);
+  if (!binding?.local_path) throw new Error(`Source ${effect.source_id} has no canonical checkout on this host; the index effect stays queued for its owner.`);
+  const file = join(binding.local_path, data.path);
+  if (await headBlob(binding.local_path, file) !== data.head_oid) { holdsLease(); return hold(engine, effect, data, 'git_object_missing'); }
+  const onDisk = existsSync(file) ? await fileSha256(file) : null;
+  if (!onDisk || onDisk.sha256 !== head.body_sha256 || onDisk.bytes !== head.body_bytes) { holdsLease(); return hold(engine, effect, data, 'hash_mismatch'); }
+  const imported = await importManagedFile(engine, file, data.path, { sourceId: effect.source_id });
+  holdsLease();
+  await engine.transaction(async tx => {
+    await declarePersistenceProtocol(tx);
+    const current = await readPendingHead(tx, effect.source_id, data.slug, { lock: true });
+    if (!current || current.request_id !== effect.request_id || current.revision !== data.pending_revision) {
+      await finishIndex(tx, effect, { state: 'superseded', commit: data.commit, ...(current ? { superseded_by: current.request_id } : {}) });
+      return;
+    }
+    await tx.executeRaw('DELETE FROM page_pending_heads WHERE source_id = $1 AND slug = $2 AND request_id = $3::uuid', [effect.source_id, data.slug, effect.request_id]);
+    await tx.executeRaw('UPDATE pages SET indexed_commit = $3 WHERE source_id = $1 AND slug = $2', [effect.source_id, data.slug, data.commit]);
+    await finishIndex(tx, effect, { state: 'indexed', commit: data.commit }, imported.searchable ?? true);
+  });
+}
 
 registerBuiltInIndexSplitPageConsumer(indexSplitPage);
