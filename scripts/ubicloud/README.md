@@ -98,7 +98,9 @@ silent for `UBI_IDLE_TIMEOUT` seconds (1800) or older than `UBI_RUN_TIMEOUT`
 
 `ubi-runner.sh verify` (and gstack's `gstack-ubi verify`) runs the
 repository's committed single-VM verify, `.gstack/ubicloud.json`: gbrain's
-runs the heavy serial suite on one VM (setup `scripts/ubicloud/verify-vm-setup.sh`).
+runs the heavy suite (`bun run test:heavy`, as heavy-tests.yml does) on one
+standard-30 VM, set up by `setup-ci-vm.sh` with one slot and run through
+`ci-item.sh heavy`, and pulls its logs into `.context/ubicloud-verify`.
 Its setup script and pull destinations must be relative paths inside `--src`,
 a variable reaches the VM only when named (`--env`, or `--pass NAME` on the
 command line), and `UBICLOUD_*` never does. The full gate stays
