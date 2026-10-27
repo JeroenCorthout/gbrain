@@ -76,7 +76,7 @@ export const doorSeams: { beforeUpdateRef?: (root: string, attempt: number) => P
 
 const doorTurns = new Map<string, Promise<void>>();
 /** Refusals that keep their own code: the checkout's state, not the commit, stopped the write. */
-const TYPED = new Set(['timeout', 'git_detached_head', 'git_branch_unborn', 'git_index_locked', 'git_index_stale', 'git_target_changed', 'git_index_conflict']);
+const TYPED = new Set(['git_door_timeout', 'git_detached_head', 'git_branch_unborn', 'git_index_locked', 'git_index_stale', 'git_target_changed', 'git_index_conflict']);
 const landedFailures = new WeakSet<object>();
 
 /** One published file of a door commit and the state the commit must give its path. */
@@ -95,7 +95,7 @@ export interface DoorFile {
  */
 function doorTimeout(root: string, files: DoorFile[]): OperationError {
   const paths = files.map(file => relative(root, file.path).split(sep).join('/'));
-  return opError('timeout', `The strict source's commit of ${paths.join(', ')} did not reach its ref update within the publication's door bound, so nothing was published.`,
+  return opError('git_door_timeout', `The strict source's commit of ${paths.join(', ')} did not reach its ref update within the publication's door bound, so nothing was published.`,
     'The publication transaction holds its page locks while the door commits, so a door that stalls is refused instead of holding them. Check the checkout on the brain host (git status, a slow disk, a held index lock), then retry the write with a new request_id.');
 }
 
@@ -104,7 +104,7 @@ function doorTimeout(root: string, files: DoorFile[]): OperationError {
  * names (the commit that holds these bytes, also when every path was already committed). Each path is committed in
  * its planned state or not at all. A target Git refuses, a file that no longer holds its plan, or a target with a
  * staged change throws, so the publication rolls back. `deadline` (epoch ms) bounds a door called inside a publication
- * transaction: past it the door refuses with `timeout` before it starts and before it moves the branch, so a stalled door
+ * transaction: past it the door refuses with `git_door_timeout` before it starts and before it moves the branch, so a stalled door
  * holds the transaction's locks for at most the bound plus one Git step (each step has its own timeout).
  */
 export async function commitThroughDoor(root: string, files: DoorFile[], writerLock?: NativeLockHandle, onIndexRestored?: (paths: string[]) => void, deadline?: number): Promise<string | null> {

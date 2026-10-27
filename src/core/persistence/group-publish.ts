@@ -508,7 +508,7 @@ export async function publishGroup(engine: BrainEngine, rows: WriteRequest[], pr
         const charged = await chargedInterruption(engine, row, error);
         if (charged) await faultPoint('persistence:recovery_interruption_charged', { requestId: row.request_id, writeId: row.id, sourceId: row.source_id, operation: row.operation, ...chargedInterruptionDetail(transientInterruption(error), error) });
         // A door past the transaction's bound (git-door.ts) committed nothing: every member ends with that typed refusal, as on the single path.
-        const timedOut = error instanceof OperationError && error.code === 'timeout' && !memberOf.has(error);
+        const timedOut = error instanceof OperationError && error.code === 'git_door_timeout' && !memberOf.has(error);
         const failure = charged?.failure ? withAttempt(charged.failure, 'publication')
           : timedOut ? withAttempt({ code: error.code, message: error.message }, 'publication') : undefined;
         await markRecovering(engine, row, failure ? 'publication_failed' : 'publication_not_started', failure);

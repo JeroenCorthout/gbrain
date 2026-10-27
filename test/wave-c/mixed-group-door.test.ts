@@ -7,20 +7,24 @@
  *   - a door commit that fails leaves no row of the group behind;
  *   - a door commit that lands before the transaction fails (a forced failure, or the connection dying as a crash does)
  *     keeps Git's content, and the next sync derives the pages from Git with no hold and nothing lost;
- *   - the door inside the transaction is bounded: a door that stalls past the bound refuses with timeout, commits nothing
- *     and releases the worktree.
+ *   - the door inside the transaction is bounded: a door that stalls past the bound refuses with git_door_timeout,
+ *     commits nothing and releases the worktree; a generic timeout thrown by a door step is wrapped like any other
+ *     untyped failure (git_unavailable), never passed through as the door's own refusal.
  * Both engines. Synthetic content only.
  */
 import { afterAll, afterEach, beforeAll, describe, expect, test } from 'bun:test';
 import { randomUUID } from 'node:crypto';
-import { existsSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { BrainEngine } from '../../src/core/engine.ts';
 import { performSync } from '../../src/commands/sync.ts';
 import { configureGateway, resetGateway, type ChatResult } from '../../src/core/ai/gateway.ts';
 import { runPhaseExtractAtoms } from '../../src/core/cycle/extract-atoms.ts';
-import { OperationError, type OperationContext } from '../../src/core/ops/contract.ts';
-import { doorSeams } from '../../src/core/persistence/git-door.ts';
+import { exitCodeForCode } from '../../src/core/error-catalogue.ts';
+import { OperationError, opError, type OperationContext } from '../../src/core/ops/contract.ts';
+import { sha256 } from '../../src/core/persistence/digest.ts';
+import { commitThroughDoor, doorSeams } from '../../src/core/persistence/git-door.ts';
 import { installFaultHook } from '../../src/core/persistence/fault-points.ts';
 import { submitPageMutation } from '../../src/core/persistence/page-mutations.ts';
 import { readGitHoldListing } from '../../src/core/persistence/sync-holds.ts';
@@ -62,6 +66,42 @@ const groupKinds = "intent->>'kind' IN ('managed_atom_page','managed_atom_delete
 beforeAll(() => configureGateway({ embedding_model: 'openai:text-embedding-3-large', embedding_dimensions: 1536, env: {} }));
 afterAll(() => resetGateway());
 afterEach(() => { delete doorSeams.beforeUpdateRef; installFaultHook(undefined); });
+
+describe('the door bound refuses with git_door_timeout; a generic timeout from a door step is wrapped', () => {
+  const roots: string[] = [];
+  afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
+  const repo = () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'gbrain-door-bound-')));
+    roots.push(root);
+    git(root, 'init', '-q', '-b', 'main');
+    git(root, 'config', 'user.name', 'Example Writer'); git(root, 'config', 'user.email', 'writer@example.invalid');
+    writeFileSync(join(root, 'seed.md'), 'seed\n'); git(root, 'add', 'seed.md'); git(root, 'commit', '-qm', 'seed');
+    writeFileSync(join(root, 'page.md'), 'page body\n');
+    return root;
+  };
+  const refusal = (work: Promise<unknown>) => work.then(() => null, (error: OperationError) => error);
+  const file = (root: string) => [{ path: join(root, 'page.md'), planned: sha256('page body\n') }];
+
+  test('a deadline already past refuses git_door_timeout before the turn; one passing before update-ref refuses it there', async () => {
+    const root = repo();
+    const head = git(root, 'rev-parse', 'HEAD').trim();
+    expect((await refusal(commitThroughDoor(root, file(root), undefined, undefined, Date.now() - 1)))?.code).toBe('git_door_timeout');
+    doorSeams.beforeUpdateRef = async () => { await Bun.sleep(300); };
+    expect((await refusal(commitThroughDoor(root, file(root), undefined, undefined, Date.now() + 100)))?.code).toBe('git_door_timeout');
+    expect(git(root, 'rev-parse', 'HEAD').trim()).toBe(head);
+    expect(exitCodeForCode('git_door_timeout')).toBe(1);
+  });
+
+  test('a door step throwing a generic timeout comes out wrapped as git_unavailable, not as a typed refusal', async () => {
+    const root = repo();
+    const head = git(root, 'rev-parse', 'HEAD').trim();
+    doorSeams.beforeUpdateRef = async () => { throw opError('timeout', 'A step timed out.', 'Fixture.'); };
+    const error = await refusal(commitThroughDoor(root, file(root)));
+    expect(error?.code).toBe('git_unavailable');
+    expect(error?.suggestion).toContain('A step timed out.');
+    expect(git(root, 'rev-parse', 'HEAD').trim()).toBe(head);
+  });
+});
 
 for (const backend of testBackends()) describe('[' + backend + '] mixed strict groups: rows before the door are neither visible nor durable', () => {
   const databaseUrl = backend === 'postgres' ? requirePostgresTestDatabase() : undefined;
@@ -143,7 +183,7 @@ for (const backend of testBackends()) describe('[' + backend + '] mixed strict g
       }
     }, { databaseUrl, setup }), 240_000);
   }
-  test('a door that stalls past the publication\'s door bound refuses with timeout, commits nothing and releases the worktree (single path)', () => managedBrain(async ({ engine, ctx, root }) => {
+  test('a door that stalls past the publication\'s door bound refuses with git_door_timeout, commits nothing and releases the worktree (single path)', () => managedBrain(async ({ engine, ctx, root }) => {
     await strictSource(engine);
     const first = await submitPageMutation(ctx, { operation: 'put_page', params: { slug: 'notes/bounded', request_id: randomUUID(), content: '---\ntype: note\ntitle: Bounded\n---\n\nFirst revision.\n' } }) as { revision: string };
     await settleManagedGitEffects(engine);
@@ -157,7 +197,7 @@ for (const backend of testBackends()) describe('[' + backend + '] mixed strict g
     delete doorSeams.beforeUpdateRef;
     const [row] = await engine.executeRaw<{ state: string; error_code: string | null }>('SELECT state, error_code FROM persistence_requests WHERE request_id = $1::uuid', [requestId]);
     expect(stalls).toBe(1);
-    expect(row).toMatchObject({ state: 'failed', error_code: 'timeout' });
+    expect(row).toMatchObject({ state: 'failed', error_code: 'git_door_timeout' });
     expect(git(root, 'rev-parse', 'HEAD').trim()).toBe(head);
     expect(git(root, 'show', 'HEAD:notes/bounded.md')).toContain('First revision.');
     expect((await engine.getPage('notes/bounded', { sourceId: 'default' }))!.compiled_truth).toContain('First revision.');
@@ -169,7 +209,7 @@ for (const backend of testBackends()) describe('[' + backend + '] mixed strict g
     expect(git(root, 'show', 'HEAD:notes/bounded.md')).toContain('Third revision.');
   }, { databaseUrl, setup }), 240_000);
 
-  test('a mixed group whose door stalls past the bound ends with timeout and commits nothing; Git and the rows stay in step', () => managedBrain(async ({ engine, ctx, root }) => {
+  test('a mixed group whose door stalls past the bound ends with git_door_timeout and commits nothing; Git and the rows stay in step', () => managedBrain(async ({ engine, ctx, root }) => {
     await strictSource(engine);
     expect((await generation(engine, ctx, 'Alice Example reviewed the Acme Example plan. ', FIRST)).status).toBe('ok');
     const first = await liveAtoms(engine);
@@ -188,7 +228,7 @@ for (const backend of testBackends()) describe('[' + backend + '] mixed strict g
     expect(stalled).toBe(true);
     if (next !== undefined) expect(next).toBe(head);
     const rows = await engine.executeRaw<{ slug: string; state: string; error_code: string | null }>('SELECT slug, state, error_code FROM persistence_requests WHERE ' + groupKinds + ' AND sequence > $1::bigint ORDER BY sequence', [after]);
-    expect(rows.some(row => row.state === 'failed' && row.error_code === 'timeout')).toBe(true);
+    expect(rows.some(row => row.state === 'failed' && row.error_code === 'git_door_timeout')).toBe(true);
     // The whole generation committed nothing, not just the member whose door stalled: no member request committed,
     // HEAD is where the group found it, and the first generation's atoms are still the live ones.
     expect(rows.length).toBeGreaterThan(1);

@@ -63,7 +63,7 @@ import { assertNoPendingIndex, clearPublishedPendingHeads, queueIndexFromGit, ty
 /** How long a publication transaction may stay open across its door commit (GBRA-108, eng-r3-outside-1 for mixed groups). */
 export const PUBLICATION_DOOR_BOUND_MS = 120_000;
 /**
- * The door deadline of a publication transaction opened at `openedAt`: a door past it refuses with `timeout` before it
+ * The door deadline of a publication transaction opened at `openedAt`: a door past it refuses with `git_door_timeout` before it
  * moves the branch (git-door.ts), so the rows the transaction holds roll back and its locks are released.
  * GBRAIN_PUBLICATION_DOOR_BOUND_MS overrides the bound.
  */
