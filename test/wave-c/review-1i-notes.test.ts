@@ -1,10 +1,9 @@
 /**
- * Wave C 1I-a: the five open notes of the 1I review, each red first on both engines.
+ * Wave C 1I-a: four of the five open notes of the 1I review, each red first on both engines.
  *   1. pages verify / pages reindex refusals follow the exit-status contract (exitCodeForCode), never a hard-coded 1.
  *   2. a put_pages batch honours --wait-indexed, and a page that reads indexing counts as pending, never failed.
  *   3. a claim whose per-page index lease recheck fails moves on to the next claimable effect instead of ending the pass.
  *   4. a strict publication group judges each member's file target on the incoming head before it publishes or commits.
- *   5. a connector sync counts a conversation whose write the index step held (index_held) instead of failing it.
  * Synthetic content only.
  */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';

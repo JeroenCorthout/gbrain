@@ -91,9 +91,8 @@ for (const backend of testBackends()) describe('[' + backend + '] mixed strict g
     else expect(seen).toBe('blocked');
     await read;
     const published = await engine.executeRaw<{ published: string }>('SELECT DISTINCT published_at::text AS published FROM persistence_requests WHERE ' + groupKinds + " AND intent->>'activationId' = (SELECT intent->>'activationId' FROM persistence_requests WHERE intent->>'kind'='managed_generation_activate' ORDER BY sequence DESC LIMIT 1)");
-    // Postgres publishes the generation as one group; PGLite's owner publishes its members one at a time, and each removal
-    // still writes its rows inside its own transaction before the door.
-    if (backend === 'postgres') expect(published).toHaveLength(1);
+    // Both engines publish the generation as one group (consumer.ts groups a generation on PGLite too).
+    expect(published).toHaveLength(1);
   }, { databaseUrl, setup }), 240_000);
 
   test('a door commit that fails leaves no row of the group behind', () => managedBrain(async ({ engine, ctx, root }) => {
@@ -190,6 +189,14 @@ for (const backend of testBackends()) describe('[' + backend + '] mixed strict g
     if (next !== undefined) expect(next).toBe(head);
     const rows = await engine.executeRaw<{ slug: string; state: string; error_code: string | null }>('SELECT slug, state, error_code FROM persistence_requests WHERE ' + groupKinds + ' AND sequence > $1::bigint ORDER BY sequence', [after]);
     expect(rows.some(row => row.state === 'failed' && row.error_code === 'timeout')).toBe(true);
+    // The whole generation committed nothing, not just the member whose door stalled: no member request committed,
+    // HEAD is where the group found it, and the first generation's atoms are still the live ones.
+    expect(rows.length).toBeGreaterThan(1);
+    expect(rows.filter(row => row.state === 'committed')).toEqual([]);
+    expect(git(root, 'rev-parse', 'HEAD').trim()).toBe(head);
+    expect(await liveAtoms(engine)).toEqual(first);
+    expect(await atomRows(engine, 'pilot-before-launch')).toEqual([]);
+    expect(await atomRows(engine, 'keep-the-checklist-short')).toEqual([]);
     expect(await readGitHoldListing(engine, ['default'], 10)).toEqual([]);
     const live = await liveAtoms(engine);
     expect(live.map(slug => slug + '.md').sort()).toEqual(trackedAtoms(root));
