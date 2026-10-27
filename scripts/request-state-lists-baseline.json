@@ -84,7 +84,7 @@
   "src/core/persistence/worktree-refresh.ts": 2,
   "src/core/persistence/write-applied.ts": 2,
   "src/core/repair/receipt-compaction.ts": 1,
-  "src/core/schema-migrations/v275-git-first-strict-path.ts": 1,
+  "src/core/schema-migrations/v278-git-first-strict-path.ts": 1,
   "src/core/shared-skills/content-freshness.ts": 2,
   "src/core/shared-skills/migration-export.ts": 1,
   "src/core/shared-skills/persistence-schema.ts": 1,
