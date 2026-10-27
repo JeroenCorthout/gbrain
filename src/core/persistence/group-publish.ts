@@ -67,7 +67,7 @@ import { assertKnowledgePublicationAllowed } from '../shared-skills/knowledge-gu
 import { isStreamedContent } from './large-file.ts';
 import { sharedReadFailure } from './bounded-reads.ts';
 import { chargedInterruption, decoratePublicationOutcome, finishPreparationStalled, finishUnpublishedFailure, pageRecoveryRecord, persistenceFileHash, preparationAbortReason,
-  publicationPostimage, publishMutation, publishPersistenceFile, recoverPublication, releaseChargedInterruption, runDoorProbe, type PreparedMutation, type PublicationHooks } from './coordinator.ts';
+  publicationDoorDeadline, publicationPostimage, publishMutation, publishPersistenceFile, recoverPublication, releaseChargedInterruption, runDoorProbe, type PreparedMutation, type PublicationHooks } from './coordinator.ts';
 import { withAttempt } from './publication-failure.ts';
 import { chargedInterruptionDetail, transientInterruption, type TransientInterruption } from './transient-retry.ts';
 import { pipelined } from '../page-state/transactions.ts';
@@ -324,6 +324,7 @@ export async function publishGroup(engine: BrainEngine, rows: WriteRequest[], pr
     }
     const markBegun = lane ? await awaitLaneBegin(lane, rows) : null;
     const done = await transaction(async opened => {
+      const doorBy = publicationDoorDeadline(Date.now());
       markBegun?.();
       hooks.began?.();
       timed.apply?.end(rows.length);
@@ -392,7 +393,7 @@ export async function publishGroup(engine: BrainEngine, rows: WriteRequest[], pr
           }
           for (const member of recorded.values()) await runDoorProbe(tx, member.row);
           doorCommit = await commitThroughDoor(binding.local_path!, [...recorded].map(([i, member]) => ({ path: member.record.path, planned: member.record.afterHash, note: prepared[i]!.file?.commit })), lane || joined ? undefined : lock,
-            paths => { indexRestored = paths; });
+            paths => { indexRestored = paths; }, doorBy);
         }
         // The previous member's effects (rows no attribution or page check depends on) go out with the next member's checks.
         let effects: (() => Promise<void>) | null = null;
@@ -453,7 +454,7 @@ export async function publishGroup(engine: BrainEngine, rows: WriteRequest[], pr
       if (strict && recorded.size) {
         if (!gitFirst) for (const member of recorded.values()) await runDoorProbe(tx, member.row);
         const commit = gitFirst ? doorCommit! : await commitThroughDoor(binding.local_path!, [...recorded].map(([i, member]) => ({ path: member.record.path, planned: member.record.afterHash, note: prepared[i]!.file?.commit })), lane || joined ? undefined : lock,
-          paths => { indexRestored = paths; });
+          paths => { indexRestored = paths; }, doorBy);
         for (const i of recorded.keys()) Object.assign(outcomes[i]!.persistence as object, { git_state: 'committed', git_commit: commit });
         if (indexRestored) for (const [i, member] of recorded) {
           const rel = relative(binding.local_path!, member.record.path).split(sep).join('/');
@@ -497,7 +498,10 @@ export async function publishGroup(engine: BrainEngine, rows: WriteRequest[], pr
       try {
         const charged = await chargedInterruption(engine, row, error);
         if (charged) await faultPoint('persistence:recovery_interruption_charged', { requestId: row.request_id, writeId: row.id, sourceId: row.source_id, operation: row.operation, ...chargedInterruptionDetail(transientInterruption(error), error) });
-        const failure = charged?.failure ? withAttempt(charged.failure, 'publication') : undefined;
+        // A door past the transaction's bound (git-door.ts) committed nothing: every member ends with that typed refusal, as on the single path.
+        const timedOut = error instanceof OperationError && error.code === 'timeout' && !memberOf.has(error);
+        const failure = charged?.failure ? withAttempt(charged.failure, 'publication')
+          : timedOut ? withAttempt({ code: error.code, message: error.message }, 'publication') : undefined;
         await markRecovering(engine, row, failure ? 'publication_failed' : 'publication_not_started', failure);
         const recovered = await recoverPublication(engine, row.id, hostId, true, failure, true);
         if (!charged && recovered.state === 'queued' && !recovered.recovery) requeued.push(row.id);

@@ -60,6 +60,18 @@ import { gitFirstStrictActive } from './git-first-gate.ts';
 import './index-split-page.ts';
 import { assertNoPendingIndex, clearPublishedPendingHeads, queueIndexFromGit, type IndexFromGit } from './git-first.ts';
 
+/** How long a publication transaction may stay open across its door commit (GBRA-108, eng-r3-outside-1 for mixed groups). */
+export const PUBLICATION_DOOR_BOUND_MS = 120_000;
+/**
+ * The door deadline of a publication transaction opened at `openedAt`: a door past it refuses with `timeout` before it
+ * moves the branch (git-door.ts), so the rows the transaction holds roll back and its locks are released.
+ * GBRAIN_PUBLICATION_DOOR_BOUND_MS overrides the bound.
+ */
+export function publicationDoorDeadline(openedAt: number): number {
+  const configured = Number(process.env.GBRAIN_PUBLICATION_DOOR_BOUND_MS);
+  return openedAt + (Number.isFinite(configured) && configured > 0 ? configured : PUBLICATION_DOOR_BOUND_MS);
+}
+
 interface PreparedMutationBase {
   sourceExclusive?: boolean;
   /** Always-loaded core writes: source rows locked FOR UPDATE in id order (core-guard.ts lockCoreSources). */
@@ -556,6 +568,7 @@ export async function publishMutation(engine: BrainEngine, row: WriteRequest, pr
       await hooks.boundary?.('prepared', row);
     }
     const done = await publicationTransaction(engine, async tx => {
+      const doorBy = publicationDoorDeadline(Date.now());
       await declarePublication(tx);
       const liveBinding = await guardOwnership(tx, row, hostId);
       if (prepared.sourceExclusive && !prepared.exclusiveSources?.length) await tx.executeRaw('SELECT id FROM sources WHERE id=$1 FOR UPDATE', [row.source_id]);
@@ -633,7 +646,7 @@ export async function publishMutation(engine: BrainEngine, row: WriteRequest, pr
       if (gitFirst) {
         await assertStrictFileTarget(tx, row, prepared, snapshot, binding);
         await doorProbe?.(tx, row);
-        gitCommit = await commitThroughDoor(door!.door!.root, [{ path: door!.path, planned: door!.afterHash, note: prepared.file?.commit }], lock ?? undefined, paths => { gitIndexRestored = paths; });
+        gitCommit = await commitThroughDoor(door!.door!.root, [{ path: door!.path, planned: door!.afterHash, note: prepared.file?.commit }], lock ?? undefined, paths => { gitIndexRestored = paths; }, doorBy);
       }
       // A door publication that is not itself indexed (an inline write, a delete, a private transition, a rename) replaces
       // or removes the page's pending head (the index step's own import of the committed file leaves it to the flip), so an older index job finds its token gone and ends superseded (git-first.ts).
@@ -665,7 +678,7 @@ export async function publishMutation(engine: BrainEngine, row: WriteRequest, pr
       // G2: a strict source's file is committed before its row; its Git effect only pushes.
       if (door?.door && !gitFirst) await doorProbe?.(tx, row);
       if (door?.door) Object.assign(outcome.persistence as object, { git_state: 'committed', git_commit: gitFirst ? gitCommit
-        : await commitThroughDoor(door.door.root, [{ path: door.path, planned: door.afterHash, note: prepared.file?.commit }], lock ?? undefined, paths => { gitIndexRestored = paths; }),
+        : await commitThroughDoor(door.door.root, [{ path: door.path, planned: door.afterHash, note: prepared.file?.commit }], lock ?? undefined, paths => { gitIndexRestored = paths; }, doorBy),
         ...(gitIndexRestored ? { git_index_restored: gitIndexRestored } : {}) });
       await timePublicationStep('effects', row.slug, () => queuePublicationEffects(tx, row, final, outcome, prepared, { pushOnly: !!door?.door }));
       if (prepared.afterEffects) await withCoordinatedWrite(tx, [row.source_id], () => prepared.afterEffects!(tx, outcome), publicationAttribution(row, prepared.trust));
