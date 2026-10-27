@@ -426,7 +426,7 @@ async function refuseWhileIndexPending(engine: BrainEngine, row: Pick<WriteReque
   throw indexPendingError(row.slug, pending);
 }
 
-/** Wave C (spec §3.1): whether a put (or an append composed as one, page-append.ts) stages its segmented body or defers it to the index step (strict git-first, git-first-gate.ts). */
+/** Wave C (spec §3.1): whether a put (or an append or a segmented page's edit composed whole, page-append.ts, prepareInlineOrSegmentedMutation) stages its segmented body or defers it to the index step (strict git-first, git-first-gate.ts). */
 async function deferSegmentedBody(engine: BrainEngine, row: WriteRequest, options: { gitFirstIndex?: false }, notPlain: boolean): Promise<boolean> {
   return options.gitFirstIndex !== false && (row.operation === 'put_page' || row.operation === 'capture' || row.operation === 'append_page' || row.operation === 'edit_page') && !notPlain
     && await gitFirstStrictActive(engine, row.source_id);
@@ -815,8 +815,6 @@ async function prepareInlineOrSegmentedMutation(unbounded: BrainEngine, row: Wri
     () => loadActivePackForEngine(engine, { remote: row.authority.remote, sourceId: row.source_id }).catch(() => null),
   ]) as [unknown, PageSnapshot | null, Awaited<ReturnType<typeof loadActivePackForEngine>> | null];
   // Wave B (spec 6.3): edit_page on a segmented page splices the touched segments; a declined edit takes the string path.
-  // Wave C (eng-r3-outside-1): on a strict git-first source the splice would stage segment text before the door, so an
-  // unsplit page's edit is composed whole and takes the deferred path (deferSegmentedBody), as an append does.
   const segmented = row.operation === 'edit_page' && stored && !stored.page.deleted_at && isSegmentedPage(stored.page) && stored.page.id === row.page_id
     && !await gitFirstStrictActive(engine, row.source_id) ? await prepareSegmentedEditMutation(engine, row, stored) : null;
   if (segmented) return segmented;
