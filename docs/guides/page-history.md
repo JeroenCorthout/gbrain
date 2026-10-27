@@ -92,8 +92,9 @@ you make yourself can give a reason the same way:
 git commit --trailer "gbrain-reason: policies/refunds.md: Client asked for the 30-day window."
 ```
 
-A pushed commit message cannot be changed, so treat a reason like any other
-text you push. There is no operation to add a reason to a past write.
+A sync reads these trailers back into page history ([reasons from
+Git](#reasons-from-git)). A pushed commit message cannot be changed, so treat a
+reason like any other text you push. There is no operation to add a reason to a past write.
 
 ### Repo-less brains
 
@@ -113,6 +114,99 @@ any change made while it was private, is therefore never shown remotely. When
 the replacing version was later pruned (large pages keep a few versions), its
 visibility can no longer be checked and the reason is withheld from remote
 callers. Remote reasons go through the same text sanitizer as version bodies.
+
+## Reasons from Git
+
+When `gbrain sync` imports a changed file from a Git checkout, it reads the
+`gbrain-reason` trailers of the commits it is importing and stores the
+file's reason on the version that import archives. A commit you make yourself
+with `git commit --trailer "gbrain-reason: <path>: <text>"` therefore shows up
+in `get_versions` as `replaced_because`, the same as a reason given to
+`put_page`.
+
+How a sync picks the reason for a file:
+
+- It reads the commits between the last synced commit and the new one along the
+  first-parent line, which is the history the checked-out branch came from. A
+  merge counts as changing every file it changed relative to its first parent.
+- The newest of those commits that changed the file decides. Its trailer for
+  that file is the reason. If it has none, the version gets no reason, so an
+  older reason is never shown against newer text.
+- A merge that resolved a conflict decides with its own trailer, so put the
+  trailer in the merge message. A commit on a merged side branch never decides,
+  whether its edit was kept or discarded.
+- The trailer names the file by its path in the repository (or under the
+  source's folder when the source is a subfolder), then `: ` and the text. A
+  trailer that names no file its commit changed is skipped and counted in the
+  sync result's `reason_trailers_malformed`.
+- A reason from Git gets the same cleanup and limits as a written reason. One
+  longer than 500 characters is skipped and counted the same way.
+- A file's first import creates its page and archives nothing, so it stores no
+  reason, as with a page's first write.
+
+When one sync imports more than one commit for a file, the versions in between
+were never stored. The sync marks the page as having a gap in its history, so
+readers of old versions know some are missing.
+
+A trailer already in Git that looks like a credential is not stored. The sync
+prints the `reason_trailer_secret` notice, which names the commit and the file,
+never the value. Rotate that credential: Git history keeps the commit message.
+
+If reading the trailers fails (a Git error, or more than two minutes), the sync
+prints `reason_scan_failed`. If the range holds more than 10,000 commits, it
+prints `reason_scan_capped` instead of reading them. Either way the content is
+imported, because reasons never hold up content. Every version that sync
+archives stores no reason, and each page it changed is marked with a history
+gap. This release does not backfill reasons for that range: the sync still
+moves its last synced commit forward, and a later sync does not read the range
+again. The reasons are still in Git, and the notice's command lists them:
+
+```bash
+git log --first-parent --format='%H %(trailers:key=gbrain-reason,valueonly)' <range>
+```
+
+A commit and file that a purge has tombstoned (below) never gives a reason
+again, not even on a full re-import.
+
+A source with no Git checkout (a repo-less brain, or a folder imported with
+`gbrain import`) reads no trailers, prints none of these notices and marks no
+gap. Its reasons come only from the writes that carry them.
+
+## Purge and reasons
+
+`gbrain forget <id> --purge` ([expire versus purge](memory-boundaries.md#purge))
+reaches every copy of a reason that quotes the claim:
+
+- **Versions.** The reason is replaced with `[purged]` on every version that
+  carries it, inline and segmented alike, and counted in
+  `removed.page_versions`.
+- **Queued and kept Git commits.** The source's Git effects whose commit message
+  would quote the claim, whether queued, failed or kept after they ran, are
+  redacted in the same transaction: the line becomes `[purged]` and the trailer
+  that quotes it is dropped (`removed.persistence_effects`). If one is being
+  written right now, the purge stops with `purge_blocked_pending_recovery`;
+  retry once it finishes.
+- **Commits already in the repository.** Purge never rewrites Git history, so a
+  pushed commit keeps its message text, as it keeps the file's earlier
+  contents. Before it deletes anything, purge reads the `gbrain-reason` trailers
+  on the source's first-parent history up to `HEAD` (up to 200,000 commits) and
+  records each commit and file whose reason quotes the claim. The record holds
+  no text. No later sync, cold re-import or re-derive stores that reason again.
+  The receipt counts these in `removed.reason_purge_tombstones` and lists the
+  commits under the `git_commit_messages` residual.
+
+Purge refuses before it changes anything when it cannot read that history:
+
+- `reason_purge_scan_failed`: reading the trailers failed (a Git error or a
+  timeout). Nothing was changed; wait, then run the same purge again.
+- `reason_purge_scan_capped`: the history is longer than 200,000 commits. Your
+  agent asks you to choose: purge now and check only the newest commits, with
+  `--reason-scan-limit <n>` set to the number you pick, or stop. With a limit, a
+  reason in an older commit is not tombstoned and a re-import could store it
+  again; the receipt says so.
+
+On a source with no Git checkout there is no history to read, so purge redacts
+the database copies and never raises either refusal.
 
 ## Choosing how to record a change
 
