@@ -4392,22 +4392,9 @@ per session); the stamp never is, so it is on every affected call.
 | CLI `--json`, object result (recall, get, think, context_pack, ...) | a top-level `degraded: { reasons: [...] }` key |
 | CLI `--json`, array result (search, query, list_pages), and human output | the same one line on stderr |
 
-`reasons` is sorted and unique. A code names a cause, never page text or a
-source the caller cannot read:
-
-| Code | Ops | Meaning |
-|---|---|---|
-| a retrieval stage: `embed_unavailable`, `embed_timeout`, `expansion_failed`, `expansion_partial`, `rescore_skipped`, `vector_arm_failed`, `keyword_arm_failed`, `title_arm_failed`, `budget_dropped_all`, `budget_truncated`, `keyword_zero`, `cache_prestamp`, `rerank_passthrough`, `rerank_failed`, `keyword_relaxed_carried`, `safe_index_pending`, `vector_candidates_incomplete`, `keyword_candidates_incomplete`, `projection_pending`, `projection_by_design`, `projection_status_unknown`, `keyword_count_unavailable` | search, query, recall, find_experts; think and synthesize (their page search) | the stage in `_meta.retrieval.degraded` (every stage except the ranking-only `reranker_skipped`; `projection_pending` only when a pending page could match). `embed_unavailable` also covers a keyless brain and recall's keyword-only markers, so a keyless brain stamps every search |
-| `no_query_terms`, `facts_embedding_column_missing`, `facts_read_failed` | recall | `facts_degraded.reason` of a question-ranked recall |
-| `facts_unembedded` | recall | some facts in scope could not be compared with the question |
-| `deadline`, `server_budget`, `budget_trimmed` | context_pack | `degraded_reason`: the pack is partial |
-| `delta_incomplete` | delta | delta delivered less than is waiting |
-| `file_held` | get_page | the page's newer file is held by sync; this is its last good revision |
-| `gather_hybrid_failed`, `gather_takes_keyword_failed`, `gather_takes_vector_failed`, `gather_graph_failed`, `gather_anchor_hydrate_failed`, `gather_window_floor_failed` | think, synthesize | an evidence stream failed (the matching `GATHER_*_FAILED` warning) |
-| `held_files`, `sources_not_readable`, `references_unavailable`, `mention_index`, `relational_chain`, `graph_walk_truncated`, `pinned_answer_stale` | the ops that emit the notice of that code | a `kind: degraded` notice about this result |
-| `scan_deadline`, `unreadable_pages` | search_exact | `incomplete_reasons` other than the caller's `limit` |
-| `source_stale`, `held_items` | open_loops | `stale` or `completeness: "partial"` |
-| `link_coverage_behind`, `link_coverage_unread` | rank_entities | `coverage.state` |
+`reasons` is sorted and unique, and a code names a cause, never page text or
+a source the caller cannot read. Every code and the ops that emit it:
+[`_meta` channels, Degraded stamp codes](MCP_META_CHANNELS.md#degraded-stamp-codes).
 
 **What you do.** Answer from the result with the caveat, and never tell the
 user the brain has nothing on the subject. A transient code (`embed_timeout`,
@@ -4415,11 +4402,9 @@ an `*_failed` code, `deadline`) may clear on a retry; the notices on the
 same result carry the fix. Treat a code you do not know as degraded: the list
 grows, and a code never changes meaning.
 
-**Harness authors.** Count a call as degraded when `_meta.degraded.reasons`
-is non-empty, or when a content block starts with `[gbrain degraded: `.
-A caller-requested limit, page size or token budget that the caller can see
-in the result (`listing_truncated`, `has_more`, a `next` cursor) is
-pagination, not degradation, and is not stamped.
+**Harness authors.** A call is degraded when `_meta.degraded.reasons` is
+non-empty or a block starts with `[gbrain degraded: `. Pagination the caller
+can see (`listing_truncated`, `has_more`, a `next` cursor) is not stamped.
 
 ## Consent and preapproval
 
@@ -11181,89 +11166,6 @@ need the user's confirmation (documented legacy; changing it is a v2 item).
 
 The per-command exit changes that came with contract v1 (v0.60.46.0) are in
 the [CHANGELOG](../../CHANGELOG.md#exit-code-changes-by-command).
-
----
-
-## docs/integrations/reliability-repair.md
-
-Source: https://raw.githubusercontent.com/garrytan/gbrain/master/docs/integrations/reliability-repair.md
-
-# Reliability repair
-
-Two data-corruption classes can affect a brain on real Postgres or Supabase:
-JSONB values stored double-encoded, and markdown bodies truncated at import.
-`gbrain doctor` detects both, and the standalone `gbrain repair-jsonb`
-command fixes the mechanically fixable class. PGLite brains are not affected
-(PGLite parses text to jsonb natively, so the double-encode never happens
-there).
-
-## What the checks look for
-
-**JSONB double-encode.** Writing `${JSON.stringify(x)}::jsonb` through
-postgres.js stores a JSONB *string literal* instead of an object.
-`frontmatter ->> 'key'` returns NULL; GIN indexes are ineffective. Columns
-checked: `pages.frontmatter`, `raw_data.data`, `ingest_log.pages_updated`,
-`files.metadata`. The write-side rule that prevents it is in
-`docs/ENGINES.md` ("JSONB writes: never double-encode").
-
-**Markdown body truncation.** A page whose `compiled_truth` is much shorter
-than its `raw_data.data ->> 'content'` lost body content at import time (for
-example, when a `---` horizontal rule was treated as a body/timeline
-delimiter). Wiki-style pages with multiple `##`/`###` sections are the usual
-casualty.
-
-## Detect
-
-```
-gbrain doctor
-```
-
-Reports two checks:
-
-- `jsonb_integrity` — counts double-encoded rows per table and points you
-  at `gbrain repair-jsonb`.
-- `markdown_body_completeness` — heuristic for pages whose `compiled_truth`
-  is suspiciously short compared to `raw_data.data ->> 'content'`. A page
-  stored in segments has no `compiled_truth` column to compare, so it is not
-  checked; the check reports how many with `skipped_segmented: N`.
-
-## Repair
-
-For JSONB (mechanically fixable):
-
-```
-gbrain repair-jsonb
-```
-
-Runs `UPDATE <table> SET <col> = (<col>#>>'{}')::jsonb WHERE jsonb_typeof(<col>) = 'string'`
-across every affected column. Idempotent. Second run reports 0 rows. Use
-`--dry-run` to preview, `--json` for structured output. The `v0_12_2`
-version migration runs this automatically on `gbrain upgrade`.
-
-For truncated markdown bodies (source-dependent): the importer skips a file
-whose content hash has not changed, and trailing whitespace is trimmed before
-hashing, so a re-import needs a real edit to the page body. Make the edit, then
-re-import:
-
-```
-gbrain sync                  # git-backed brain: commit the edit first
-gbrain sync --working-tree   # or import the uncommitted working tree
-gbrain import <brain-root> --fresh   # or re-import the root you originally imported;
-                                     # --fresh ignores a resume checkpoint that would skip the path
-```
-
-gbrain cannot recover content that is already lost if you no longer have
-the source markdown file. `gbrain doctor` tells you which pages look short;
-you decide whether to re-import from source or accept the truncation.
-
-## Verify
-
-```
-gbrain doctor
-```
-
-All four `jsonb_integrity` rows should read zero. `markdown_body_completeness`
-should match your expectations for the corpus.
 
 ---
 

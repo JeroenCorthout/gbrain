@@ -881,22 +881,9 @@ per session); the stamp never is, so it is on every affected call.
 | CLI `--json`, object result (recall, get, think, context_pack, ...) | a top-level `degraded: { reasons: [...] }` key |
 | CLI `--json`, array result (search, query, list_pages), and human output | the same one line on stderr |
 
-`reasons` is sorted and unique. A code names a cause, never page text or a
-source the caller cannot read:
-
-| Code | Ops | Meaning |
-|---|---|---|
-| a retrieval stage: `embed_unavailable`, `embed_timeout`, `expansion_failed`, `expansion_partial`, `rescore_skipped`, `vector_arm_failed`, `keyword_arm_failed`, `title_arm_failed`, `budget_dropped_all`, `budget_truncated`, `keyword_zero`, `cache_prestamp`, `rerank_passthrough`, `rerank_failed`, `keyword_relaxed_carried`, `safe_index_pending`, `vector_candidates_incomplete`, `keyword_candidates_incomplete`, `projection_pending`, `projection_by_design`, `projection_status_unknown`, `keyword_count_unavailable` | search, query, recall, find_experts; think and synthesize (their page search) | the stage in `_meta.retrieval.degraded` (every stage except the ranking-only `reranker_skipped`; `projection_pending` only when a pending page could match). `embed_unavailable` also covers a keyless brain and recall's keyword-only markers, so a keyless brain stamps every search |
-| `no_query_terms`, `facts_embedding_column_missing`, `facts_read_failed` | recall | `facts_degraded.reason` of a question-ranked recall |
-| `facts_unembedded` | recall | some facts in scope could not be compared with the question |
-| `deadline`, `server_budget`, `budget_trimmed` | context_pack | `degraded_reason`: the pack is partial |
-| `delta_incomplete` | delta | delta delivered less than is waiting |
-| `file_held` | get_page | the page's newer file is held by sync; this is its last good revision |
-| `gather_hybrid_failed`, `gather_takes_keyword_failed`, `gather_takes_vector_failed`, `gather_graph_failed`, `gather_anchor_hydrate_failed`, `gather_window_floor_failed` | think, synthesize | an evidence stream failed (the matching `GATHER_*_FAILED` warning) |
-| `held_files`, `sources_not_readable`, `references_unavailable`, `mention_index`, `relational_chain`, `graph_walk_truncated`, `pinned_answer_stale` | the ops that emit the notice of that code | a `kind: degraded` notice about this result |
-| `scan_deadline`, `unreadable_pages` | search_exact | `incomplete_reasons` other than the caller's `limit` |
-| `source_stale`, `held_items` | open_loops | `stale` or `completeness: "partial"` |
-| `link_coverage_behind`, `link_coverage_unread` | rank_entities | `coverage.state` |
+`reasons` is sorted and unique, and a code names a cause, never page text or
+a source the caller cannot read. Every code and the ops that emit it:
+[`_meta` channels, Degraded stamp codes](https://github.com/garrytan/gbrain/blob/master/docs/protocol/MCP_META_CHANNELS.md#degraded-stamp-codes).
 
 **What you do.** Answer from the result with the caveat, and never tell the
 user the brain has nothing on the subject. A transient code (`embed_timeout`,
@@ -904,11 +891,9 @@ an `*_failed` code, `deadline`) may clear on a retry; the notices on the
 same result carry the fix. Treat a code you do not know as degraded: the list
 grows, and a code never changes meaning.
 
-**Harness authors.** Count a call as degraded when `_meta.degraded.reasons`
-is non-empty, or when a content block starts with `[gbrain degraded: `.
-A caller-requested limit, page size or token budget that the caller can see
-in the result (`listing_truncated`, `has_more`, a `next` cursor) is
-pagination, not degradation, and is not stamped.
+**Harness authors.** A call is degraded when `_meta.degraded.reasons` is
+non-empty or a block starts with `[gbrain degraded: `. Pagination the caller
+can see (`listing_truncated`, `has_more`, a `next` cursor) is not stamped.
 
 ## Consent and preapproval
 
