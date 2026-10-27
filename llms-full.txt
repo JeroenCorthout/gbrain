@@ -5399,7 +5399,7 @@ flowchart LR
     Synthesis --> Answer[Cited answer]
 ```
 
-**Two engines, one contract.** PGLite (Postgres 17 via WASM, zero-config, default) for personal brains up to ~50K pages. Postgres + pgvector (Supabase or self-hosted) for shared, large or multi-machine brains. Both implement one `BrainEngine` contract ([`src/core/engine.ts`](src/core/engine.ts)); CLI and MCP are generated from it.
+**Two engines, one contract.** PGLite (Postgres 17 via WASM, zero-config, default) for personal brains up to ~50K pages. Postgres + pgvector (Supabase or self-hosted) for shared, large or multi-machine brains. Both implement one `BrainEngine` contract ([`src/core/engine.ts`](src/core/engine.ts)); CLI and MCP share one op registry.
 
 **Canonical files preserve file-backed knowledge.** Your brain repo holds the Markdown; the database is an index rebuildable from it, and git deletes become soft-deletes. DB-only pages, unresolved facts, history and operational state need a database backup: [where your memory lives](docs/guides/where-your-memory-lives.md), [system of record](docs/architecture/system-of-record.md). Publish public subsets, share team mounts, or point a thin client at a colleague's brain. Topologies in [`docs/architecture/topologies.md`](docs/architecture/topologies.md).
 

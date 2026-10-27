@@ -65,9 +65,11 @@ Facts (ranked by relevance to the question):
 note: fact ranking degraded (keyword_only_embedding_disabled)
 ```
 
-gbrain does not blend the rows: each one names its client (`entity_slug` in
-`--json` and MCP results), and a row with `entity_slug: null` was saved with no
-entity. Choosing between them is the agent's job, so the agent should:
+gbrain does not merge different claims: each row names its client
+(`entity_slug` in `--json` and MCP results), and a row with `entity_slug: null`
+was saved with no entity. The same claim saved for several entities can come
+back as one row; it then lists every entity in `entity_slugs` with a
+`collapsed_count`. Choosing between them is the agent's job, so the agent should:
 
 1. Name the client whenever the conversation is about one, and call
    `recall {entity}`.
@@ -94,10 +96,12 @@ and falls back to the policy (`recall concepts/pricing`) when the client has
 no price of its own. gbrain has no built-in "default unless the entity says
 otherwise" rule; the two calls are that rule.
 
-A fact saved with no entity, or with an entity slug that has no page, still
-saves and still shows up in question recall, but it has no file to live in:
-its only copy is in the database ([where your memory lives](where-your-memory-lives.md)).
-Create the page first.
+Without `entity`, `remember` attaches the fact to a page only when the text
+names exactly one entity page (`entity_inferred: "mention"`; `--infer-entity
+false` turns that off). A fact that ends up with no entity, or with an entity
+slug that has no page, still saves and still shows up in question recall, but
+it has no file to live in: its only copy is in the database
+([where your memory lives](where-your-memory-lives.md)). Create the page first.
 
 ## Related
 

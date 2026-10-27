@@ -49,7 +49,7 @@ A prospect.
 | Compiled truth | everything after the frontmatter and above `<!-- timeline -->` | The current synthesis, in prose. An agent rewrites it when the evidence changes. It can hold the facts and takes fences. |
 | Facts fence | `<!--- gbrain:facts:begin -->` to `<!--- gbrain:facts:end -->` | One row per saved claim about the page's subject. See [fences](#facts-and-takes-fences). |
 | Timeline sentinel | `<!-- timeline -->` | Splits compiled truth from the timeline. |
-| Timeline | everything below the sentinel | Dated evidence, one bullet per event, only ever appended to. See [timeline rows](#timeline-rows). |
+| Timeline | everything below the sentinel | Dated evidence, one bullet per event. New entries are added in date order; existing ones aren't rewritten. See [timeline rows](#timeline-rows). |
 
 ## Frontmatter keys
 
@@ -61,11 +61,11 @@ doesn't know. These are the ones it reads:
 | `type` | The page type, one of the types the active schema pack declares (`person`, `company`, `concept`, `deal`, ...). When it is missing, the pack infers it from the path prefix (`people/` → `person`). Search and query filter on it (`--types`). |
 | `title` | The display title. Without one, gbrain uses the first `# ` heading, then the file name. |
 | `tags` | A list of tags. |
-| `aliases` | Other names for the page. Entity lookup and link resolution match them, so `[[Alice]]` can find `people/alice-example`. |
+| `aliases` | Other names for the page. Entity lookup (`entity`, `recall <name>`, `remember --entity <name>`) and `gbrain whois` match them. A wikilink resolves by slug or file name, so write `[[people/alice-example]]` for a dependable link. |
 | `email`, `emails` | Exact identity for `gbrain whois`. |
-| `visibility` | `private` hides the page from remote (MCP) callers and keeps facts derived from it private; on a [git-canonical](git-canonical.md) source a private page is never committed. Absent means not private. |
+| `visibility` | `private` hides the page from remote (MCP) callers by default and keeps facts derived from it private; on a [git-canonical](../designs/GIT_CANONICAL_MEMORY.md) source a private page is never committed. A page without `visibility` is normally world, but some are private anyway: privacy aliases such as `access: private`, derived pages whose origin is private, and pinned-question pages. See [what confines remote callers](../architecture/brains-and-sources.md#what-confines-remote-callers-and-what-does-not). |
 | `status` | A free-form state such as `draft` or `archived`, returned on every search row. |
-| `event_date`, `date`, `published`, `created` | The page's content date (`effective_date`), in that order of precedence, used by `--since`/`--until` and recency. A leading `YYYY-MM-DD` in the file name also counts. |
+| `event_date`, `date`, `published`, `created` | The page's content date (`effective_date`), used by `--since`/`--until` and recency. Precedence: `event_date`, `date`, `published`, a leading `YYYY-MM-DD` in the file name, then `created` (or `created_at`, `date_created`). Under `daily/` and `meetings/` the file name comes first. |
 | `slug` | Optional. When present it must name the same page as the path, or the write is refused and sync holds the file ([`frontmatter_slug_conflict`](write-refusals.md#frontmatter_slug_conflict)). |
 
 gbrain stamps a few keys itself: `subtype` (the finer kind gbrain-base-v2 records
@@ -118,7 +118,8 @@ rule is in the generated [fence format](fence-format.md) reference.
 
 The active schema pack says which types exist, which folders they live in and
 which types facts are extracted from. The default pack, gbrain-base-v2, has 14
-types plus `note` as the catch-all; see the [type taxonomy](../architecture/type-taxonomy.md).
+canonical types plus `note` as the catch-all, and a few internal types gbrain
+writes itself; see the [type taxonomy](../architecture/type-taxonomy.md).
 `gbrain schema show` prints the active pack, `gbrain schema explain <type>`
 one type's settings, and `gbrain schema lint` checks a pack. MCP agents use
 `schema_explain_type` and `schema_lint`. To change the shape of your brain,

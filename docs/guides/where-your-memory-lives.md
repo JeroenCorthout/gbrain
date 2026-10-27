@@ -17,7 +17,7 @@ and what follows from it.
 |---|---|---|
 | Markdown files in a source folder | Every file-backed page: frontmatter, compiled truth, timeline, and the facts and takes tables ([anatomy of a page](page-anatomy.md)). | It is the record. Git, when the folder is a repository, holds its history. |
 | The index in Postgres | Pages, chunks with embeddings, the keyword (full-text) index, links, timeline rows, and facts and takes parsed from the files. | Yes, from the files: `gbrain sync`, then `gbrain extract all`. Embeddings cost a provider call again. |
-| Database-only records | Pages that have no file on purpose (private pages on a strict source, `storage.db_only` folders, sources with no folder such as connectors), facts saved with no page to hold them, page revision history, receipts and other operational state. | No. Back up the database. |
+| Database-only records | Pages that have no file on purpose (private pages on a strict source, `storage.db_only` folders, a brain or source with write-through off), facts saved with no page to hold them, page revision history, receipts and other operational state. | No. Back up the database. |
 
 Recall reads the index: hybrid search ranks keyword and vector matches
 together, optionally reranked, and `recall` reads saved facts. Nothing is
@@ -33,19 +33,22 @@ initializes Git in a new empty folder, `--content-root <path>` picks the
 folder, and `gbrain sources add <id> --path <repo>` adds a Git repository
 you already have. `gbrain sources harden <id>` adds the commit-and-push hook that
 keeps a remote copy current. `gbrain sources list` shows every source and its
-folder. A brain initialized with `--db-only`, or a connector source (Gmail,
-Calendar, GitHub), has no folder, and the database is its record.
+folder. A brain initialized with `--db-only` has no folder, and the database is its
+record. Connector sources (Gmail, Calendar, GitHub) render their pages into
+a folder of their own.
 
 ## How tightly the database follows Git
 
 Each source with a Git checkout runs in one of two modes:
 
-- **Mixed (the default).** Sync imports what is committed. A write lands in the
-  file and the database together and is committed to Git afterwards. When the
-  two disagree, sync keeps the database copy or holds the page for review.
-- **Strict, or git-canonical (opt-in per source).** Every write is committed to
-  Git before the database records it, sync indexes committed files only, and
-  Git wins any disagreement. See [git-canonical sources](git-canonical.md).
+- **Mixed (the default).** Sync imports changes made in the files. A write
+  lands in the file and the database together and is committed to Git
+  afterwards. When the two disagree, sync keeps a database-only change or
+  holds the page for review.
+- **Strict, or git-canonical (opt-in per source).** Every file-backed write is
+  committed to Git before the database records it, sync indexes committed
+  files only, and Git wins any disagreement; the declared database-only
+  classes above are the exception. See the [git-canonical design](../designs/GIT_CANONICAL_MEMORY.md).
 
 Either way, a page with a file can be recovered from Git. The difference is
 whether the database can ever be briefly ahead of it.
