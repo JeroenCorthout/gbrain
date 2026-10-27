@@ -309,10 +309,13 @@ export async function publishGroup(engine: BrainEngine, rows: WriteRequest[], pr
     }
     // G2 (git-door.ts): a strict source's members are committed together before the transaction commits.
     strict = files.size > 0 && binding.canonical_git === true;
-    // Wave C (eng-r3-outside-1): with the git-first path on, the group's files commit through the door before any member's
-    // rows; a member deferred to the index step (git-first.ts) publishes on the single path.
-    gitFirst = strict && await gitFirstStrictActive(engine, head.source_id, { strict: true });
-    if (gitFirst && prepared.some(member => member.indexFromGit)) return none;
+    // Wave C (eng-r3-outside-1): with the git-first path on, a group whose every member writes file content commits its
+    // files through the door before any member's rows; a member deferred to the index step (git-first.ts) publishes on the
+    // single path. A group with a removal or a database-only member (a generation's activation and retirements, whose
+    // checks need the members before them applied) keeps G2's order, as the single path does for a removal.
+    const active = strict && await gitFirstStrictActive(engine, head.source_id, { strict: true });
+    if (active && prepared.some(member => member.indexFromGit)) return none;
+    gitFirst = active && files.size === rows.length && [...files.keys()].every(i => prepared[i]!.file!.content !== null);
     if (strict) { const door = await doorMarker(binding.local_path); for (const member of files.values()) member.record.door = door; }
     if (files.size) {
       await prepareRecoveries(engine, [...files.values()], transaction, limits);
