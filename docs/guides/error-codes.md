@@ -15,6 +15,7 @@ Under contract v1 an `error` value never changes. Where a surface sends a legacy
 
 | `error` (frozen) | `code` (canonical) | Meaning |
 |---|---|---|
+| `invalid_params` | `change_reason_rejected` | The write's reason was refused before anything was admitted: it is longer than 500 characters, or it looks like it holds a secret. |
 | `invalid_params` | `fact_withdrawn` | `remember`, or an owner `gbrain trust release` that writes a held fact into its entity page's `## Facts` table (a managed brain), refused a claim that was explicitly forgotten for this subject (wire `invalid_params`, message prefix `fact_withdrawn:`); nothing was saved, and a refused release leaves the fact held. |
 | `permission_denied` | `insufficient_scope` | The connection lacks the OAuth scope the operation requires. |
 | `invalid_params` | `invalid_fence` | A facts or takes fence in the page cannot be imported without dropping or guessing rows, so the page (or the file) was not written. |
@@ -508,6 +509,18 @@ More: [docs/guides/shared-brain-skills.md#troubleshoot-leave-and-recover](../../
 | Meaning | Why | Next step | Who acts · consent | Verify | Exit | Retryable |
 |---|---|---|---|---|---|---|
 | Shared skill storage is not ready on this brain. | A temporary condition (a lock, a pending write, a rate limit); the same request can succeed later. | Wait briefly, then retry the same request (writes: reuse the same request_id). | agent | `repeat the read that failed` | 1 | yes |
+
+### change_reason_rejected
+
+<a id="change_reason_rejected"></a>
+
+| Meaning | Why | Next step | Who acts · consent | Verify | Exit | Retryable |
+|---|---|---|---|---|---|---|
+| The write's reason was refused before anything was admitted: it is longer than 500 characters, or it looks like it holds a secret. | A reason is kept in page history and, on a page that reaches Git, in the commit message, which a push makes permanent; it is checked before the write is journaled so no copy of a refused reason is stored anywhere. | Shorten the reason, or remove the secret from it, and send the write again. | agent | `repeat the read that failed` | 1 | no |
+
+Reasons: `reason_too_long`, `reason_contains_secret`.
+
+More: [docs/guides/page-history.md#reasons](../../docs/guides/page-history.md#reasons)
 
 ### changed_since_preview
 

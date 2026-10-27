@@ -7,38 +7,32 @@
  * 2. Fails when: a reason is lost or lands on the wrong snapshot, a refused reason (too long, a secret) is stored in any
  *    journal row, the replay identity ignores the reason, or a remote reader is shown a reason whose successor snapshot
  *    is private or was pruned.
- * 3. No new seam: the real put_page / edit_page / revert_version / put_pages / get_versions handlers over PGLite.
+ * 3. No new seam: the real put_page / edit_page / revert_version / put_pages / get_versions handlers over PGLite, and over Postgres when DATABASE_URL is set (test/postgres-unit-arms.txt).
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'bun:test';
-import { PGLiteEngine } from '../src/core/pglite-engine.ts';
-import { resetPgliteState } from './helpers/reset-pglite.ts';
+import type { BrainEngine } from '../src/core/engine.ts';
 import { operationsByName, OperationError, type OperationContext } from '../src/core/operations.ts';
 import { canonicalChangeReason, CHANGE_REASON_MAX } from '../src/core/persistence/change-reason.ts';
-import { resetGateway } from '../src/core/ai/gateway.ts';
+import { disposePersistenceConsumer } from '../src/core/persistence/service.ts';
+import { isolatedSharedSkillsEngine } from './helpers/shared-skills-engine.ts';
+import { requirePostgresTestDatabase, testBackends } from './helpers/test-backends.ts';
 
-let engine: PGLiteEngine;
-
-beforeAll(async () => {
-  engine = new PGLiteEngine();
-  await engine.connect({});
-  await engine.initSchema();
-}, 120_000);
-afterAll(async () => { await engine.disconnect(); resetGateway(); });
-beforeEach(async () => { await resetPgliteState(engine); resetGateway(); });
+let engine: BrainEngine;
+let SLUG = '';
+let run = 0;
 
 function ctx(remote = false): OperationContext {
-  return { engine, config: { engine: 'pglite' as const }, logger: { info() {}, warn() {}, error() {} }, dryRun: false, remote, sourceId: 'default' } as OperationContext;
+  return { engine, config: { engine: engine.kind }, logger: { info() {}, warn() {}, error() {} }, dryRun: false, remote, sourceId: 'default' } as OperationContext;
 }
 const call = (name: string, params: Record<string, unknown>, remote = false) =>
   operationsByName[name]!.handler(ctx(remote), params) as Promise<Record<string, unknown>>;
 const page = (body: string, extra = '') => `---\ntitle: Policy\ntype: note\n${extra}---\n\n${body}\n`;
-const SLUG = 'policies/policy-4a-example';
 const outcomeOf = (result: Record<string, unknown>) => (result.outcome ?? result) as Record<string, unknown>;
-async function revision(slug = SLUG): Promise<string> {
-  return String((await call('get_page', { slug, include_content: true })).revision);
+async function revision(slug?: string): Promise<string> {
+  return String((await call('get_page', { slug: slug ?? SLUG, include_content: true })).revision);
 }
-async function versions(remote = false, slug = SLUG): Promise<Array<Record<string, unknown>>> {
-  return await call('get_versions', { slug }, remote) as unknown as Array<Record<string, unknown>>;
+async function versions(remote = false, slug?: string): Promise<Array<Record<string, unknown>>> {
+  return await call('get_versions', { slug: slug ?? SLUG }, remote) as unknown as Array<Record<string, unknown>>;
 }
 async function journalHolds(text: string): Promise<boolean> {
   const rows = await engine.executeRaw<{ n: number }>(`SELECT count(*)::int AS n FROM persistence_requests WHERE intent::text LIKE $1 OR outcome::text LIKE $1`, [`%${text}%`]);
@@ -46,7 +40,12 @@ async function journalHolds(text: string): Promise<boolean> {
   return rows[0]!.n + effects[0]!.n > 0;
 }
 
-describe('page change reasons on a repo-less brain', () => {
+for (const backend of testBackends()) describe(`[${backend}] page change reasons on a repo-less brain`, () => {
+  let close: () => Promise<void>;
+  beforeAll(async () => { ({ engine, close } = await isolatedSharedSkillsEngine(backend === 'postgres' ? requirePostgresTestDatabase() : undefined)); }, 120_000);
+  afterAll(async () => { await disposePersistenceConsumer(engine); await close(); });
+  beforeEach(() => { SLUG = `policies/policy-4a-example-${++run}`; });
+
   test('a reason lands on the snapshot its write archived; creation and a reasonless write are reported', async () => {
     const created = outcomeOf(await call('put_page', { slug: SLUG, content: page('Edition one.'), reason: 'First edition from the board.', wait_ms: 30_000 }));
     expect(created.reason_recorded).toEqual({ reason: 'First edition from the board.', version: false, version_why: 'page_created', git: 'no_repository' });
@@ -88,9 +87,9 @@ describe('page change reasons on a repo-less brain', () => {
     expect((await engine.executeRaw('SELECT 1 FROM pages WHERE slug = $1', [SLUG])).length).toBe(0);
 
     const batch = await call('put_pages', { request_id: crypto.randomUUID(), pages: [
-      { slug: 'notes/a-example', content: page('a'), reason: 'fine' }, { slug: 'notes/b-example', content: page('b'), reason: `token ${secret}` }] }).then(() => null, e => e);
-    expect((batch as OperationError).message).toContain('pages[1] (notes/b-example)');
-    expect((await engine.executeRaw("SELECT 1 FROM pages WHERE slug LIKE 'notes/%'")).length).toBe(0);
+      { slug: `notes/a-example-${run}`, content: page('a'), reason: 'fine' }, { slug: `notes/b-example-${run}`, content: page('b'), reason: `token ${secret}` }] }).then(() => null, e => e);
+    expect((batch as OperationError).message).toContain(`pages[1] (notes/b-example-${run})`);
+    expect((await engine.executeRaw('SELECT 1 FROM pages WHERE slug LIKE $1', [`notes/%-example-${run}`])).length).toBe(0);
     expect(await journalHolds(secret)).toBe(false);
   });
 
@@ -103,17 +102,17 @@ describe('page change reasons on a repo-less brain', () => {
   });
 
   test('put_pages items carry their own reasons; equal repeats coalesce and different ones conflict', async () => {
-    await call('put_pages', { request_id: crypto.randomUUID(), wait_ms: 30_000, pages: [{ slug: 'notes/a-example', content: page('a1') }, { slug: 'notes/b-example', content: page('b1') }] });
-    const a = await revision('notes/a-example'), b = await revision('notes/b-example');
+    await call('put_pages', { request_id: crypto.randomUUID(), wait_ms: 30_000, pages: [{ slug: `notes/a-example-${run}`, content: page('a1') }, { slug: `notes/b-example-${run}`, content: page('b1') }] });
+    const a = await revision(`notes/a-example-${run}`), b = await revision(`notes/b-example-${run}`);
     const result = await call('put_pages', { request_id: crypto.randomUUID(), wait_ms: 30_000, pages: [
-      { slug: 'notes/a-example', content: page('a2'), expected_revision: a, reason: 'reason a' },
-      { slug: 'notes/b-example', content: page('b2'), expected_revision: b, reason: 'reason b' },
-      { slug: 'notes/b-example', content: page('b2'), expected_revision: b, reason: 'reason  b' }] });
+      { slug: `notes/a-example-${run}`, content: page('a2'), expected_revision: a, reason: 'reason a' },
+      { slug: `notes/b-example-${run}`, content: page('b2'), expected_revision: b, reason: 'reason b' },
+      { slug: `notes/b-example-${run}`, content: page('b2'), expected_revision: b, reason: 'reason  b' }] });
     const entries = result.pages as Array<Record<string, unknown>>;
     expect(entries[0]!.reason_recorded).toMatchObject({ reason: 'reason a', version: true });
-    expect((await versions(false, 'notes/b-example'))[0]!.replaced_because).toBe('reason b');
+    expect((await versions(false, `notes/b-example-${run}`))[0]!.replaced_because).toBe('reason b');
     const differ = await call('put_pages', { request_id: crypto.randomUUID(), wait_ms: 30_000, pages: [
-      { slug: 'notes/c-example', content: page('c'), reason: 'one' }, { slug: 'notes/c-example', content: page('c'), reason: 'two' }] });
+      { slug: `notes/c-example-${run}`, content: page('c'), reason: 'one' }, { slug: `notes/c-example-${run}`, content: page('c'), reason: 'two' }] });
     expect((differ.pages as Array<Record<string, unknown>>).map(entry => entry.state)).toEqual(['refused', 'refused']);
   });
 
@@ -132,6 +131,26 @@ describe('page change reasons on a repo-less brain', () => {
     expect((await versions(true))[0]!.replaced_because).toBeNull();
     expect((await versions(false))[0]!.replaced_because).toBe('third edition');
   });
+
+  test('a real prune marks the survivor: a pruned private successor withholds the world predecessor\'s reason remotely', async () => {
+    const big = 'x'.repeat(1024 ** 2 + 16);
+    const write = async (body: string, visibility?: string) => {
+      await engine.putPage(SLUG, { type: 'note', title: 'Policy', compiled_truth: body, frontmatter: visibility ? { visibility } : {} });
+      await engine.createVersion(SLUG, { sourceId: 'default' });
+    };
+    await write('small world edition');
+    await engine.executeRaw("UPDATE page_versions SET change_reason = 'made it private' WHERE id = (SELECT max(pv.id) FROM page_versions pv JOIN pages p ON p.id = pv.page_id WHERE p.slug = $1)", [SLUG]);
+    await write(big, 'private');
+    for (let i = 0; i < 5; i++) await write(big + i);
+    const kept = await engine.executeRaw<{ visibility: string | null; successor_pruned: boolean | null; change_reason: string | null }>(
+      `SELECT pv.frontmatter->>'visibility' AS visibility, pv.successor_pruned, pv.change_reason FROM page_versions pv JOIN pages p ON p.id = pv.page_id WHERE p.slug = $1 ORDER BY pv.id`, [SLUG]);
+    expect(kept.map(row => row.visibility)).toEqual([null, null, null, null, null, null]);
+    expect(kept[0]).toMatchObject({ successor_pruned: true, change_reason: 'made it private' });
+    const [gap] = await engine.executeRaw<{ gap: unknown }>('SELECT version_history_gap_at AS gap FROM pages WHERE slug = $1', [SLUG]);
+    expect(gap!.gap).not.toBeNull();
+    expect((await versions(false)).at(-1)!.replaced_because).toBe('made it private');
+    expect((await versions(true)).at(-1)!.replaced_because).toBeNull();
+  }, 60_000);
 
   test('canonicaliser bounds', () => {
     expect(canonicalChangeReason('  a\tb\r\nc\u0007  d ')).toBe('a b c d');
