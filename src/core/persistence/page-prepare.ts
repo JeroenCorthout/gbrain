@@ -45,7 +45,7 @@ import { getWorktreeBinding } from './ownership.ts';
 import type { PreparedContentImport } from './prepared-import.ts';
 import type { PreparedMutation } from './coordinator.ts';
 import type { SqlEngine, WriteRequest } from './model.ts';
-import { indexPendingError, readPendingHead } from './git-first.ts';
+import { importsCommittedFile, indexPendingError, readPendingHead } from './git-first.ts';
 import { isUnboundSourcePage } from './unbound-source.ts';
 import { isOriginTwinPage } from './origin-twins.ts';
 import { sealImportedPage, sealPageTextProjection } from '../page-state/projections.ts';
@@ -334,7 +334,7 @@ export async function prepareFileTarget(engine: BrainEngine, row: Pick<WriteRequ
 }
 
 /** prepareFileTarget's comparison of the file at `path` (`before`, its bytes or a piecewise reading) with the snapshot. */
-async function compareFileTarget(engine: BrainEngine, row: Pick<WriteRequest, 'source_id' | 'worktree_id' | 'slug'> & { id?: string }, snapshot: PageSnapshot | null,
+async function compareFileTarget(engine: BrainEngine, row: Pick<WriteRequest, 'source_id' | 'worktree_id' | 'slug'> & { id?: string; intent?: WriteRequest['intent']; operation?: string }, snapshot: PageSnapshot | null,
   content: string | Uint8Array | StreamedFileContent | null, options: Parameters<typeof prepareFileTarget>[5] & object,
   target: { root: string; path: string; mode: Awaited<ReturnType<typeof scannerSlugRootMode>> | undefined; capturedPath: string | null | undefined; before: Buffer | FileBytes | null }): Promise<PreparedMutation['file']> {
   const { root, path, mode, capturedPath, before } = target;
@@ -383,8 +383,8 @@ async function compareFileTarget(engine: BrainEngine, row: Pick<WriteRequest, 's
     const landed = !matches && !staleCache && content !== null && beforeHash() === fileContentHash(content)
       && await sourceCanonicalGit(engine, row.source_id) && await committedBlob(root, path) !== null;
     if (landed) return { path, root, content, expectedBeforeHash: beforeHash() };
+    if (!matches && !staleCache && await refuseWhileIndexPending(engine, row)) return { path, root, content, expectedBeforeHash: beforeHash() };
     if (!matches && !staleCache) {
-      await refuseWhileIndexPending(engine, row);
       const held = await heldFileRefusal(engine, row, root, path, 'drift', options.remote === true);
       if (held) throw held;
       // #6394: a page that never recorded its file reconciles against the file at its slug path only when adopted explicitly.
@@ -405,10 +405,16 @@ async function compareFileTarget(engine: BrainEngine, row: Pick<WriteRequest, 's
   return { path, root, content, expectedBeforeHash: before ? beforeHash() : null };
 }
 
-/** Wave C (ceo-r3-outside-1): the file differs from the rows because another write's committed head waits for its index. */
-async function refuseWhileIndexPending(engine: BrainEngine, row: Pick<WriteRequest, 'source_id' | 'slug'> & { id?: string }): Promise<void> {
+/**
+ * Wave C (ceo-r3-outside-1): the file differs from the rows because another write's committed head waits for its index.
+ * True when the write may replace it anyway (a delete); throws index_pending for any other write.
+ */
+async function refuseWhileIndexPending(engine: BrainEngine, row: Pick<WriteRequest, 'source_id' | 'slug'> & { id?: string; intent?: WriteRequest['intent']; operation?: string }): Promise<boolean> {
   const pending = await readPendingHead(engine, row.source_id, row.slug);
-  if (pending && pending.request_id !== row.id) throw indexPendingError(row.slug, pending.request_id);
+  if (!pending || pending.request_id === row.id || importsCommittedFile(row)) return false;
+  // A delete removes access rather than adding content (spec §3.1 step 7): it replaces the committed head and the flip aborts.
+  if (row.operation === 'delete_page') return true;
+  throw indexPendingError(row.slug, pending.request_id);
 }
 
 /** Wave C (spec §3.1): whether a put stages its segmented body or defers it to the index step (strict git-first, git-first-gate.ts). */

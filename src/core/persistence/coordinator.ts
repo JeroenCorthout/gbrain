@@ -56,7 +56,8 @@ import { classifyPgAccessError } from '../pg-access-classify.ts';
 import { commitThroughDoor, doorCommitLanded, doorMarker, replayAfterDoorCommit, sourceCanonicalGit, strictChanged } from './git-door.ts';
 import { assertNoPrivateCommit, assertStrictFileTarget, declareStrictPublication } from './git-declared.ts';
 import { gitFirstStrictActive } from './git-first-gate.ts';
-import { clearPendingHeads, indexPendingError, queueIndexFromGit, readPendingHead, type IndexFromGit } from './git-first.ts';
+import './index-split-page.ts';
+import { assertNoPendingIndex, clearPublishedPendingHeads, queueIndexFromGit, type IndexFromGit } from './git-first.ts';
 
 interface PreparedMutationBase {
   sourceExclusive?: boolean;
@@ -625,21 +626,16 @@ export async function publishMutation(engine: BrainEngine, row: WriteRequest, pr
         && await gitFirstStrictActive(tx, row.source_id, { strict: true });
       let gitCommit: string | null | undefined;
       if (prepared.indexFromGit && !gitFirst) throw strictChanged(row.source_id);
-      // Wave C (ceo-r3-outside-1): while another write's committed head waits for its index, the page's rows describe the
-      // generation before it, so a write prepared from them would drop the committed write from Git. It refuses (retryable)
-      // until the flip; preparation refuses the same way when it sees the file ahead of the rows (page-prepare.ts).
-      if (door?.door) {
-        const pending = await readPendingHead(tx, row.source_id, row.slug);
-        if (pending && pending.request_id !== row.id) throw indexPendingError(row.slug, pending.request_id);
-      }
+      // Wave C (ceo-r3-outside-1): preparation refuses the same way when it sees the file ahead of the rows (page-prepare.ts).
+      if (door?.door) await assertNoPendingIndex(tx, row);
       if (gitFirst) {
         await assertStrictFileTarget(tx, row, prepared, snapshot, binding);
         await doorProbe?.(tx, row);
         gitCommit = await commitThroughDoor(door!.door!.root, [{ path: door!.path, note: prepared.file?.commit }], lock ?? undefined);
       }
       // A door publication that is not itself indexed (an inline write, a delete, a private transition, a rename) replaces
-      // or removes the page's pending head, so an older index job finds its token gone and ends superseded (git-first.ts).
-      if (door?.door && !prepared.indexFromGit) await clearPendingHeads(tx, row.source_id, [row.slug, ...(prepared.additionalPageKeys ?? []).filter(key => key.sourceId === row.source_id).map(key => key.slug)]);
+      // or removes the page's pending head (the index step's own import of the committed file leaves it to the flip), so an older index job finds its token gone and ends superseded (git-first.ts).
+      if (door?.door && !prepared.indexFromGit) await clearPublishedPendingHeads(tx, row, prepared.additionalPageKeys);
       if (prepared.indexFromGit && gitCommit) {
         // Wave C (spec §3.1 step 7): no page metadata changes before the index flip; the request is indexing.
         const outcome: Record<string, unknown> = { status: 'created_or_updated', slug: row.slug, source_id: row.source_id, searchable: 'pending' };

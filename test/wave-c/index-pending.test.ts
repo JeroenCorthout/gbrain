@@ -11,7 +11,7 @@ import { join } from 'node:path';
 import type { BrainEngine } from '../../src/core/engine.ts';
 import { CODES } from '../../src/core/error-registry.ts';
 import { operations } from '../../src/core/operations.ts';
-import { _resetGitFirstGateForTests, _unregisterIndexSplitPageConsumerForTests, registerIndexSplitPageConsumer } from '../../src/core/persistence/git-first-gate.ts';
+import { _resetGitFirstGateForTests, _resetIndexSplitPageConsumerForTests, _unregisterIndexSplitPageConsumerForTests, registerIndexSplitPageConsumer } from '../../src/core/persistence/git-first-gate.ts';
 import { durableGitRepo, git } from '../helpers/git-publication.ts';
 import { managedBrain } from '../helpers/managed-brain.ts';
 import { requirePostgresTestDatabase, testBackends } from '../helpers/test-backends.ts';
@@ -27,7 +27,7 @@ const pendingHead = async (engine: BrainEngine, slug: string) => (await engine.e
 for (const backend of testBackends()) describe(`[${backend}] writes during a pending index (ceo-r3-outside-1)`, () => {
   const databaseUrl = backend === 'postgres' ? requirePostgresTestDatabase() : undefined;
   beforeEach(() => { _resetGitFirstGateForTests(); registerIndexSplitPageConsumer({ run: async () => undefined }); });
-  afterEach(() => { _unregisterIndexSplitPageConsumerForTests(); _resetGitFirstGateForTests(); });
+  afterEach(() => { _resetIndexSplitPageConsumerForTests(); _resetGitFirstGateForTests(); });
 
   test('an append and a revision-bound put refuse with index_pending; Git keeps the committed write', () => managedBrain(async ({ engine, ctx, root }) => {
     await strict(engine);

@@ -73,13 +73,13 @@ export async function queueIndexFromGit(tx: BrainEngine, row: WriteRequest, inde
 /** The page's pending head, or null when the page has none (indexed, or never written through the git-first path). */
 export interface PendingHead {
   source_id: string; slug: string; page_id: number | null; request_id: string; commit_oid: string; head_oid: string; path: string;
-  revision: string; body_bytes: number; title: string | null; type: string | null; frontmatter: Record<string, unknown> | null;
+  revision: string; body_bytes: number; body_sha256: string; title: string | null; type: string | null; frontmatter: Record<string, unknown> | null;
   lead_text: string | null; access_state: 'world' | 'private'; hold_code: string | null; queued_at: string;
 }
 
 export async function readPendingHead(exec: Pick<BrainEngine, 'executeRaw'>, sourceId: string, slug: string, opts: { lock?: boolean } = {}): Promise<PendingHead | null> {
   const [row] = await exec.executeRaw<PendingHead>(`SELECT source_id, slug, page_id, request_id::text AS request_id, commit_oid, head_oid, path,
-      revision::text AS revision, body_bytes, title, type, frontmatter, lead_text, access_state, hold_code, queued_at
+      revision::text AS revision, body_bytes, encode(body_sha256, 'hex') AS body_sha256, title, type, frontmatter, lead_text, access_state, hold_code, queued_at
     FROM page_pending_heads WHERE source_id = $1 AND slug = $2${opts.lock ? ' FOR UPDATE' : ''}`, [sourceId, slug]);
   return row ? { ...row, body_bytes: Number(row.body_bytes), page_id: row.page_id == null ? null : Number(row.page_id) } : null;
 }
@@ -98,4 +98,32 @@ export function indexPendingError(slug: string, requestId: string): OperationErr
     'Wait a few seconds for the index step, then read the page again and submit the write with a new request_id.',
     { fix: { argv: ['gbrain', 'write-request', '--', requestId], consent: [], actor: 'agent', requires_exclusive: false,
       why: 'Read-only: the committed write\'s receipt says when its index step has flipped the page.' } });
+}
+
+/**
+ * Wave C 1I-a: a managed import of the page's canonical file as Git holds it (its input is the file itself), which is
+ * how the index step derives the rows; it is not refused while the page's index is pending.
+ */
+export function importsCommittedFile(row: { intent?: Record<string, unknown> | null }): boolean {
+  const intent = row.intent;
+  return intent?.kind === 'managed_file_import' && typeof intent.inputHash === 'string' && intent.inputHash === intent.targetHash;
+}
+
+/**
+ * Wave C (ceo-r3-outside-1): while another write's committed head waits for its index, the page's rows describe the
+ * generation before it, so a write prepared from them would drop the committed write from Git; it refuses index_pending
+ * (retryable) until the flip. A delete removes access rather than adding content (spec §3.1 step 7) and applies, and the
+ * index step's own import of the committed file is never refused.
+ */
+export async function assertNoPendingIndex(tx: Pick<BrainEngine, 'executeRaw'>, row: Pick<WriteRequest, 'id' | 'source_id' | 'slug' | 'operation' | 'intent'>): Promise<void> {
+  if (row.operation === 'delete_page' || importsCommittedFile(row)) return;
+  const pending = await readPendingHead(tx, row.source_id, row.slug);
+  if (pending && pending.request_id !== row.id) throw indexPendingError(row.slug, pending.request_id);
+}
+
+/** After a door publication that is not itself indexed: the pages it replaced or removed lose their pending heads. */
+export async function clearPublishedPendingHeads(tx: Pick<BrainEngine, 'executeRaw'>, row: Pick<WriteRequest, 'source_id' | 'slug' | 'intent'>,
+  additional: readonly { sourceId: string; slug: string }[] = []): Promise<void> {
+  if (importsCommittedFile(row)) return;
+  await clearPendingHeads(tx, row.source_id, [row.slug, ...additional.filter(key => key.sourceId === row.source_id).map(key => key.slug)]);
 }
