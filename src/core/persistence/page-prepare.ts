@@ -432,10 +432,14 @@ function gitKeepsDeferredTarget(file: PreparedMutation['file'], databaseOnly: Pi
 }
 
 /** The metadata a deferred write carries to its door transaction (git-first.ts IndexFromGit). */
-function indexFromGitOf(ready: PreparedContentImport): Pick<PreparedMutation, 'indexFromGit'> {
+function indexFromGitOf(ready: PreparedContentImport, row: WriteRequest): Pick<PreparedMutation, 'indexFromGit'> {
   if (!ready.deferredToIndex) return {};
   const page = ready.parsedPage;
-  return { indexFromGit: { title: page.title, type: page.type, frontmatter: page.frontmatter ?? {} } };
+  // T-DX1: the write gate assessed these bytes before the door; the receipt says what it decided, as an applied write's does.
+  const gate = gateField(ready.result.gate, `p:${row.source_id}/${row.slug}`, null);
+  const quarantined = quarantineOutcome(page.frontmatter);
+  return { indexFromGit: { title: page.title, type: page.type, frontmatter: page.frontmatter ?? {},
+    ...(gate || quarantined ? { outcome: { ...(gate ? { gate } : {}), ...(quarantined ? { quarantined } : {}) } } : {}) } };
 }
 
 /** #6188 (D12): what Tier 1 rewrote; a remote caller is never told about the takes fence it cannot read (preserved verbatim). */
@@ -998,7 +1002,7 @@ async function prepareInlineOrSegmentedMutation(unbounded: BrainEngine, row: Wri
   // An inferred mode is pinned with the first origin it mints, so later pages cannot flip the inference (#5610).
   const pinMode = sourcePath && mintMode && scannerSourcePath(file!.root, file!.root) && !await readSlugRootMode(engine, row.source_id) ? mintMode : undefined;
   const publication: PreparedMutation = { observedRevision, noop, additionalPageKeys:links?.pageKeys, file, ...databaseOnly,
-    ...indexFromGitOf(ready), ...(supersedes ? { supersedesPending: supersedes.request_id } : {}), ...(core ? { exclusiveSources: core.exclusiveSources } : {}), ...(trust ? { trust } : {}), ...(ready.afterCommit ? { afterCommit: ready.afterCommit } : {}),
+    ...indexFromGitOf(ready, row), ...(supersedes ? { supersedesPending: supersedes.request_id } : {}), ...(core ? { exclusiveSources: core.exclusiveSources } : {}), ...(trust ? { trust } : {}), ...(ready.afterCommit ? { afterCommit: ready.afterCommit } : {}),
     validate: async tx => { await ready.validate(tx); await core?.validate(tx); }, apply: async (tx, preimage) => {
     let autoLinks: Awaited<ReturnType<NonNullable<typeof links>['apply']>> | undefined;
     let removedTimeline: TimelineRowsRemoved | null = null;

@@ -24,6 +24,8 @@ export interface IndexFromGit {
   title: string;
   type: string;
   frontmatter: Record<string, unknown>;
+  /** Receipt fields the preparation decided before the door (the write gate's outcome, a quarantine). */
+  outcome?: Record<string, unknown>;
 }
 
 /** Lead text kept on a pending head: what a partial read during the lag shows. */

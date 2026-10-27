@@ -652,7 +652,7 @@ export async function publishMutation(engine: BrainEngine, row: WriteRequest, pr
       if (door?.door && !prepared.indexFromGit) await clearPendingHeads(tx, row.source_id, [row.slug, ...(prepared.additionalPageKeys ?? []).filter(key => key.sourceId === row.source_id).map(key => key.slug)]);
       if (prepared.indexFromGit && gitCommit) {
         // Wave C (spec §3.1 step 7): no page metadata changes before the index flip; the request is indexing.
-        const outcome: Record<string, unknown> = { status: 'created_or_updated', slug: row.slug, source_id: row.source_id, searchable: 'pending' };
+        const outcome: Record<string, unknown> = { status: 'created_or_updated', slug: row.slug, source_id: row.source_id, searchable: 'pending', ...prepared.indexFromGit.outcome };
         decoratePublicationOutcome(row, prepared, outcome, null, files.length, false);
         Object.assign(outcome.persistence as object, { git_state: 'committed', git_commit: gitCommit, ...(gitIndexRestored ? { git_index_restored: gitIndexRestored } : {}) });
         outcome.index = await queueIndexFromGit(tx, row, prepared.indexFromGit, String(prepared.file!.content), snapshot, gitCommit, door!.door!.root, door!.path);
