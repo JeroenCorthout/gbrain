@@ -83,6 +83,7 @@ test/forecast-journal.test.ts
 test/frontmatter-reserved-keys-6454.test.ts
 test/get-chunks-paging.test.ts
 test/git-canonical-conversion-g8a.test.ts
+test/git-canonical-conversion-progress.test.ts
 test/git-canonical-declared-g7a.test.ts
 test/git-canonical-indexer-g3.test.ts
 test/git-door-index-lock-7742.test.ts

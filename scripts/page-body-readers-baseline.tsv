@@ -207,8 +207,8 @@ src/core/enrichment-service.ts	stubMarkdown	call:serializeMarkdown	INLINE	G6: a 
 src/core/export-snapshot.ts	inlineExportMarkdown	call:serializeMarkdown	SEGW	
 src/core/export-snapshot.ts	inlineExportMarkdown	field	STREAM	
 src/core/export-snapshot.ts	segmentedExportHead	call:serializeMarkdown	NONE	not the page body: the frontmatter head, rendered with an empty body
-src/core/export-snapshot.ts	readExportPage	field	STREAM	inline pages only: a segmented page skips the overlay here and streams through segmentedExportMarkdown (readBodyRange, trusted stored)
-src/core/export-snapshot.ts	readExportPage	sql	STREAM	
+src/core/export-snapshot.ts	readExportPages	field	STREAM	inline pages only: a segmented page skips the overlay here and streams through segmentedExportMarkdown (readBodyRange, trusted stored)
+src/core/export-snapshot.ts	readExportPages	sql	STREAM	
 src/core/extract-ner.ts	extractNerLinks	field	STREAM	
 src/core/extract-takes-from-pages.ts	extractTakesFromPages	call:serializePageToMarkdown	SEGW	
 src/core/extract-takes-from-pages.ts	extractTakesFromPages	field	STREAM	inline rows only (SQL filter)
