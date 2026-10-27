@@ -10,6 +10,99 @@ credits are retained; no result has been reassigned to another provider. Origina
 identifiers and attribution are available in the pre-removal Git revision
 `6040075c6cb95be5881cc2e1b76ef7d71f4e5d29` (retained on 2026-09-23).
 
+## [0.60.473.0] - 2026-10-27
+
+**A change you stage while a write is finishing is no longer overwritten.**
+
+After a write on a Git-canonical source commits, gbrain refreshes the Git index so `git status` shows the written pages as clean. That refresh read the index, compared it, and then wrote it without holding Git's index lock. If you staged a change to the same page in that gap (`git add`, `git update-index`), the refresh wrote its own version over yours and the write still reported `committed`.
+
+The refresh now takes Git's own `index.lock`, the same lock `git add` and `git commit` take. It updates a copy of the index and renames the copy into place, so no other Git command can change the index between the check and the write.
+
+### What changed
+
+| Situation | Before | Now |
+|---|---|---|
+| You stage a page while gbrain refreshes the index after its commit | your staged change was silently replaced | Git refuses your `git add` on `index.lock`; run it again and it holds |
+| You stage a page after gbrain's commit and before its refresh | left staged (unchanged) | left staged; the write's failure says the commit landed and names the page |
+| Another Git command holds `index.lock` during the refresh | the refresh could fail with a Git error | the write's failure says the commit landed and the index wasn't updated, and names the pages; the other command keeps its lock |
+| A linked worktree | refreshed its own index | refreshed under that worktree's own lock, never the main checkout's |
+
+In every row the commit itself has landed. Only the index refresh is skipped, and `git status` shows the difference.
+
+A writer that doesn't take the index lock (for example `git commit -- <path>`, which reads the index before locking) is still outside this guarantee.
+
+## [0.60.472.0] - 2026-10-27
+
+**A `gbrain sources refresh` whose process dies mid-refresh no longer wedges the managed checkout. The next refresh finishes it, and status tells you who holds a refresh and whether it is still running.**
+
+Before, if the refreshing process was killed while its refresh was syncing (a container replaced mid-refresh, an OOM kill), every later `gbrain sources refresh` refused with `refresh_in_progress` and every page write to that checkout refused with `worktree_refreshing`, until someone ran `--resume` by hand. Now the next scheduled refresh on the owner host finishes the orphaned refresh the same way `--resume` would, then runs its own. The owner's background scan also completes an orphaned refresh once every source on the checkout has synced to its target. A refresh whose process is still running, or whose holder is on another host, is never taken over.
+
+### How to get it
+
+Upgrade. Nothing to run: an orphaned refresh left by an older version is picked up by the next refresh on the owner host. To see a refresh's state:
+
+```bash
+gbrain sources writer status <source> --json   # worktree_refreshes: holder, liveness, auto_recovery, fix
+gbrain sync status --source <source> --json     # worktree_refresh
+```
+
+### What changed
+
+| Situation | Before | Now |
+|---|---|---|
+| A refresh's process died and the next scheduled `gbrain sources refresh` runs on the owner host | refused `refresh_in_progress` forever; page writes refused `worktree_refreshing` | finishes the orphan through the `--resume` path (reported under `recovered`, also in text mode), then refreshes |
+| An orphaned refresh whose sources already synced to its target, or past it | stayed active until `--resume` | the owner completes it on its own (`completed_by: owner_recovery`) |
+| A refresh still running, or held on another host | `refresh_in_progress` | unchanged: never taken over; the refusal names the holder's pid and host |
+| `gbrain sources writer status` / `gbrain sync status` on an active refresh | state only | `holder`, `liveness` (`live`, `orphaned`, `unknown`), `auto_recovery` and a `fix` naming `--resume` when no process will move it on |
+| `gbrain sources refresh --json` refusal with a structured next step (`refresh_diverged`, `refresh_in_progress`, a git read failure) | `fix` was the prose string; the structured publish step was dropped | `fix` is the v1 object (`argv`, `next`, `actor`); the prose moves to `suggestion` |
+| A plain refresh of a checkout whose interrupted refresh needs a reset decision | `refresh_in_progress` | `refresh_recovery_required`, naming both ways out |
+
+### Things to watch after you upgrade
+
+- Scripts that read `fix` from `gbrain sources refresh --json` as a string should read `suggestion` for the text; refusals without a structured step keep the string.
+- An orphan is not adopted while the checkout's HEAD cannot be read, or while publication or topology recovery is pending on it; status then reports `auto_recovery: none`. `--dry-run` never adopts.
+- A refresh whose interrupted state needs a reset still waits for you: `--resume` prints the two ways out, and resetting is your call.
+
+### Itemized changes
+
+- `src/core/persistence/worktree-refresh.ts`: refresh rows record `outcome.holder` (host, pid, process start) and keep the first replaced holder as `previous_holder` (no migration); a plain refresh adopts an orphan (refresh lock free, holder on this host, HEAD readable, worktree active, no pending recovery) through `resumeHeld`; the owner topology scan selects `syncing` rows and completes one whose members all reached the target or a descendant and whose HEAD is at or past the target, re-checking a lagging one after a member moves or a minute passes; `refreshLiveness` / `refreshHolderReport` drive status; the main refresh waits up to 1 s for its lock so a status probe never makes it refuse.
+- `src/core/persistence/sync-status.ts`: `worktree_refresh` with holder and liveness, read in the existing source statement; an orphaned refresh's fix leads `next`.
+- `src/commands/sources-refresh.ts`: structured refusal fixes in `--json` (#7685) and a text-mode `Recovered orphaned refresh` line.
+- Tests: `test/worktree-refresh-orphan-7679.test.ts` (a real child process SIGKILLed at `syncing`, PGLite and Postgres), state-matrix tests 7c/7d over every interrupted-row kind and guard, and 7e-7h in `test/persistence-worktree-refresh.test.ts`.
+
+## [0.60.471.0] - 2026-10-27
+
+**A page write on a Git-canonical source now commits exactly what it published, or nothing, and a new page costs less Git time to write. A full sync stops reparsing pages that are already current.**
+
+Before, a write on a source with `canonical: git` committed whatever the file held on disk when Git staged it, so an edit made while the write was publishing could land in the commit while the database recorded the write's own content. A staged change of the same file was silently replaced. Both now refuse with a named code and leave your files and index as they were. Separately, writing a new page on a large checkout ran `git check-ignore` up to three times; most such writes now skip it, so their overhead drops on big brains. And `gbrain sync --full` (including the two passes inside `gbrain sources canonical --apply`) admits an unchanged, fully current page without re-reading it, which makes a conversion with nothing to adopt much faster.
+
+### What changed
+
+| Situation | Before | Now |
+|---|---|---|
+| A page's file is edited on disk while a strict write publishes it | Git committed the edit; the database recorded the write's content | refuses `git_target_changed`: nothing is committed, the edit stays on disk, and the source's writes pause until `gbrain repair stuck-recovery` resolves it |
+| The page's file has a staged change when a strict write starts | the write replaced the staged change in the index | refuses `git_index_conflict` with the index untouched; commit or unstage, then retry |
+| The index still holds the version from before an earlier gbrain commit whose index update failed | no notice said the entry was replaced | the next write restores the entry to HEAD and reports a `git_index_restored` notice naming the path |
+| A strict write to a path no ignore rule could match | ran `git check-ignore`, which reads the whole index | skips it; any path a rule might match still goes to Git, which stays the only judge |
+| `gbrain sync --full` over a page whose content, parser, chunks, text projection and contextual mode are all current | reparsed the page | admits it in place; any stale state, a hold or a moved origin still reparses |
+
+### Things to watch after you upgrade
+
+- A write refused with `git_target_changed` pauses that source's writes on purpose. `gbrain sources writer status --json` shows the state, and `gbrain repair stuck-recovery --source <id> --keep disk|prior` previews and applies the choice of which version wins.
+- A staged edit to a page's file now blocks gbrain writes to that page until you commit or unstage it.
+- Git decides alone, with no filter in front, on sparse checkouts, skip-worktree entries, split or sparse indexes, unresolvable ignore includes, and gitlinks or symlinks on the path.
+- Nothing rewrites your data on upgrade.
+
+### Itemized changes
+
+- `src/core/persistence/git-door.ts`: the door stages the planned blob (`hash-object -w` then `update-index --cacheinfo`), refuses a changed file (`git_target_changed`) or a foreign staged entry (`git_index_conflict`), restores a stale entry left by an interrupted door refresh and reports it, sizes its step deadline from one stat of the index, and asks `check-ignore` only for filter candidates.
+- `src/core/persistence/ignore-rules.ts`: the over-approximating ignore filter (every `.gitignore` down the path, `info/exclude`, `core.excludesFile`); `sync-origin-evidence.ts` uses it too.
+- `src/core/persistence/sync-classify.ts`, `sync-pass.ts`, `sync-pass-episode.ts`, `sync-prepare.ts`: a full episode admits a current page without a reparse.
+- `src/core/error-registry.ts`, `docs/guides/error-codes.md`: `git_target_changed`, `git_index_conflict`.
+- `src/core/behavior-change-notice.ts`: one behavior notice for the door's refusals and the restore notice.
+- `scripts/bench/door-write-overhead.ts`: measures strict-write door overhead on a synthetic checkout.
+- Tests: `test/git-door-planned-state.test.ts`, `test/git-door-write-cost.test.ts`, `test/ignore-rules.test.ts`, `test/sync-pass-episode-in-place.test.ts`, `test/bench-door-write-overhead.test.ts`.
+
 ## [0.60.470.0] - 2026-10-26
 
 **A temporary table can no longer slip purged or forgotten content past gbrain's guards. Before, any database session, including gbrain's own role, could create an empty table named like a purge list and have a purged claim, page or take stored again, or a forgotten fact saved active.**

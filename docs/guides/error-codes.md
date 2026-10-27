@@ -1731,6 +1731,14 @@ Reasons: `no_file_form`, `declared_target`, `facts_lane`.
 
 More: [docs/guides/write-refusals.md#git_home_required](../../docs/guides/write-refusals.md#git_home_required)
 
+### git_index_conflict
+
+<a id="git_index_conflict"></a>
+
+| Meaning | Why | Next step | Who acts · consent | Verify | Exit | Retryable |
+|---|---|---|---|---|---|---|
+| A strict (canonical: git) write found a staged change of its path that is not committed, so it committed nothing and left the index as it was. | The door commits a path only while the checkout's index entry for it equals HEAD's. Committing over a staged change would overwrite it in the index or publish it under a gbrain commit, so the person who staged it decides first. | Commit the staged change, or unstage it (git restore --staged -- <path> keeps the file on disk), then retry the write with a new request_id. git diff --cached --name-only -- <path> prints nothing once it is resolved. | user | `repeat the read that failed` | 1 | no |
+
 ### git_index_locked
 
 <a id="git_index_locked"></a>
@@ -1808,6 +1816,14 @@ More: [docs/guides/write-refusals.md#git_protocol_required](../../docs/guides/wr
 | Meaning | Why | Next step | Who acts · consent | Verify | Exit | Retryable |
 |---|---|---|---|---|---|---|
 | The canonical commit is durable locally; its push will retry. | A temporary condition (a lock, a pending write, a rate limit); the same request can succeed later. | Wait briefly, then retry the same request (writes: reuse the same request_id). | agent | `repeat the read that failed` | 1 | yes |
+
+### git_target_changed
+
+<a id="git_target_changed"></a>
+
+| Meaning | Why | Next step | Who acts · consent | Verify | Exit | Retryable |
+|---|---|---|---|---|---|---|
+| A strict (canonical: git) write's file changed on disk while it was being committed, so nothing was committed and the write was not published. | The door commits exactly the bytes the write published, and checks the file's hash against them before and after Git stores it. An edit landing in between would otherwise be committed while the database records other content; recovery leaves the changed file as it is. | When the file holds neither the write's bytes nor the version before it, the write is held in recovery (blocked reason unexpected_file_bytes) and the source's later writes wait behind it; when it holds the version before the write, nothing is held and the write failed, so read the page before resubmitting it with a new request_id. To resolve a held write, preview with gbrain repair stuck-recovery --source <id> --json, ask the user which version to keep, then run gbrain repair stuck-recovery --source <id> --keep disk\|prior --apply --expect <preview_hash> --yes (disk keeps the edit). Run: gbrain sources writer status --json | user | `repeat the read that failed` | 1 | no |
 
 ### git_target_ignored
 
