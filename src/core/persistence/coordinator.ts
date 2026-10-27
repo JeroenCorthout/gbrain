@@ -55,7 +55,7 @@ import { publicationBeliefOptions, withBeliefBatch } from '../belief/ledger.ts';
 import { markBeliefCommits } from '../belief/append.ts';
 import { classifyPgAccessError } from '../pg-access-classify.ts';
 import { commitThroughDoor, doorCommitLanded, doorMarker, prehashDoorFile, replayAfterDoorCommit, sourceCanonicalGit, strictChanged, type PrehashedBlob } from './git-door.ts';
-import { assertNoPrivateCommit, assertStrictFileTarget, declareStrictPublication } from './git-declared.ts';
+import { assertNoPrivateCommit, assertStrictFileTarget, declareStrictPublication, strictTargetRefuses } from './git-declared.ts';
 import { gitFirstStrictActive } from './git-first-gate.ts';
 import { clearPendingHeads, indexPendingError, queueIndexFromGit, readPendingHead, type IndexFromGit } from './git-first.ts';
 
@@ -493,7 +493,7 @@ export async function publishMutation(engine: BrainEngine, row: WriteRequest, pr
       // the plan and the path's attributes under the lock and hashes in place only when they changed (git-door.ts).
       const content = prepared.file?.content;
       if (!skill && binding.canonical_git === true && !prepared.noop && (typeof content === 'string' || content instanceof Uint8Array)
-        && isWriteTargetContained(prepared.file!.path, prepared.file!.root)) prehashed = await prehashDoorFile(binding.local_path, prepared.file!.path, content);
+        && isWriteTargetContained(prepared.file!.path, prepared.file!.root) && !await strictTargetRefuses(engine, row, content, binding)) prehashed = await prehashDoorFile(binding.local_path, prepared.file!.path, content);
       try { lock = await acquireWorktree(binding, 0, undefined, engine, { yieldLanes: true }); }
       catch (error) {
         // #6305: this process cannot open the lock file (sandbox, unwritable lock directory): like a busy lock, publish nothing.

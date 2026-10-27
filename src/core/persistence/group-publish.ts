@@ -57,7 +57,7 @@ import { assertUnboundPublication, classifyUnboundPage } from './unbound-source.
 import { boundPublication, declarePublication, publicationLeaseMs, publicationTransaction, type PublicationBound } from './publication-deadline.ts';
 import { classifyMirrorPage, sourceMirrorReadOnly } from './mirror-read-only.ts';
 import { commitThroughDoor, doorMarker, prehashDoorFile, sourceCanonicalGit, strictChanged, type PrehashedBlob } from './git-door.ts';
-import { assertNoPrivateCommit, declareStrictPublication } from './git-declared.ts';
+import { assertNoPrivateCommit, declareStrictPublication, strictTargetRefuses } from './git-declared.ts';
 import { gitFirstStrictActive } from './git-first-gate.ts';
 import { authorizePageVisibility } from './page-visibility.ts';
 import { withFilesystemPublication } from './filesystem-guard.ts';
@@ -266,9 +266,10 @@ export async function publishGroup(engine: BrainEngine, rows: WriteRequest[], pr
   const beside = !lane && rows.length === 1 && singleWrite(head) && await foregroundPriority(engine);
   // Wave C (spec §3.5): a strict group stores its members' blobs before it takes the writer lock (git-door.ts rechecks them).
   const prehashed: Array<PrehashedBlob | null> = [];
-  if (binding.canonical_git === true) for (const member of prepared) {
+  if (binding.canonical_git === true) for (const [i, member] of prepared.entries()) {
     const content = member.noop ? null : member.file?.content;
-    prehashed.push(typeof content === 'string' || content instanceof Uint8Array ? await prehashDoorFile(binding.local_path, member.file!.path, content) : null);
+    prehashed.push((typeof content === 'string' || content instanceof Uint8Array) && !await strictTargetRefuses(engine, rows[i]!, content, binding)
+      ? await prehashDoorFile(binding.local_path, member.file!.path, content) : null);
   }
   let joined: NativeLockHandle | null, lock: NativeLockHandle | null;
   try {
