@@ -19,7 +19,7 @@ import { readStdinPayload } from '../../core/stdin-read.ts';
 import { ConnectorClient, probeFailure } from '../../core/connectors/client.ts';
 import { deleteCredential, saveCredential } from '../../core/connectors/credentials.ts';
 import { getConnectorProvider, isConnectorProviderName } from '../../core/connectors/registry.ts';
-import type { ChatHistoryProvider, ConnectorCredential, ProbeResult } from '../../core/connectors/types.ts';
+import { isTokenProviderName, type ChatHistoryProvider, type ConnectorCredential, type ProbeResult } from '../../core/connectors/types.ts';
 
 interface AuthFlags {
   cookie?: string;
@@ -142,8 +142,13 @@ function printFirstRun(provider: string): void {
 
 export async function runConnectorAuth(_engine: BrainEngine, args: string[]): Promise<void> {
   const { provider, flags } = parseFlags(args);
+  if (isTokenProviderName(provider)) {
+    const { runApiTokenAuth } = await import('./auth-token.ts');
+    await runApiTokenAuth(provider, flags);
+    return;
+  }
   if (!isConnectorProviderName(provider)) {
-    console.error(`Usage: gbrain connectors auth <chatgpt|claude> [--cookie -|--token V] [--try-oauth] [--force]`);
+    console.error(`Usage: gbrain connectors auth <chatgpt|claude> [--cookie -|--token V] [--try-oauth] [--force], or gbrain connectors auth fireflies --token -`);
     setCliExitVerdict(1);
     return;
   }
@@ -252,8 +257,8 @@ async function tryOauth(prov: ChatHistoryProvider, flags: AuthFlags): Promise<bo
 
 export async function runConnectorLogout(args: string[]): Promise<void> {
   const provider = args.find((a) => !a.startsWith('-')) ?? '';
-  if (!isConnectorProviderName(provider)) {
-    console.error('Usage: gbrain connectors logout <chatgpt|claude>');
+  if (!isConnectorProviderName(provider) && !isTokenProviderName(provider)) {
+    console.error('Usage: gbrain connectors logout <chatgpt|claude|fireflies>');
     setCliExitVerdict(1);
     return;
   }

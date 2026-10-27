@@ -398,6 +398,8 @@ export class ManagedConnectorSync {
     this.checkpointKeys = connectorCheckpointKeys(sourceId, source.incarnation, identity);
     this.checkpointKey = this.checkpointKeys[0]!;
   }
+  /** Whether this run publishes canonical files (a bound worktree root) rather than database-only rows. */
+  get bound(): boolean { return this.canonicalRoot !== null; }
   async assertLease(engine: BrainEngine): Promise<void> {
     if (!this.lease) return;
     this.lease.signal.throwIfAborted();

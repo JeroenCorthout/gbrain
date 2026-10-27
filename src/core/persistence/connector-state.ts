@@ -23,7 +23,8 @@ export const CONNECTOR_STATE_OP = 'managed-connector-state';
 
 export type ConnectorAccount =
   | { kind: 'google'; email: string }
-  | { kind: 'github'; installationId: number | null; login: string | null };
+  | { kind: 'github'; installationId: number | null; login: string | null }
+  | { kind: 'meetings'; provider: string; userId: string; email: string | null };
 
 export interface ConnectorPendingEntry {
   /** The page slug, or `__managed_connector_checkpoint__` for a checkpoint save. */
@@ -199,6 +200,10 @@ export function sameConnectorAccount(a: ConnectorAccount, b: ConnectorAccount): 
       const other = b as typeof a;
       return (a.installationId ?? null) === (other.installationId ?? null) && (a.login ?? null)?.toLowerCase() === (other.login ?? null)?.toLowerCase();
     }
+    case 'meetings': {
+      const other = b as typeof a;
+      return a.provider === other.provider && a.userId === other.userId;
+    }
     default: return assertNever(a);
   }
 }
@@ -208,6 +213,7 @@ export function describeConnectorAccount(account: ConnectorAccount): string {
     case 'google': return account.email;
     case 'github': return [account.installationId !== null ? `installation ${account.installationId}` : null, account.login ? `login ${account.login}` : null]
       .filter(Boolean).join(', ') || 'no installation or login';
+    case 'meetings': return `${account.provider} user ${account.userId}${account.email ? ` (${account.email})` : ''}`;
     default: return assertNever(account);
   }
 }

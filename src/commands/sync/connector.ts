@@ -45,6 +45,11 @@ async function runConnectorKind(engine: BrainEngine, sourceId: string, config: R
       const { parseGoogleSourceConfig, runGoogleSync } = await import('../../core/google/google-source.ts');
       return runGoogleSync(engine, sourceId, parseGoogleSourceConfig(config, fallbackDir), options);
     }
+    case 'meetings': {
+      const { parseMeetingsSourceConfig } = await import('../../core/meetings/source-config.ts');
+      const { runMeetingsSync } = await import('../../core/meetings/meetings-source.ts');
+      return runMeetingsSync(engine, sourceId, parseMeetingsSourceConfig(config, fallbackDir), options);
+    }
     default: return assertNever(config.kind);
   }
 }
