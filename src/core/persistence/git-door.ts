@@ -84,6 +84,8 @@ export interface DoorFile {
   path: string;
   /** The planned state: the sha256 of the bytes the publication wrote at `path`, or null for a removal. */
   planned: string | null;
+  /** Wave C (spec §3.5): the blob stored before the writer lock (prehashDoorFile); used only while its plan and the path's attributes still hold. */
+  prehashed?: PrehashedBlob | null;
   note?: GitCommitNote;
 }
 
@@ -115,7 +117,7 @@ export async function commitThroughDoor(root: string, files: DoorFile[], writerL
 }
 
 interface TreeEntry { mode: string; oid: Buffer }
-interface Target { rel: string; name: string; dir: string; planned: string | null; note?: GitCommitNote; mode?: string; oid?: string; head?: string }
+interface Target { rel: string; name: string; dir: string; planned: string | null; note?: GitCommitNote; mode?: string; oid?: string; head?: string; prehashed?: PrehashedBlob | null }
 /** The index entries of the targets (`<mode> <oid>`, or `unmerged`) and the index file's identity when they were read. */
 interface IndexSnapshot { signature: string; entries: Map<string, string> }
 
@@ -209,16 +211,23 @@ async function doorCommit(session: GitSession, root: string, files: DoorFile[], 
     const slash = full.lastIndexOf('/');
     const target = targets.get(rel) ?? { rel, dir: slash < 0 ? '' : full.slice(0, slash), name: latin1(full.slice(slash + 1)), planned: file.planned };
     target.note ??= file.note;
+    target.prehashed ??= file.prehashed;
     targets.set(rel, target);
   }
   refuseChanged(root, targets.values());
   const present = [...targets.values()].filter(target => existsSync(join(root, target.rel)));
-  if (present.length) {
-    const hashed = await git(session, ['hash-object', '-w', '--', ...present.map(target => target.rel)]);
+  // A blob hashed before the lock stands only for the bytes it was hashed from (the plan, which refuseChanged checks the
+  // file against) under the same attributes; any other target is hashed here.
+  for (const target of present) if (target.prehashed && target.prehashed.planned === target.planned
+    && await pathAttributes(session, target.rel) === target.prehashed.attributes) target.oid = target.prehashed.oid;
+  const unhashed = present.filter(target => !target.oid);
+  if (unhashed.length) {
+    const hashed = await git(session, ['hash-object', '-w', '--', ...unhashed.map(target => target.rel)]);
     const oids = hashed.stdout.split('\n').filter(Boolean);
-    if (hashed.code !== 0 || oids.length !== present.length) throw gitFailure('Cannot hash the canonical Git target.', `git hash-object failed for ${present.length} file(s).`);
-    present.forEach((target, i) => { target.oid = oids[i]; target.mode = lstatSync(join(root, target.rel)).mode & 0o111 ? '100755' : '100644'; });
+    if (hashed.code !== 0 || oids.length !== unhashed.length) throw gitFailure('Cannot hash the canonical Git target.', `git hash-object failed for ${unhashed.length} file(s).`);
+    unhashed.forEach((target, i) => { target.oid = oids[i]; });
   }
+  for (const target of present) target.mode = lstatSync(join(root, target.rel)).mode & 0o111 ? '100755' : '100644';
   let fileModeTrusted: boolean | undefined;
   refuseChanged(root, targets.values());
 
@@ -361,6 +370,39 @@ async function refuseIgnored(session: GitSession, root: string, fresh: Target[])
 export function indexRestoredNotice(paths: string[]): Notice {
   return { code: 'git_index_restored', kind: 'info',
     why: `gbrain restored index to HEAD after an interrupted door refresh for ${paths.join(', ')}: the index still held the version before an earlier gbrain commit (its update of the index had failed), so this write replaced that stale entry. Nothing was lost; the earlier version is in Git history.` };
+}
+
+/** A file's blob stored before the writer lock (spec §3.5): the plan it was hashed from and the path's attributes then. */
+export interface PrehashedBlob { oid: string; planned: string; attributes: string }
+
+/** The Git attributes that apply to `rel` (`check-attr -a`), the signature a pre-hashed blob is rechecked against. */
+async function pathAttributes(session: GitSession, rel: string): Promise<string | null> {
+  const attrs = await git(session, ['check-attr', '-a', '-z', '--', rel]);
+  return attrs.code === 0 ? attrs.stdout : null;
+}
+
+/**
+ * Wave C (spec §3.5): stores the blob of `content` as Git would hash it at `path` (`hash-object -w --path`), before the
+ * publication takes the writer lock, so the door turn hashes nothing. Null (the door hashes under the lock as before)
+ * when the path has a clean filter (only Git can run it against the file in place) or Git refuses; never a refusal.
+ */
+export async function prehashDoorFile(root: string, path: string, content: string | Uint8Array): Promise<PrehashedBlob | null> {
+  const temp = join(persistenceHome(), 'door');
+  mkdirSync(temp, { recursive: true, mode: 0o700 });
+  const scratch = mkdtempSync(join(temp, 'prehash-'));
+  try {
+    return await withSession(root, undefined, undefined, false, async session => {
+      const rel = relative(root, path).split(sep).join('/');
+      const attributes = await pathAttributes(session, rel);
+      if (attributes === null || attributes.split('\0').some((field, i) => i % 3 === 1 && field === 'filter')) return null;
+      const bytes = typeof content === 'string' ? Buffer.from(content, 'utf8') : Buffer.from(content);
+      const stage = join(scratch, 'blob');
+      writeFileSync(stage, bytes, { mode: 0o600 });
+      const hashed = await git(session, ['hash-object', '-w', `--path=${rel}`, '--', stage]);
+      const oid = hashed.stdout.trim();
+      return hashed.code === 0 && oid ? { oid, planned: createHash('sha256').update(bytes).digest('hex'), attributes } : null;
+    });
+  } catch { return null; } finally { rmSync(scratch, { recursive: true, force: true }); }
 }
 
 /** The targets whose file no longer holds its planned state (its bytes, or no file for a removal) refuse as `git_target_changed`. */

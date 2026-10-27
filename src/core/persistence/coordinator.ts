@@ -54,7 +54,7 @@ import { segmentWriteScope } from '../page-body/ingest.ts';
 import { publicationBeliefOptions, withBeliefBatch } from '../belief/ledger.ts';
 import { markBeliefCommits } from '../belief/append.ts';
 import { classifyPgAccessError } from '../pg-access-classify.ts';
-import { commitThroughDoor, doorCommitLanded, doorMarker, replayAfterDoorCommit, sourceCanonicalGit, strictChanged } from './git-door.ts';
+import { commitThroughDoor, doorCommitLanded, doorMarker, prehashDoorFile, replayAfterDoorCommit, sourceCanonicalGit, strictChanged, type PrehashedBlob } from './git-door.ts';
 import { assertNoPrivateCommit, assertStrictFileTarget, declareStrictPublication } from './git-declared.ts';
 import { gitFirstStrictActive } from './git-first-gate.ts';
 import { clearPendingHeads, indexPendingError, queueIndexFromGit, readPendingHead, type IndexFromGit } from './git-first.ts';
@@ -471,6 +471,7 @@ export async function publishMutation(engine: BrainEngine, row: WriteRequest, pr
   let transactionBodyCompleted = false;
   let afterCommitDue: WriteRequest | null = null;
   let createdPage = false;
+  let prehashed: PrehashedBlob | null = null;
   const skill = prepared.target === 'skill_bundle';
   const files = skill ? prepared.files ?? [] : prepared.file ? [prepared.file] : [];
   const beliefReport = { appended: 0 };
@@ -488,6 +489,11 @@ export async function publishMutation(engine: BrainEngine, row: WriteRequest, pr
         await releaseUnpublishedClaim(engine, row, 'owner_unavailable');
         return (await getWriteRequestById(engine, row.id))!;
       }
+      // Wave C (spec §3.5): a strict file publication stores its blob before it takes the writer lock; the door rechecks
+      // the plan and the path's attributes under the lock and hashes in place only when they changed (git-door.ts).
+      const content = prepared.file?.content;
+      if (!skill && binding.canonical_git === true && !prepared.noop && (typeof content === 'string' || content instanceof Uint8Array)
+        && isWriteTargetContained(prepared.file!.path, prepared.file!.root)) prehashed = await prehashDoorFile(binding.local_path, prepared.file!.path, content);
       try { lock = await acquireWorktree(binding, 0, undefined, engine, { yieldLanes: true }); }
       catch (error) {
         // #6305: this process cannot open the lock file (sandbox, unwritable lock directory): like a busy lock, publish nothing.
@@ -639,7 +645,7 @@ export async function publishMutation(engine: BrainEngine, row: WriteRequest, pr
       if (gitFirst) {
         await assertStrictFileTarget(tx, row, prepared, snapshot, binding);
         await doorProbe?.(tx, row);
-        gitCommit = await commitThroughDoor(door!.door!.root, [{ path: door!.path, planned: door!.afterHash, note: prepared.file?.commit }], lock ?? undefined, paths => { gitIndexRestored = paths; });
+        gitCommit = await commitThroughDoor(door!.door!.root, [{ path: door!.path, planned: door!.afterHash, note: prepared.file?.commit, prehashed }], lock ?? undefined, paths => { gitIndexRestored = paths; });
       }
       // A door publication that is not itself indexed (an inline write, a delete, a private transition, a rename) replaces
       // or removes the page's pending head, so an older index job finds its token gone and ends superseded (git-first.ts).
@@ -671,7 +677,7 @@ export async function publishMutation(engine: BrainEngine, row: WriteRequest, pr
       // G2: a strict source's file is committed before its row; its Git effect only pushes.
       if (door?.door && !gitFirst) await doorProbe?.(tx, row);
       if (door?.door) Object.assign(outcome.persistence as object, { git_state: 'committed', git_commit: gitFirst ? gitCommit
-        : await commitThroughDoor(door.door.root, [{ path: door.path, planned: door.afterHash, note: prepared.file?.commit }], lock ?? undefined, paths => { gitIndexRestored = paths; }),
+        : await commitThroughDoor(door.door.root, [{ path: door.path, planned: door.afterHash, note: prepared.file?.commit, prehashed }], lock ?? undefined, paths => { gitIndexRestored = paths; }),
         ...(gitIndexRestored ? { git_index_restored: gitIndexRestored } : {}) });
       await timePublicationStep('effects', row.slug, () => queuePublicationEffects(tx, row, final, outcome, prepared, { pushOnly: !!door?.door }));
       if (prepared.afterEffects) await withCoordinatedWrite(tx, [row.source_id], () => prepared.afterEffects!(tx, outcome), publicationAttribution(row, prepared.trust));
