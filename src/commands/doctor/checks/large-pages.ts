@@ -10,11 +10,11 @@
  * A remote caller's run (run_doctor) shells out to no checkout path read from the database: history is `not_read`.
  */
 import { existsSync, statfsSync } from 'node:fs';
-import { execFileSync } from 'node:child_process';
 import type { Check } from '../../doctor.ts';
 import { agentFix, doctorVerify } from '../check-fix.ts';
 import { connectedEngine, doctorSourceIds, type DoctorContext, type DoctorEntry } from '../context.ts';
 import { gitChildEnv } from '../../../core/git-env.ts';
+import { execFileSync } from '../../../core/spawn.ts';
 import { readPageBodyPolicy } from '../../../core/page-body/limits.ts';
 import { PAGE_MAX_BYTES } from '../../../core/page-size-policy.ts';
 import { gitFirstWriterBlockers, gitFirstWriterFloor, indexSplitPageConsumer } from '../../../core/persistence/git-first-gate.ts';

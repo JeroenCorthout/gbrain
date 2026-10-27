@@ -522,14 +522,14 @@ test/v273-validate-timeouts.test.ts
 test/vector-manifest-probe-bound.test.ts
 test/visibility-fail-closed-derived-writes.test.ts
 test/visibility-repair-scale.test.ts
+test/wave-c/doctor-large-pages.test.ts
+test/wave-c/door-prehash.test.ts
+test/wave-c/fenced-upload-git-first.test.ts
 test/wave-c/git-first-gate.test.ts
 test/wave-c/index-from-git.test.ts
 test/wave-c/index-pending.test.ts
 test/wave-c/indexing-receipt.test.ts
 test/wave-c/mixed-group-door.test.ts
-test/wave-c/doctor-large-pages.test.ts
-test/wave-c/door-prehash.test.ts
-test/wave-c/fenced-upload-git-first.test.ts
 test/wave-c/no-bytes-before-door.test.ts
 test/wave-c/pending-head-admission.test.ts
 test/wave-c/strict-segmented-git-first.test.ts

@@ -45,7 +45,7 @@ import { getWorktreeBinding } from './ownership.ts';
 import type { PreparedContentImport } from './prepared-import.ts';
 import type { PreparedMutation } from './coordinator.ts';
 import type { SqlEngine, WriteRequest } from './model.ts';
-import { importsCommittedFile, indexPendingError, pendingPrecondition, readPendingHead } from './git-first.ts';
+import { importsCommittedFile, indexPendingError, pendingPrecondition, readPendingHead, type PendingHead } from './git-first.ts';
 import { isUnboundSourcePage } from './unbound-source.ts';
 import { isOriginTwinPage } from './origin-twins.ts';
 import { sealImportedPage, sealPageTextProjection } from '../page-state/projections.ts';
@@ -776,6 +776,20 @@ export async function preparePageMutation(unbounded: BrainEngine, row: WriteRequ
   return prepareInlineOrSegmentedMutation(unbounded, row, _config, preparedIntent, signal, options);
 }
 
+/**
+ * Wave C (ceo-r3-outside-1): the write's revision check. A whole-page write may replace a committed head whose index is
+ * pending; its precondition is checked against that head (git-first.ts pendingPrecondition), and the file it replaces is
+ * the committed one. Returns the head it supersedes, or null.
+ */
+async function checkWriteRevision(engine: BrainEngine, row: WriteRequest, snapshot: PageSnapshot | null,
+  preparedIntent: Parameters<typeof preparePageMutation>[3]): Promise<PendingHead | null> {
+  const pending = !preparedIntent && (row.operation === 'put_page' || row.operation === 'capture') ? await readPendingHead(engine, row.source_id, row.slug) : null;
+  const supersedes = pending && pending.request_id !== row.id ? pending : null;
+  assertPageRevision(supersedes ? { revision: pendingPrecondition(row.slug, supersedes, snapshot?.revision, row.intent!.expected_revision) } : snapshot,
+    preparedIntent ? { expectedRevision: preparedIntent.expectedRevision } : engineMutationPrecondition(parseMutationPrecondition(row.intent!)));
+  return supersedes;
+}
+
 async function prepareInlineOrSegmentedMutation(unbounded: BrainEngine, row: WriteRequest, _config: Parameters<typeof preparePageMutation>[2],
   preparedIntent: Parameters<typeof preparePageMutation>[3], signal: AbortSignal | undefined,
   options: NonNullable<Parameters<typeof preparePageMutation>[5]>): Promise<PreparedMutation> {
@@ -802,12 +816,7 @@ async function prepareInlineOrSegmentedMutation(unbounded: BrainEngine, row: Wri
   const snapshot = await materializedSnapshot(unbounded, stored);
   signal?.throwIfAborted();
   enterClaimStep(clock, 'revision_check');
-  // Wave C (ceo-r3-outside-1): a whole-page write may replace a committed head whose index is pending; its precondition
-  // is checked against that head (git-first.ts pendingPrecondition), and the file it replaces is the committed one.
-  const pending = !preparedIntent && (row.operation === 'put_page' || row.operation === 'capture') ? await readPendingHead(engine, row.source_id, row.slug) : null;
-  const supersedes = pending && pending.request_id !== row.id ? pending : null;
-  assertPageRevision(supersedes ? { revision: pendingPrecondition(row.slug, supersedes, snapshot?.revision, p.expected_revision) } : snapshot,
-    preparedIntent ? { expectedRevision: preparedIntent.expectedRevision } : engineMutationPrecondition(parseMutationPrecondition(p)));
+  const supersedes = await checkWriteRevision(engine, row, snapshot, preparedIntent);
   if ((snapshot?.page.id ?? null) !== row.page_id) throw pageIdentityError(snapshot != null || row.page_id === null, 'The accepted page identity changed.');
   const observedRevision = snapshot?.revision ?? null;
   const activePack = pack?.manifest;
