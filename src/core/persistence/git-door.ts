@@ -270,7 +270,6 @@ async function doorCommit(session: GitSession, root: string, files: DoorFile[], 
           return read(dir, entry?.mode === TREE_MODE ? entry.oid.toString('hex') : null);
         }));
       }
-      // `exactDirs` (a split page's parts directory): the commit's tree holds nothing there but the targets.
       for (const dir of exactDirs.map(path => relative(root, path).split(sep).join('/'))) {
         const held = await git(session, ['ls-tree', '-r', '-z', '--name-only', head, '--', dir]);
         if (held.code !== 0) throw gitFailure('Cannot read the canonical Git tree.', `git ls-tree failed for ${dir}.`);
