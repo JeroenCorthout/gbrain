@@ -3285,6 +3285,16 @@ More: [docs/guides/graph-ranking.md#rank_entities_timeout](../../docs/guides/gra
 
 More: [docs/guides/dream-patterns.md#child-read-budget](../../docs/guides/dream-patterns.md#child-read-budget)
 
+### readable_by_invalid
+
+<a id="readable_by_invalid"></a>
+
+| Meaning | Why | Next step | Who acts · consent | Verify | Exit | Retryable |
+|---|---|---|---|---|---|---|
+| A remote write's readable_by is malformed, removes the field from a page that names readers, or would leave the page unreadable by the writer; nothing was written. | The request itself was wrong or no longer matches the brain; nothing was changed. | Correct the request using the message above, then retry. | agent | `repeat the read that failed` | 1 | no |
+
+More: [docs/guides/write-refusals.md#readable_by_invalid](../../docs/guides/write-refusals.md#readable_by_invalid)
+
 ### receipt_conflict
 
 <a id="receipt_conflict"></a>

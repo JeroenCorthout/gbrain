@@ -70,6 +70,8 @@ export const ERROR_CATALOGUE = {
   no_pricing: { code: 'no_pricing', docs: 'docs/guides/write-refusals.md#no_pricing' },
   timeline_comment_markup: { code: 'timeline_comment_markup', docs: 'docs/guides/repair.md#timeline-comments' },
   timeline_rows_would_be_removed: { code: 'timeline_rows_would_be_removed', docs: 'docs/guides/write-refusals.md#timeline_rows_would_be_removed' },
+  // GBRA-218: a remote write's frontmatter readable_by is malformed, drops the field, or locks the writer out.
+  readable_by_invalid: { code: 'readable_by_invalid', docs: 'docs/guides/write-refusals.md#readable_by_invalid' },
   reconcile_private_facts: { code: 'permission_denied', docs: 'docs/guides/write-refusals.md#reconcile-private-facts' },
   maintenance_backpressure: { code: 'maintenance_backpressure', docs: 'docs/guides/write-refusals.md#maintenance_backpressure' },
   // #6696: cumulative write caps (A5 background pause, A6 refusal at the cap, A7 bulk-run preflight).

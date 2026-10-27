@@ -17,10 +17,13 @@ const MEMBER_SQL = (credential: string) => `SELECT m.id, COALESCE(array_agg(g.gr
   WHERE m.id = (${credential}) AND m.disabled_at IS NULL AND m.tombstoned_at IS NULL
   GROUP BY m.id`;
 
-/** The member identity bound to `auth`'s principal; empty when unbound, unknown or unreadable. */
-export async function memberIdentityFor(engine: BrainEngine, auth: AuthInfo | undefined): Promise<string[]> {
+/**
+ * The member identity bound to `auth`'s principal; empty when unbound, unknown or unreadable. A write's publication
+ * passes its stored principal here, so a member disabled or a binding removed after submission takes effect.
+ */
+export async function memberIdentityFor(engine: Pick<BrainEngine, 'executeRaw'>, auth: { principal?: { kind: string; id: string } } | undefined): Promise<string[]> {
   const principal = auth?.principal;
-  if (!principal) return [];
+  if (!principal || (principal.kind !== 'legacy_token' && principal.kind !== 'oauth_client')) return [];
   const credential = principal.kind === 'legacy_token'
     ? 'SELECT member_id FROM access_tokens WHERE id::text = $1'
     : 'SELECT member_id FROM oauth_clients WHERE client_id = $1';

@@ -80,6 +80,11 @@ export const BRAIN_CHECK_NAMES: ReadonlySet<string> = new Set([
   'trust_sources_unclaimed',
   'credential_projection_pending',
   'derived_visibility',
+  // GBRA-218: member read access (doctor/checks/member-access.ts).
+  'access_readers_malformed',
+  'access_unknown_readers',
+  'access_recent_narrowings',
+  'access_page_readers_backfill',
   'extractor_facts_expired',
   'loop_facts_drift',
   'ontology_facts_fenced',

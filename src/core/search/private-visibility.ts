@@ -228,6 +228,21 @@ export function privatePagesFilterForCaller(pageAlias: string): string {
   return `(${accessAllowedSql(pageAlias, callerIdentity())} AND ${callerPrivacySql(pageAlias, privacyPartSql(pageAlias))})`;
 }
 
+/** The mandatory member-access part alone (readers and lineage) for the current caller; privacy is not tested. */
+export function callerAccessAllowedSql(pageAlias: string): string {
+  return accessAllowedSql(pageAlias, callerIdentity());
+}
+
+/**
+ * The read policy for an explicit identity, outside any caller record (a
+ * write's publication re-resolves its writer's identity): the member-access
+ * part, then the privacy part unless `hidePrivate` is false. With an empty
+ * identity and `hidePrivate` it equals privatePagesFilterFragment.
+ */
+export function readPolicyFragment(pageAlias: string, identity: readonly string[], hidePrivate: boolean): string {
+  return `(${accessAllowedSql(pageAlias, identity)} AND ${hidePrivate ? privacyPartSql(pageAlias) : 'TRUE'})`;
+}
+
 /** privatePagesFilterFragmentFast for a remote read. */
 export function privatePagesFilterFastForCaller(pageAlias: string): string {
   return `(${accessAllowedSql(pageAlias, callerIdentity())} AND ${callerPrivacySql(pageAlias, privacyPartFastSql(pageAlias))})`;
@@ -450,6 +465,23 @@ export function privateTimelineEventFilterForCaller(timelineAlias: string): stri
  * consulted — fail-open for cross-source provenance, acceptable under source
  * isolation because ontology_propose stamps the fact with ctx.sourceId.
  */
+/**
+ * GBRA-218: privateProvenanceFilterFragment for the fact reads a caller gates on `excludePrivate`. The readers part
+ * always applies (a world fact held in or extracted from a page that names readers stays hidden from every remote
+ * caller, as with the plain fragment); the privacy part is dropped when an operator relaxed privacy for this remote
+ * read, which is what the hatches did to these reads before member access (`excludePrivate` was false then).
+ * Outside a remote record nothing relaxes it.
+ */
+export function privateProvenanceFilterUnderPolicy(factAlias: string): string {
+  return `NOT EXISTS (SELECT 1 FROM pages pp WHERE pp.source_id = ${factAlias}.source_id ` +
+    `AND pp.slug = ${factAlias}.source_markdown_slug AND NOT ${readPolicyFragment('pp', [], !callerRelaxesPrivacy())})`;
+}
+
+/** True only inside a remote caller record whose read an operator relaxed (the env hatch or the config opt-out). */
+export function callerRelaxesPrivacy(): boolean {
+  return callerAccessStore.getStore()?.hidePrivate === false;
+}
+
 export function privateProvenanceFilterFragment(factAlias: string): string {
   return `NOT EXISTS (SELECT 1 FROM pages pp WHERE pp.source_id = ${factAlias}.source_id ` +
     `AND pp.slug = ${factAlias}.source_markdown_slug AND NOT (${privatePagesFilterFragment('pp')}))`;
@@ -563,6 +595,24 @@ export async function remotePrivacyRelaxed(engine: BrainEngine): Promise<boolean
   (expose ? exposeEngines : strictEngines).add(engine);
   (expose ? strictEngines : exposeEngines).delete(engine);
   return expose;
+}
+
+/**
+ * The remote read policy read fresh, for publication: whether an operator
+ * relaxed privacy (the env hatch or the config opt-out, uncached) and whether
+ * the brain holds member-access restrictions. Takes any executeRaw engine (a
+ * transaction included). An unreadable config counts as not opted out and
+ * restricted (fail closed); the env hatch needs no read.
+ */
+export async function readRemotePolicyNow(engine: Pick<BrainEngine, 'executeRaw'>): Promise<{ privacyRelaxed: boolean; restricted: boolean }> {
+  const hatch = process.env.GBRAIN_REMOTE_PRIVATE_PAGES === '1';
+  try {
+    const rows = await engine.executeRaw<{ key: string; value: string }>('SELECT key, value FROM config WHERE key = ANY($1::text[])', [[REMOTE_PRIVATE_PAGES_KEY, ACCESS_RESTRICTIONS_KEY]]);
+    const value = (key: string) => rows.find(r => r.key === key)?.value ?? '';
+    return { privacyRelaxed: hatch || ['visible', 'true', '1'].includes(value(REMOTE_PRIVATE_PAGES_KEY)), restricted: value(ACCESS_RESTRICTIONS_KEY) === '1' };
+  } catch {
+    return { privacyRelaxed: hatch, restricted: true };
+  }
 }
 
 /** GBRA-218: does this brain hold member-access restrictions? Read live (the request snapshot answers it inside a read); unreadable counts as yes. */

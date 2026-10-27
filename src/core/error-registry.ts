@@ -730,6 +730,7 @@ export const CODES = {
   take_row_collision: { class: 'caller', summary: "A takes fence row number is already used by a different take that is not in this page's canonical fence." },
   target_escape: { class: 'caller', summary: "The skill target must remain within its selected root." },
   timeline_comment_markup: { class: 'caller', summary: "A stored timeline row carries HTML comment markup, so gbrain keeps it database-side and never writes it back into the page; clean it with gbrain repair timeline-comments.", docs: 'docs/guides/repair.md#timeline-comments' },
+  readable_by_invalid: { class: 'caller', summary: 'A remote write\'s readable_by is malformed, removes the field from a page that names readers, or would leave the page unreadable by the writer; nothing was written.', docs: 'docs/guides/write-refusals.md#readable_by_invalid' },
   timeline_rows_would_be_removed: { class: 'caller', summary: "A remote put_page or put_pages entry has no Timeline section and would delete the page's dated entries; resend it with the section or with drop_timeline: true.", docs: 'docs/guides/write-refusals.md#timeline_rows_would_be_removed' },
   timeout: { class: 'retryable', summary: "The operation did not finish within its time bound.", exit: 124 },
   topology_change_required: { class: 'host_only', summary: "Adding this source would replace or overlap another owner root." },
