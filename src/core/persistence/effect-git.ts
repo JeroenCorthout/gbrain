@@ -66,8 +66,8 @@ const gitArgs = (session: GitSession, args: string[], literal: boolean) =>
   [...(literal ? ['--literal-pathspecs'] : []), '-C', session.root, '-c', `core.hooksPath=${session.hooks}`, '-c', 'commit.gpgsign=false', ...args];
 const gitOptions = (session: GitSession) => ({ timeout: session.timeoutMs, termGraceMs: GIT_TERM_GRACE_MS, maxBuffer: 1024 * 1024, signal: session.signal });
 
-function run(session: GitSession, args: string[], literal = true) {
-  return execFileBounded('git', gitArgs(session, args, literal), { ...gitOptions(session), env: gitChildEnv(GIT_ENV) });
+function run(session: GitSession, args: string[], literal = true, input?: string) {
+  return execFileBounded('git', gitArgs(session, args, literal), { ...gitOptions(session), env: gitChildEnv(GIT_ENV), input });
 }
 
 /** A read-only git step whose stdout is raw bytes (a tree object); null when git exits non-zero. */
@@ -130,9 +130,9 @@ async function indexLockError(session: GitSession, stderr: string, mayReclaim: b
     { detail: lock, fix: staleLockFix(session.root, lock, why) });
 }
 
-export async function git(session: GitSession, args: string[], literal = true): Promise<{ stdout: string; stderr: string; code: number }> {
+export async function git(session: GitSession, args: string[], literal = true, input?: string): Promise<{ stdout: string; stderr: string; code: number }> {
   for (let reclaimed = false; ; reclaimed = true) {
-    const { error, stdout, stderr } = await run(session, args, literal);
+    const { error, stdout, stderr } = await run(session, args, literal, input);
     if (error && (error.killed || typeof error.code !== 'number')) throw gitFailure('Git execution did not finish within its bounded attempt.',
       `A git command in the canonical checkout did not finish within ${Math.round(session.timeoutMs / 1000)} seconds or could not start.`);
     const code = error?.code as number ?? 0;

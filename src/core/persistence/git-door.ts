@@ -217,9 +217,16 @@ async function doorCommit(session: GitSession, root: string, files: DoorFile[], 
   refuseChanged(root, targets.values());
   const present = [...targets.values()].filter(target => existsSync(join(root, target.rel)));
   // A blob hashed before the lock stands only for the bytes it was hashed from (the plan, which refuseChanged checks the
-  // file against) under the same attributes; any other target is hashed here.
-  for (const target of present) if (target.prehashed && target.prehashed.planned === target.planned
-    && await pathAttributes(session, target.rel) === target.prehashed.attributes) target.oid = target.prehashed.oid;
+  // file against) under the same attributes and line-ending config, and only while Git still stores it (gc --prune=now
+  // may have removed it); any other target is hashed here. One check-attr and one cat-file cover every target.
+  const prehashed = present.filter(target => target.prehashed && target.prehashed.planned === target.planned);
+  if (prehashed.length) {
+    const [attributes, config, stored] = await Promise.all([pathAttributes(session, prehashed.map(target => target.rel)), lineEndingConfig(session),
+      git(session, ['cat-file', '--batch-check'], true, prehashed.map(target => target.prehashed!.oid + '\n').join(''))]);
+    const blobs = new Set(stored.code === 0 ? stored.stdout.split('\n').map(line => line.split(' ')).filter(([, type]) => type === 'blob').map(([oid]) => oid) : []);
+    for (const target of prehashed) if (target.prehashed!.config === config && attributes?.get(target.rel) === target.prehashed!.attributes
+      && blobs.has(target.prehashed!.oid)) target.oid = target.prehashed!.oid;
+  }
   const unhashed = present.filter(target => !target.oid);
   if (unhashed.length) {
     const hashed = await git(session, ['hash-object', '-w', '--', ...unhashed.map(target => target.rel)]);
@@ -372,13 +379,26 @@ export function indexRestoredNotice(paths: string[]): Notice {
     why: `gbrain restored index to HEAD after an interrupted door refresh for ${paths.join(', ')}: the index still held the version before an earlier gbrain commit (its update of the index had failed), so this write replaced that stale entry. Nothing was lost; the earlier version is in Git history.` };
 }
 
-/** A file's blob stored before the writer lock (spec §3.5): the plan it was hashed from and the path's attributes then. */
-export interface PrehashedBlob { oid: string; planned: string; attributes: string }
+/** A file's blob stored before the writer lock (spec §3.5): the plan it was hashed from, the path's attributes and the checkout's line-ending config then. */
+export interface PrehashedBlob { oid: string; planned: string; attributes: string; config: string }
 
-/** The Git attributes that apply to `rel` (`check-attr -a`), the signature a pre-hashed blob is rechecked against. */
-async function pathAttributes(session: GitSession, rel: string): Promise<string | null> {
-  const attrs = await git(session, ['check-attr', '-a', '-z', '--', rel]);
-  return attrs.code === 0 ? attrs.stdout : null;
+/**
+ * The Git attributes that apply to each of `rels` (one `check-attr -a -z --stdin`), keyed by path: the
+ * `path\0attr\0value\0` triples check-attr printed for it, the signature a pre-hashed blob is rechecked against.
+ */
+async function pathAttributes(session: GitSession, rels: string[]): Promise<Map<string, string> | null> {
+  const attrs = await git(session, ['check-attr', '-a', '-z', '--stdin'], true, rels.map(rel => rel + '\0').join(''));
+  if (attrs.code !== 0) return null;
+  const byPath = new Map(rels.map(rel => [rel, '']));
+  const fields = attrs.stdout.split('\0');
+  for (let i = 0; i + 2 < fields.length; i += 3) byPath.set(fields[i]!, (byPath.get(fields[i]!) ?? '') + fields.slice(i, i + 3).map(field => field + '\0').join(''));
+  return byPath;
+}
+
+/** The checkout's core.autocrlf / core.eol / core.safecrlf settings, which convert a file's bytes as attributes do; null when Git cannot read them. */
+async function lineEndingConfig(session: GitSession): Promise<string | null> {
+  const read = await git(session, ['config', '--get-regexp', '^core\\.(autocrlf|eol|safecrlf)$']);
+  return read.code === 0 ? read.stdout : read.code === 1 ? '' : null;
 }
 
 /**
@@ -393,14 +413,15 @@ export async function prehashDoorFile(root: string, path: string, content: strin
   try {
     return await withSession(root, undefined, undefined, false, async session => {
       const rel = relative(root, path).split(sep).join('/');
-      const attributes = await pathAttributes(session, rel);
-      if (attributes === null || attributes.split('\0').some((field, i) => i % 3 === 1 && field === 'filter')) return null;
+      const attributes = (await pathAttributes(session, [rel]))?.get(rel) ?? null;
+      const config = await lineEndingConfig(session);
+      if (attributes === null || config === null || attributes.split('\0').some((field, i) => i % 3 === 1 && field === 'filter')) return null;
       const bytes = typeof content === 'string' ? Buffer.from(content, 'utf8') : Buffer.from(content);
       const stage = join(scratch, 'blob');
       writeFileSync(stage, bytes, { mode: 0o600 });
       const hashed = await git(session, ['hash-object', '-w', `--path=${rel}`, '--', stage]);
       const oid = hashed.stdout.trim();
-      return hashed.code === 0 && oid ? { oid, planned: createHash('sha256').update(bytes).digest('hex'), attributes } : null;
+      return hashed.code === 0 && oid ? { oid, planned: createHash('sha256').update(bytes).digest('hex'), attributes, config } : null;
     });
   } catch { return null; } finally { rmSync(scratch, { recursive: true, force: true }); }
 }

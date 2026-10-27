@@ -4,6 +4,10 @@
  * planned bytes (git_target_changed otherwise, as before) and the path's attributes must be the ones the blob was hashed
  * under; a changed plan or changed attributes (an ident attribute added meanwhile) make the door hash the file in place.
  * A path with a clean filter is never pre-hashed. GIT_TRACE shows which hash-object calls ran.
+ *
+ * The recheck is batched (one check-attr per door turn, however many files), covers the checkout's line-ending config
+ * (core.autocrlf / core.eol / core.safecrlf, which convert bytes as attributes do), and confirms the blobs are still
+ * stored (one cat-file --batch-check): a blob pruned meanwhile (gc --prune=now) is hashed again, never committed missing.
  */
 import { afterEach, describe, expect, test } from 'bun:test';
 import { execFileSync } from 'node:child_process';
@@ -15,7 +19,8 @@ import type { BrainEngine } from '../../src/core/engine.ts';
 import { gitChildEnv } from '../../src/core/git-env.ts';
 import { operations } from '../../src/core/operations.ts';
 import { sha256 } from '../../src/core/persistence/digest.ts';
-import { commitThroughDoor, prehashDoorFile } from '../../src/core/persistence/git-door.ts';
+import { runImport } from '../../src/commands/import.ts';
+import { commitThroughDoor, prehashDoorFile, type DoorFile } from '../../src/core/persistence/git-door.ts';
 import { durableGitRepo } from '../helpers/git-publication.ts';
 import { managedBrain } from '../helpers/managed-brain.ts';
 import { requirePostgresTestDatabase, testBackends } from '../helpers/test-backends.ts';
@@ -27,6 +32,18 @@ const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 const scratch = (prefix: string) => { const dir = realpathSync(mkdtempSync(join(tmpdir(), prefix))); roots.push(dir); return dir; };
 /** The hash-object command lines a GIT_TRACE file recorded. */
+const traced = (trace: string) => existsSync(trace) ? readFileSync(trace, 'utf8').split('\n').filter(line => /trace: (built-in|exec): git /.test(line)).map(line => line.replace(/^.*?trace: (built-in|exec): git /, '')) : [];
+/** The check-attr calls of each door turn a GIT_TRACE file recorded (a turn runs from its symbolic-ref of HEAD to its update-ref). */
+const checkAttrPerTurn = (trace: string) => {
+  const turns: number[] = [];
+  let open = false;
+  for (const call of traced(trace)) {
+    if (call.startsWith('symbolic-ref -q HEAD')) { turns.push(0); open = true; }
+    else if (call.startsWith('update-ref')) open = false;
+    else if (open && call.startsWith('check-attr')) turns[turns.length - 1]!++;
+  }
+  return turns;
+};
 const hashCalls = (trace: string) => existsSync(trace) ? readFileSync(trace, 'utf8').split('\n').filter(line => /trace: (built-in|exec): git hash-object/.test(line)).map(line => line.replace(/^.*?git hash-object/, 'hash-object')) : [];
 
 function repo(): string {
@@ -82,6 +99,47 @@ describe('door pre-hash: rechecks under the lock', () => {
     expect(() => git(root, 'rev-parse', 'HEAD:notes/d.md')).toThrow();
   });
 
+  test('a multi-file publication rechecks every attribute with one check-attr in the door turn', async () => {
+    const root = repo(), trace = join(scratch('gbrain-trace-'), 'trace');
+    writeFileSync(join(root, '.gitattributes'), '*.md text eol=lf\nnotes/sub/*.md diff=markdown linguist-generated\n');
+    git(root, 'add', '.gitattributes'); git(root, 'commit', '-qm', 'attributes');
+    const files = ['notes/f1.md', 'notes/f2.md', 'notes/sub/f3.md'].map(path => ({ path, body: path + ' body\n' }));
+    const door: DoorFile[] = [];
+    for (const { path, body } of files) {
+      const prehashed = await prehashDoorFile(root, join(root, path), body);
+      put(root, path, body);
+      door.push({ path: join(root, path), planned: sha256(body), prehashed });
+    }
+    await withEnv({ GIT_TRACE: trace }, () => commitThroughDoor(root, door));
+    expect(traced(trace).filter(call => call.startsWith('check-attr')).length).toBe(1);
+    for (const [i, { path }] of files.entries()) expect(git(root, 'rev-parse', 'HEAD:' + path)).toBe(door[i]!.prehashed!.oid);
+    expect(hashCalls(trace).filter(call => !call.includes('-t tree'))).toEqual([]);
+  });
+
+  test('core.autocrlf flipped after the pre-hash makes the door hash the file in place', async () => {
+    const root = repo();
+    const body = 'line one\r\nline two\r\n';
+    const prehashed = await prehashDoorFile(root, join(root, 'notes/crlf.md'), body);
+    git(root, 'config', 'core.autocrlf', 'true');
+    put(root, 'notes/crlf.md', body);
+    await commitThroughDoor(root, [{ path: join(root, 'notes/crlf.md'), planned: sha256(body), prehashed }]);
+    const inLock = git(root, 'hash-object', '--', 'notes/crlf.md');
+    expect(inLock).not.toBe(prehashed!.oid);
+    expect(git(root, 'rev-parse', 'HEAD:notes/crlf.md')).toBe(inLock);
+  });
+
+  test('a pre-hashed blob pruned before the commit is hashed again, so the tree has no missing object', async () => {
+    const root = repo();
+    const body = 'a blob gc prunes before the door turn\n';
+    const prehashed = await prehashDoorFile(root, join(root, 'notes/pruned.md'), body);
+    git(root, 'gc', '-q', '--prune=now');
+    expect(() => git(root, 'cat-file', '-e', prehashed!.oid)).toThrow();
+    put(root, 'notes/pruned.md', body);
+    await commitThroughDoor(root, [{ path: join(root, 'notes/pruned.md'), planned: sha256(body), prehashed }]);
+    expect(git(root, 'show', 'HEAD:notes/pruned.md')).toBe(body.trim());
+    expect(git(root, 'fsck', '--connectivity-only', '--no-dangling')).toBe('');
+  });
+
   test('a path with a clean filter is not pre-hashed', async () => {
     const root = repo();
     writeFileSync(join(root, '.gitattributes'), '*.md filter=example\n');
@@ -105,5 +163,22 @@ for (const backend of testBackends()) describe('[' + backend + '] a strict put p
     expect(calls.filter(call => call.includes('-w') && call.includes('--path=notes/prehash.md')).length).toBe(1);
     expect(calls.filter(call => /-w -- notes\/prehash\.md/.test(call))).toEqual([]);
     expect(git(root, 'show', 'HEAD:notes/prehash.md')).toContain('stored before the writer lock');
+  }, { databaseUrl, setup }), 120_000);
+
+  test('a strict import of several files runs one check-attr per door turn', () => managedBrain(async ({ engine, root }) => {
+    await strict(engine);
+    const trace = join(scratch('gbrain-trace-'), 'trace');
+    const slugs = ['notes/batch-one', 'notes/batch-two', 'notes/batch-three'];
+    mkdirSync(join(root, 'notes'), { recursive: true });
+    for (const slug of slugs) writeFileSync(join(root, slug + '.md'), '---\ntitle: ' + slug + '\nsummary: reordered\ntype: note\n---\n\n' + slug + ' body.\n');
+    const result = await withEnv({ GIT_TRACE: trace }, () => runImport(engine, [root, '--no-embed'], { sourceId: 'default' }));
+    expect(result).toMatchObject({ imported: slugs.length, errors: 0 });
+    expect(hashCalls(trace).filter(call => call.includes('--path=notes/batch-')).length).toBe(slugs.length);
+    expect(hashCalls(trace).filter(call => /-w -- notes\/batch-/.test(call))).toEqual([]);
+    const turns = checkAttrPerTurn(trace);
+    expect(turns.length).toBeGreaterThan(0);
+    expect(turns.filter(count => count > 1)).toEqual([]);
+    expect(turns.reduce((sum, count) => sum + count, 0)).toBe(turns.length);
+    for (const slug of slugs) expect(git(root, 'show', 'HEAD:' + slug + '.md')).toContain(slug + ' body.');
   }, { databaseUrl, setup }), 120_000);
 });
