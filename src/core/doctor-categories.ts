@@ -271,6 +271,9 @@ export const SKILL_CHECK_NAMES: ReadonlySet<string> = new Set([
   'skills_manifest_integrity',
   'skill_currency',
   'skill_preconditions',
+  // Skillpack update journals (crash-pending updates, kept backups).
+  'skillpack_update_incomplete',
+  'skillpack_backups',
   'whoknows_health',
 ]);
 

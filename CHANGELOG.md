@@ -25,6 +25,20 @@ Every `gbrain ...` invocation a bundled skill shows now runs through the dispatc
 | A SKILL.md grows past its ceiling, or a new one passes 16 KB | passed | fails; raising a ceiling is a reviewer-visible edit |
 | `skills-commit-gate.sh` | four checks | also runs the skill health guard and prints `Skill-size:` lines for staged skills |
 
+**Installed skills you never edited can take gbrain's current version whole, and that update never overwrites a skill you edited.**
+
+`gbrain skillpack reference <name>|--all --update-untouched` replaces a skill only when every one of its files still matches what gbrain installed. Scaffold, sync and harness installs now record the sha256 of each skill file they write, per skills root. A skill with any edited file, a pinned skill (`gbrain skillpack pin`), or a file with no recorded base that matches no released version is skipped whole and its diff is printed. Installs from before bases were recorded can opt in with `--accept-historical` when every file equals a released version listed in the new `skills/skills.lock.history.json`. Every update writes a journal and backups to `~/.gbrain/skillpack-backups/<id>/` before it changes anything, rehashes each file right before replacing it, and runs the conformance, trigger and resolver checks; a failure rolls back only the files that still hold the update's bytes. `gbrain skillpack restore <id>` undoes an update and refuses files you changed since, unless you name them with `--skip`. It never prompts (`--dry-run` is the preview), works the same on a brain with no git repository, and `gbrain upgrade` writes no skill files.
+
+### Skill updates
+
+| Situation | Before | Now |
+|---|---|---|
+| You want gbrain's new version of skills you never touched | `--apply-clean-hunks` applied hunks two-way and could not tell your edits from gbrain's | `--update-untouched` replaces only skills whose every file still matches the install |
+| A skill you edited or pinned | `--apply-clean-hunks` could overwrite it hunk by hunk | skipped with `local_edits` or `pinned` and its diff |
+| An update fails a check or the process dies mid-update | — | rolled back per skill; doctor reports `skillpack_update_incomplete` with the restore command |
+| Exit code of an update | — | 0 nothing failed, 1 with `--fail-on-skipped` when a skill was skipped, 2 on a failure |
+| `~/.gbrain/skillpack-state.json` | schema v1 | schema v2 with per-skill bases and pins; a v1 file still loads |
+
 ## [0.60.474.0] - 2026-10-27
 
 **A database role that can't read the writer state is now refused instead of let through.**

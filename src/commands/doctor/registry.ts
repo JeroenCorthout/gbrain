@@ -27,6 +27,7 @@ import {
   minionsMigrationEntry,
 } from './checks/local-runtime.ts';
 import { supervisorEntry } from './checks/supervisor-health.ts';
+import { skillpackUpdateEntry } from './checks/skillpack-update.ts';
 import {
   stubGuardEntry,
   extractionBacklogsEntry,
@@ -169,6 +170,7 @@ export const DOCTOR_CHECK_REGISTRY: readonly DoctorEntry[] = [
   resolverHealthEntry,
   retrievalReflexEntry,
   skillConformanceEntry,
+  skillpackUpdateEntry,
   bootstrapChecksEntry,
   memorableRelayEntry,
   connectorsEntry,
