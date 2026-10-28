@@ -764,7 +764,8 @@ export async function accessRestrictionsPresent(engine: BrainEngine): Promise<bo
  * member-access restriction, where the hatches keep their pre-GBRA-218
  * meaning. With restrictions present the fragment still applies under a
  * hatch: caller-aware fragments relax only their privacy part, and the
- * member-access part (accessAllowedSql) stays mandatory.
+ * member-access part (accessAllowedSql) stays mandatory. A shared-agent audience the hatch does not relax (a
+ * channel: several entries, a group or a guest) always applies it, restrictions or not.
  */
 export async function resolveExcludePrivatePages(
   engine: BrainEngine,
@@ -772,5 +773,7 @@ export async function resolveExcludePrivatePages(
 ): Promise<boolean> {
   if (remote === false) return currentCallerAccess().applyRemoteReadPolicy;
   if (!await remotePrivacyRelaxed(engine)) return true;
+  const access = currentCallerAccess();
+  if (access.audience?.length && access.hidePrivate) return true;
   return accessRestrictionsPresent(engine);
 }

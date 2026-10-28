@@ -448,3 +448,35 @@ for (const kind of testBackends()) {
     }, 60_000);
   });
 }
+
+describe('shared agents on an unrestricted brain (pglite, repo-less)', () => {
+  test('a channel audience never sees a private page under the operator hatch before any member exists', async () => {
+    const engine = new PGLiteEngine();
+    await engine.connect({ engine: 'pglite' } as never);
+    await engine.initSchema();
+    try {
+      await engine.executeRaw('INSERT INTO sources (id, name) VALUES ($1, $1)', ['obo-open-src']);
+      await importFromContent(engine, 'notes/quiet', '---\ntype: note\ntitle: Quiet\nvisibility: private\n---\n# Quiet\n\nHarbor ledger canaryoboopenquiet.', { sourceId: 'obo-open-src', noEmbed: true });
+      await addGroup(engine, 'room-a');
+      await addGroup(engine, 'room-b');
+      const minted = await mintLegacyToken(engine, { name: 'chan-bot', scopes: ['read'], takesHolders: ['world'], sourceGrant: ['obo-open-src'] });
+      await bindCredential(engine, { kind: 'token', id: minted.id }, { mayActFor: ['guest', 'group:room-a', 'group:room-b'] });
+      const provider = new GBrainOAuthProvider({ sql: sqlQueryForEngine(engine), transaction: fn => engine.transaction(tx => fn(sqlQueryForEngine(tx))) });
+      await withEnv({ GBRAIN_REMOTE_PRIVATE_PAGES: '1' }, async () => {
+        __resetPrivateVisibilityCacheForTests();
+        const auth = await provider.verifyAccessToken(minted.token) as unknown as AuthInfo;
+        const read = async (op: string, params: Record<string, unknown>, header?: string) => (await dispatchToolCall(engine, op, params, {
+          remote: true, transport: 'http', auth, sourceId: 'obo-open-src', takesHoldersAllowList: ['world'], ...(header ? { onBehalfOf: { header } } : {}) })).content.map(c => c.text).join('\n');
+        expect(await read('get_page', { slug: 'notes/quiet' })).toContain('canaryoboopenquiet');
+        for (const header of ['guest', 'group:room-a, group:room-b', 'group:room-a']) {
+          expect(await read('get_page', { slug: 'notes/quiet' }, header)).not.toContain('canaryoboopenquiet');
+          expect(await read('search', { query: 'harbor ledger', match: 'keyword', fields: 'full' }, header)).not.toContain('canaryoboopenquiet');
+          expect(await read('list_pages', {}, header)).not.toContain('notes/quiet');
+        }
+      });
+    } finally {
+      __resetPrivateVisibilityCacheForTests();
+      await engine.disconnect();
+    }
+  }, 120_000);
+});
