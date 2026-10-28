@@ -211,9 +211,11 @@ for (const kind of testBackends()) {
     });
 
     test('an unbound token, a bot with granted_sources, an unknown member and an unlisted member see no restricted page on any path', async () => {
-      for (const who of ['unbound', 'bot', 'ghost', 'dan']) {
+      for (const who of ['unbound', 'bot', 'dan']) {
         expect({ who, visible: await visibleTo(who, Object.keys(PAGES) as PageKey[]) }).toEqual({ who, visible: {} });
       }
+      // GBRA-218 identity lane: a token bound to a missing member is refused at verification, so it reads nothing at all.
+      await expect(provider().verifyAccessToken(tokens.ghost!)).rejects.toThrow('access_member_disabled');
     }, 240_000);
 
     test('a listed member reads their page on the core paths, and only theirs', async () => {
@@ -336,7 +338,8 @@ for (const kind of testBackends()) {
     test('a disabled member loses access on the next request', async () => {
       await engine.executeRaw("UPDATE access_members SET disabled_at = now() WHERE id = 'alice-example'");
       try {
-        expect(await visibleTo('alice', ['alice'])).toEqual({});
+        // GBRA-218 identity lane: the disabled member's credential is refused at verification, so no read path runs.
+        await expect(provider().verifyAccessToken(tokens.alice!)).rejects.toThrow('access_member_disabled');
       } finally {
         await engine.executeRaw("UPDATE access_members SET disabled_at = NULL WHERE id = 'alice-example'");
       }

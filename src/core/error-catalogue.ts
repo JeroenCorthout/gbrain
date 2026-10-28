@@ -32,6 +32,10 @@ export interface CatalogueEntry {
 }
 
 export const ERROR_CATALOGUE = {
+  // GBRA-218 per-member read access: member ids, credential bindings and local --as.
+  access_member_invalid: { code: 'access_member_invalid', docs: 'docs/guides/write-refusals.md#access_member_invalid' },
+  access_member_id_retired: { code: 'access_member_id_retired', docs: 'docs/guides/write-refusals.md#access_member_id_retired' },
+  access_member_disabled: { code: 'access_member_disabled', docs: 'docs/guides/write-refusals.md#access_member_disabled' },
   // W2 page-at-time: recorded-time reads (`known_as_of`).
   coverage_from: { code: 'coverage_from', docs: 'docs/guides/repair.md#coverage-from' },
   coverage_gap: { code: 'coverage_gap', docs: 'docs/guides/repair.md#coverage-gap' },

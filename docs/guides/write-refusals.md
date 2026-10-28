@@ -903,6 +903,17 @@ Earlier commits keep whatever was pushed before the change; gbrain never rewrite
 | <a id="git_protocol_required"></a>`git_protocol_required` | A database trigger refused a row on a strict source because the writing process does not declare the git-canonical protocol: an older gbrain, or `gbrain.write_sources` set by hand. Nothing was written. | Upgrade (`gbrain upgrade`) or stop every gbrain process that shares the database, then retry with a new request ID. |
 | <a id="git_lfs_not_enabled"></a>`git_lfs_not_enabled` | The file falls under a Git LFS rule in `.gitattributes`, and either `storage.git_lfs` is off (`opt_in_off`, the default) or the checkout does not configure the LFS filter or git-lfs does not run (`checkout_unconfigured`). Nothing was written. | Ask the user. To store it with LFS: `git lfs install --local` in the checkout, then `gbrain config set storage.git_lfs true`. Otherwise narrow the `.gitattributes` rule. With the key on and LFS configured, the door commits the LFS pointer and the object goes to the checkout's LFS store; a publication that rolls back can leave an unreferenced object there, which is harmless. |
 
+## Member access refusals
+
+Per-member read access (members, groups and frontmatter `readable_by`) lives in the database, so these refusals are the
+same on a repo-less brain and on a git-backed one.
+
+| Code | What happened | What to do |
+|---|---|---|
+| <a id="access_member_invalid"></a>`access_member_invalid` | A member or group id given to `gbrain access`, to `--member` on `gbrain auth create`, `rescope` or `register-client`, or to a local `--as <member>` is ill-formed (`ill_formed`) or names no usable member (`unknown`, `disabled`, `removed`, `unknown_group`), or `member add` named an existing member (`exists`). Nothing was read or changed: an unknown `--as` is refused before the command runs instead of reading as unbound. | Check the id with `gbrain access member list --all`; add the member with `gbrain access member add <id>` or enable it with `gbrain access member enable <id>`. Ids are 1-64 characters: lower-case letters, digits, `.`, `_` or `-`. |
+| <a id="access_member_id_retired"></a>`access_member_id_retired` | `gbrain access member add` or `enable` named an id that `gbrain access member rm --yes` removed. Member ids are never reused, because pages and audit history may still name the removed id. Nothing was created. | Choose a new member id. `gbrain access member disable` is the reversible way to pause a member. |
+| <a id="access_member_disabled"></a>`access_member_disabled` | The access token or OAuth client is bound to a member who is disabled, removed or missing, so it was refused at verification (HTTP 401, `invalid_token` with this code in the description). A credential bound to a member reads as that member, so it is refused rather than silently treated as unbound. | Ask the brain operator to run `gbrain access member enable <id>`, or to rebind the credential with `gbrain auth rescope --token <name> --member <id>` (`--member none` unbinds it; an unbound credential sees no page that names readers). |
+
 ## Related
 
 - [Concurrent writes and durable receipts](concurrent-writes.md) — receipt states, retries, capacity limits
