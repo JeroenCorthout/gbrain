@@ -28,6 +28,7 @@ import { searchCountLine } from '../core/search/keyword-paging.ts';
 import { dateLabelLine } from '../core/search/date-labels.ts';
 import { hiddenTakesNotice, localTranscriptsNotice, recallInteropNotices, wantsTranscriptHint } from '../core/interop-notices.ts';
 import { unreadableSourcesNotice } from '../core/unreadable-sources-notice.ts';
+import { accessPolicyNotices } from '../core/access/policy-notice.ts';
 import { hiddenToolHint, hiddenToolNext, hiddenToolRoute, type ToolConnection } from './hidden-tool-hint.ts';
 import { opAllowedForBoundClient } from '../core/ops/context.ts';
 import { takePostUpgradeMcpNotice } from '../core/post-upgrade-notice.ts';
@@ -1156,7 +1157,7 @@ async function dispatchResolvedCall(
     notices.push(...recallInteropNotices(name, result, responseMeta, safeParams,
       { config: ctx.config, transport: dispatchRenderContext(opts).transport, binding: ctx.explicitReadBinding, rerankDegradedCalls }));
     const unreadable = await unreadableSourcesNotice(name, safeParams, result, ctx);
-    if (unreadable) notices.push(unreadable);
+    notices.push(...(unreadable ? [unreadable] : []), ...accessPolicyNotices(name, ctx));
     notices.push(...await hiddenContentNotices(engine, name, result, ctx, opts));
     // Monthly backup-coverage: one AGGREGATE notice per process (counts only —
     // never a local path or source id). The refresher runs on the stdio
