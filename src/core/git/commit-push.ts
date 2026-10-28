@@ -377,8 +377,8 @@ function withIndexRetry(root: string, args: string[], what: string, env?: NodeJS
 }
 
 /** A staged rename (`git mv`) commits both sides: committing only the new name would publish a duplicate and leave the deletion staged for another writer's commit. */
-function withRenamePartners(root: string, rel: string[]): string[] {
-  const fields = git(root, ['diff', '--cached', '-M', '--name-status', '-z']).stdout.split('\0');
+function withRenamePartners(root: string, rel: string[], env?: NodeJS.ProcessEnv): string[] {
+  const fields = git(root, ['diff', '--cached', '-M', '--name-status', '-z'], { env }).stdout.split('\0');
   const out = new Set(rel);
   for (let i = 0; i < fields.length;) {
     const status = fields[i];
@@ -418,14 +418,12 @@ function restoreIndex(root: string, rel: string[], before: string[]): void {
 interface CommitScope { roots: string[]; lockPath: string; markHeld: boolean; untrack?: boolean }
 
 /**
- * Stage and commit exactly `rel` (the caller holds the commit lock). Refused
- * before anything is staged: a path outside the source root(s), and a file
- * another writer already staged under a named directory (name it to claim
- * it). A commit git refuses leaves the index as it found it.
+ * What commitPaths refuses before anything is staged (and the dry run with it): a path outside the source root(s),
+ * and a file another writer already staged under a named directory (name it to claim it).
  */
-function commitPaths(root: string, rel: string[], message: string, scope: CommitScope): string | null {
-  const outside = rel.filter(p => !insideSourceRoots(p, scope.roots));
-  if (outside.length) throw outsideRootError(root, scope.roots, outside, 'Refusing to commit');
+function admitPaths(root: string, rel: string[], roots: string[]): void {
+  const outside = rel.filter(p => !insideSourceRoots(p, roots));
+  if (outside.length) throw outsideRootError(root, roots, outside, 'Refusing to commit');
   const swept = stagedPaths(root).filter(p => !rel.includes(p) && rel.some(spec => covers(spec, p)));
   if (swept.length) {
     const list = `${swept.slice(0, 10).join(', ')}${swept.length > 10 ? ', ...' : ''}`;
@@ -437,6 +435,14 @@ function commitPaths(root: string, rel: string[], message: string, scope: Commit
         user_message: `Files already staged by another writer sit under the path you asked to commit (${list}). Commit only the files you name, or unstage those (their bytes stay on disk)?`,
         docs: 'docs/guides/shared-checkout-git.md#outcomes' } });
   }
+}
+
+/**
+ * Stage and commit exactly `rel` (the caller holds the commit lock), after admitPaths. A commit git refuses leaves the
+ * index as it found it.
+ */
+function commitPaths(root: string, rel: string[], message: string, scope: CommitScope): string | null {
+  admitPaths(root, rel, scope.roots);
   const before = indexEntries(root, rel);
   if (scope.untrack) return untrackPaths(root, rel, message, scope, before);
   const add = withIndexRetry(root, stageArgs(rel, false), 'git add');
@@ -468,19 +474,27 @@ const pathsRefused = (r: GitRun, untrack: boolean) => opError('commit_paths_inva
   r.stderr.trim().slice(0, 300) || 'Check the paths exist or are tracked.');
 
 /**
- * #7752: `--dry-run` asks the real run's own staging command with --dry-run (`git add -A -n`, untracking `git rm --cached -n`)
- * against a copy of the index, so the preview takes no lock and writes nothing. A path outside a sparse-checkout
- * definition, or one that matches nothing, refuses `commit_paths_invalid` with the real run's text.
+ * #7752: `--dry-run` runs the real run's path checks in its order: the source roots (`--allow-outside-source-root` lifts
+ * them, as in the real run) and files another writer staged (admitPaths), untracking the paths HEAD must hold, then the
+ * real run's own staging command with --dry-run (`git add -A -n`, untracking `git rm --cached -n`) and, for a commit, the
+ * source roots of a staged rename's other side. Git is asked against a copy of the index, so the preview takes no lock
+ * and writes nothing; each refusal carries the real run's code and text.
  */
-export function previewPaths(root: string, rel: string[], untrack = false): void {
+export function previewPaths(root: string, rel: string[], opts: { untrack?: boolean; allowOutsideSourceRoot?: boolean } = {}): void {
+  const untrack = !!opts.untrack;
+  const roots = opts.allowOutsideSourceRoot ? [''] : configuredSourceRoots(root);
+  admitPaths(root, rel, roots);
   if (untrack) untrackTargets(root, rel);
   const dir = mkdtempSync(join(tmpdir(), 'gbrain-preview-'));
   try {
     const index = join(dir, 'index');
     const live = absGitPath(root, 'index');
     if (existsSync(live)) copyFileSync(live, index);
-    const r = git(root, stageArgs(rel, untrack, true), { env: { GIT_INDEX_FILE: index } });
+    const env = { GIT_INDEX_FILE: index };
+    const r = git(root, stageArgs(rel, untrack, true), { env });
     if (r.code !== 0) throw pathsRefused(r, untrack);
+    const partners = untrack ? [] : withRenamePartners(root, rel, env).filter(p => !insideSourceRoots(p, roots));
+    if (partners.length) throw outsideRootError(root, roots, partners, 'A staged rename would commit');
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

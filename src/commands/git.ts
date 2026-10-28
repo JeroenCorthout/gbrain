@@ -62,9 +62,9 @@ Flags:
                       (git config gbrain.sourceRoot); only after the user agrees.
   --untrack           Remove the named paths from Git (git rm --cached), keeping the files on disk, and push
                       that commit; a directory untracks every file Git holds under it.
-  --dry-run           Print the paths, branch and lock that would be used, after git's own check of the paths
-                      (a path outside a sparse-checkout definition refuses as the real run does); take no
-                      lock, write nothing.
+  --dry-run           Print the paths, branch and lock that would be used, after the real run's path checks
+                      (a path outside the source root or a sparse-checkout definition refuses as the real run
+                      does); take no lock, write nothing.
   --json              One JSON result (or the error envelope) on stdout.
 
 Paths are relative to --path when it is given (like git -C), else to the current
@@ -169,7 +169,7 @@ export async function runGit(args: string[]): Promise<number> {
       const lock = execFileSync('git', ['-C', repo, 'rev-parse', '--git-path', COMMIT_LOCK_NAME], { env: gitChildEnv({ ...GIT_ENV }) }).toString().trim();
       const branch = execFileSync('git', ['-C', repo, 'symbolic-ref', '--quiet', '--short', 'HEAD'], { env: gitChildEnv({ ...GIT_ENV }) }).toString().trim();
       const paths = p.pull || p.pushOnly ? [] : scopePaths(repo, p.paths, cwd);
-      if (paths.length) previewPaths(repo, paths, p.untrack);
+      if (paths.length) previewPaths(repo, paths, { untrack: p.untrack, allowOutsideSourceRoot: p.allowOutside });
       emit(json, { dry_run: true, repo, branch, lock, paths, mode: p.pull ? 'pull' : p.pushOnly ? 'push-only' : p.untrack ? 'untrack' : 'commit-push' },
         `dry run: ${p.pull ? 'pull' : p.pushOnly ? 'push-only' : `${p.untrack ? 'untrack' : 'commit'} ${paths.join(' ')}`} on ${branch} in ${repo} (lock ${lock}); nothing written`);
       return 0;

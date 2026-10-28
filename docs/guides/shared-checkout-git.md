@@ -108,8 +108,8 @@ gbrain git commit-push --pending
 # Stop tracking files and keep them on disk (git rm --cached through the commit lock), then push
 gbrain git commit-push --untrack -m "stop tracking generated output" -- gen/out.json
 
-# Preview: asks git about the paths as the real run stages them (a sparse-checkout exclusion
-# refuses here too), prints the paths, branch and lock it would use; takes no lock, writes nothing
+# Preview: runs the real run's path checks (source root, a sparse-checkout exclusion and the rest
+# refuse here too), prints the paths, branch and lock it would use; takes no lock, writes nothing
 gbrain git commit-push --dry-run -m "people: add alice-example" -- people/alice-example.md
 ```
 

@@ -4,7 +4,9 @@
  *   - #7752: `gbrain git commit-push --dry-run` runs the real run's path checks. On a non-cone sparse checkout a path
  *     outside the sparse-checkout definition refuses `commit_paths_invalid` with the real run's fix text, takes no lock
  *     and writes nothing (red before: the dry run exited 0 and listed the path the real run refuses). Cone mode and a
- *     checkout without sparse checkout keep answering what their real run does.
+ *     checkout without sparse checkout keep answering what their real run does. The dry run also refuses what the real
+ *     run refuses before staging: a path outside gbrain.sourceRoot (red before: exit 0), another writer's staged file
+ *     under a named directory, a staged rename's other side outside the root; its envelope equals the real run's.
  *   - #7753: `--untrack` removes exactly the named paths from the index and Git, keeps the files on disk, and leaves
  *     through the same commit lock and publish as an ordinary commit; a commit carrying anything else is taken back.
  *   - #7793 item 2: the fix and verify commands printed for a staged file read each path literally.
@@ -110,6 +112,49 @@ describe('#7752: --dry-run runs the real run\'s path checks', () => {
     expect(status(root)).toEqual(['?? notes/b/new.md']);
     expect((await cli(root, ['-m', 'test', '--', 'notes/b/new.md'])).exitCode).toBe(0);
     expect(git(bare!, 'show', 'main:notes/b/new.md')).toBe('new');
+  });
+});
+
+describe('#7752: the dry run refuses what the real run refuses before staging (source roots, staged files, rename partners)', () => {
+  /** A checkout whose source root (git config gbrain.sourceRoot) is brain/, with x.md outside it. */
+  function rooted(): { root: string; bare: string } {
+    const { root, bare } = checkout({ 'x.md': 'outside v1\n', 'brain/page.md': 'page v1\n' });
+    git(root, 'config', '--add', 'gbrain.sourceRoot', 'brain');
+    return { root, bare: bare! };
+  }
+  const envelope = async (root: string, args: string[]) => { const r = await cli(root, args); return { exit: r.exitCode, body: JSON.parse(r.stdout) as Record<string, unknown> }; };
+
+  test('a path outside the source root, in commit and --untrack modes: the dry-run envelope equals the real run\'s; --allow-outside-source-root lifts both', async () => {
+    const { root, bare } = rooted();
+    put(root, 'x.md', 'outside edit\n');
+    const head = git(root, 'rev-parse', 'HEAD');
+    for (const mode of [[], ['--untrack']]) {
+      const preview = await envelope(root, ['--dry-run', ...mode, '-m', 'm', '--', 'x.md']);
+      expect(preview).toMatchObject({ exit: 1, body: { code: 'commit_outside_source_root' } });
+      expect(await envelope(root, [...mode, '-m', 'm', '--', 'x.md'])).toEqual(preview);
+    }
+    expect(git(bare, 'rev-parse', 'main')).toBe(head);
+    expect(status(root)).toEqual([' M x.md']);
+    expect(await envelope(root, ['--dry-run', '--allow-outside-source-root', '-m', 'm', '--', 'x.md'])).toMatchObject({ exit: 0, body: { dry_run: true, paths: ['x.md'] } });
+    expect((await envelope(root, ['--allow-outside-source-root', '-m', 'm', '--', 'x.md'])).exit).toBe(0);
+    expect(git(bare, 'show', 'main:x.md')).toBe('outside edit');
+  });
+
+  test('a staged rename whose other side is outside the source root, and a file another writer staged under a named directory', async () => {
+    const { root } = rooted();
+    git(root, 'mv', 'x.md', 'brain/x.md');
+    const rename = await envelope(root, ['--dry-run', '-m', 'm', '--', 'brain/x.md']);
+    expect(rename).toMatchObject({ exit: 1, body: { code: 'commit_outside_source_root', message: expect.stringContaining('A staged rename would commit x.md') } });
+    expect(await envelope(root, ['-m', 'm', '--', 'brain/x.md'])).toEqual(rename);
+    expect(status(root)).toEqual(['R  x.md -> brain/x.md']);
+
+    git(root, 'mv', 'brain/x.md', 'x.md');
+    put(root, 'brain/theirs.md', 'staged by another writer\n'); git(root, 'add', 'brain/theirs.md');
+    put(root, 'brain/page.md', 'mine\n');
+    const swept = await envelope(root, ['--dry-run', '-m', 'm', '--', 'brain']);
+    expect(swept).toMatchObject({ exit: 1, body: { code: 'commit_prestaged_paths' } });
+    expect(await envelope(root, ['-m', 'm', '--', 'brain'])).toEqual(swept);
+    expect(status(root)).toEqual([' M brain/page.md', 'A  brain/theirs.md']);
   });
 });
 
