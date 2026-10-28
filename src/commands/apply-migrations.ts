@@ -50,6 +50,7 @@ import {
   connectAtSchemaVersion,
   redactDbError,
   reportDatabaseUnreachable,
+  schemaAheadRefusal,
   schemaBehindAtPreflight,
   schemaPendingError,
   type SchemaPending,
@@ -1001,6 +1002,9 @@ async function preflightSchema(
       access: classifyPgAccessError(err, { url: cfg?.database_url ?? null }).reason,
     };
   }
+  // #7776: an older binary runs no orchestrator (or its schema replay) on a database a newer gbrain migrated.
+  const behind = cfg && !cli.list && !cli.dryRun ? await schemaAheadRefusal(cfg, dbProbe.status === 'connected' ? dbProbe.schemaVer : null) : null;
+  if (behind) throw behind;
   return { schemaBehind, dbProbe, schemaTimeout };
 }
 

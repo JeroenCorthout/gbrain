@@ -69,6 +69,24 @@ async function pendingAbove(version: number | null): Promise<{ latest: number; p
   return { latest: LATEST_VERSION, pending };
 }
 
+/**
+ * #7776: `client_behind` when the brain's schema is newer than this binary, so an older binary runs no orchestrator (or
+ * its schema replay) there. Postgres reuses the pre-flight's version; PGLite is read here, before any orchestrator opens
+ * the datastore. An unreadable PGLite datastore is left to the orchestrators, as before.
+ */
+export async function schemaAheadRefusal(cfg: GBrainConfig, preflightVersion: number | null): Promise<OperationError | null> {
+  let version = preflightVersion;
+  if (version === null && cfg.engine === 'pglite' && cfg.database_path && existsSync(cfg.database_path)) {
+    try {
+      const { engine, close } = await connectMigrationEngine(cfg);
+      try { version = parseInt(await engine.getConfig('version') || '0', 10); } finally { await close(); }
+    } catch { return null; }
+  }
+  const { clientBehindError } = await import('../core/schema-client-behind.ts');
+  const { latest } = await pendingAbove(null);
+  return version !== null && version > latest ? clientBehindError(version) : null;
+}
+
 /** The pre-flight's finding when it saw the schema behind and did not bring it to head. */
 export async function schemaBehindAtPreflight(version: number, authorized: boolean, timeout?: MigrationTimeoutRecord): Promise<SchemaPending> {
   return { reason: authorized ? 'still_behind' : 'not_applied', current: version, ...(await pendingAbove(version)), ...(authorized && timeout ? { timeout } : {}) };
