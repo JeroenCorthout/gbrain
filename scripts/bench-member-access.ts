@@ -75,11 +75,14 @@ async function runCell(share: number) {
   if (share > 0 && !hasMembers) { await engine.disconnect(); return null; }
   await seed(engine, share);
 
-  if (hasMembers) await engine.executeRaw("INSERT INTO access_members (id) VALUES ('alice-example') ON CONFLICT DO NOTHING");
+  // Share 0 is a brain with no restriction at all (no member, no readers), the case nearly every brain is in; its
+  // "member" token is a second unbound token. Restricted shares create the member and bind it.
+  const bindMember = hasMembers && share > 0;
+  if (bindMember) await engine.executeRaw("INSERT INTO access_members (id) VALUES ('alice-example') ON CONFLICT DO NOTHING");
   const mint = async (name: string) => mintLegacyToken(engine, { name, scopes: ['read'], takesHolders: ['world'], sourceGrant: [SRC] });
   const unbound = await mint('bench-unbound');
   const alice = await mint('bench-alice');
-  if (hasMembers) await engine.executeRaw('UPDATE access_tokens SET member_id = $2 WHERE id = $1::uuid', [alice.id, 'alice-example']);
+  if (bindMember) await engine.executeRaw('UPDATE access_tokens SET member_id = $2 WHERE id = $1::uuid', [alice.id, 'alice-example']);
   const provider = new GBrainOAuthProvider({ sql: sqlQueryForEngine(engine), transaction: fn => engine.transaction(tx => fn(sqlQueryForEngine(tx))) });
 
   async function remote(token: string, params: Record<string, unknown>) {

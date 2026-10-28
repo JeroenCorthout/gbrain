@@ -69,6 +69,7 @@ function privacyPartSql(pageAlias: string): string {
  * embedded as literals; anything else empties it (fail closed).
  */
 export function accessAllowedSql(pageAlias: string, identity: readonly string[]): string {
+  if (!currentCallerAccess().restricted) return `(${pageAlias}.page_readers IS NULL)`;
   return `(${readersAllowedSql(pageAlias, identity)} AND ${originAllowedSql(pageAlias)})`;
 }
 
@@ -137,7 +138,17 @@ export function privatePagesFilterFragmentFast(pageAlias: string): string {
  *    no-grant floor, federation, an OAuth client's bound source or a request's
  *    `source_ids`); empty for writes;
  *  - hidePrivate: false only when an operator relaxed privacy for remote reads
- *    (GBRAIN_REMOTE_PRIVATE_PAGES=1 or search.remote_private_pages=visible).
+ *    (GBRAIN_REMOTE_PRIVATE_PAGES=1 or search.remote_private_pages=visible);
+ *  - restricted: false only inside a remote request on a brain whose config
+ *    access.restrictions_present was unset when the request began. Then no
+ *    page named readers at that moment and none predates the migration (v274
+ *    sets the flag when one does), so every readers value is in the derived
+ *    column: accessAllowedSql tests only page_readers IS NULL (live, so a page
+ *    gaining readers mid-request is still hidden, since the trigger fills the
+ *    column in that write) and skips lineage, member matching and the
+ *    frontmatter test, whose per-row JSONB read cost keyword search about 3%.
+ *    The flag is sticky and set in the same transaction as the first page
+ *    that names readers.
  * Outside any record (local CLI, jobs, cycles) the identity is empty, no
  * source is private-readable and hidePrivate follows the process's hatch
  * state, so caller-aware fragments still fail closed on restricted pages.
@@ -147,12 +158,13 @@ export interface CallerAccess {
   privateReadableSources: readonly string[];
   hidePrivate: boolean;
   applyRemoteReadPolicy: boolean;
+  restricted: boolean;
 }
 const callerAccessStore = new AsyncLocalStorage<CallerAccess>();
 
 /** The current read's caller-access record (see CallerAccess). */
 export function currentCallerAccess(): CallerAccess {
-  return callerAccessStore.getStore() ?? { identity: [], privateReadableSources: [], hidePrivate: !processPrivacyRelaxed(), applyRemoteReadPolicy: false };
+  return callerAccessStore.getStore() ?? { identity: [], privateReadableSources: [], hidePrivate: !processPrivacyRelaxed(), applyRemoteReadPolicy: false, restricted: true };
 }
 
 /** Runs `fn` under `access` merged over the current record; an invalid identity or source id empties that set (fail closed). */
@@ -165,6 +177,7 @@ export function withCallerAccess<T>(access: Partial<CallerAccess>, fn: () => T):
     privateReadableSources: sources.length && sources.every(isValidSourceId) ? Object.freeze([...new Set(sources)]) : Object.freeze([]),
     hidePrivate: access.hidePrivate ?? base.hidePrivate,
     applyRemoteReadPolicy: access.applyRemoteReadPolicy ?? base.applyRemoteReadPolicy,
+    restricted: access.restricted ?? base.restricted,
   }), fn);
 }
 
