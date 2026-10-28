@@ -1080,7 +1080,7 @@
         {
           "category": "meta",
           "elapsed_ms": "<volatile>",
-          "message": "All 20 function(s) this gbrain's schema defines have its bodies",
+          "message": "Every function this gbrain's schema defines has its body",
           "name": "schema_function_bodies",
           "status": "ok"
         },

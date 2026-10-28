@@ -2,18 +2,22 @@
  * #7776 on Postgres: an older binary's initSchema replayed its whole schema (CREATE OR REPLACE FUNCTION ...) over a
  * database a newer gbrain migrated, reinstalling superseded writer-fence guard bodies, then applied nothing. initSchema
  * now refuses with client_behind under the schema lock, before anything in the schema runs, and doctor's
- * schema_function_bodies check names bodies an older replay already reverted. PGLite (repo-less default):
+ * schema_function_bodies check names bodies an older replay already reverted. A forced schema run of apply-migrations
+ * (runMigrations under the orchestration lease) refuses the same way before its drift repairs touch the newer schema. PGLite (repo-less default):
  * test/init-schema-client-behind.test.ts and test/doctor-schema-function-bodies.test.ts.
  * Run: DATABASE_URL=... bun test test/e2e/init-schema-client-behind-postgres.test.ts
  */
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { randomUUID } from 'node:crypto';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import postgres from '#postgres';
 import { assertSafeE2eDatabaseUrl } from '../helpers/db-guard.ts';
 import { PostgresEngine } from '../../src/core/postgres-engine.ts';
 import { LATEST_VERSION } from '../../src/core/migrate.ts';
 import { schemaFunctionBodyDrift } from '../../src/commands/doctor/checks/schema-function-bodies.ts';
-import { functionBody, installNewerBody, NEWER_BODY_MARKER } from '../helpers/guard-body-drift.ts';
+import { forceSchemaRun, functionBody, installNewerBody, installNewerLinkSourceCheck, linkSourceCheckDef, NEWER_BODY_MARKER } from '../helpers/guard-body-drift.ts';
 
 const DATABASE_URL = process.env.DATABASE_URL;
 const describeE2E = DATABASE_URL ? describe : describe.skip;
@@ -23,16 +27,18 @@ const GUARDS = ['gbrain_count_git_canonical_sources', 'gbrain_guard_effect_proto
 describeE2E('initSchema on a database newer than the binary (#7776, Postgres)', () => {
   let admin: ReturnType<typeof postgres>;
   let engine: PostgresEngine;
+  let url = '';
   const name = `gbrain_test_behind_${randomUUID().replaceAll('-', '')}`;
 
   beforeAll(async () => {
     assertSafeE2eDatabaseUrl(DATABASE_URL!);
     admin = postgres(DATABASE_URL!, { max: 1, prepare: false, onnotice: () => {} });
     await admin.unsafe(`CREATE DATABASE ${name}`);
-    const url = new URL(DATABASE_URL!);
-    url.pathname = `/${name}`;
+    const parsed = new URL(DATABASE_URL!);
+    parsed.pathname = `/${name}`;
+    url = parsed.toString();
     engine = new PostgresEngine();
-    await engine.connect({ database_url: url.toString() });
+    await engine.connect({ database_url: url });
     await engine.initSchema();
   }, 180_000);
 
@@ -61,6 +67,23 @@ describeE2E('initSchema on a database newer than the binary (#7776, Postgres)', 
     expect(await engine.getConfig('version')).toBe(String(LATEST_VERSION + 1));
     expect(await schemaFunctionBodyDrift(engine)).toEqual({ status: 'skipped', reason: 'client_behind', version: LATEST_VERSION + 1, latest: LATEST_VERSION });
   }, 60_000);
+
+  test('apply-migrations --force-schema (lease held) refuses client_behind and its drift repair leaves the newer constraint alone', async () => {
+    await installNewerLinkSourceCheck(engine);
+    const before = await linkSourceCheckDef(engine);
+    const home = mkdtempSync(join(tmpdir(), 'gbrain-force-schema-'));
+    try {
+      mkdirSync(join(home, '.gbrain'), { recursive: true });
+      writeFileSync(join(home, '.gbrain', 'config.json'), JSON.stringify({ engine: 'postgres', database_url: url }));
+      const run = await forceSchemaRun(home);
+      expect(run.doc?.code ?? run.out).toBe('client_behind');
+      expect(run.exitCode).not.toBe(0);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+    expect(await linkSourceCheckDef(engine)).toBe(before);
+    expect(await engine.getConfig('version')).toBe(String(LATEST_VERSION + 1));
+  }, 120_000);
 
   test('at head doctor names each drifted body, and the replay of this binary (lock released) clears them', async () => {
     await engine.setConfig('version', String(LATEST_VERSION));

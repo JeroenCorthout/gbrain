@@ -52,7 +52,7 @@ async function runSchemaFunctionBodies(ctx: DoctorContext): Promise<Check[]> {
         ? `Skipped: the brain schema is v${drift.version}, newer than this client (v${drift.latest}); upgrade gbrain to check it.`
         : `Skipped: the brain schema is v${drift.version} with migrations to v${drift.latest} pending (schema_version covers it).` });
     } else if (drift.differing.length === 0) {
-      checks.push({ name: 'schema_function_bodies', status: 'ok', message: `All ${drift.checked} function(s) this gbrain's schema defines have its bodies` });
+      checks.push({ name: 'schema_function_bodies', status: 'ok', message: `Every function this gbrain's schema defines has its body` });
     } else {
       checks.push({
         name: 'schema_function_bodies',

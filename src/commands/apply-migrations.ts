@@ -48,6 +48,7 @@ import { exitCliError, usageError, writeCliError } from '../cli/cli-error.ts';
 import {
   checkSchemaAfterOrchestrators,
   connectAtSchemaVersion,
+  connectForForcedSchema,
   redactDbError,
   reportDatabaseUnreachable,
   schemaAheadRefusal,
@@ -703,7 +704,8 @@ async function runLockedMigrations(
         fail('failed', opError('no_brain', 'No brain configured for --force-schema.', 'Create a brain first: `gbrain init` (`gbrain init --help` lists the options).'));
         return 2;
       }
-      const { engine: eng, version } = await connectAtSchemaVersion(cfg);
+      const { engine: eng, version, behind } = await connectForForcedSchema(cfg);
+      if (behind) { fail('refused', behind); return 1; }
       console.log('Running schema migrations from current config.version...');
       const result = await migrateSchema(eng, version);
       console.log(`Applied ${result.applied} schema migration(s); now at v${result.current}.`);
@@ -715,8 +717,7 @@ async function runLockedMigrations(
         'Fix the database error above, then run `gbrain apply-migrations --force-schema` again.', { reason: 'schema_failed' }));
       return 1;
     }
-    if (cli.forceSchema && !cli.forceAll) return;
-    if (cli.forceAll) return; // both surfaces flushed
+    return; // --force-schema alone, or --force-all with both surfaces flushed
   }
 
   // Pre-flight: schema drift (#1530) and the DB probe (#4364); see preflightSchema.
