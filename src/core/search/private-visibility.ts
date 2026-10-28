@@ -70,7 +70,7 @@ function privacyPartSql(pageAlias: string): string {
  * embedded as literals; anything else empties it (fail closed).
  */
 export function accessAllowedSql(pageAlias: string, identity: readonly string[], satisfied: readonly string[] = satisfiedFor(identity)): string {
-  if (!currentCallerAccess().restricted) return `(${pageAlias}.page_readers IS NULL)`;
+  if (!currentCallerAccess().restricted) return `(${pageAlias}.page_readers IS NULL AND ${pageAlias}.folder_rule_ids IS NULL)`;
   return `(${readersAllowedSql(pageAlias, identity)} AND ${folderRulesAllowedSql(pageAlias, satisfied)} AND ${originAllowedSql(pageAlias)})`;
 }
 
@@ -176,12 +176,13 @@ export function privatePagesFilterFragmentFast(pageAlias: string): string {
  *    access.restrictions_present was unset when the request began. Then no
  *    page named readers at that moment and none predates the migration (v274
  *    sets the flag when one does), so every readers value is in the derived
- *    column: accessAllowedSql tests only page_readers IS NULL (live, so a page
- *    gaining readers mid-request is still hidden, since the trigger fills the
- *    column in that write) and skips lineage, member matching and the
- *    frontmatter test, whose per-row JSONB read cost keyword search about 3%.
- *    The flag is sticky and set in the same transaction as the first page
- *    that names readers.
+ *    column: accessAllowedSql tests only page_readers IS NULL and
+ *    folder_rule_ids IS NULL (live, so a page gaining readers or a folder rule
+ *    mid-request is still hidden, since the triggers fill both columns in that
+ *    write) and skips lineage, member matching and the frontmatter test, whose
+ *    per-row JSONB read cost keyword search about 3%. The flag is sticky and set
+ *    in the same transaction as the first page that names readers, the first
+ *    member and the first folder rule or pending folder prefix (v275).
  * Outside any record (local CLI, jobs, cycles) the identity is empty, no
  * source is private-readable and hidePrivate follows the process's hatch
  * state, so caller-aware fragments still fail closed on restricted pages.
