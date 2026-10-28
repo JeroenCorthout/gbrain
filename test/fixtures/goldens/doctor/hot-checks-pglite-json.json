@@ -3825,6 +3825,18 @@
           {
             "category": "brain",
             "details": {
+              "docs": "docs/guides/repair.md#outside-content-fences",
+              "items": [],
+              "pages": 0
+            },
+            "elapsed_ms": "<volatile>",
+            "message": "No fact, take or link is indexed from a fence on an imported email, calendar, GitHub or transcript page.",
+            "name": "outside_content_fences",
+            "status": "ok"
+          },
+          {
+            "category": "brain",
+            "details": {
               "auto_repair": {
                 "active": false,
                 "enabled": true,
@@ -8572,6 +8584,18 @@
             "elapsed_ms": "<volatile>",
             "message": "No source is strict (git-canonical), so no index trails a commit.",
             "name": "git_index_lag",
+            "status": "ok"
+          },
+          {
+            "category": "brain",
+            "details": {
+              "docs": "docs/guides/repair.md#outside-content-fences",
+              "items": [],
+              "pages": 0
+            },
+            "elapsed_ms": "<volatile>",
+            "message": "No fact, take or link is indexed from a fence on an imported email, calendar, GitHub or transcript page.",
+            "name": "outside_content_fences",
             "status": "ok"
           },
           {
