@@ -63,13 +63,13 @@ function privacyPartSql(pageAlias: string): string {
  * (`member:<id>` and its `group:<g>` entries) meets them, through the one SQL
  * normalization gbrain_access_readers() (malformed values read as nobody). A
  * page derived from a page that names readers is readable by no remote caller
- * (originRestrictedSql). No escape hatch, operator opt-out or granted source
+ * (originAllowedSql). No escape hatch, operator opt-out or granted source
  * relaxes this part; with an empty identity it hides every restricted page.
  * `identity` must pass validIdentity (its alphabet has no quote), so it is
  * embedded as literals; anything else empties it (fail closed).
  */
 export function accessAllowedSql(pageAlias: string, identity: readonly string[]): string {
-  return `(${readersAllowedSql(pageAlias, identity)} AND NOT ${originRestrictedSql(pageAlias)})`;
+  return `(${readersAllowedSql(pageAlias, identity)} AND ${originAllowedSql(pageAlias)})`;
 }
 
 /**
@@ -84,7 +84,8 @@ export function readersAllowedSql(alias: string, identity: readonly string[], ro
   const ids = identity.length && validIdentity(identity) ? identity : [];
   const readers = row === 'page' ? `${alias}.page_readers` : `gbrain_access_readers(${alias}.frontmatter)`;
   const listed = ids.length ? ` OR ${readers} && ARRAY[${ids.map(id => `'${id}'`).join(', ')}]::text[]` : '';
-  return `(NOT (${alias}.frontmatter ? 'readable_by')${listed})`;
+  const none = row === 'page' ? `(${alias}.page_readers IS NULL AND NOT (${alias}.frontmatter ? 'readable_by'))` : `NOT (${alias}.frontmatter ? 'readable_by')`;
+  return `(${none}${listed})`;
 }
 
 /** A page names readers (valid or not); SQL twin of hasReaders. */
@@ -101,11 +102,13 @@ function namesReadersSql(alias: string): string {
  * the origin gained readers are covered; new derivations are stamped private
  * by isDerivationPrivate. The lineage test lives in the SQL function
  * gbrain_access_origin_restricted (migration v274) behind a cheap type and
- * key guard, so a read plans one function call instead of four subplans.
+ * key guard, so a read plans one function call instead of four subplans. Both
+ * parts lead with column tests (page_readers IS NULL, type) so the planner's
+ * row estimate follows column statistics instead of a default guess.
  */
-function originRestrictedSql(p: string): string {
-  return `(CASE WHEN ${p}.type IN ('atom', 'question', 'concept', 'event') OR ${p}.frontmatter ? 'derived_from'
-    THEN gbrain_access_origin_restricted(${p}.id, ${p}.source_id, ${p}.type, ${p}.frontmatter) ELSE false END)`;
+function originAllowedSql(p: string): string {
+  return `((${p}.type NOT IN ('atom', 'question', 'concept', 'event') AND NOT (${p}.frontmatter ? 'derived_from'))
+    OR NOT gbrain_access_origin_restricted(${p}.id, ${p}.source_id, ${p}.type, ${p}.frontmatter))`;
 }
 
 /**

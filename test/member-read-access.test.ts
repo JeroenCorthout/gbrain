@@ -227,6 +227,13 @@ for (const kind of testBackends()) {
       for (const label of CORE) expect({ label, keys: bob[label] }).toEqual({ label, keys: ['team'] });
     }, 240_000);
 
+    test('a member\'s hybrid search keeps its vector arm (the index walk projects page_readers)', async () => {
+      for (const who of ['alice', 'bob', 'unbound']) {
+        const { isError, text } = await call(who, 'search', { query: 'harbor ledger planning notes', fields: 'full', limit: 20 });
+        expect({ who, isError, armFailed: text.includes('vector_arm_failed') }).toEqual({ who, isError: false, armFailed: false });
+      }
+    }, 240_000);
+
     test('readers never relax visibility: private; a private_pages grant opens it to a listed member only', async () => {
       expect(Object.values(await visibleTo('alice', ['privateAlice'])).flat()).toEqual([]);
       const granted = await visibleTo('alice-granted', ['privateAlice']);

@@ -26,6 +26,7 @@ const arg = (name: string, def: number) => { const i = process.argv.indexOf(name
 const PAGES = arg('--pages', 5000);
 const QUERIES = arg('--queries', 60);
 const JSON_MODE = process.argv.includes('--json');
+const SHARES = (process.argv.includes('--shares') ? process.argv[process.argv.indexOf('--shares') + 1] : '0,0.2,0.8').split(',').map(Number);
 const DIMS = 1536;
 const SRC = 'bench-src';
 const SYLLABLES = 'ba ce di fo gu ha je ki lo mu na pe qi ro su ta ve wi xo yu za'.split(' ');
@@ -88,7 +89,9 @@ async function runCell(share: number) {
     const t0 = performance.now();
     const out = await dispatchToolCall(engine, 'search', params, { remote: true, transport: 'http', auth, sourceId,
       takesHoldersAllowList: auth.takesHoldersAllowList ?? ['world'], ...(localFederated ? { localFederatedSourceIds: localFederated } : {}) });
-    return { ms: performance.now() - t0, text: out.content.map(c => c.text).join('\n') };
+    const text = out.content.map(c => c.text).join('\n');
+    if (out.isError || text.includes('vector_arm_failed')) throw new Error(`bench search degraded or failed: ${text.slice(0, 300)}`);
+    return { ms: performance.now() - t0, text };
   }
   const slugsIn = (text: string) => [...new Set(text.match(/notes\/page-\d+/g) ?? [])];
 
@@ -127,7 +130,7 @@ async function runCell(share: number) {
 configureGateway({ embedding_model: 'openai:text-embedding-3-small', embedding_dimensions: DIMS, env: { OPENAI_API_KEY: 'bench' } });
 __setEmbedTransportForTests((async ({ values }: { values: string[] }) => ({ embeddings: values.map(vectorFor) })) as never);
 const all: Record<string, unknown>[] = [];
-for (const share of [0, 0.2, 0.8]) {
+for (const share of SHARES) {
   const cells = await runCell(share);
   if (cells) all.push(...cells);
 }
