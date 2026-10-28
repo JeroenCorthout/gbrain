@@ -94,6 +94,7 @@ export async function remoteCallerAccess(engine: BrainEngine, auth: AuthInfo | u
     privateReadableSources: privateSources ?? [],
     hidePrivate: !relaxed,
     applyRemoteReadPolicy: false,
+    restricted,
   };
 }
 
