@@ -51,7 +51,7 @@ export function privatePagesFilterFragment(pageAlias: string): string {
 }
 
 /** The privacy rules alone (visibility, aliases, pinned questions, lineage): what the escape hatches and granted_sources may relax. */
-function privacyPartSql(pageAlias: string): string {
+export function privacyPartSql(pageAlias: string): string {
   return `(${privateSnapshotFilterFragment(pageAlias)}
     AND NOT ${derivedOriginPrivateSql(pageAlias)}
     AND NOT ${declaredLineagePrivateSql(pageAlias)})`;
