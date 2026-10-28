@@ -624,7 +624,10 @@ SKILL_DRIFT_UNKNOWN_FLAG skills/x/SKILL.md:42 'gbrain doctor --jsn' (did you mea
 A line that shows a wrong invocation on purpose carries
 `<!-- skill-drift-ok: <reason> -->` (on that line or the one before). An
 existing finding nobody can fix yet goes in `scripts/skill-drift-baseline.txt`,
-which only shrinks.
+which only shrinks. A command that skills call with a second word but that
+declares no subcommands can only have its flags checked; declare its
+subcommands in `src/cli/subcommands.ts`, or (for a positional argument) list it
+in `scripts/skill-drift-undeclared-subcommands.txt`, which also only shrinks.
 
 **Size budget.** A `SKILL.md` over 16 KB needs a row in
 `skills/skill-budgets.tsv` and stays under its ceiling; a description stays

@@ -9,6 +9,7 @@ import type { DoctorContext } from '../src/commands/doctor/context.ts';
 
 const surface: CliSurface = {
   isCommand: n => ['doctor', 'search'].includes(n),
+  isCliOnly: n => n === 'doctor',
   subcommands: () => undefined,
   stripGlobalFlags: argv => argv,
   unknownFlag: (_c, args) => args.find(a => a.startsWith('--') && !['--json', '--limit'].includes(a)) ?? null,

@@ -17,6 +17,7 @@ export function cliSurface(): CliSurface {
   const opNames = OPERATION_MANIFEST.map(op => op.name);
   const opSet = new Set(opNames);
   return {
+    isCliOnly: command => CLI_ONLY.has(command),
     isCommand: name => CLI_ONLY.has(name) || cliOps.has(name) || cliAliases.has(name),
     subcommands: command => ROUTERS[command]?.bareHelpFirst ? ROUTERS[command]!.subcommands : undefined,
     stripGlobalFlags: argv => parseGlobalFlags(argv).rest,

@@ -23,6 +23,7 @@ Every `gbrain ...` invocation a bundled skill shows now runs through the dispatc
 | A skill shows `gbrain config sett ...` or `gbrain doctor --jsn` | passed CI; an agent following it got an error | `bun run check:skill-health` fails with the nearest valid name |
 | A skill declares a `tools:` entry that is not an operation | passed | fails with the nearest operation |
 | A SKILL.md grows past its ceiling, or a new one passes 16 KB | passed | fails; raising a ceiling is a reviewer-visible edit |
+| A skill calls a new command's subcommand that the CLI never declares | unchecked, silently | fails until the subcommands are declared or the command is listed in the shrink-only `scripts/skill-drift-undeclared-subcommands.txt` |
 | `skills-commit-gate.sh` | four checks | also runs the skill health guard and prints `Skill-size:` lines for staged skills |
 
 **Installed skills get the same health check at runtime.**

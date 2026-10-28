@@ -9,7 +9,10 @@
  * a command or flag fails here until it updates the skills that teach it.
  * Accepted exceptions live in scripts/skill-drift-baseline.txt, a shrink-only
  * list; a line can also carry `<!-- skill-drift-ok: <reason> -->` (or the
- * line before it) when it shows a wrong invocation on purpose.
+ * line before it) when it shows a wrong invocation on purpose. A CLI command
+ * called with a second word but no declared subcommands can only have its
+ * flags checked; such commands are listed in the shrink-only
+ * scripts/skill-drift-undeclared-subcommands.txt so a new one is a visible edit.
  *
  * Size: a SKILL.md over 16384 bytes needs a row in skills/skill-budgets.tsv
  * and must stay under its ceiling; every description stays under 1024 bytes. Ceilings only go down without a
@@ -30,6 +33,7 @@ import { DESCRIPTION_CAP, NEW_SKILL_CAP, parseSkillBudgets } from '../src/core/s
 const ROOT = process.env.GBRAIN_GUARD_ROOT ? resolve(process.env.GBRAIN_GUARD_ROOT) : resolve(import.meta.dir, '..');
 const SKILLS = join(ROOT, 'skills');
 const BASELINE = join(ROOT, 'scripts', 'skill-drift-baseline.txt');
+const UNDECLARED = join(ROOT, 'scripts', 'skill-drift-undeclared-subcommands.txt');
 const BUDGETS = join(SKILLS, 'skill-budgets.tsv');
 
 const args = process.argv.slice(2);
@@ -61,11 +65,13 @@ const baseline = new Set(existsSync(BASELINE) ? readFileSync(BASELINE, 'utf8').s
 const seen = new Set<string>();
 let invocations = 0;
 let unverified = 0;
+const undeclared = new Set<string>();
 const files = walk(SKILLS);
 for (const file of files) {
   const report = analyzeSkillDrift(rel(file), readFileSync(file, 'utf8'), surface);
   invocations += report.invocations;
   unverified += report.subcommandUnverified;
+  for (const c of report.undeclaredCommands) undeclared.add(c);
   for (const f of report.findings) {
     const key = `${f.file}\t${f.code}\t${f.token}`;
     if (baseline.has(key)) { seen.add(key); continue; }
@@ -74,6 +80,13 @@ for (const file of files) {
 }
 for (const key of baseline) {
   if (!seen.has(key)) failures.push(`SKILL_DRIFT_BASELINE_STALE ${key.replaceAll('\t', ' ')}\n    fix: the finding is gone; delete this line from scripts/skill-drift-baseline.txt (the list only shrinks)`);
+}
+const accepted = new Set(existsSync(UNDECLARED) ? readFileSync(UNDECLARED, 'utf8').split('\n').map(l => l.trim()).filter(l => l && !l.startsWith('#')) : []);
+for (const c of [...undeclared].sort()) {
+  if (!accepted.has(c)) failures.push(`SKILL_DRIFT_UNDECLARED_SUBCOMMANDS '${c}': skills call it with a second word, but it declares no subcommands, so only its flags can be checked\n    fix: declare its subcommands in src/cli/subcommands.ts (ROUTERS, bareHelpFirst) so a renamed one fails here; if the word is a positional argument, add '${c}' to scripts/skill-drift-undeclared-subcommands.txt`);
+}
+for (const c of accepted) {
+  if (!undeclared.has(c)) failures.push(`SKILL_DRIFT_UNDECLARED_STALE '${c}'\n    fix: no skill calls it with an unchecked second word any more; delete it from scripts/skill-drift-undeclared-subcommands.txt (the list only shrinks)`);
 }
 
 // Size
@@ -103,7 +116,7 @@ for (const file of skillFiles) {
 }
 for (const skill of rows.keys()) if (!present.has(skill)) failures.push(`SKILL_BUDGET_ROW_STALE skills/skill-budgets.tsv '${skill}' names no skill\n    fix: delete the row`);
 
-const coverage = `${invocations} gbrain invocations in ${files.length} files; subcommands verified for ${invocations - unverified}, not declared for ${unverified} (flags checked for all)`;
+const coverage = `${invocations} gbrain invocations in ${files.length} files; flags checked for all; ${unverified} name a subcommand of ${undeclared.size} command(s) that declare none, so only their flags were checked (scripts/skill-drift-undeclared-subcommands.txt)`;
 if (failures.length) {
   console.error(`FAIL: ${failures.length} skill health violation(s) (${coverage}):`);
   for (const f of failures) console.error(`  ${f}`);
