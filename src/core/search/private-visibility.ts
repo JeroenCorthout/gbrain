@@ -52,7 +52,7 @@ export function privatePagesFilterFragment(pageAlias: string): string {
 }
 
 /** The privacy rules alone (visibility, aliases, pinned questions, lineage): what the escape hatches and granted_sources may relax. */
-function privacyPartSql(pageAlias: string): string {
+export function privacyPartSql(pageAlias: string): string {
   return `(${privateSnapshotFilterFragment(pageAlias)}
     AND NOT ${derivedOriginPrivateSql(pageAlias)}
     AND NOT ${declaredLineagePrivateSql(pageAlias)})`;
@@ -89,8 +89,12 @@ export function folderRulesAllowedSql(alias: string, satisfied: readonly string[
   return `(${alias}.folder_rule_ids IS NULL${listed})${coverageSql(alias)}`;
 }
 
-/** The pending or invalid prefixes of the current record as a conjunct (empty when none); an ill-formed entry hides everything. */
+/**
+ * The pending or invalid prefixes of the current record as a conjunct (empty when none); an ill-formed entry hides
+ * everything. Outside any caller record the prefixes are read live, so a page under a pending prefix stays hidden.
+ */
 function coverageSql(alias: string): string {
+  if (!callerAccessStore.getStore()) return ` AND NOT gbrain_access_pending_covers(${alias}.source_id, ${alias}.slug)`;
   const coverage = currentCallerAccess().folderCoverage;
   if (!coverage.length) return '';
   return coverage.map(c => !isValidSourceId(c.source_id) || (c.prefix !== '' && !validPrefix(c.prefix)) ? ' AND FALSE'
@@ -440,15 +444,42 @@ export async function readHonorAliases(engine: BrainEngine): Promise<boolean> {
   }
 }
 
-/** A page whatever is derived from it must not outrank: private to remote readers, or carrying a privacy alias. */
-export function isDerivationPrivate(page: { type?: string | null; frontmatter?: unknown }): boolean {
-  if (isPrivatePage(page)) return true;
+/**
+ * A page whatever is derived from it must not outrank: private to remote readers, carrying a privacy alias, or under a
+ * folder rule or a pending folder prefix (`folder_restricted`, selected with folderRestrictedSql or looked up with folderRestricted).
+ */
+export function isDerivationPrivate(page: { type?: string | null; frontmatter?: unknown; folder_restricted?: boolean | null }): boolean {
+  if (page.folder_restricted === true || isPrivatePage(page)) return true;
   return typeof page.frontmatter === 'object' && page.frontmatter !== null && hasPrivacyAlias(page.frontmatter as Record<string, unknown>);
 }
 
 /** SQL twin of isDerivationPrivate. */
 export function derivationPrivateSql(alias: string): string {
-  return `(NOT ${privateSnapshotFilterFragment(alias)} OR ${privacyAliasSql(alias)} OR ${namesReadersSql(alias)})`;
+  return `(NOT ${privateSnapshotFilterFragment(alias)} OR ${privacyAliasSql(alias)} OR ${namesReadersSql(alias)} OR ${folderRestrictedSql(alias)})`;
+}
+
+/** GBRA-218 (A2): the page row sits under an applied folder rule (its stamp) or a pending or invalid folder prefix. */
+export function folderRestrictedSql(alias: string): string {
+  return `(${alias}.folder_rule_ids IS NOT NULL OR gbrain_access_pending_covers(${alias}.source_id, ${alias}.slug))`;
+}
+
+/**
+ * folderRestrictedSql for a page known by its slug (a parsed page, a row read without the column, a page about to be
+ * written): judged against the applied folder rules, not the stamp. A failed read counts as restricted.
+ */
+export async function folderRestricted(engine: Pick<BrainEngine, 'executeRaw'>, sourceId: string, slug: string): Promise<boolean> {
+  try {
+    const [row] = await engine.executeRaw<{ restricted: boolean }>(
+      'SELECT (gbrain_access_folder_rules($1, $2) IS NOT NULL OR gbrain_access_pending_covers($1, $2)) AS restricted', [sourceId, slug]);
+    return row?.restricted === true;
+  } catch {
+    return true;
+  }
+}
+
+/** `page` with folder_restricted looked up (folderRestricted), for a page read without it, such as a page snapshot. */
+export async function withFolderRestricted<P extends { source_id: string; slug: string }>(engine: Pick<BrainEngine, 'executeRaw'>, page: P): Promise<P & { folder_restricted: boolean }> {
+  return { ...page, folder_restricted: await folderRestricted(engine, page.source_id, page.slug) };
 }
 
 /**
@@ -456,7 +487,7 @@ export function derivationPrivateSql(alias: string): string {
  * missing origins are private, and a page origin is private when remote
  * readers cannot see it or it carries a privacy alias.
  */
-export function effectiveVisibility(origin: { kind: 'transcript' } | { kind: 'page'; page: { type?: string | null; frontmatter?: unknown } | null }): Visibility {
+export function effectiveVisibility(origin: { kind: 'transcript' } | { kind: 'page'; page: { type?: string | null; frontmatter?: unknown; folder_restricted?: boolean | null } | null }): Visibility {
   if (origin.kind === 'transcript' || !origin.page) return 'private';
   return isDerivationPrivate(origin.page) ? 'private' : 'world';
 }

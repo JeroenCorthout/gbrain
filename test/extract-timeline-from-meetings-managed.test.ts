@@ -82,6 +82,16 @@ describe(`extract timeline --from-meetings on a managed brain (#6273, ${database
     }, { databaseUrl, setup: ({ engine }) => seed(engine) });
   }, 180_000);
 
+  test('GBRA-218: a meeting under a pending folder prefix fans out nothing', async () => {
+    await managedBrain(async ({ engine }) => {
+      await engine.executeRaw("INSERT INTO access_policy_state (source_id) VALUES ('default') ON CONFLICT DO NOTHING");
+      await engine.executeRaw("INSERT INTO access_pending_coverage (source_id, prefix, reason) VALUES ('default', 'meetings/', 'pending')");
+      expect(await extractTimelineFromMeetings(engine)).toMatchObject({ batch_errors: 0, entries_created: 0 });
+      expect(await requests(engine)).toBe(0);
+      expect(await rows(engine)).toEqual([]);
+    }, { databaseUrl, setup: ({ engine }) => seed(engine) });
+  }, 180_000);
+
   test('the preparer refuses forged rows and writes nothing for a row whose meeting does not match', async () => {
     await managedBrain(async ({ engine }) => {
       const [page] = await engine.executeRaw<{ id: number }>("SELECT id FROM pages WHERE slug='people/alice-example'");

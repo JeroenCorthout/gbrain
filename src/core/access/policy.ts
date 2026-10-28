@@ -104,7 +104,12 @@ export async function ensurePolicyState(engine: Exec, sourceId: string): Promise
   await engine.executeRaw('INSERT INTO access_policy_state (source_id) VALUES ($1) ON CONFLICT (source_id) DO NOTHING', [sourceId]);
 }
 
+/**
+ * The source row first, then its policy row: page writers hold `sources FOR SHARE` before their stamping trigger takes
+ * the policy row, so the same order lets a write already in flight finish (and be stamped here) instead of deadlocking.
+ */
 async function lockSource(tx: Exec, sourceId: string): Promise<void> {
+  await tx.executeRaw('SELECT 1 FROM sources WHERE id = $1 FOR NO KEY UPDATE', [sourceId]);
   await tx.executeRaw('SELECT 1 FROM access_policy_state WHERE source_id = $1 FOR UPDATE', [sourceId]);
 }
 

@@ -105,6 +105,7 @@ import { upsertExtractRollup, classifyRunStop } from '../core/extract/rollup-wri
 import { ALLOWED_TYPES, ALLOWED_TYPE_ALIASES, isConversationFactsEligiblePage, pageTypesForAllowed, requireParseableConversationFlag, type AllowedType } from '../core/facts/conversation-types.ts';
 import { TERMINAL_AUDIT_SOURCE, NON_EXTRACTABLE_AUDIT_SOURCE, stampExtractorVersion } from '../core/facts/audit-sources.ts';
 import { resolveDefaultVisibility, tightenToPage, type FactVisibility } from '../core/facts/visibility.ts';
+import { folderRestricted } from '../core/search/private-visibility.ts';
 import {
   emptySaveTimeResolutionCounts,
   formatSaveTimeResolutionCounts,
@@ -1016,7 +1017,7 @@ async function processPage(
   let segmentsThisPage = 0;
   const pageRows: Array<NewFact & { row_num: number; source_markdown_slug: string }> = [];
   const pageResolution = emptySaveTimeResolutionCounts();
-  const factVisibility = tightenToPage(state.factVisibility, page);
+  const factVisibility = tightenToPage(state.factVisibility, { ...page, folder_restricted: await folderRestricted(state.engine, state.sourceId, page.slug) });
   const entityHints = await conversationEntityHints(state.engine, state.sourceId, page.slug, factVisibility); // #6731
 
   for (const seg of segments) {
