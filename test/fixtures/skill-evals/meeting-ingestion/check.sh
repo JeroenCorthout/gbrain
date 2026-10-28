@@ -47,7 +47,8 @@ case "$1" in
     p=$(page_of "$s"); echo "$p" | grep -q -E '^type: *source' || fail "sidecar type is not source"
     echo "$p" | grep -q -E '^facts_backstop: *false' || fail "sidecar lacks facts_backstop: false" ;;
   sensitive)
-    m=$(meetings | head -1); [ -n "$m" ] || fail "no meeting page"
+    m=$(meetings | head -1)
+    if [ -z "$m" ]; then answer | grep -q '?' || fail "no meeting page and no question to the user"; exit 0; fi
     page_of "$m" | grep -q -E '^facts_backstop: *false' || fail "the sensitive meeting page lost facts_backstop: false" ;;
   one-meeting)
     n=$(meetings | wc -l | tr -d ' '); [ "$n" = 1 ] || fail "$n meeting pages for one meeting"

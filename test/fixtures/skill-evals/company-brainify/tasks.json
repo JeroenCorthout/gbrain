@@ -73,9 +73,6 @@
     "id": "connect-not-sanitize",
     "prompt": "Using the company-brainify skill, connect our existing company brain repo at ./acme-brain to gbrain so the team can search it.",
     "setup": "sh \"$SKILL_EVAL_FIXTURES/seed.sh\" acme",
-    "must": [
-      "sources inspect"
-    ],
     "check": "sh \"$SKILL_EVAL_FIXTURES/check.sh\" acme-unchanged"
   },
   {

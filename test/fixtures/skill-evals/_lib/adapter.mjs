@@ -5,7 +5,7 @@
 // target skill is installed harness-natively under its folder name, and the rest of gbrain's skills tree is at
 // <work>/skills/ like a scaffolded workspace. After the session it writes <work>/.eval/{answer.txt,calls.jsonl}
 // so task checks can assert on what the agent ran.
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { appendFileSync, cpSync, existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 
@@ -62,9 +62,12 @@ const raw = join(out, "raw.jsonl");
 // own skill version, the agent CLIs, the pinned gbrain checkout and the gbrain shim, so it cannot find another
 // version's copy of the skill (or the repository's) by searching the disk.
 const W = process.env.EVAL_ROOT;
+// Every copy of a pilot skill inside the gbrain checkout (bundled, plugin trees, test fixtures). gbrain needs the rest
+// of skills/ at runtime (the filing rules), so only these folders are hidden.
+const hiddenCopies = (src) => spawnSync("find", [src, "-path", join(src, "node_modules"), "-prune", "-o", "-type", "d", "(", "-name", "brain-ops", "-o", "-name", "company-brainify", "-o", "-name", "meeting-ingestion", ")", "-print"], { encoding: "utf8" }).stdout.split("\n").filter(Boolean);
 const ro = [skillDir, BIN.replace(/\/\.bin$/, ""), process.env.GBRAIN_EVAL_SRC ?? join(W, "gbrain-src"), join(W, "bin")].filter(Boolean);
 const box = ["--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp", "--tmpfs", "/home", "--tmpfs", "/workspace", "--tmpfs", "/root",
-  "--bind", work, work, ...ro.flatMap((d) => ["--ro-bind", d, d]), ...["skills", "plugin", "plugin-variants", "test"].flatMap((d) => ["--tmpfs", join(process.env.GBRAIN_EVAL_SRC ?? join(W, "gbrain-src"), d)]), "--die-with-parent", "--chdir", work, "--"];
+  "--bind", work, work, ...ro.flatMap((d) => ["--ro-bind", d, d]), ...hiddenCopies(process.env.GBRAIN_EVAL_SRC ?? join(W, "gbrain-src")).flatMap((d) => ["--tmpfs", d]), "--die-with-parent", "--chdir", work, "--"];
 const child = spawn("bwrap", [...box, ...argv], { cwd: work, env, stdio: ["ignore", "pipe", "pipe"] });
 const chunks = [];
 const errs = [];

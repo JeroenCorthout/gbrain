@@ -45,3 +45,13 @@ EVAL_ROOT=<scratch> GBRAIN_REPO=<gbrain checkout> test/fixtures/skill-evals/_lib
   any model keeps its shipped version.
 - The noise floor is the two-standard-error rule above rather than a second `before` arm (cost).
 - Spend cap: $450 across all three pilot skills, enforced per session by the adapter.
+
+## Amendments
+
+- 2026-10-28, before any counted cell: the first full run hid gbrain's whole `skills/` folder from the
+  sandbox, which removed the filing rules every write needs, so every write failed in every arm; those runs
+  were discarded and the adapter now hides only the pilot skills' folders. A one-trial smoke of the
+  `before` arm on Sonnet then showed three checks that failed valid behavior, amended here:
+  `strip-pii` also passes when nothing was edited and the answer asks for confirmation;
+  `sensitive-meeting` also passes when no page was written and the answer asks the user;
+  `connect-not-sanitize` asserts the `gbrain sources inspect`/`connect` call instead of the words in the answer.
