@@ -104,7 +104,8 @@ export function checkSelfUpgradeHealth(): Check {
         fix: agentFix(['gbrain', 'config', 'get', 'self_upgrade.channel'], 'Read-only: shows the configured channel; set stable or alpha with gbrain config set self_upgrade.channel <name>.', 'self_upgrade_health'),
       };
     }
-    const parts: string[] = [`mode=${mode}`, `channel=${resolution.channel} (${resolution.source})`];
+    const parts: string[] = [`mode=${mode}`];
+    if (resolution.source !== 'default') parts.push(`channel=${resolution.channel} (${resolution.source})`);
     // Shared stale/foreign-cache guard: only report an upgrade strictly newer
     // than the RUNNING binary (pendingUpgradeVersion owns the rule).
     const pendingLatest = pendingUpgradeVersion(GBRAIN_BINARY_VERSION, Date.now(), resolution.channel);

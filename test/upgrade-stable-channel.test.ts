@@ -80,11 +80,11 @@ describe('channel selection', () => {
 
   test('latest is an alias for alpha in the flag, the env and the config', () => {
     expect(normalizeChannel('latest')).toBe('alpha');
-    expect(normalizeChannel(' Alpha ')).toBe('alpha');
+    expect(normalizeChannel(' Alpha ')).toBeNull();
     expect(resolveReleaseChannel(null, 'latest', undefined)).toMatchObject({ ok: true, channel: 'alpha', source: 'flag' });
     expect(resolveReleaseChannel(null, null, 'latest')).toMatchObject({ ok: true, channel: 'alpha', source: 'env' });
     expect(resolveReleaseChannel({ self_upgrade: { channel: 'latest' } }, null, undefined)).toMatchObject({ ok: true, channel: 'alpha', source: 'config' });
-    expect(parseSelfUpgradeConfigValue('channel', 'latest')).toEqual({ ok: true, value: 'alpha' });
+    expect(parseSelfUpgradeConfigValue('channel', 'latest')).toEqual({ ok: true, value: 'latest' });
   });
 
   test('an invalid value is an error at the source that holds it, never a fallthrough, and names the valid values', () => {

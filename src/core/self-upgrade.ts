@@ -73,9 +73,8 @@ export const VALID_CHANNELS_TEXT = 'stable or alpha (latest is an alias for alph
 
 export function normalizeChannel(raw: unknown): ReleaseChannel | null {
   if (typeof raw !== 'string') return null;
-  const v = raw.trim().toLowerCase();
-  if (v === 'stable') return 'stable';
-  return v === 'alpha' || v === 'latest' ? 'alpha' : null;
+  if (raw === 'stable') return 'stable';
+  return raw === 'alpha' || raw === 'latest' ? 'alpha' : null;
 }
 
 export type ChannelSource = 'flag' | 'env' | 'config' | 'default';
@@ -911,8 +910,8 @@ export function parseSelfUpgradeConfigValue(leaf: SelfUpgradeConfigLeaf, raw: st
       return mode ? { ok: true, value: mode } : { ok: false, error: `must be auto, notify or off (got '${raw}')` };
     }
     case 'channel': {
-      const channel = normalizeChannel(raw.trim());
-      return channel ? { ok: true, value: channel } : { ok: false, error: `must be ${VALID_CHANNELS_TEXT} (got '${raw}')` };
+      const value = raw.trim();
+      return normalizeChannel(value) ? { ok: true, value } : { ok: false, error: `must be ${VALID_CHANNELS_TEXT} (got '${raw}')` };
     }
     case 'mode_prompted': {
       if (isConfigTruthy(raw)) return { ok: true, value: true };

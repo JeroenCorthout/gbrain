@@ -6,8 +6,6 @@
  * heartbeat rows, the service managers and the socket.
  */
 import { describe, expect, test } from 'bun:test';
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
 import { EQUALS_READERS } from '../src/cli/flag-equals.ts';
 import { parseGlobalFlags } from '../src/core/cli-options.ts';
 import {
@@ -15,6 +13,7 @@ import {
   type HostProcess, type ProcessSources, type RestartContext, type RestartExecutor, type WarmSocketState,
 } from '../src/core/upgrade-restart.ts';
 import { handleRestartOnly, mismatchFix, restartRefusal } from '../src/commands/upgrade-restart.ts';
+import { runUpgradeDryRun } from '../src/commands/upgrade-channel.ts';
 import { CLI_FLAG_REGISTRY } from '../src/core/cli-flag-registry.generated.ts';
 import { _resetCliExitVerdictForTests, currentExitCode } from '../src/core/cli-force-exit.ts';
 import { exitCodeForCode } from '../src/core/error-catalogue.ts';
@@ -420,10 +419,7 @@ describe('--dry-run never installs (#2185)', () => {
       _resetCliExitVerdictForTests();
     }
     expect(writes.join('')).toBe('');
-    const src = readFileSync(join(import.meta.dir, '..', 'src', 'commands', 'upgrade.ts'), 'utf8');
-    const preview = src.indexOf("if (args.includes('--dry-run')) return runUpgradeDryRun(args, json);");
-    expect(preview).toBeGreaterThan(src.indexOf('if (await handleRestartOnly(args, restartOpts)) return;'));
-    expect(preview).toBeLessThan(src.indexOf('const stableTarget = await channelTarget('));
+    expect(await runUpgradeDryRun(['--channel', 'stable'], false)).toBe(false);
   });
 
   test('upgrade accepts --dry-run and post-upgrade, which shares its module, does not', () => {

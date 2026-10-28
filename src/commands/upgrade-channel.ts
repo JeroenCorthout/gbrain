@@ -72,14 +72,15 @@ export async function channelTarget(args: readonly string[], oldVersion: string,
 }
 
 /** `gbrain upgrade --dry-run` (without --restart-only): the effective channel, where it came from and what would install. */
-export async function runUpgradeDryRun(args: readonly string[], json: boolean): Promise<void> {
+export async function runUpgradeDryRun(args: readonly string[], json: boolean): Promise<boolean> {
+  if (!args.includes('--dry-run')) return false;
   const plan = await planChannelUpgrade(args);
-  if (plan.kind === 'invalid' || plan.kind === 'stable_failure') { refuse(plan, VERSION, json); return; }
+  if (plan.kind === 'invalid' || plan.kind === 'stable_failure') { refuse(plan, VERSION, json); return true; }
   const target = plan.kind === 'stable_install' ? plan.target.version : plan.kind === 'alpha' ? null : plan.version;
   const action = plan.kind === 'alpha' ? 'install_method_update' : plan.kind === 'stable_install' ? (plan.withdrawn ? 'install_withdrawn_replacement' : 'install') : 'none';
   if (json) {
     await writeJsonDocument(JSON.stringify({ dry_run: true, channel: plan.resolution.channel, channel_source: plan.resolution.source, current_version: VERSION, target_version: target, action }, null, 2));
-    return;
+    return true;
   }
   console.log(`Channel: ${plan.resolution.channel} (from ${sourceLabel(plan.resolution)})`);
   console.log(plan.kind === 'alpha'
@@ -88,4 +89,5 @@ export async function runUpgradeDryRun(args: readonly string[], json: boolean): 
     : plan.kind === 'stable_current' ? `Already on the stable release, gbrain ${VERSION}.`
     : `gbrain ${VERSION} is ahead of stable (${target}); nothing would change.`);
   console.log('Dry run: nothing was changed.');
+  return true;
 }

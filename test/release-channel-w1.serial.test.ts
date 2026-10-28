@@ -259,9 +259,9 @@ for (const brain of ['repo-less', 'repo'] as const) {
       expect(readSnooze('stable')).toMatchObject({ version: AHEAD, level: 1 });
     });
 
-    test('doctor names the effective channel and its source, and warns with the code when stable failed', async () => {
+    test('doctor names a channel that was set and its source (the default stays mode=notify), and warns with the code when stable failed', async () => {
       writeConfig({}, brain);
-      expect(checkSelfUpgradeHealth().message).toContain('channel=stable (default)');
+      expect(checkSelfUpgradeHealth().message).toBe('mode=notify');
       process.env.GBRAIN_RELEASE_CHANNEL = 'latest';
       expect(checkSelfUpgradeHealth().message).toContain('channel=alpha (env)');
       delete process.env.GBRAIN_RELEASE_CHANNEL;

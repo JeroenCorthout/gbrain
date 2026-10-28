@@ -15,11 +15,11 @@ import { isNewerVersion, isValidVersionString } from './semver.ts';
 import type { Action } from './agent-output.ts';
 import { MATRIX_REQUIRED_FROM, channelSwitchCommand, type ChannelResolution, type StableLookupError } from './self-upgrade.ts';
 
-const GBRAIN_REPO = 'garrytan/gbrain';
-const GBRAIN_GIT_URL = `https://github.com/${GBRAIN_REPO}`;
+const REPO_SLUG = 'garrytan/gbrain';
+const GBRAIN_GIT_URL = `https://github.com/${REPO_SLUG}`;
 export const STABLE_RECORD_BRANCH = 'stable-record';
 export const STABLE_RECORD_FILE = 'stable.json';
-export const STABLE_RECORD_URL = `https://raw.githubusercontent.com/${GBRAIN_REPO}/${STABLE_RECORD_BRANCH}/${STABLE_RECORD_FILE}`;
+export const STABLE_RECORD_URL = `https://raw.githubusercontent.com/${REPO_SLUG}/${STABLE_RECORD_BRANCH}/${STABLE_RECORD_FILE}`;
 const RECORD_MAX_BYTES = 64 * 1024;
 const STABLE_ERRORS_DOCS = 'docs/guides/upgrades-auto-update.md#stable-channel-errors';
 const SHA_RE = /^[0-9a-f]{40}$/;
@@ -89,7 +89,7 @@ export function parseStableRecord(body: string, matrixFrom: string | null = MATR
   }
   for (const key of requiredEvidenceKeys(version, matrixFrom)) {
     if (typeof raw[key] !== 'string' || !RUN_URL_RE.test(raw[key] as string)) {
-      return { ok: false, cause: `the record for ${version} lacks the evidence key ${key} (a run of ${GBRAIN_REPO})` };
+      return { ok: false, cause: `the record for ${version} lacks the evidence key ${key} (a run of ${REPO_SLUG})` };
     }
   }
   const knownBad = raw.known_bad ?? [];
