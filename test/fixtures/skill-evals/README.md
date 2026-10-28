@@ -61,8 +61,11 @@ EVAL_ROOT=<scratch> GBRAIN_REPO=<gbrain checkout> test/fixtures/skill-evals/_lib
   and changes nothing else. company-brainify: Phase 3 and the Contract say the staging copy leaves the
   personal brain's working tree untouched, and the deletion log entry is post-purge only.
   meeting-ingestion: the split rule says to surface the boundary to the user only when the boundary is
-  unclear, and every attendee gets a page, even a thin one. A three-trial pilot of the two failed tasks
-  on GPT-6.1 Sol runs first and is not counted. The counted v2 run is a new `after` arm (12 tasks x 3
+  unclear, and Phase 7 takes back the before text of its attendee steps ("Does a people page
+  exist? Only an exact match counts…", "If NO → create via the enrich skill… even a thin one"), because
+  a first uncounted pilot of v2 still stopped to ask, quoting "exact match only". Uncounted three-trial pilots of the two failed
+  tasks on GPT-6.1 Sol: `staging-copy` 3/3; `split-recording` 0/3 before the Phase 7 restore and 2/3
+  after it. The counted v2 run is a new `after` arm (12 tasks x 3
   trials) on Opus 5.5, Sonnet 5.5 and GPT-6.1 Sol, judged by the same keep rule against the `before`
   arm above, which is reused because the tasks and the shipped skill are unchanged; one rerun of a red
   task is allowed.
