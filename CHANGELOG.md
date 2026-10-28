@@ -33,6 +33,18 @@ A self-hosted nightly cycle could end `partial` for reasons that needed no one: 
 - New switches, on by default: `dream.write_deferral.enabled` and `embed.restamp.enabled`. Setting either to `false` restores the old behavior.
 - Every heal writes a row to the `heal.audit` config record (last 200 rows, 30 days).
 - Nothing runs on upgrade: the restamp runs only in the maintenance cycle's embed phase, and repo-less brains get the same behavior.
+## [0.60.477.0] - 2026-10-28
+
+**A trust release confirms only what its preview showed.**
+
+Releasing a held fact that already sits in a page's `## Facts` table confirmed that row's confidence, notability, validity and other cells, though the owner's preview showed only the text (#7656). The database-only release, which every brain without a repository uses, could also release a hold that was re-gated after the owner approved it (#7657).
+
+### What changed
+
+- **The preview names every field the release confirms.** That's the held row's cells as they stand, or the held payload's kind, visibility, validity, source and context. The approval binds them, so a row edited after the approval refuses `preview_changed` and the fact stays held.
+- **The preview can't be made to show a field the row doesn't have.** A held fact's text is printed quoted and escaped, any other value containing a quote, comma or semicolon is quoted the same way, and invisible or bidirectional formatting characters become spaces.
+- **The database-only release re-checks the approval** on the locked hold and refuses `preview_changed` when the hold changed after the owner approved it, the same as the managed path.
+- **New doctor check `trust_release_unpreviewed_fields`** lists facts released from a held row before this fix, so the owner can review them. It's read-only and never lowers a tier.
 
 ## [0.60.476.0] - 2026-10-27
 
