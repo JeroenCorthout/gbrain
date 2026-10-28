@@ -60,6 +60,46 @@ export function withReasonNote(path: string, reason: string, base?: GitCommitNot
     : { subject: '', line: `${path}: ${reason}`, trailers: [trailer] };
 }
 
+/** A note without what `withReasonNote` added: a reason-only note goes, a merged one keeps its own subject, line and trailers. */
+export function withoutReasonNote(note: GitCommitNote): GitCommitNote | undefined {
+  const key = `${REASON_TRAILER_KEY}: `;
+  const reasons = (note.trailers ?? []).filter(trailer => trailer.startsWith(key)).map(trailer => trailer.slice(key.length));
+  if (!reasons.length) return note;
+  if (note.subject === '' && reasons.includes(note.line)) return undefined;
+  const trailers = (note.trailers ?? []).filter(trailer => !trailer.startsWith(key));
+  return { subject: note.subject, line: note.line, ...(trailers.length ? { trailers } : {}) };
+}
+
+async function pageWorldVisible(engine: SqlEngine, sourceId: string, slug: string): Promise<boolean> {
+  const [page] = await engine.executeRaw<{ world: boolean }>(
+    `SELECT ${privatePagesFilterFragment('p')} AS world FROM pages p WHERE p.source_id = $1 AND p.slug = $2 AND p.deleted_at IS NULL`, [sourceId, slug]);
+  return page?.world === true;
+}
+
+/**
+ * The note a file commits with, checked against its page's visibility at commit time: a page that is not world-visible
+ * any more (a later member of its group, or a later write, made it private) commits without its reason.
+ */
+export async function visibleCommitNote(engine: SqlEngine, sourceId: string, slug: unknown, note: GitCommitNote | undefined): Promise<GitCommitNote | undefined> {
+  if (!note || typeof slug !== 'string' || withoutReasonNote(note) === note) return note;
+  return await pageWorldVisible(engine, sourceId, slug) ? note : withoutReasonNote(note);
+}
+
+/**
+ * A strict group, once every member has applied and before its one commit: each member's note checked as above, and a
+ * member whose reason is dropped reports `git: 'private'` on its receipt.
+ */
+export async function settleGroupCommitNotes(engine: SqlEngine, members: Array<{ row: Pick<WriteRequest, 'source_id' | 'slug'>; note: GitCommitNote | undefined; outcome: Record<string, unknown> }>): Promise<Array<GitCommitNote | undefined>> {
+  const notes: Array<GitCommitNote | undefined> = [];
+  for (const { row, note, outcome } of members) {
+    const visible = await visibleCommitNote(engine, row.source_id, row.slug, note);
+    const recorded = outcome.reason_recorded as ReasonRecorded | undefined;
+    if (visible !== note && recorded) outcome.reason_recorded = { ...recorded, git: 'private' };
+    notes.push(visible);
+  }
+  return notes;
+}
+
 export type ReasonGit = 'committed' | 'queued' | 'superseded' | 'not_file_backed' | 'private' | 'no_repository' | 'none';
 export interface ReasonRecorded { reason: string; version: boolean; version_why?: 'page_created' | 'no_change'; git: ReasonGit }
 
@@ -78,9 +118,7 @@ export function withChangeReason(row: WriteRequest, prepared: PreparedMutation):
     const outcome = await apply(tx, preimage);
     const stamped = pageId === null || prepared.noop ? [] : await tx.executeRaw<{ id: number }>(
       'UPDATE page_versions SET change_reason = $2 WHERE page_id = $1 AND id > $3 RETURNING id', [pageId, reason, Number(before?.last ?? 0)]);
-    const [page] = await tx.executeRaw<{ world: boolean }>(
-      `SELECT ${privatePagesFilterFragment('p')} AS world FROM pages p WHERE p.source_id = $1 AND p.slug = $2 AND p.deleted_at IS NULL`, [row.source_id, row.slug]);
-    const world = page?.world === true;
+    const world = await pageWorldVisible(tx, row.source_id, row.slug);
     let git: ReasonGit;
     if (!prepared.file) git = row.authority.databaseOnlyReason === 'no_repo_configured' ? 'no_repository' : world ? 'not_file_backed' : 'private';
     else if (prepared.noop) git = 'none';

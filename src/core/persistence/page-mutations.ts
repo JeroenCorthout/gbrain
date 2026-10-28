@@ -309,11 +309,12 @@ export async function preparePageAdmission(ctx: OperationContext,
     () => assertPageRequestIdentity(ctx.engine, principal, requestId),
     () => getWriteRequest(ctx.engine, principal, requestId),
   ]) as [unknown, WriteRequest | null];
-  // GBRA-217: a reason is refused before anything is journaled; its canonical form joins the replay identity.
+  // GBRA-217: a reason is refused before anything is journaled; its canonical form joins the replay identity. An
+  // operation that records no reason never journals one a caller passed anyway.
   if (CHANGE_REASON_OPERATIONS.includes(input.operation) && Object.hasOwn(p, 'reason')) {
     const reason = admitChangeReason(p.reason);
     if (reason === null) delete p.reason; else p.reason = reason;
-  }
+  } else delete p.reason;
   const callerIntent = { ...p };
   delete callerIntent.request_id;
   if (prior) {

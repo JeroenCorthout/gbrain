@@ -3376,6 +3376,56 @@ More: [docs/guides/graph-ranking.md#rank_entities_timeout](../../docs/guides/gra
 
 More: [docs/guides/dream-patterns.md#child-read-budget](../../docs/guides/dream-patterns.md#child-read-budget)
 
+### reason_purge_scan_capped
+
+<a id="reason_purge_scan_capped"></a>
+
+| Meaning | Why | Next step | Who acts · consent | Verify | Exit | Retryable |
+|---|---|---|---|---|---|---|
+| A fact purge stopped before deleting anything: the source's Git history has more commits than the purge reads (200,000) when it looks for change reasons quoting the claim. | Purge tombstones every commit whose gbrain-reason trailer quotes the claim, so no later sync or re-import stores that reason again. Past the limit it cannot say which older commits do, so the user decides. | Ask the user: purge now and check only the newest commits (--reason-scan-limit <n>, their choice; older commits are not tombstoned), or stop. | user | `repeat the read that failed` | 3 | no |
+
+More: [docs/guides/page-history.md#purge-and-reasons](../../docs/guides/page-history.md#purge-and-reasons)
+
+### reason_purge_scan_failed
+
+<a id="reason_purge_scan_failed"></a>
+
+| Meaning | Why | Next step | Who acts · consent | Verify | Exit | Retryable |
+|---|---|---|---|---|---|---|
+| A fact purge stopped before deleting anything: reading the change reasons in the source's Git history failed (a Git error or a timeout). | Purge reads the reason trailers that quote the claim before it changes anything, so it can tombstone them; nothing was removed, so retrying is safe. | Wait, then run the same purge again. | agent | `repeat the read that failed` | 1 | yes |
+
+More: [docs/guides/page-history.md#purge-and-reasons](../../docs/guides/page-history.md#purge-and-reasons)
+
+### reason_scan_capped
+
+<a id="reason_scan_capped"></a>
+
+| Meaning | Why | Next step | Who acts · consent | Verify | Exit | Retryable |
+|---|---|---|---|---|---|---|
+| A sync imported its files but did not read their change reasons from Git: the range held more than 10,000 commits. Each reason in the pass is stored as empty and each page it changed is marked with a history gap. | Reasons are metadata, so content import never waits on them. The pass still advances last_commit and this release does not backfill reasons for that range; they stay in Git. | Nothing to repair. The reasons for the range are in Git: git log --first-parent <range> shows them. | agent | `gbrain doctor --json` | 1 | no |
+
+More: [docs/guides/page-history.md#reasons-from-git](../../docs/guides/page-history.md#reasons-from-git)
+
+### reason_scan_failed
+
+<a id="reason_scan_failed"></a>
+
+| Meaning | Why | Next step | Who acts · consent | Verify | Exit | Retryable |
+|---|---|---|---|---|---|---|
+| A sync imported its files but could not read their change reasons from Git (a Git error or a timeout). Each reason in the pass is stored as empty and each page it changed is marked with a history gap. | Reasons are metadata, so content import never waits on them. The pass still advances last_commit and this release does not backfill reasons for that range; they stay in Git. | Nothing to repair. The reasons for the range are in Git: git log --first-parent <range> shows them. | agent | `gbrain doctor --json` | 1 | no |
+
+More: [docs/guides/page-history.md#reasons-from-git](../../docs/guides/page-history.md#reasons-from-git)
+
+### reason_trailer_secret
+
+<a id="reason_trailer_secret"></a>
+
+| Meaning | Why | Next step | Who acts · consent | Verify | Exit | Retryable |
+|---|---|---|---|---|---|---|
+| A gbrain-reason trailer already pushed to Git looks like it holds a secret; sync stored no reason for that commit and path. | A secret in a reason is refused at write time; a commit made outside gbrain can still carry one. Git history keeps commit messages, so the credential stays exposed until it is rotated. | Rotate the credential the notice names (by commit and path); the brain stores nothing of it. | host_admin | `gbrain doctor --json` | 1 | no |
+
+More: [docs/guides/page-history.md#reasons-from-git](../../docs/guides/page-history.md#reasons-from-git)
+
 ### receipt_conflict
 
 <a id="receipt_conflict"></a>

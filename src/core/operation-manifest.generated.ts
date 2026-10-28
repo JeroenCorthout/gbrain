@@ -6054,6 +6054,10 @@ export const OPERATION_MANIFEST: OperationMeta[] = [
       "source_id": {
         "type": "string",
         "description": "Source holding the fact (default: the routed source)."
+      },
+      "reason_scan_limit": {
+        "type": "number",
+        "description": "Check only the newest N commits for change reasons quoting the claim (after a reason_purge_scan_capped refusal, with the user's choice); older commits are not tombstoned."
       }
     },
     "mutating": true,

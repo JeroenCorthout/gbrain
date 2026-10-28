@@ -42,6 +42,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { closeSync, copyFileSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, openSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join, relative, resolve, sep } from 'node:path';
 import type { Notice } from '../agent-output.ts';
+import { literalPathspecs } from '../git-env.ts';
 import { OperationError, opError } from '../ops/contract.ts';
 import { commitMessage, commitMessageArgs, git, gitBytes, gitFailure, gitStepTimeoutMs, ignoredTargetError, reclaimAbandonedIndexLock, withSession, type GitSession } from './effect-git.ts';
 import type { GitCommitNote } from './effect-model.ts';
@@ -347,8 +348,9 @@ async function refuseIgnored(session: GitSession, root: string, fresh: Target[])
   const candidates = new Set(await ignoreCandidates(root, fresh.map(target => target.rel)));
   const asked = fresh.filter(target => candidates.has(target.rel));
   if (!asked.length) return;
-  // check-ignore takes no literal pathspecs; -n prints one line per path, in order, so no path is parsed back.
-  const matched = await git(session, ['check-ignore', '-v', '-n', '--', ...asked.map(target => target.rel)], false);
+  // check-ignore refuses pathspec magic and reads a path literally except a leading ':', which ./ keeps literal; -n prints one
+  // line per path, in order, so no path is parsed back.
+  const matched = await git(session, ['check-ignore', '-v', '-n', '--', ...asked.map(target => target.rel.startsWith(':') ? `./${target.rel}` : target.rel)]);
   if (matched.code !== 0 && matched.code !== 1) throw gitFailure('Cannot inspect the canonical Git target.', `git check-ignore failed for ${asked.length} file(s).`);
   const lines = matched.stdout.split('\n');
   asked.forEach((target, i) => {
@@ -391,7 +393,7 @@ const indexSignature = (index: string) => {
 /** The index entries of the targets, keyed by path relative to the root; the signature is read first, so a later match proves no rewrite. */
 async function readIndex(session: GitSession, index: string, targets: Target[]): Promise<IndexSnapshot> {
   const signature = indexSignature(index);
-  const listed = await git(session, ['ls-files', '-s', '-z', '--', ...targets.map(target => target.rel)]);
+  const listed = await git(session, ['ls-files', '-s', '-z', '--', ...literalPathspecs(targets.map(target => target.rel))]);
   if (listed.code !== 0) throw gitFailure('Cannot read the canonical Git index.', `git ls-files failed for ${targets.length} file(s).`);
   const entries = new Map<string, string>();
   for (const record of listed.stdout.split('\0')) {
@@ -412,10 +414,10 @@ async function readIndex(session: GitSession, index: string, targets: Target[]):
 async function replacedEntries(session: GitSession, commit: string, targets: Target[]): Promise<Map<string, string>> {
   const entries = new Map<string, string>();
   for (const target of targets) {
-    const last = await git(session, ['rev-list', '-1', commit, '--', target.rel]);
+    const last = await git(session, ['rev-list', '-1', commit, '--', ...literalPathspecs([target.rel])]);
     const changed = last.stdout.trim();
     if (last.code !== 0 || !changed) continue;
-    const listed = await git(session, ['ls-tree', '-z', `${changed}^`, '--', target.rel]);
+    const listed = await git(session, ['ls-tree', '-z', `${changed}^`, '--', ...literalPathspecs([target.rel])]);
     if (listed.code !== 0) continue;
     for (const record of listed.stdout.split('\0')) {
       const tab = record.indexOf('\t');
