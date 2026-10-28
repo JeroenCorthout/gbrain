@@ -907,6 +907,10 @@
       },
       {
         "category": "brain",
+        "name": "trust_release_unpreviewed_fields"
+      },
+      {
+        "category": "brain",
         "name": "core_memory"
       },
       {

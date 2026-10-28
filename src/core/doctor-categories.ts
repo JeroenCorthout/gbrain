@@ -80,6 +80,8 @@ export const BRAIN_CHECK_NAMES: ReadonlySet<string> = new Set([
   'trust_tiers',
   'trust_scan',
   'trust_sources_unclaimed',
+  // #7656: index-existing trust releases confirmed before their preview showed the fence row's fields (doctor/checks/trust-release-unpreviewed.ts).
+  'trust_release_unpreviewed_fields',
   'credential_projection_pending',
   'derived_visibility',
   'extractor_facts_expired',

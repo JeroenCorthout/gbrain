@@ -29,6 +29,19 @@ One upgrade path did install a daemon. On a Postgres brain with `sync.repo_path`
 - `test/boring-default.test.ts`: fresh setup (both harnesses) and init add nothing; `post-upgrade` without the opt-out on repo-less and repo brains installs no unit; an installed unit is the only one rewritten.
 - `test/apply-migrations-safety.serial.test.ts`: Phase F with `sync.repo_path` set and no autopilot installs none (the postinstall argv); with one installed it reinstalls as before.
 
+## [0.60.477.0] - 2026-10-28
+
+**A trust release confirms only what its preview showed.**
+
+Releasing a held fact that already sits in a page's `## Facts` table confirmed that row's confidence, notability, validity and other cells, though the owner's preview showed only the text (#7656). The database-only release, which every brain without a repository uses, could also release a hold that was re-gated after the owner approved it (#7657).
+
+### What changed
+
+- **The preview names every field the release confirms.** That's the held row's cells as they stand, or the held payload's kind, visibility, validity, source and context. The approval binds them, so a row edited after the approval refuses `preview_changed` and the fact stays held.
+- **The preview can't be made to show a field the row doesn't have.** A held fact's text is printed quoted and escaped, any other value containing a quote, comma or semicolon is quoted the same way, and invisible or bidirectional formatting characters become spaces.
+- **The database-only release re-checks the approval** on the locked hold and refuses `preview_changed` when the hold changed after the owner approved it, the same as the managed path.
+- **New doctor check `trust_release_unpreviewed_fields`** lists facts released from a held row before this fix, so the owner can review them. It's read-only and never lowers a tier.
+
 ## [0.60.476.0] - 2026-10-27
 
 **Text someone else wrote can no longer add facts to your brain.**
