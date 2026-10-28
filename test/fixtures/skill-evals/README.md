@@ -56,6 +56,17 @@ EVAL_ROOT=<scratch> GBRAIN_REPO=<gbrain checkout> test/fixtures/skill-evals/_lib
   `sensitive-meeting` also passes when no page was written and the answer asks the user;
   `connect-not-sanitize` asserts the `gbrain sources inspect`/`connect` call instead of the words in the answer.
 
+- 2026-10-28, after the counted run and before any v2 cell: second diet of `company-brainify` and
+  `meeting-ingestion` (v2). It restores the before wording of the lines the GPT-6.1 Sol failures point at
+  and changes nothing else. company-brainify: Phase 3 and the Contract say the staging copy leaves the
+  personal brain's working tree untouched, and the deletion log entry is post-purge only.
+  meeting-ingestion: the split rule says to surface the boundary to the user only when the boundary is
+  unclear, and every attendee gets a page, even a thin one. A three-trial pilot of the two failed tasks
+  on GPT-6.1 Sol runs first and is not counted. The counted v2 run is a new `after` arm (12 tasks x 3
+  trials) on Opus 5.5, Sonnet 5.5 and GPT-6.1 Sol, judged by the same keep rule against the `before`
+  arm above, which is reused because the tasks and the shipped skill are unchanged; one rerun of a red
+  task is allowed.
+
 ## Results (2026-10-28)
 
 Counted run: 3 skills x Opus 5.5, Sonnet 5.5 and GPT-6.1 Sol x before/after/none x 12 tasks x 3 trials.
