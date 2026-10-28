@@ -42,7 +42,6 @@ import { factEventTime } from './event-time.ts';
 import type { BrainEngine, FactInsertStatus, NewFact } from '../engine.ts';
 import type { ResolutionSource } from '../entities/resolve.ts';
 import { isFactsBackstopEligible } from './eligibility.ts';
-import { folderRestricted } from '../search/private-visibility.ts';
 import type { PageType } from '../types.ts';
 import type { OperationContext } from '../ops/contract.ts';
 import type { WriteReceipt } from '../persistence/types.ts';
@@ -369,9 +368,8 @@ export async function runFactsBackstop(
       : { mode: 'inline', inserted: 0, duplicate: 0, superseded: 0, fact_ids: [], skipped };
   }
   // Facts extracted from a private page stay private, whatever the caller or the brain default says.
-  const { tightenToPage } = await import('./visibility.ts');
-  const folder_restricted = await folderRestricted(ctx.engine, ctx.sourceId, parsedPage.slug);
-  if (tightenToPage('world', { ...parsedPage, folder_restricted }) === 'private') ctx = { ...ctx, visibility: 'private' };
+  const { tightenToStoredPage } = await import('./visibility.ts');
+  if (await tightenToStoredPage(ctx.engine, ctx.sourceId, 'world', parsedPage) === 'private') ctx = { ...ctx, visibility: 'private' };
   const { managedPersistenceEnabled } = await import('../persistence/ownership.ts');
   if (await managedPersistenceEnabled(ctx.engine)) {
     if (mode !== 'inline') {

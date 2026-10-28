@@ -20,7 +20,7 @@
  */
 
 import type { BrainEngine } from '../engine.ts';
-import { isDerivationPrivate } from '../search/private-visibility.ts';
+import { folderRestricted, isDerivationPrivate } from '../search/private-visibility.ts';
 
 export type FactVisibility = 'private' | 'world';
 
@@ -66,11 +66,17 @@ export async function resolveVisibilityParam(
  * Facts derived from a page never take a broader visibility than that page: a
  * `visibility: private` page, a derived page that reads as private, a page
  * carrying a privacy marker (`access: private`, a private `confidentiality`) or
- * a page under a folder rule (`folder_restricted`, from a snapshot or
- * folderRestricted) yields private facts whatever the caller or the brain default asked for.
+ * a page under a folder rule (`folder_restricted`, see tightenToStoredPage) yields private facts whatever the caller
+ * or the brain default asked for.
  */
 export function tightenToPage(visibility: FactVisibility, page: { type?: string | null; frontmatter?: unknown; folder_restricted?: boolean | null } | null | undefined): FactVisibility {
   return page && isDerivationPrivate(page) ? 'private' : visibility;
+}
+
+/** tightenToPage for a page of `sourceId` known by its slug, its folder restriction looked up (folderRestricted). */
+export async function tightenToStoredPage(engine: Pick<BrainEngine, 'executeRaw'>, sourceId: string, visibility: FactVisibility,
+  page: { slug: string; type?: string | null; frontmatter?: unknown }): Promise<FactVisibility> {
+  return tightenToPage(visibility, { ...page, folder_restricted: await folderRestricted(engine, sourceId, page.slug) });
 }
 
 /**
