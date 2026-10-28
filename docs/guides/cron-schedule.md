@@ -381,7 +381,9 @@ times (default 3; `0` disables) within 24 hours is refused before the next
 submission, and `gbrain doctor` reports it as `dream_paid_loop`. Fix the
 cause first (a missing provider key, a quota, a failing transcript), then
 `gbrain dream reset-key --list` shows the refused keys and
-`gbrain dream reset-key '<key>'` re-enables one. Details in
+`gbrain dream reset-key '<key>'` re-enables one. A purge or consolidate write
+still pending after its publish wait is deferred and reconciled on the next
+pass instead of failing the cycle (`dream_write_deferred` after 3 passes). Details in
 [spend controls](../operations/spend-controls.md#dream-paid-loop-breaker-dreambreakermax_dead_submissions).
 
 Three more fields answer "what did that cost and did it land":
