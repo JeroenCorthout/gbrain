@@ -84,12 +84,12 @@ export function readersAllowedSql(alias: string, identity: readonly string[], ro
   const ids = identity.length && validIdentity(identity) ? identity : [];
   const readers = row === 'page' ? `${alias}.page_readers` : `gbrain_access_readers(${alias}.frontmatter)`;
   const listed = ids.length ? ` OR ${readers} && ARRAY[${ids.map(id => `'${id}'`).join(', ')}]::text[]` : '';
-  return `(${alias}.frontmatter->'readable_by' IS NULL${listed})`;
+  return `(NOT (${alias}.frontmatter ? 'readable_by')${listed})`;
 }
 
 /** A page names readers (valid or not); SQL twin of hasReaders. */
 function namesReadersSql(alias: string): string {
-  return `(${alias}.frontmatter->'readable_by' IS NOT NULL)`;
+  return `(${alias}.frontmatter ? 'readable_by')`;
 }
 
 /**
@@ -99,25 +99,13 @@ function namesReadersSql(alias: string): string {
  * atom's origin), a Life Chronicle event extracted from one, or a page whose
  * declared `derived_from` names one. Read-time, so derivatives written before
  * the origin gained readers are covered; new derivations are stamped private
- * by isDerivationPrivate.
+ * by isDerivationPrivate. The lineage test lives in the SQL function
+ * gbrain_access_origin_restricted (migration v274) behind a cheap type and
+ * key guard, so a read plans one function call instead of four subplans.
  */
 function originRestrictedSql(p: string): string {
-  const restrictedOrigin = (atom: string, alias: string) => `EXISTS (SELECT 1 FROM pages ${alias} WHERE ${alias}.source_id = ${atom}.source_id
-      AND ${alias}.slug = ${atom}.frontmatter->>'source_slug' AND ${namesReadersSql(alias)})`;
-  return `((CASE WHEN ${p}.type = 'atom' THEN ${restrictedOrigin(p, 'acl_origin')}
-    WHEN ${derivedPageSql(p)} THEN EXISTS (SELECT 1 FROM links acl_input_link
-      JOIN pages acl_input ON acl_input.id = acl_input_link.to_page_id
-      WHERE acl_input_link.from_page_id = ${p}.id AND acl_input_link.link_source = 'concept-provenance'
-        AND acl_input_link.link_type = 'synthesized_from'
-        AND (${namesReadersSql('acl_input')} OR ${restrictedOrigin('acl_input', 'acl_input_origin')}))
-    WHEN ${p}.type = 'event' AND ${p}.frontmatter->>'captured_via' LIKE 'life-chronicle:%' THEN EXISTS (SELECT 1 FROM pages acl_chronicle
-      WHERE acl_chronicle.source_id = ${p}.source_id AND acl_chronicle.slug = ${p}.frontmatter->'event'->>'depth' AND ${namesReadersSql('acl_chronicle')})
-    ELSE false END)
-    OR (CASE WHEN jsonb_typeof(${p}.frontmatter->'derived_from') IN ('array', 'string') THEN EXISTS (
-      SELECT 1 FROM pages acl_declared WHERE acl_declared.source_id = ${p}.source_id AND ${namesReadersSql('acl_declared')}
-        AND acl_declared.slug = ANY(ARRAY(SELECT regexp_replace(declared.slug, '\\.md$', '') FROM jsonb_array_elements_text(
-          CASE WHEN jsonb_typeof(${p}.frontmatter->'derived_from') = 'array' THEN ${p}.frontmatter->'derived_from'
-            ELSE jsonb_build_array(${p}.frontmatter->'derived_from') END) AS declared(slug)))) ELSE false END))`;
+  return `(CASE WHEN ${p}.type IN ('atom', 'question', 'concept', 'event') OR ${p}.frontmatter ? 'derived_from'
+    THEN gbrain_access_origin_restricted(${p}.id, ${p}.source_id, ${p}.type, ${p}.frontmatter) ELSE false END)`;
 }
 
 /**

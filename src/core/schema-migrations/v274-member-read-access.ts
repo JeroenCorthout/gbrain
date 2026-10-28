@@ -13,6 +13,8 @@ import type { Migration } from './types.ts';
 // is rewritten on upgrade. A trigger sets config access.restrictions_present
 // once any page names readers or any member exists (sticky), so a brain with no
 // restriction keeps every pre-GBRA-218 read path and escape hatch exactly.
+// gbrain_access_origin_restricted() is the read-time lineage test (a derived
+// page whose origin names readers); reads call it behind a cheap guard.
 // No schema.sql mirror: like v273, these exist only
 // through migrations. Provisional number: renumbered at the merge slot.
 export const v274: Migration = {
@@ -65,6 +67,33 @@ CREATE OR REPLACE FUNCTION gbrain_access_readers(fm JSONB) RETURNS TEXT[]
       AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements(fm->'readable_by') AS e WHERE jsonb_typeof(e) <> 'string')
       THEN gbrain_access_norm_readers(ARRAY(SELECT jsonb_array_elements_text(fm->'readable_by')))
     ELSE ARRAY['!nobody'] END
+$fn$;
+CREATE OR REPLACE FUNCTION gbrain_access_origin_restricted(p_id INTEGER, p_source_id TEXT, p_type TEXT, fm JSONB) RETURNS boolean
+  LANGUAGE plpgsql STABLE PARALLEL SAFE SET search_path = pg_catalog, public AS $fn$
+BEGIN
+  IF p_type = 'atom' THEN
+    IF EXISTS (SELECT 1 FROM pages o WHERE o.source_id = p_source_id AND o.slug = fm->>'source_slug' AND o.frontmatter ? 'readable_by') THEN
+      RETURN true;
+    END IF;
+  ELSIF p_type = 'question' OR (p_type = 'concept' AND fm->>'synthesized_by' IS NOT NULL) THEN
+    IF EXISTS (SELECT 1 FROM links l JOIN pages i ON i.id = l.to_page_id
+        WHERE l.from_page_id = p_id AND l.link_source = 'concept-provenance' AND l.link_type = 'synthesized_from'
+          AND (i.frontmatter ? 'readable_by' OR EXISTS (SELECT 1 FROM pages io WHERE io.source_id = i.source_id
+            AND io.slug = i.frontmatter->>'source_slug' AND io.frontmatter ? 'readable_by'))) THEN
+      RETURN true;
+    END IF;
+  ELSIF p_type = 'event' AND fm->>'captured_via' LIKE 'life-chronicle:%' THEN
+    IF EXISTS (SELECT 1 FROM pages c WHERE c.source_id = p_source_id AND c.slug = fm->'event'->>'depth' AND c.frontmatter ? 'readable_by') THEN
+      RETURN true;
+    END IF;
+  END IF;
+  IF jsonb_typeof(fm->'derived_from') IN ('array', 'string') THEN
+    RETURN EXISTS (SELECT 1 FROM pages d WHERE d.source_id = p_source_id AND d.frontmatter ? 'readable_by'
+      AND d.slug = ANY(ARRAY(SELECT regexp_replace(declared.slug, '\\.md$', '') FROM jsonb_array_elements_text(
+        CASE WHEN jsonb_typeof(fm->'derived_from') = 'array' THEN fm->'derived_from' ELSE jsonb_build_array(fm->'derived_from') END) AS declared(slug))));
+  END IF;
+  RETURN false;
+END
 $fn$;
 CREATE OR REPLACE FUNCTION gbrain_access_mark_restricted() RETURNS trigger
   LANGUAGE plpgsql SET search_path = pg_catalog, public AS $fn$
