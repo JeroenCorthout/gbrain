@@ -93,6 +93,36 @@ for (const backend of testBackends()) describe(`[${backend}] page change reasons
     expect(await journalHolds(secret)).toBe(false);
   });
 
+  test('a reason passed to a page operation that takes none is dropped before the journal', async () => {
+    await call('put_page', { slug: SLUG, content: page('Edition one.'), wait_ms: 30_000 });
+    const marker = `stray-reason-marker-${run}`;
+    await call('add_tag', { slug: SLUG, tag: `tag-example-${run}`, reason: `${marker} on a tag`, expected_revision: await revision(), wait_ms: 30_000 });
+    await call('delete_page', { slug: SLUG, reason: `${marker} on a delete`, expected_revision: await revision(), wait_ms: 30_000 });
+    await call('restore_page', { slug: SLUG, reason: `${marker} on a restore`, expected_revision: String((await call('get_page', { slug: SLUG, include_deleted: true })).revision), wait_ms: 30_000 });
+    expect(await journalHolds(marker)).toBe(false);
+  });
+
+  test('a page purge leaves the page\'s reasons in no receipt, intent or effect, and its receipt checks both stores', async () => {
+    const marker = `purged-reason-marker-${run}`;
+    await call('put_page', { slug: SLUG, content: page('Edition one.'), reason: `${marker} at creation`, wait_ms: 30_000 });
+    await call('put_page', { slug: SLUG, content: page('Edition two.'), expected_revision: await revision(), reason: `${marker} on the second edition`, wait_ms: 30_000 });
+    await call('put_page', { slug: SLUG, content: page('Edition three.'), expected_revision: await revision(), wait_ms: 30_000 });
+    await engine.executeRaw(`UPDATE persistence_requests SET intent = NULL, compacted = true WHERE slug = $1 AND state = 'committed'`, [SLUG]);
+    expect(await journalHolds(marker)).toBe(true);
+    const done = await call('delete_page', { slug: SLUG, purge: true, expected_revision: await revision(), wait_ms: 30_000 });
+    expect(await journalHolds(marker)).toBe(false);
+    const stores = (done.receipt as { stores: Array<{ store: string; status: string }> }).stores;
+    expect(stores.filter(s => s.store === 'persistence_requests' || s.store === 'persistence_effects').map(s => s.status)).not.toContain('incomplete');
+    expect(stores.map(s => s.store)).toEqual(expect.arrayContaining(['persistence_requests', 'persistence_effects']));
+    // The receipt's check finds a reason still in one of the slug's receipts.
+    await call('put_page', { slug: SLUG, content: page('A new page.'), reason: `${marker} again`, wait_ms: 30_000 });
+    await engine.executeRaw(`UPDATE persistence_requests SET intent = NULL, compacted = true WHERE slug = $1 AND state = 'committed'`, [SLUG]);
+    const { verifyPagePurge } = await import('../src/core/facts/purge-verify.ts');
+    const recheck = await verifyPagePurge(engine, { sourceId: 'default', slug: SLUG, requestId: crypto.randomUUID(), removed: {}, blobsRemaining: [],
+      context: { needles: [], reasons: [`${marker} again`], factIds: [], pageId: 0, paths: [], segmentShas: [] } }) as { stores: Array<{ store: string; status: string }> };
+    expect(recheck.stores.find(s => s.store === 'persistence_requests')).toMatchObject({ status: 'incomplete' });
+  });
+
   test('the canonical reason joins replay identity', async () => {
     const request_id = crypto.randomUUID();
     await call('put_page', { slug: SLUG, content: page('one'), reason: 'same  reason', request_id, wait_ms: 30_000 });

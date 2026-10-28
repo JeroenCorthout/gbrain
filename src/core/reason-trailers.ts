@@ -159,17 +159,32 @@ export async function scanSyncReasons(engine: BrainEngine, input: { sourceId: st
   return { status: read.status, gitRoot: repo.gitRoot, range, byPath: new Map(), malformed: 0, secrets: [], ...(read.status === 'failed' ? { detail: read.detail } : {}) };
 }
 
+type GitTopLevel = { status: 'found'; gitRoot: string; scopePrefix: string } | { status: 'not_repository' } | { status: 'failed'; detail: string };
+
 /**
- * The Git top level holding `sourceRoot` and the source's path under it (both real paths), or null when it is in no
- * Git repository (a plain folder source, a repo-less brain): such a source runs no scan.
+ * Where `sourceRoot` sits in Git: its top level and the source's path under it (both real paths); `not_repository` only
+ * when Git itself says the folder is in no repository (exit 128, "not a git repository"); anything else, a missing path,
+ * no `git`, an unsafe or corrupt repository, a timeout, is `failed`.
+ */
+function locateGitTopLevel(sourceRoot: string): GitTopLevel {
+  let root: string;
+  try { root = realpathSync(sourceRoot); } catch (error) { return { status: 'failed', detail: `source path unreadable: ${(error as NodeJS.ErrnoException).code ?? 'error'}` }; }
+  const top = hardenedGitSync(root, ['rev-parse', '--show-toplevel'], { timeoutMs: 10_000, maxBytes: 64 * 1024, stderr: true });
+  if (top.ok) {
+    const gitRoot = realpathSync(top.stdout.toString('utf8').trim());
+    return { status: 'found', gitRoot, scopePrefix: relative(gitRoot, root).split(sep).join('/') };
+  }
+  if (top.reason === 'exit' && top.status === 128 && /not a git repository/i.test(top.stderr ?? '')) return { status: 'not_repository' };
+  return { status: 'failed', detail: `git rev-parse --show-toplevel ${top.reason}${top.status === undefined ? '' : ` ${top.status}`}` };
+}
+
+/**
+ * Sync's view: the Git top level holding `sourceRoot`, or null when it is in no Git repository (a plain folder source,
+ * a repo-less brain) or Git cannot place it; such a pass runs no scan and imports as before.
  */
 export function gitTopLevel(sourceRoot: string): { gitRoot: string; scopePrefix: string } | null {
-  let root: string;
-  try { root = realpathSync(sourceRoot); } catch { return null; }
-  const top = hardenedGitSync(root, ['rev-parse', '--show-toplevel'], { timeoutMs: 10_000, maxBytes: 64 * 1024 });
-  if (!top.ok) return null;
-  const gitRoot = realpathSync(top.stdout.toString('utf8').trim());
-  return { gitRoot, scopePrefix: relative(gitRoot, root).split(sep).join('/') };
+  const top = locateGitTopLevel(sourceRoot);
+  return top.status === 'found' ? { gitRoot: top.gitRoot, scopePrefix: top.scopePrefix } : null;
 }
 
 /** A file's path relative to the scan's Git top level, resolving its directory's real path (the file itself may be gone). */
@@ -218,10 +233,12 @@ const CACHE_TTL_MS = 10 * 60_000;
 
 /**
  * Managed sync prepares one request at a time, each naming its pass's range: the pass's scan runs once per process and
- * its later requests reuse it. A purge clears the cache, so the next request reads its new tombstones.
+ * its later requests reuse it. The key carries the source's purge epoch, which every fact purge bumps in the transaction
+ * that writes its tombstones, so a purge from any process makes the next request scan again and read them.
  */
-export function cachedSyncReasonScan(engine: BrainEngine, input: Parameters<typeof scanSyncReasons>[1]): Promise<SyncReasonScan | null> {
-  const key = [input.sourceId, input.sourceRoot, input.from ?? '', input.to].join('\0');
+export async function cachedSyncReasonScan(engine: BrainEngine, input: Parameters<typeof scanSyncReasons>[1]): Promise<SyncReasonScan | null> {
+  const [source] = await engine.executeRaw<{ purge_epoch: string | number }>('SELECT purge_epoch FROM sources WHERE id = $1', [input.sourceId]);
+  const key = [input.sourceId, String(source?.purge_epoch ?? 0), input.sourceRoot, input.from ?? '', input.to].join('\0');
   const hit = cache.get(key);
   if (hit && Date.now() - hit.at < CACHE_TTL_MS) return hit.scan;
   const scan = scanSyncReasons(engine, input);
@@ -241,24 +258,26 @@ export type PurgeTrailerScan =
 
 /**
  * A7: the commits on the first-parent line of HEAD (`from..HEAD` for a recheck) whose `gbrain-reason` trailer quotes one of
- * `needles` (case-insensitive), each with the path its trailer names: the touched path it prefixes, else the text before
- * its first ": ". Capped at the purge cap, or at `limit` when the user chose one (then older commits are not read).
+ * `needles` (case-insensitive, both canonicalised as a stored reason is: whitespace runs and control characters folded),
+ * each with the path its trailer names: the touched path it prefixes, else the text before its first ": ". Capped at
+ * the purge cap, or at `limit` when the user chose one (then older commits are not read).
  */
 export async function scanTrailersCarrying(sourceRoot: string, needles: readonly string[], opts: { from?: string | null; limit?: number } = {}): Promise<PurgeTrailerScan> {
-  const repo = gitTopLevel(sourceRoot);
-  if (!repo) return { status: 'no_repository' };
+  const repo = locateGitTopLevel(sourceRoot);
+  if (repo.status === 'not_repository') return { status: 'no_repository' };
+  if (repo.status === 'failed') return { status: 'failed', detail: repo.detail };
   const head = hardenedGitSync(repo.gitRoot, ['rev-parse', '--verify', '--quiet', 'HEAD^{commit}'], { timeoutMs: 10_000, maxBytes: 1024 });
   if (!head.ok) return head.reason === 'exit' && head.status === 1 ? { status: 'complete', gitRoot: repo.gitRoot, head: null, hits: [], commits: 0, limited: false }
     : { status: 'failed', detail: `git rev-parse ${head.reason}` };
   const tip = head.stdout.toString('utf8').trim();
   if (opts.from === tip) return { status: 'complete', gitRoot: repo.gitRoot, head: tip, hits: [], commits: 0, limited: false };
-  const lowered = needles.map(needle => needle.toLowerCase()).filter(Boolean);
+  const lowered = needles.map(needle => canonicalChangeReason(needle)?.toLowerCase() ?? '').filter(Boolean);
   const forms = pathForms(repo.scopePrefix);
   const hits: Array<{ commit: string; path: string }> = [];
   const cap = opts.limit ?? caps.purge;
   const read = await readReasonTrailers(repo.gitRoot, opts.from ? `${opts.from}..${tip}` : tip, cap, commit => {
     for (const value of commit.values) {
-      const lower = value.toLowerCase();
+      const lower = canonicalChangeReason(value)?.toLowerCase() ?? '';
       if (!lowered.some(needle => lower.includes(needle))) continue;
       let best: { path: string; length: number } | null = null;
       for (const path of commit.paths) for (const form of forms(path)) {

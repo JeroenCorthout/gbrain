@@ -276,11 +276,20 @@ async function probeNamedRows(engine: BrainEngine, entry: InventoryEntry, source
 }
 
 /** W1 (BELIEF_LEDGER.md 6.5): a queued effect whose payload still carries the purged text would write it back after the purge. */
-async function effectPayloadReport(engine: BrainEngine, sourceId: string, needles: readonly string[], deadline: number, removed: number): Promise<StoreReport> {
+async function effectPayloadReport(engine: BrainEngine, sourceId: string, needles: readonly string[], deadline: number, removed: number,
+  page?: { slug: string; reasons: readonly string[] }): Promise<StoreReport> {
   const list = needles.filter(Boolean).slice(0, 32);
-  if (!list.length) return { store: 'persistence_effects', status: 'not_present' };
-  const params: unknown[] = [sourceId, ...list.flatMap(n => [n.toLowerCase(), JSON.stringify(n).slice(1, -1).toLowerCase()])];
+  const reasons = (page?.reasons ?? []).filter(Boolean).slice(0, 32);
+  if (!list.length && !reasons.length) return { store: 'persistence_effects', status: 'not_present' };
+  const forms = (n: string) => [n.toLowerCase(), JSON.stringify(n).slice(1, -1).toLowerCase()];
+  const params: unknown[] = [sourceId, ...list.flatMap(forms)];
   const ors = list.flatMap((_, i) => ['data', 'outcome', 'recovery'].map(c => textMatch(`COALESCE(e.${c}::text,'')`, 2 + i * 2)));
+  // GBRA-217: a purged page's reasons are searched in its own Git effects only (a short reason is not a claim).
+  if (page && reasons.length) {
+    const at = params.push(page.slug);
+    params.push(...reasons.flatMap(forms));
+    ors.push(`(e.kind = 'git' AND e.data->>'slug' = $${at} AND (${reasons.map((_, i) => textMatch('e.data', at + 1 + i * 2)).join(' OR ')}))`);
+  }
   const sql = `SELECT 'effect:' || e.id || ' ' || e.kind || ' ' || e.state AS item FROM persistence_effects e WHERE e.source_id = $1 AND (${ors.join(' OR ')})`;
   const counted = await boundedCount(engine, sql, params, deadline);
   if ('unverified' in counted) return { store: 'persistence_effects', status: 'unverified', reason: counted.unverified, removed };
@@ -571,7 +580,7 @@ export async function verifyFactPurge(engine: BrainEngine, input: { target: Purg
 }
 
 /** In-process context a page purge keeps for its receipt (never journaled): the page's claims as probe needles, and row ids. */
-export interface PagePurgeContext { needles: string[]; factIds: number[]; pageId: number; paths: string[]; segmentShas: string[]; segmentClaims?: string[]; ledgerClaims?: string[]; ledger?: LedgerPurgeReport | null }
+export interface PagePurgeContext { needles: string[]; reasons?: string[]; factIds: number[]; pageId: number; paths: string[]; segmentShas: string[]; segmentClaims?: string[]; ledgerClaims?: string[]; ledger?: LedgerPurgeReport | null }
 
 const outOfReach = (engine: BrainEngine): StoreReport[] => OUT_OF_REACH_RESIDUALS.map(r => ({ store: r.store, status: 'out_of_reach' as const,
   detail: r.store === 'database_physical' ? `${r.detail}${engine.kind === 'pglite' ? ' PGLite has no autovacuum.' : ' On Postgres the operator runs VACUUM; WAL archives, replicas and PITR windows are outside gbrain.'}` : r.detail }));
@@ -632,13 +641,15 @@ export async function verifyPagePurge(engine: BrainEngine, input: { sourceId: st
     await keyed('trust_proposals', `SELECT 1 FROM trust_proposals WHERE source_id=$1 AND ((target_table='pages' AND target_id=$2) OR (related_table='pages' AND related_id=$2)
       OR (target_table='facts' AND target_id=ANY($3::bigint[])) OR (related_table='facts' AND related_id=ANY($3::bigint[])))`, [src, context.pageId, context.factIds]);
   }
-  const textChecks = needles.flatMap((n, i) => ['intent', 'outcome', 'error_detail', 'error_message'].map(c => `strpos(lower(COALESCE(${c}::text,'')),$${4 + i})>0`));
+  const reasons = context?.reasons ?? [];
+  const textAt = (list: readonly string[], from: number) => list.flatMap((n, i) => ['intent', 'outcome', 'error_detail', 'error_message'].map(c => `strpos(lower(COALESCE(${c}::text,'')),$${from + i})>0`));
+  const textChecks = textAt(needles, 4), reasonChecks = textAt(reasons, 4 + needles.length);
   await keyed('persistence_requests', `SELECT 1 FROM persistence_requests WHERE source_id=$1 AND request_id<>$3::uuid AND (
-      (slug=$2 AND intent IS NOT NULL AND state IN ('committed','conflict','failed','cancelled'))${textChecks.length ? ` OR ${textChecks.join(' OR ')}` : ''})`,
-  [src, slug, input.requestId, ...needles.map(n => n.toLowerCase())]);
+      (slug=$2 AND intent IS NOT NULL AND state IN ('committed','conflict','failed','cancelled'))${textChecks.length ? ` OR ${textChecks.join(' OR ')}` : ''}${reasonChecks.length ? ` OR (slug=$2 AND (${reasonChecks.join(' OR ')}))` : ''})`,
+  [src, slug, input.requestId, ...needles.map(n => n.toLowerCase()), ...reasons.map(n => n.toLowerCase())]);
   if (context) {
     stores.push(...await ledgerReports(engine, src, context.ledgerClaims ?? needles, context.ledger, deadline));
-    stores.push(await effectPayloadReport(engine, src, needles, deadline, removed.persistence_effects ?? 0));
+    stores.push(await effectPayloadReport(engine, src, needles, deadline, removed.persistence_effects ?? 0, { slug, reasons }));
   }
   stores.push(...await sweptInventoryReports(engine, new Set(stores.map(s => s.store)), src, needles, removed, deadline, false));
   for (const entry of DELETION_INVENTORY) {

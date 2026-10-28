@@ -16,7 +16,7 @@
 import { afterAll, afterEach, beforeAll, describe, expect, test } from 'bun:test';
 import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { BrainEngine } from '../src/core/engine.ts';
@@ -359,6 +359,92 @@ describe('A7: purge reaches change reasons', () => {
       expect(await engine.executeRaw('SELECT commit_sha FROM reason_purge_tombstones WHERE source_id = $1', [s.id])).toEqual([{ commit_sha: pushed }]);
       expect((await reasonsOf(engine, s.id, 'notes/a')).reasons).toEqual(['[purged]']);
       __setReasonScanCapsForTests();
+    }
+  }), 120_000);
+  test('A-T7c: a moved checkout or a corrupt .git/config refuses before anything is deleted; a plain-folder source still purges', async () => inHome(async () => {
+    for (const engine of engines) {
+      const n = engines.indexOf(engine);
+      const claim = `Locker code is ${8100 + n}`;
+      const s = await classicSource(engine, { 'notes/a.md': page('A one.') });
+      await sync(engine, s);
+      write(s.root, { 'notes/a.md': page('A two.') });
+      commit(s.root, 'edit', [`notes/a.md: Changed once ${claim} was rotated.`]);
+      await sync(engine, s);
+      const id = await seedFact(engine, s.id, `people/locker-example-${n}`, claim);
+      const untouched = async () => {
+        expect(await engine.executeRaw('SELECT 1 FROM facts WHERE id = $1', [id])).toHaveLength(1);
+        expect((await reasonsOf(engine, s.id, 'notes/a')).reasons).toEqual([`Changed once ${claim} was rotated.`]);
+        expect(await engine.executeRaw('SELECT 1 FROM reason_purge_tombstones WHERE source_id = $1', [s.id])).toHaveLength(0);
+      };
+
+      renameSync(s.root, `${s.root}-moved`);
+      try {
+        const moved = await refusal(purge(engine, s.id, id));
+        expect(moved).toMatchObject({ code: 'reason_purge_scan_failed' });
+        await untouched();
+      } finally { renameSync(`${s.root}-moved`, s.root); }
+
+      const config = join(s.root, '.git', 'config');
+      const intact = readFileSync(config, 'utf8');
+      writeFileSync(config, `${intact}[core\n\tbroken = \n`);
+      try {
+        expect(gitTopLevel(s.root)).toBeNull();
+        const corrupt = await refusal(purge(engine, s.id, id));
+        expect(corrupt).toMatchObject({ code: 'reason_purge_scan_failed' });
+        await untouched();
+      } finally { writeFileSync(config, intact); }
+
+      const folder = join(home, `plain-source-${++serial}`);
+      write(folder, { 'notes/plain.md': page('Plain one.') });
+      const plainId = `rt-plain-${serial}`;
+      await engine.executeRaw(`INSERT INTO sources(id, name, local_path, config) VALUES ($1, $1, $2, '{}')`, [plainId, folder]);
+      const plainFact = await seedFact(engine, plainId, `people/plain-example-${n}`, claim);
+      const plain = await purge(engine, plainId, plainFact);
+      expect(plain.state).toBe('committed');
+      expect(plain.residuals.map((r: { store: string }) => r.store)).not.toContain('git_commit_messages');
+      expect(await engine.executeRaw('SELECT 1 FROM facts WHERE id = $1', [plainFact])).toHaveLength(0);
+    }
+  }), 180_000);
+  test('a purge while another process holds a cached scan of the range: its next request reads the tombstone, not the cached reason', async () => inHome(async () => {
+    // A second module instance is the managed sync worker's process: the purge cannot clear its cache.
+    const worker = await import(new URL('../src/core/reason-trailers.ts?sync-worker', import.meta.url).href) as typeof import('../src/core/reason-trailers.ts');
+    for (const engine of engines) {
+      const claim = `Safe combination is ${9300 + engines.indexOf(engine)}`;
+      const s = await classicSource(engine, { 'notes/a.md': page('A one.') });
+      await sync(engine, s);
+      const from = git(s.root, 'rev-parse', 'HEAD');
+      write(s.root, { 'notes/a.md': page('A two.') });
+      const to = commit(s.root, 'edit', [`notes/a.md: Changed once ${claim} was rotated.`]);
+      const range = { sourceId: s.id, sourceRoot: s.root, from, to };
+      const file = join(s.root, 'notes/a.md');
+      expect(worker.importHistoryFor(await worker.cachedSyncReasonScan(engine, range), file)).toEqual({ reason: `Changed once ${claim} was rotated.`, historyGap: false });
+      await sync(engine, s);
+      const id = await seedFact(engine, s.id, `people/safe-example-${engines.indexOf(engine)}`, claim);
+      expect((await purge(engine, s.id, id)).state).toBe('committed');
+      expect(worker.importHistoryFor(await worker.cachedSyncReasonScan(engine, range), file)).toEqual({ reason: null, historyGap: false });
+      worker.clearReasonScanCache();
+    }
+  }), 120_000);
+  test('a trailer whose spacing differs from the claim (double space, tab) is tombstoned, and a cold re-import does not restore it', async () => inHome(async () => {
+    for (const engine of engines) {
+      const n = engines.indexOf(engine);
+      const claim = `the secret project name ${n}`;
+      const s = await classicSource(engine, { 'notes/a.md': page('A one.') });
+      await sync(engine, s);
+      write(s.root, { 'notes/a.md': page('A two.') });
+      const pushed = commit(s.root, 'edit', [`notes/a.md: the  secret\tproject name ${n}`]);
+      await sync(engine, s);
+      expect((await reasonsOf(engine, s.id, 'notes/a')).reasons).toEqual([claim]);
+      const id = await seedFact(engine, s.id, `people/spacing-example-${n}`, claim);
+      const done = await purge(engine, s.id, id);
+      expect(done.state).toBe('committed');
+      expect(await engine.executeRaw('SELECT commit_sha, path FROM reason_purge_tombstones WHERE source_id = $1', [s.id])).toEqual([{ commit_sha: pushed, path: 'notes/a.md' }]);
+      await importFromContent(engine, 'notes/a', page('A one.'), { noEmbed: true, sourceId: s.id });
+      await engine.executeRaw('UPDATE sources SET last_commit = NULL WHERE id = $1', [s.id]);
+      await sync(engine, s);
+      expect(await bodyOf(engine, s.id, 'notes/a')).toContain('A two.');
+      expect((await reasonsOf(engine, s.id, 'notes/a')).reasons.at(-1)).toBeNull();
+      expect(await engine.executeRaw('SELECT 1 FROM page_versions v JOIN pages p ON p.id = v.page_id WHERE p.source_id = $1 AND strpos(lower(v.change_reason), $2) > 0', [s.id, claim])).toHaveLength(0);
     }
   }), 120_000);
 });

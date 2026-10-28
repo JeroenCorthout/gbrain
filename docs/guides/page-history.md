@@ -25,7 +25,7 @@ on the starter surface can pass it too. On the CLI the same parameter is `--reas
 A reason is one line of at most 500 characters. Tabs and line breaks become
 spaces, other control characters are removed, and an empty reason counts as
 none. It is checked before the write is accepted, so a refused reason leaves no
-copy anywhere:
+copy anywhere, except opt-in `serve --log-full-params` logging:
 
 - longer than 500 characters: `change_reason_rejected` with reason
   `reason_too_long` (the wire `error` is `invalid_params`), naming the length
@@ -68,7 +68,10 @@ Every write result says where its reason went in `reason_recorded`:
   reason stays in gbrain's history but is in no commit. Nothing needs fixing,
   and retrying the write would be wrong.
 - `private`: the page is private, so its reason stays out of every commit
-  message, group commits for other pages included.
+  message, group commits for other pages included. Visibility is checked when
+  the commit is made: a page that a later page in the same `put_pages` group
+  made private (through `derived_from`, for example) commits without its
+  reason, and so does a queued commit whose page a later write made private.
 - `not_file_backed`: the page has no file (database-only), so the reason is in
   gbrain's history only.
 - `no_repository`: the brain has no Git repository (below).
@@ -197,16 +200,28 @@ reaches every copy of a reason that quotes the claim:
 
 Purge refuses before it changes anything when it cannot read that history:
 
-- `reason_purge_scan_failed`: reading the trailers failed (a Git error or a
-  timeout). Nothing was changed; wait, then run the same purge again.
+- `reason_purge_scan_failed`: reading the trailers failed: the source's folder
+  is missing or moved, `git` is not installed, Git refuses the repository (an
+  unsafe owner or a corrupt `.git/config`), or the read timed out. Nothing was
+  changed; fix the cause or wait, then run the same purge again.
 - `reason_purge_scan_capped`: the history is longer than 200,000 commits. Your
   agent asks you to choose: purge now and check only the newest commits, with
   `--reason-scan-limit <n>` set to the number you pick, or stop. With a limit, a
   reason in an older commit is not tombstoned and a re-import could store it
   again; the receipt says so.
 
-On a source with no Git checkout there is no history to read, so purge redacts
-the database copies and never raises either refusal.
+A source counts as having no Git checkout only when it has no folder, or when
+Git itself says its folder is in no repository. Then there is no history to
+read, so purge redacts the database copies and never raises either refusal.
+
+`gbrain delete <slug> --purge` also reaches the purged page's own reasons. Before
+anything is deleted it reads every reason the page's versions and write
+receipts recorded, then removes them from the page's receipts and stored
+intents, and drops the commit line and trailers from every Git effect of the
+page, queued, failed or kept, with the same `purge_blocked_pending_recovery`
+refusal while one carrying a reason is being written. Its receipt checks both
+stores (`persistence_requests`, `persistence_effects`). Commits already in the
+repository keep their messages, as above.
 
 ## Choosing how to record a change
 

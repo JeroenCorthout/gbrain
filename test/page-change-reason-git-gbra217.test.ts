@@ -140,7 +140,64 @@ for (const backend of testBackends()) {
         const versions = await call(ctx, 'get_versions', { slug: 'notes/private-example' }) as unknown as Array<Record<string, unknown>>;
         expect(versions[0]!.replaced_because).toBe('private-only reason');
       }, { databaseUrl, setup }), 120_000);
+
+      // A put_pages batch publishes as one group (one strict door commit) on Postgres only; on PGLite its members publish one
+      // at a time (persistence/consumer.ts executeOrGroup), so a strict member commits before the next one applies.
+      test.skipIf(strict && backend === 'pglite')(`${strict ? 'strict' : 'non-strict'}: a group that makes an earlier member private commits that member without its reason`, () => managedBrain(async ({ engine, ctx, root }) => {
+        if (strict) await strictSource(engine);
+        const origin = 'notes/origin-example', derived = 'notes/derived-example';
+        await call(ctx, 'put_pages', { request_id: randomUUID(), wait_ms: 30_000, pages: [
+          { slug: origin, content: page('o1') }, { slug: derived, content: page('d1', `derived_from: ${origin}\n`) }] });
+        await settleManagedGitEffects(engine);
+        await call(ctx, 'put_pages', { request_id: randomUUID(), wait_ms: 30_000, pages: [
+          { slug: derived, content: page('d2', `derived_from: ${origin}\n`), expected_revision: await revision(ctx, derived), reason: 'lineage-private reason' },
+          { slug: origin, content: page('o2', 'visibility: private\n'), expected_revision: await revision(ctx, origin) }] });
+        await settleManagedGitEffects(engine);
+        expect(raw(root, 'show', `HEAD:${derived}.md`)).toContain('d2');
+        expect(raw(root, 'log', '--all', '--format=%B')).not.toContain('lineage-private reason');
+        const versions = await call(ctx, 'get_versions', { slug: derived }) as unknown as Array<Record<string, unknown>>;
+        expect(versions[0]!.replaced_because).toBe('lineage-private reason');
+      }, { databaseUrl, setup }), 120_000);
     }
+
+    test('non-strict: a later write that makes a queued page private commits it without its reason', () => managedBrain(async ({ engine, ctx, root }) => {
+      const origin = 'notes/origin-example', derived = 'notes/derived-example';
+      await call(ctx, 'put_pages', { request_id: randomUUID(), wait_ms: 30_000, pages: [
+        { slug: origin, content: page('o1') }, { slug: derived, content: page('d1', `derived_from: ${origin}\n`) }] });
+      await settleManagedGitEffects(engine);
+      await call(ctx, 'put_page', { slug: derived, content: page('d2', `derived_from: ${origin}\n`), expected_revision: await revision(ctx, derived), request_id: randomUUID(), reason: 'queued-then-private reason' });
+      await call(ctx, 'put_page', { slug: origin, content: page('o2', 'visibility: private\n'), expected_revision: await revision(ctx, origin), request_id: randomUUID() });
+      await settleManagedGitEffects(engine);
+      expect(raw(root, 'show', `HEAD:${derived}.md`)).toContain('d2');
+      expect(raw(root, 'log', '--all', '--format=%B')).not.toContain('queued-then-private reason');
+    }, { databaseUrl, setup }), 120_000);
+
+    test('non-strict: a page purge strips the page\'s reasons from every receipt and retained Git effect; the receipt checks both stores', () => managedBrain(async ({ engine, ctx }) => {
+      const marker = 'purged-git-reason-marker';
+      await call(ctx, 'put_page', { slug: SLUG, content: page('Edition one.'), request_id: randomUUID(), reason: `${marker} at creation` });
+      await settleManagedGitEffects(engine);
+      await call(ctx, 'put_page', { slug: SLUG, content: page('Edition two.'), expected_revision: await revision(ctx), request_id: randomUUID(), reason: `${marker} on the second edition` });
+      await settleManagedGitEffects(engine);
+      const carrying = async () => (await engine.executeRaw(`SELECT 1 FROM persistence_requests WHERE strpos(COALESCE(intent::text,'') || COALESCE(outcome::text,'') || COALESCE(error_detail::text,''), $1) > 0
+        UNION ALL SELECT 1 FROM persistence_effects WHERE strpos(data::text || COALESCE(outcome::text,''), $1) > 0`, [marker])).length;
+      expect(await engine.executeRaw(`SELECT 1 FROM persistence_effects WHERE kind = 'git' AND data->>'slug' = $1 AND strpos(data::text, $2) > 0`, [SLUG, marker])).not.toHaveLength(0);
+      const done = await call(ctx, 'delete_page', { slug: SLUG, purge: true, expected_revision: await revision(ctx), request_id: randomUUID(), wait_ms: 30_000 });
+      expect(await carrying()).toBe(0);
+      const stores = (done.receipt as { stores: Array<{ store: string; status: string }> }).stores;
+      expect(stores.filter(s => s.store === 'persistence_requests' || s.store === 'persistence_effects').map(s => s.status)).not.toContain('incomplete');
+
+      // The receipt's checks find a reason left behind: a Git effect of the slug still carrying one is incomplete.
+      const { declarePersistenceProtocol } = await import('../src/core/persistence/protocol.ts');
+      await engine.transaction(async tx => {
+        await declarePersistenceProtocol(tx);
+        await tx.executeRaw(`UPDATE persistence_effects SET data = data || $1::text::jsonb WHERE id = (SELECT min(id) FROM persistence_effects WHERE kind = 'git')`,
+          [JSON.stringify({ slug: SLUG, commit_line: `${SLUG}.md: ${marker} left behind` })]);
+      });
+      const { verifyPagePurge } = await import('../src/core/facts/purge-verify.ts');
+      const recheck = await verifyPagePurge(engine, { sourceId: 'default', slug: SLUG, requestId: randomUUID(), removed: {}, blobsRemaining: [],
+        context: { needles: [], reasons: [`${marker} left behind`], factIds: [], pageId: 0, paths: [], segmentShas: [] } }) as { stores: Array<{ store: string; status: string }> };
+      expect(recheck.stores.find(s => s.store === 'persistence_effects')).toMatchObject({ status: 'incomplete' });
+    }, { databaseUrl, setup }), 120_000);
 
     test('non-strict: a superseded Git effect never lends its reason to the newer commit; its receipt says so', () => managedBrain(async ({ engine, ctx, root }) => {
       await call(ctx, 'put_page', { slug: SLUG, content: page('Edition one.'), request_id: randomUUID() });
