@@ -128,9 +128,9 @@ jobs:
           # pr profile against their head; the nightly Upgrade matrix schedule runs
           # the full profile.
           case "$EVENT" in
-            pull_request) candidate="$PR_HEAD"; profile=pr ;;
-            workflow_dispatch) candidate="$INPUT_CANDIDATE"; profile=full ;;
-            *) candidate=""; profile=full ;;
+            pull_request) candidate="$PR_HEAD"; profile="pr" ;;
+            workflow_dispatch) candidate="$INPUT_CANDIDATE"; profile="full" ;;
+            *) candidate=""; profile="full" ;;
           esac
           args=(plan --candidate "$candidate" --profile "$profile" --out upgrade-matrix-plan.json)
           if [ -n "${INPUT_FROM:-}" ]; then args+=(--from "$INPUT_FROM"); fi
