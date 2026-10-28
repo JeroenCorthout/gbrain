@@ -4,8 +4,9 @@
  * Seeds a synthetic one-source brain on in-process PGLite (repo-less), with a
  * share of pages naming readers, then runs remote search calls through MCP
  * dispatch as serve --http does, for an unbound token and a member token.
- * Reports p50/p95 per cell and hit@10 against an oracle (the local caller's
- * ranking filtered to the pages that caller may read). PGLite is in-process, so
+ * Reports p50/p95 per cell and hit@10 against a pre-filter oracle: the pages
+ * the member may read that contain every query word, known by construction
+ * (the synthetic corpus gives each page distinct words; capped at 10). PGLite is in-process, so
  * runs on two revisions are directly comparable; on a revision without member
  * tables only the 0% cell runs.
  *
@@ -27,7 +28,10 @@ const QUERIES = arg('--queries', 60);
 const JSON_MODE = process.argv.includes('--json');
 const DIMS = 1536;
 const SRC = 'bench-src';
-const WORDS = 'harbor ledger quarry beacon orchard summit lantern canyon meadow glacier river forest delta prairie island coral'.split(' ');
+const SYLLABLES = 'ba ce di fo gu ha je ki lo mu na pe qi ro su ta ve wi xo yu za'.split(' ');
+const VOCAB = Array.from({ length: 4000 }, (_, i) => SYLLABLES[i % 21] + SYLLABLES[Math.floor(i / 21) % 21] + SYLLABLES[Math.floor(i / 441) % 21] + 'n');
+/** Deterministic word j of page i (a fixed LCG), so both brains and both revisions see the same corpus. */
+const wordOf = (i: number, j: number) => VOCAB[((i + 1) * 2654435761 + (j + 1) * 40503) % 4294967296 % VOCAB.length];
 
 function vectorFor(text: string): number[] {
   const v = new Array<number>(DIMS).fill(0);
@@ -41,24 +45,35 @@ function vectorFor(text: string): number[] {
 }
 const pct = (xs: number[], p: number) => { const s = [...xs].sort((a, b) => a - b); return s[Math.min(s.length - 1, Math.floor(p * s.length))]; };
 
-async function runCell(share: number) {
+async function newEngine(): Promise<PGLiteEngine> {
   const engine = new PGLiteEngine();
   await engine.connect({ engine: 'pglite' } as never);
   await engine.initSchema();
+  await engine.executeRaw('INSERT INTO sources (id, name) VALUES ($1, $1) ON CONFLICT (id) DO NOTHING', [SRC]);
+  return engine;
+}
+
+/** Page i: its readers at this restricted share (null = open) and whether the member may read it. */
+function pageSpec(i: number, share: number): { readers: string | null; memberReads: boolean } {
+  const restricted = share > 0 && (share >= 0.5 ? i % 5 !== 0 : i % Math.round(1 / share) === 0);
+  return { readers: restricted ? (i % 2 === 0 ? '[alice-example]' : '[group:team-b]') : null, memberReads: !restricted || i % 2 === 0 };
+}
+
+async function seed(engine: PGLiteEngine, share: number): Promise<void> {
+  for (let i = 0; i < PAGES; i++) {
+    const { readers } = pageSpec(i, share);
+    const words = Array.from({ length: 12 }, (_, j) => wordOf(i, j));
+    const fm = ['---', 'type: note', `title: Page ${i}`, ...(readers ? [`readable_by: ${readers}`] : []), '---'].join('\n');
+    await importFromContent(engine, `notes/page-${i}`, `${fm}\n# Page ${i}\n\nNotes about the ${words.join(' ')} for item ${i}.`, { sourceId: SRC });
+  }
+}
+
+async function runCell(share: number) {
+  const engine = await newEngine();
   const hasMembers = (await engine.executeRaw<{ t: string | null }>("SELECT to_regclass('access_members')::text AS t"))[0]?.t != null;
   if (share > 0 && !hasMembers) { await engine.disconnect(); return null; }
-  await engine.executeRaw('INSERT INTO sources (id, name) VALUES ($1, $1) ON CONFLICT (id) DO NOTHING', [SRC]);
-  const aliceReads = new Set<string>();
-  const restrictedEvery = share > 0 ? Math.round(1 / share) : 0;
-  for (let i = 0; i < PAGES; i++) {
-    const slug = `notes/page-${i}`;
-    const words = [WORDS[i % WORDS.length], WORDS[(i * 7) % WORDS.length], WORDS[(i * 13 + 3) % WORDS.length]];
-    const restricted = share > 0 && (share >= 0.5 ? i % 5 !== 0 : i % restrictedEvery === 0);
-    const readers = restricted ? (i % 2 === 0 ? '[alice-example]' : '[group:team-b]') : null;
-    if (!restricted || i % 2 === 0) aliceReads.add(slug);
-    const fm = ['---', 'type: note', `title: Page ${i}`, ...(readers ? [`readable_by: ${readers}`] : []), '---'].join('\n');
-    await importFromContent(engine, slug, `${fm}\n# Page ${i}\n\nNotes about the ${words.join(' ')} for item ${i}.`, { sourceId: SRC });
-  }
+  await seed(engine, share);
+
   if (hasMembers) await engine.executeRaw("INSERT INTO access_members (id) VALUES ('alice-example') ON CONFLICT DO NOTHING");
   const mint = async (name: string) => mintLegacyToken(engine, { name, scopes: ['read'], takesHolders: ['world'], sourceGrant: [SRC] });
   const unbound = await mint('bench-unbound');
@@ -78,24 +93,31 @@ async function runCell(share: number) {
   const slugsIn = (text: string) => [...new Set(text.match(/notes\/page-\d+/g) ?? [])];
 
   const cells: Record<string, unknown>[] = [];
-  for (const [who, token, readable] of [['unbound', unbound.token, null], ['member', alice.token, aliceReads]] as const) {
-    for (const match of ['keyword', 'hybrid'] as const) {
-      const times: number[] = [];
-      let hits = 0, possible = 0;
-      for (let q = 0; q < QUERIES; q++) {
-        const query = `${WORDS[q % WORDS.length]} ${WORDS[(q * 5 + 1) % WORDS.length]}`;
-        const params = { query, limit: 10, ...(match === 'keyword' ? { match: 'keyword' } : {}) };
-        const { ms, text } = await remote(token, params);
-        if (q >= 5) times.push(ms);
-        if (readable && share > 0) {
-          const local = await dispatchToolCall(engine, 'search', { ...params, limit: 200 }, { remote: false, sourceId: SRC });
-          const oracle = slugsIn(local.content.map(c => c.text).join('\n')).filter(s => readable.has(s)).slice(0, 10);
+  for (const match of ['keyword', 'hybrid'] as const) {
+    const times: Record<string, number[]> = { unbound: [], member: [] };
+    let hits = 0, possible = 0;
+    for (let q = 0; q < QUERIES + 5; q++) {
+      const page = share > 0 ? [...Array(PAGES).keys()].filter(j => pageSpec(j, share).memberReads)[(q * 7919) % PAGES % Math.max(1, Math.round(PAGES * (share >= 0.5 ? 0.6 : 0.9)))] ?? 0 : (q * 7919) % PAGES;
+      const query = `${wordOf(page, q % 12)} ${wordOf(page, (q + 5) % 12)}`;
+      const params = { query, limit: 10, ...(match === 'keyword' ? { match: 'keyword' } : {}) };
+      const order = q % 2 === 0 ? (['unbound', 'member'] as const) : (['member', 'unbound'] as const);
+      for (const who of order) {
+        const { ms, text } = await remote(who === 'member' ? alice.token : unbound.token, params);
+        if (q >= 5) times[who].push(ms);
+        if (who === 'member' && share > 0 && q >= 5) {
+          const words = query.split(' ');
+          const want = Array.from({ length: PAGES }, (_, j) => j)
+            .filter(j => pageSpec(j, share).memberReads && words.every(w => Array.from({ length: 12 }, (_, k) => wordOf(j, k)).includes(w)))
+            .slice(0, 10).map(j => `notes/page-${j}`);
           const got = new Set(slugsIn(text));
-          hits += oracle.filter(s => got.has(s)).length;
-          possible += oracle.length;
+          hits += want.filter(s => got.has(s)).length;
+          possible += want.length;
         }
       }
-      cells.push({ share, who, match, p50: +pct(times, 0.5).toFixed(2), p95: +pct(times, 0.95).toFixed(2), ...(possible ? { hit_at_10: +(hits / possible).toFixed(3) } : {}) });
+    }
+    for (const who of ['unbound', 'member'] as const) {
+      cells.push({ share, who, match, p50: +pct(times[who], 0.5).toFixed(2), p95: +pct(times[who], 0.95).toFixed(2),
+        ...(who === 'member' && possible ? { hit_at_10: +(hits / possible).toFixed(3) } : {}) });
     }
   }
   await engine.disconnect();
