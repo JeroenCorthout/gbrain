@@ -605,13 +605,9 @@ gh workflow run promote-stable.yml -f version=<VERSION> \
 - **Refs.** `refs/tags/stable` is an annotated tag on the promoted release
   commit, moved only by this workflow. Clients peel it (`refs/tags/stable^{}`)
   and take the `v<VERSION>` tag on that commit. The same push commits the
-  evidence record `stable.json` to the `stable-record` branch (parented on
-  the previous record): `version`, `commit`, `tree`, `soak_run`,
-  `known_bad` and the tag fields. The update check reads only
-  `https://raw.githubusercontent.com/<owner>/<repo>/stable-record/stable.json`;
-  an upgrade also checks it against `stable^{}` and `v<VERSION>`
-  (`src/core/stable-channel.ts`). A record without the evidence its
-  generation requires is refused by clients (`stable_invalid`).
+  evidence record `stable.json` (the tag fields plus `known_bad`) to the
+  `stable-record` branch; clients read only that file and refuse a record
+  without its evidence (`stable_invalid`, `src/core/stable-channel.ts`).
   `refs/tags/stable-v<VERSION>` is an immutable annotated record created on a
   version's first promotion and never moved or deleted. Both carry the same
   message: a title line (`gbrain`, then `stable channel: v<VERSION>`), then one
@@ -623,10 +619,8 @@ gh workflow run promote-stable.yml -f version=<VERSION> \
   `soak_run_url` (the soak's Actions run URL, optionally
   `/attempts/<n>`), `scoreboard_url` (optional, defaults to the run URL),
   `rollback` (default false), `reason` (required with rollback) and
-  `withdraw` (comma-separated versions added to the record's `known_bad`
-  list, carried forward on every later promotion; clients on a withdrawn
-  version are offered the current stable, even when older; withdrawing the
-  promoted version is refused).
+  `withdraw` (versions added to the carried-forward `known_bad` list;
+  clients on one are offered the current stable, even when older).
 - **Who.** Only an actor with the admin or maintain role; anyone else is
   refused.
 - **Soak run.** The run must belong to this repository, be completed with

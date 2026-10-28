@@ -136,7 +136,8 @@ async function runStableUpgrade(args: string[], opts: RunOpts = {}): Promise<Run
     `  return new Response(body, { status: ${opts.recordStatus ?? 200} });`,
     `}) as typeof fetch;`,
     `const { runUpgrade } = await import('${REPO}/src/commands/upgrade.ts');`,
-    `const { currentExitCode } = await import('${REPO}/src/core/cli-force-exit.ts');`,
+    `const { currentExitCode, _resetCliExitVerdictForTests } = await import('${REPO}/src/core/cli-force-exit.ts');`,
+    `_resetCliExitVerdictForTests();`,
     `await runUpgrade(${JSON.stringify(['--no-bun-floor-check', '--no-autopilot-install', ...args])});`,
     `process.exitCode = currentExitCode();`,
   ].join('\n'));

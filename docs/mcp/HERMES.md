@@ -6,11 +6,8 @@
 > this page wires the finished brain into Hermes over stdio MCP.
 
 Hermes spawns `gbrain serve` as a local stdio subprocess. No server, no tunnel,
-no token needed. Works with both PGLite and Supabase engines. Updates follow the
-stable channel by default: weekly releases promoted after testing
-([channels](../guides/upgrades-auto-update.md#stable-channel)). If no machine of
-yours stays online, hosted GBrain at [gbrain.io](https://gbrain.io/?ref=hermes-md)
-is the always-on option ([hosted harness access](../guides/hosted-harness-access.md)).
+no token needed. Works with both PGLite and Supabase engines. No machine that
+stays online? Hosted GBrain at [gbrain.io](https://gbrain.io/?ref=hermes-md) is always on.
 
 ## Register (recommended)
 

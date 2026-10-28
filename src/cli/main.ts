@@ -244,7 +244,6 @@ function maybeEmitUpdateMarker(command: string, args: readonly string[]): void {
     const cfg = loadConfigFileOnly();
     const mode = resolveSelfUpgradeMode(cfg);
     if (mode === 'off') return;
-    // GBRA-224: an invalid GBRAIN_RELEASE_CHANNEL / self_upgrade.channel checks nothing (doctor names it).
     const channel = currentReleaseChannel();
     if (!channel) return;
     maybeEmitChannelNotice({ command, args, cfg });

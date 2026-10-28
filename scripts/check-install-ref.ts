@@ -59,7 +59,7 @@ export function rewriteText(file: string, text: string, ref: string = INSTALL_RE
 }
 
 function trackedFiles(root: string): string[] {
-  const r = spawnSync('git', ['ls-files', '-z'], { cwd: root, encoding: 'utf8' });
+  const r = spawnSync('git', ['ls-files', '-z', '--cached', '--others', '--exclude-standard'], { cwd: root, encoding: 'utf8' });
   if (r.status !== 0) throw new Error(`git ls-files failed: ${r.stderr}`);
   return r.stdout.split('\0').filter(f => f && /\.(md|txt|ts|sh|json|yml|yaml)$|gbrain-launcher$/.test(f));
 }
@@ -80,7 +80,7 @@ export function findInstallRefDrift(root: string, write = false): InstallRefDrif
 }
 
 if (import.meta.main) {
-  const root = join(import.meta.dir, '..');
+  const root = process.env.GBRAIN_GUARD_ROOT || join(import.meta.dir, '..');
   const drift = findInstallRefDrift(root, process.argv.includes('--write'));
   for (const d of drift) console.error(`FAIL: ${d.file}:${d.line} ${d.found} (${d.why})`);
   if (drift.length) {
