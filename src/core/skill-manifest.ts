@@ -162,7 +162,9 @@ export function loadOrDeriveManifest(skillsDir: string): ManifestLoadResult {
  * not gbrain's to grade.
  */
 export function isGbrainManagedSkillsDir(dir: string): boolean {
+  // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal -- the second segment is a fixed file name; dir is the operator's own skills folder and is only probed for existence, never written.
   if (existsSync(join(dir, SKILLS_MANIFEST_FILENAME))) return true;
+  // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal -- fixed file name under the operator's own skills folder; existence probe only.
   if (existsSync(join(dir, 'manifest.json')) && !loadOrDeriveManifest(dir).derived) return true;
   return [...findAllResolverFiles(dir), ...findAllResolverFiles(dirname(dir))].some((file) => {
     try { return readFileSync(file, 'utf-8').includes(SKILLPACK_MANAGED_BEGIN); } catch { return false; }

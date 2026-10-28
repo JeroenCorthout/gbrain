@@ -12,7 +12,7 @@ import { afterAll, describe, expect, test } from 'bun:test';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { makeDoctorHome, runGbrain, type DoctorHome } from './helpers/doctor-json-golden.ts';
-import { PGLiteEngine } from '../src/core/pglite-engine.ts';
+import { pgliteSql } from './helpers/doctor-hot-checks-fixture.ts';
 
 const homes: DoctorHome[] = [];
 afterAll(() => { for (const h of homes) h.cleanup(); });
@@ -48,15 +48,9 @@ const check = (report: any, name: string) => report.checks.find((c: any) => c.na
 
 async function corruptJsonb(h: DoctorHome, fix = false): Promise<void> {
   const cfg = JSON.parse(readFileSync(join(h.home, '.gbrain', 'config.json'), 'utf-8'));
-  const engine = new PGLiteEngine();
-  await engine.connect({ database_path: cfg.database_path });
-  try {
-    await engine.executeRaw(fix
-      ? `DELETE FROM ingest_log WHERE source_ref = 'w4-alert-fixture'`
-      : `INSERT INTO ingest_log (source_type, source_ref, pages_updated) VALUES ('fixture', 'w4-alert-fixture', to_jsonb('["notes/alpha-example"]'::text))`);
-  } finally {
-    await engine.disconnect();
-  }
+  await pgliteSql(cfg.database_path)([[fix
+    ? `DELETE FROM ingest_log WHERE source_ref = 'w4-alert-fixture'`
+    : `INSERT INTO ingest_log (source_type, source_ref, pages_updated) VALUES ('fixture', 'w4-alert-fixture', to_jsonb('["notes/alpha-example"]'::text))`, []]]);
 }
 
 for (const kind of ['repo-less', 'repo'] as const) {
