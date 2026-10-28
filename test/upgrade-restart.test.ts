@@ -6,6 +6,8 @@
  * heartbeat rows, the service managers and the socket.
  */
 import { describe, expect, test } from 'bun:test';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { EQUALS_READERS } from '../src/cli/flag-equals.ts';
 import { parseGlobalFlags } from '../src/core/cli-options.ts';
 import {
@@ -401,8 +403,8 @@ describe('another install on the host (GBRA-175 production finding: serve ran fr
   });
 });
 
-describe('--dry-run belongs to --restart-only (#2185)', () => {
-  test('a dry run without --restart-only is refused instead of ignored', async () => {
+describe('--dry-run never installs (#2185)', () => {
+  test('without --restart-only the restart handler leaves --dry-run to the channel preview, which installs nothing (GBRA-224; upgrade-stable-channel.test.ts runs it)', async () => {
     const opts = { stopMcp: false, json: false, rerunArgv: ['gbrain', 'upgrade'] };
     const writes: string[] = [];
     const write = process.stderr.write;
@@ -410,15 +412,18 @@ describe('--dry-run belongs to --restart-only (#2185)', () => {
     const prevExit = process.exitCode;
     try {
       expect(await handleRestartOnly(['--channel', 'stable'], opts)).toBe(false);
+      expect(await handleRestartOnly(['--dry-run'], opts)).toBe(false);
       expect(currentExitCode()).toBe(0);
-      expect(await handleRestartOnly(['--dry-run'], opts)).toBe(true);
-      expect(currentExitCode()).toBe(exitCodeForCode('invalid_params'));
     } finally {
       process.stderr.write = write;
       process.exitCode = prevExit ?? 0;
       _resetCliExitVerdictForTests();
     }
-    expect(writes.join('')).toContain('--dry-run previews only a restart');
+    expect(writes.join('')).toBe('');
+    const src = readFileSync(join(import.meta.dir, '..', 'src', 'commands', 'upgrade.ts'), 'utf8');
+    const preview = src.indexOf("if (args.includes('--dry-run')) return runUpgradeDryRun(args, json);");
+    expect(preview).toBeGreaterThan(src.indexOf('if (await handleRestartOnly(args, restartOpts)) return;'));
+    expect(preview).toBeLessThan(src.indexOf('const stableTarget = await channelTarget('));
   });
 
   test('upgrade accepts --dry-run and post-upgrade, which shares its module, does not', () => {

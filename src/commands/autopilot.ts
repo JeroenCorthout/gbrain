@@ -448,7 +448,8 @@ export async function attemptAutopilotSelfUpgrade(
         /* fail-open */
       }
     }
-    if (!entry || entry.marker.kind !== 'upgrade_available' || !entry.marker.latest) return;
+    // GBRA-224: a failed stable lookup (even with a last verified answer kept for the notice) never applies.
+    if (!entry || entry.error || entry.marker?.kind !== 'upgrade_available' || !entry.marker.latest) return;
     const latestVersion = entry.marker.latest;
 
     const idle = await computeAutopilotIdle(engine, engineType);
