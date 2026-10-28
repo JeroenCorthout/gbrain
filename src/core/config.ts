@@ -1655,7 +1655,6 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = [
   // Read dual-plane by src/mcp/validate-params.ts (DB > file > 'warn').
   'mcp.strict_params',
   'mcp.result_rows', // C1 row shape, read dual-plane by src/mcp/result-rows.ts
-  'mcp.stdio_member', // GBRA-218: binds a local stdio MCP server to one member (src/core/access/caller.ts); unbound stdio reads no restricted page
   'mcp.allow_session_widen', // stdio request_tools session widening (default on), read dual-plane by src/mcp/surface.ts
   'entity.name_variants', // #7160 entity card name-variant arm and possible_duplicates (default on; verbs/entity-variants.ts)
   'entity.names_references', 'entity.record_types', 'entity.row_page_status', // names-row referenced_by_count + card `next` (default on); canonical page types listed as `records` (default empty); F3 page_status on context_pack/get_backlinks rows (default on); src/core/entity-references-config.ts

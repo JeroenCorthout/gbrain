@@ -53,7 +53,7 @@ function flagValue(args: string[], name: string): string | undefined {
   const i = args.indexOf(name);
   if (i < 0) return args.find(a => a.startsWith(`${name}=`))?.slice(name.length + 1);
   const v = args[i + 1];
-  if (v === undefined || v.startsWith('--')) throw usageError(`${name} requires a value.`, `See gbrain access --help.`);
+  if (v === undefined || v.startsWith('--')) throw usageError(`${name} requires a value.`, `Put the value right after the flag, as in ${name} VALUE.`);
   return v;
 }
 
@@ -155,7 +155,7 @@ export async function accessCheck(engine: BrainEngine, target: { token?: string;
     const audience: NonNullable<AccessCheckResult['audience']> = [];
     for (const entry of target.as.split(',').map(s => s.trim()).filter(Boolean)) {
       const principal = entry === 'guest' ? 'guest' : normalizePrincipal(entry);
-      if (!principal) throw opError('access_member_invalid', `"${entry}" is not a valid --as entry.`, 'Use member ids, group:<id> or guest, comma-separated.', { reason: 'ill_formed', why: 'Each audience entry must parse as a principal.' });
+      if (!principal) throw opError('access_member_invalid', `"${entry}" is not a valid --as entry.`, 'Use comma-separated member ids, group:ID entries or guest, for example --as alice-example,group:team-a,guest.', { reason: 'ill_formed', why: 'Each audience entry must parse as a principal.' });
       if (principal.startsWith('member:')) {
         const m = await getMember(engine, assertAccessId(principal.slice(7)));
         if (m?.status !== 'enabled') throw opError('access_member_invalid', `--as names "${principal.slice(7)}", which is ${m ? m.status : 'not a member'}.`, 'Check the id with gbrain access member list --all.', { reason: m ? m.status : 'unknown', why: 'An audience names enabled members only; an unknown one is refused rather than ignored.' });

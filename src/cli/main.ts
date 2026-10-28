@@ -145,6 +145,7 @@ const SELF_HELP_WITHOUT_ENGINE: Record<string, true | (() => Promise<(engine: ne
   'edge-proposals': async () => (await import('../commands/edge-proposals.ts')).runEdgeProposals as never,
   questions: async () => (await import('../commands/questions.ts')).runQuestions as never, // --help before the engine
   waiting: async () => (await import('../commands/loops.ts')).runWaiting as never,
+  access: async () => (await import('../commands/access.ts')).runAccess as never, // GBRA-218: usage prints before the engine
   // runSources's `--help`/`-h`/undefined-subcommand branch calls printHelp()
   // without ever touching `engine` — safe to dispatch with no brain
   // configured, matching the reader who runs `sources --help` because they
@@ -364,12 +365,7 @@ async function main() {
   command = routed.command;
   const subArgs = routed.subArgs;
   dispatchedCommand = command;
-  // GBRA-218: --as <member> previews an operation's reads as that member; any other command would ignore it, so it is refused.
-  if (cliOpts.as !== undefined && !helpRequested && (CLI_ONLY.has(command) || !(cliOps.has(command) || cliAliases.has(command))
-    || (command === 'search' && ['modes', 'stats', 'tune', 'diagnose'].includes(subArgs[0] ?? '')))) {
-    exitCliError(usageError(`--as previews member reads for operation commands only; 'gbrain ${command}' does not take it.`,
-      'Use --as with an operation such as search, query, get or list, or check a credential with gbrain access check --token <name>.'), command);
-  }
+  if (cliOpts.as !== undefined && !helpRequested) (await import('./as-preview.ts')).refuseAsOutsideOperations(command, subArgs, !CLI_ONLY.has(command) && (cliOps.has(command) || cliAliases.has(command))); // GBRA-218
   {
     const { directPoolProfileForCommand, setDirectPoolProfile } = await import('../core/direct-pool-profile.ts');
     setDirectPoolProfile(directPoolProfileForCommand(command, subArgs));
@@ -592,7 +588,6 @@ async function runSharedOperation(command: string, subArgs: string[], cliOpts: C
   // Fix for the silent-empty-results bug class that motivated this whole release.
   const cfgPre = loadConfig();
   if (isThinClient(cfgPre)) {
-    if (cliOpts.as !== undefined) exitCliError(usageError('--as previews member reads on a local brain; a thin client reads as its own credential.', 'Run the command on the brain host, or check the credential with gbrain access check there.'), command);
     if (op.localOnly) {
       refuseThinClient(command, cfgPre!.remote_mcp!.mcp_url);
     }
@@ -625,8 +620,7 @@ async function runSharedOperation(command: string, subArgs: string[], cliOpts: C
 
   // The live PGLite owner exposes canonical operations over a dedicated
   // local socket. Delegate before opening a competing engine connection.
-  // GBRA-218: a --as preview runs in this process (the owner socket carries no member identity).
-  if (cliOpts.as === undefined) {
+  if (cliOpts.as === undefined) { // GBRA-218: a --as preview runs in this process (the owner socket carries no member identity)
     const { runDelegatedCliOperation } = await import('../commands/persistence-delegate.ts');
     if (await runDelegatedCliOperation(op.name, params, cfgPre, {
       brain: cliOpts.brain, timeoutMs: cliOpts.timeoutMs ?? undefined,
@@ -656,20 +650,7 @@ async function runSharedOperation(command: string, subArgs: string[], cliOpts: C
   // because the import.meta.main seam exits explicitly on every one-shot path.
   const READ_OP_TIMEOUT_MS = 180_000;
   const configSnapshot = op.scope === 'read' ? takeStartupConfigSnapshot(engine) ?? openRequestConfigSnapshot(engine) : null;
-  // GBRA-218: --as <member> refuses an unknown or ill-formed member before any work, then reads under that member's identity with the
-  // remote read policy (readers and privacy); ctx.remote stays false, so upload confinement and write trust are unchanged.
-  let asAccess: { identity: string[]; applyRemoteReadPolicy: true; hidePrivate: true; privateReadableSources: [] } | null = null;
-  if (cliOpts.as !== undefined) {
-    try {
-      const { memberIdentity } = await import('../core/access/members.ts');
-      asAccess = { identity: (await memberIdentity(engine, cliOpts.as)).identity, applyRemoteReadPolicy: true, hidePrivate: true, privateReadableSources: [] };
-    } catch (e: unknown) {
-      await finishCliTeardown({ engine });
-      exitCliError(e, command);
-    }
-  }
-  const { withCallerAccess } = await import('../core/search/private-visibility.ts');
-  const runHandler = (ctx: OperationContext) => asAccess ? withCallerAccess(asAccess, () => op.handler(ctx, params)) : op.handler(ctx, params);
+  const asPreview = await (await import('./as-preview.ts')).openAsPreview(engine, cliOpts.as, command); // GBRA-218 local --as <member>
 
   try {
     const { withTimeout, OperationTimeoutError } = await import('../core/timeout.ts');
@@ -692,10 +673,7 @@ async function runSharedOperation(command: string, subArgs: string[], cliOpts: C
     let ctx: Awaited<ReturnType<typeof makeContext>>;
     try {
       ctx = await withTimeout(
-        timeCliPhase('context', async () => {
-          const built = await (configSnapshot ? configSnapshot.run(() => makeContext(engine, params, op)) : makeContext(engine, params, op));
-          return asAccess ? { ...built, accessIdentity: asAccess.identity, applyRemoteReadPolicy: true } : built;
-        }),
+        timeCliPhase('context', () => (configSnapshot ? configSnapshot.run(() => makeContext(engine, params, op)) : makeContext(engine, params, op)).then(c => asPreview.context(c))),
         wallclockMs,
         `gbrain ${command}: context`,
       );
@@ -711,7 +689,7 @@ async function runSharedOperation(command: string, subArgs: string[], cliOpts: C
     if (op.scope === 'read') {
       try {
         rawResult = await withTimeout(
-          configSnapshot!.run(() => withRequestIdentityMemo(() => runHandler(ctx))).catch(async (e: unknown) => { // large pages: a segmented page streams to stdout
+          configSnapshot!.run(() => withRequestIdentityMemo(() => asPreview.run(() => op.handler(ctx, params)))).catch(async (e: unknown) => { // large pages: a segmented page streams to stdout
             if (op.name !== 'get_page') throw e;
             const { streamSegmentedGet, SEGMENTED_STREAMED } = await import('./page-render.ts');
             if (await streamSegmentedGet(engine, params, e, writeStdoutFinal)) return SEGMENTED_STREAMED;
@@ -728,7 +706,7 @@ async function runSharedOperation(command: string, subArgs: string[], cliOpts: C
         throw e;
       }
     } else {
-      rawResult = await withRequestIdentityMemo(() => runHandler(ctx));
+      rawResult = await withRequestIdentityMemo(() => asPreview.run(() => op.handler(ctx, params)));
       if (op.mutating) await captureCapacityNotices(engine); // #6696 (A4)
     }
     if (op.name === 'get_page' && rawResult === (await import('./page-render.ts')).SEGMENTED_STREAMED) return;
